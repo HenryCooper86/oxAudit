@@ -1,0 +1,234 @@
+//! Configuration for guardrail policies.
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::permission::PermissionAction;
+
+/// Top-level guardrail configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardrailConfig {
+    /// Global default permission action for tools without explicit policy.
+    #[serde(default = "default_global_permission")]
+    pub default_permission: PermissionAction,
+
+    /// Per-tool permission overrides (tool name → action).
+    #[serde(default)]
+    pub tool_permissions: HashMap<String, PermissionAction>,
+
+    /// Whether dangerous tools (`is_dangerous=true`) auto-escalate to `Ask`.
+    #[serde(default = "default_true")]
+    pub dangerous_auto_ask: bool,
+
+    /// Maximum consecutive LLM calls within a single chat turn (tool-call loop).
+    ///
+    /// When the LLM responds with tool calls, each round-trip counts as one
+    /// iteration. If this limit is reached, the turn is terminated with a
+    /// `ToolLoopLimitExceeded` error.
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: usize,
+
+    /// Loop detection configuration.
+    #[serde(default)]
+    pub loop_guard: LoopGuardConfig,
+
+    /// Risk scoring configuration.
+    #[serde(default)]
+    pub risk: RiskConfig,
+
+    /// HITL configuration.
+    #[serde(default)]
+    pub hitl: HitlConfig,
+
+    /// Plan review configuration.
+    #[serde(default)]
+    pub plan_review: PlanReviewConfig,
+
+    /// Exec policy DSL configuration.
+    #[serde(default)]
+    pub exec_policy: ExecPolicyConfig,
+}
+
+impl Default for GuardrailConfig {
+    fn default() -> Self {
+        Self {
+            default_permission: PermissionAction::Allow,
+            tool_permissions: HashMap::new(),
+            dangerous_auto_ask: true,
+            max_tool_iterations: default_max_tool_iterations(),
+            loop_guard: LoopGuardConfig::default(),
+            risk: RiskConfig::default(),
+            hitl: HitlConfig::default(),
+            plan_review: PlanReviewConfig::default(),
+            exec_policy: ExecPolicyConfig::default(),
+        }
+    }
+}
+
+/// Loop detection thresholds and settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopGuardConfig {
+    /// Number of identical actions before Repetition detection fires.
+    #[serde(default = "default_repetition_threshold")]
+    pub repetition_threshold: usize,
+
+    /// Minimum cycles for Oscillation detection (A→B→A→B = 2 cycles).
+    #[serde(default = "default_oscillation_threshold")]
+    pub oscillation_threshold: usize,
+
+    /// Steps with no progress metric change for Drift detection.
+    #[serde(default = "default_drift_threshold")]
+    pub drift_threshold: usize,
+
+    /// Number of identical tool+args calls for `RedundantToolCall` detection.
+    #[serde(default = "default_redundant_threshold")]
+    pub redundant_threshold: usize,
+
+    /// Whether loop detection is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for LoopGuardConfig {
+    fn default() -> Self {
+        Self {
+            repetition_threshold: 5,
+            oscillation_threshold: 3,
+            drift_threshold: 10,
+            redundant_threshold: 3,
+            enabled: true,
+        }
+    }
+}
+
+/// Risk scoring configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskConfig {
+    /// Risk score threshold above which actions escalate to `Ask`.
+    #[serde(default = "default_risk_threshold")]
+    pub escalation_threshold: f32,
+}
+
+impl Default for RiskConfig {
+    fn default() -> Self {
+        Self {
+            escalation_threshold: 0.7,
+        }
+    }
+}
+
+/// HITL (Human-in-the-Loop) configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HitlConfig {
+    /// Timeout in milliseconds for user response (default: 120 seconds).
+    #[serde(default = "default_hitl_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for HitlConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 120_000,
+        }
+    }
+}
+
+/// Plan execution review mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum PlanReviewMode {
+    /// Generate the plan and execute it without waiting for user review.
+    Auto,
+    /// Pause execution and present the plan to the user for structured
+    /// approval via the GUI; resume only after Approve/Reject is received.
+    #[default]
+    Manual,
+}
+
+/// Configuration for plan review behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlanReviewConfig {
+    /// Whether plan execution is automatic or manually reviewed.
+    #[serde(default)]
+    pub mode: PlanReviewMode,
+}
+
+/// Configuration for the exec policy engine.
+///
+/// When `policy_file` is set, shell commands are evaluated against the
+/// policy before the generic permission model. Rules can be
+/// auto-derived from HITL "Always Allow" decisions.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecPolicyConfig {
+    /// Path to the policy file (e.g. `~/.y-agent/exec_policy.rules`).
+    ///
+    /// If `None` or the file does not exist, exec policy is disabled and
+    /// the generic permission model is used for all tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_file: Option<String>,
+}
+
+// Serde default helpers
+fn default_global_permission() -> PermissionAction {
+    PermissionAction::Allow
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_max_tool_iterations() -> usize {
+    10
+}
+
+const fn default_repetition_threshold() -> usize {
+    5
+}
+
+const fn default_oscillation_threshold() -> usize {
+    3
+}
+
+const fn default_drift_threshold() -> usize {
+    10
+}
+
+const fn default_redundant_threshold() -> usize {
+    3
+}
+
+const fn default_risk_threshold() -> f32 {
+    0.7
+}
+
+const fn default_hitl_timeout_ms() -> u64 {
+    120_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_guardrails_use_manual_plan_review() {
+        let config = GuardrailConfig::default();
+        assert_eq!(config.plan_review.mode, PlanReviewMode::Manual);
+    }
+
+    #[test]
+    fn guardrails_deserialize_plan_review_mode() {
+        let config: GuardrailConfig = toml::from_str(
+            r#"
+default_permission = "notify"
+
+[plan_review]
+mode = "auto"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.plan_review.mode, PlanReviewMode::Auto);
+    }
+}
