@@ -29,3 +29,6 @@ src-tauri/gen
 
 # Local design and execution artifacts
 .superpowers/
+
+# Isolated feature worktrees
+.worktrees/
