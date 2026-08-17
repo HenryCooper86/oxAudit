@@ -1,0 +1,489 @@
+use crate::models::{Dependency, Vulnerability};
+use serde_json::Value;
+use std::error::Error;
+
+const OSV_BASE: &str = "https://api.osv.dev/v1";
+
+pub struct OsvClient {
+    pub http: reqwest::Client,
+}
+
+impl OsvClient {
+    pub fn new(http: reqwest::Client) -> Self {
+        Self { http }
+    }
+
+    /// Query OSV for a single package@version.
+    #[allow(dead_code)]
+    pub async fn query_package(
+        &self,
+        ecosystem: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<Vec<Vulnerability>, String> {
+        if ecosystem == "unknown" {
+            return Ok(Vec::new());
+        }
+        let body = serde_json::json!({
+            "package": { "ecosystem": ecosystem, "name": name },
+            "version": version
+        });
+        let resp = self
+            .http
+            .post(format!("{OSV_BASE}/query"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                eprintln!("OSV transport error: {e}");
+                let mut cur: Option<&dyn std::error::Error> = e.source();
+                while let Some(c) = cur {
+                    eprintln!("  cause: {c}");
+                    cur = c.source();
+                }
+                format!("OSV request failed: {e}")
+            })?;
+        if !resp.status().is_success() {
+            return Err(format!("OSV returned {}", resp.status()));
+        }
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("OSV response parse failed: {e}"))?;
+        Ok(parse_vulns(
+            json.get("vulns").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+            ecosystem,
+            name,
+            version,
+        ))
+    }
+
+    /// Batch query OSV (up to 1000 per request). Returns a map keyed by
+    /// "ecosystem\0name\0version" with any found vulnerabilities.
+    pub async fn query_batch(
+        &self,
+        deps: &[Dependency],
+    ) -> Result<std::collections::HashMap<String, Vec<Vulnerability>>, String> {
+        let mut out = std::collections::HashMap::new();
+        let queryable: Vec<&Dependency> = deps
+            .iter()
+            .filter(|d| d.ecosystem != "unknown" && !d.name.is_empty() && !d.version.is_empty())
+            .collect();
+        if queryable.is_empty() {
+            return Ok(out);
+        }
+
+        for chunk in queryable.chunks(1000) {
+            let queries: Vec<Value> = chunk
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "package": { "ecosystem": d.ecosystem, "name": d.name },
+                        "version": d.version
+                    })
+                })
+                .collect();
+            let resp = self
+                .http
+                .post(format!("{OSV_BASE}/querybatch"))
+                .json(&serde_json::json!({ "queries": queries }))
+                .send()
+                .await
+                .map_err(|e| format!("OSV batch request failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("OSV returned {}", resp.status()));
+            }
+            let json: Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("OSV batch response parse failed: {e}"))?;
+            let results = json.get("results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            for (i, res) in results.iter().enumerate() {
+                let dep = chunk[i];
+                if let Some(vulns) = res.get("vulns").and_then(|v| v.as_array()) {
+                    let parsed = parse_vulns(vulns.clone(), &dep.ecosystem, &dep.name, &dep.version);
+                    if !parsed.is_empty() {
+                        let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
+                        out.insert(key, parsed);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch the full OSV record for an id (e.g. GHSA-xxxx or CVE-xxxx).
+    /// Returns Ok(None) when OSV does not know the id.
+    pub async fn get_vuln(&self, id: &str) -> Result<Option<Value>, String> {
+        let url = format!("{OSV_BASE}/vulns/{}", urlencode(id));
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("OSV request failed: {e}"))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(format!("OSV returned {}", resp.status()));
+        }
+        resp.json().await.map(Some).map_err(|e| format!("parse failed: {e}"))
+    }
+
+    /// Search all known vulnerabilities for a package (no version).
+    pub async fn search_package(&self, ecosystem: &str, name: &str) -> Result<Vec<Value>, String> {
+        if ecosystem == "unknown" {
+            return Ok(Vec::new());
+        }
+        let body = serde_json::json!({
+            "package": { "ecosystem": ecosystem, "name": name }
+        });
+        let resp = self
+            .http
+            .post(format!("{OSV_BASE}/query"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("OSV request failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("OSV returned {}", resp.status()));
+        }
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("OSV response parse failed: {e}"))?;
+        Ok(json
+            .get("vulns")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
+fn urlencode(s: &str) -> String {
+    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+/// Convert raw OSV vuln objects into our Vulnerability model.
+fn parse_vulns(
+    raw: Vec<Value>,
+    ecosystem: &str,
+    package_name: &str,
+    installed_version: &str,
+) -> Vec<Vulnerability> {
+    let mut out = Vec::new();
+    for v in raw {
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let aliases = v
+            .get("aliases")
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let summary = v.get("summary").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let details = v.get("details").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let published = v.get("published").and_then(|x| x.as_str()).map(String::from);
+        let modified = v.get("modified").and_then(|x| x.as_str()).map(String::from);
+        let references = v
+            .get("references")
+            .and_then(|r| r.as_array())
+            .map(|r| {
+                r.iter()
+                    .filter_map(|x| x.get("url").and_then(|u| u.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // severity: prefer CVSS score, fall back to affected[].database_specific.severity
+        let (severity, cvss_score) = extract_cvss(&v);
+
+        // fixed versions + affected range from affected[].ranges[].events
+        let mut fixed: Vec<String> = Vec::new();
+        let mut range_parts: Vec<String> = Vec::new();
+        if let Some(affected) = v.get("affected").and_then(|a| a.as_array()) {
+            for aff in affected {
+                if let Some(ranges) = aff.get("ranges").and_then(|r| r.as_array()) {
+                    for r in ranges {
+                        let mut introduced: Option<String> = None;
+                        let mut fixed_v: Option<String> = None;
+                        if let Some(events) = r.get("events").and_then(|e| e.as_array()) {
+                            for ev in events {
+                                if let Some(i) = ev.get("introduced").and_then(|x| x.as_str()) {
+                                    introduced = Some(i.to_string());
+                                }
+                                if let Some(f) = ev.get("fixed").and_then(|x| x.as_str()) {
+                                    fixed_v = Some(f.to_string());
+                                }
+                                if let Some(l) = ev.get("last_affected").and_then(|x| x.as_str()) {
+                                    introduced = Some("0".into());
+                                    fixed_v = Some(format!("{l} (last affected)"));
+                                }
+                            }
+                        }
+                        match (introduced, fixed_v) {
+                            (Some(i), Some(f)) => {
+                                if !f.contains("last affected") {
+                                    fixed.push(f.clone());
+                                }
+                                range_parts.push(format!(">= {i}, < {f}"));
+                            }
+                            (Some(i), None) => {
+                                range_parts.push(format!(">= {i}"));
+                            }
+                            (None, Some(f)) => {
+                                fixed.push(f.clone());
+                                range_parts.push(format!("< {f}"));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        fixed.sort();
+        fixed.dedup();
+
+        out.push(Vulnerability {
+            id,
+            aliases,
+            summary,
+            details,
+            severity,
+            cvss_score,
+            ecosystem: ecosystem.to_string(),
+            package_name: package_name.to_string(),
+            installed_version: installed_version.to_string(),
+            fixed_versions: fixed,
+            affected_range: if range_parts.is_empty() { None } else { Some(range_parts.join(", ")) },
+            references,
+            published,
+            modified,
+            lockfile: String::new(),
+        });
+    }
+    out
+}
+
+fn extract_cvss(v: &Value) -> (Option<String>, Option<f32>) {
+    // OSV severity array: [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/..." }]
+    if let Some(sev) = v.get("severity").and_then(|s| s.as_array()) {
+        for s in sev {
+            let score_str = s.get("score").and_then(|x| x.as_str()).unwrap_or("");
+            let score = score_str
+                .parse::<f32>()
+                .ok()
+                .or_else(|| cvss_vector_to_score(score_str));
+            if let Some(score) = score {
+                return (Some(score_to_severity(score)), Some(score));
+            }
+        }
+    }
+    // Fallback: affected[].database_specific.severity ("HIGH", ...)
+    if let Some(affected) = v.get("affected").and_then(|a| a.as_array()) {
+        for aff in affected {
+            if let Some(db) = aff.get("database_specific") {
+                if let Some(sev) = db.get("severity").and_then(|x| x.as_str()) {
+                    return (Some(sev.to_ascii_lowercase()), None);
+                }
+            }
+        }
+    }
+    (None, None)
+}
+
+/// Compute the CVSS base score from a vector string (v3.x or v2.0).
+pub fn cvss_vector_to_score(vector: &str) -> Option<f32> {
+    let v = vector.trim();
+    if v.starts_with("CVSS:3") || v.starts_with("CVSS3") {
+        cvss31_base(v)
+    } else if v.starts_with("AV:") || v.starts_with("CVSS:2") || v.starts_with("CVSS2") {
+        cvss2_base(v)
+    } else {
+        None
+    }
+}
+
+/// CVSS v3.0/3.1 base score (spec formulas, no environmental/temporal).
+fn cvss31_base(v: &str) -> Option<f32> {
+    let mut metrics = std::collections::HashMap::new();
+    for part in v.split('/') {
+        if let Some((k, val)) = part.split_once(':') {
+            metrics.insert(k.trim().to_ascii_uppercase(), val.trim().to_ascii_uppercase());
+        }
+    }
+    let get = |k: &str| metrics.get(k).map(|s| s.as_str());
+
+    let av = match get("AV")? {
+        "N" => 0.85f32,
+        "A" => 0.62,
+        "L" => 0.55,
+        "P" => 0.20,
+        _ => return None,
+    };
+    let ac = match get("AC")? {
+        "L" => 0.77f32,
+        "H" => 0.44,
+        _ => return None,
+    };
+    let ui = match get("UI")? {
+        "N" => 0.85f32,
+        "R" => 0.62,
+        _ => return None,
+    };
+    let scope_changed = get("S")? == "C";
+    let pr = match (get("PR")?, scope_changed) {
+        ("N", _) => 0.85f32,
+        ("L", false) => 0.62,
+        ("L", true) => 0.68,
+        ("H", false) => 0.27,
+        ("H", true) => 0.50,
+        _ => return None,
+    };
+    let c = match get("C")? {
+        "H" => 0.56f32,
+        "L" => 0.22,
+        "N" => 0.0,
+        _ => return None,
+    };
+    let i = match get("I")? {
+        "H" => 0.56f32,
+        "L" => 0.22,
+        "N" => 0.0,
+        _ => return None,
+    };
+    let a = match get("A")? {
+        "H" => 0.56f32,
+        "L" => 0.22,
+        "N" => 0.0,
+        _ => return None,
+    };
+
+    let iss = 1.0 - (1.0 - c) * (1.0 - i) * (1.0 - a);
+    let exploitability = 8.22 * av * ac * pr * ui;
+    let base = if scope_changed {
+        let impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02).powi(15);
+        (1.08 * (impact + exploitability)).min(10.0)
+    } else {
+        (6.42 * iss + exploitability).min(10.0)
+    };
+    // round up to one decimal (per spec)
+    Some((base * 10.0).ceil() / 10.0)
+}
+
+/// CVSS v2.0 base score.
+fn cvss2_base(v: &str) -> Option<f32> {
+    let mut metrics = std::collections::HashMap::new();
+    for part in v.split('/') {
+        if let Some((k, val)) = part.split_once(':') {
+            metrics.insert(k.trim().to_ascii_uppercase(), val.trim().to_ascii_uppercase());
+        }
+    }
+    let get = |k: &str| metrics.get(k).map(|s| s.as_str());
+
+    let av = match get("AV")? {
+        "N" => 1.0f32,
+        "A" => 0.646,
+        "L" => 0.395,
+        _ => return None,
+    };
+    let ac = match get("AC")? {
+        "L" => 0.71f32,
+        "M" => 0.61,
+        "H" => 0.35,
+        _ => return None,
+    };
+    let au = match get("AU")? {
+        "M" => 0.45f32,
+        "S" => 0.56,
+        "N" => 0.704,
+        _ => return None,
+    };
+    let c = match get("C")? {
+        "C" => 0.66f32,
+        "P" => 0.275,
+        "N" => 0.0,
+        _ => return None,
+    };
+    let i = match get("I")? {
+        "C" => 0.66f32,
+        "P" => 0.275,
+        "N" => 0.0,
+        _ => return None,
+    };
+    let a = match get("A")? {
+        "C" => 0.66f32,
+        "P" => 0.275,
+        "N" => 0.0,
+        _ => return None,
+    };
+
+    let impact = 10.41 * (1.0 - (1.0 - c) * (1.0 - i) * (1.0 - a));
+    let exploitability = 20.0 * av * ac * au;
+    let f = if impact == 0.0 { 0.0 } else { 1.176 };
+    let base = (0.6 * impact + 0.4 * exploitability - 1.5) * f;
+    // round to one decimal (standard rounding)
+    Some((base * 10.0).round() / 10.0)
+}
+
+pub fn score_to_severity(score: f32) -> String {
+    match score {
+        s if s >= 9.0 => "critical".into(),
+        s if s >= 7.0 => "high".into(),
+        s if s >= 4.0 => "medium".into(),
+        s if s > 0.0 => "low".into(),
+        _ => "info".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cvss31_vectors() {
+        // well-known vectors from NVD calculator
+        assert_eq!(cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(9.8));
+        assert_eq!(cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"), Some(5.3));
+        // scope-changed example (CVE-2020-0601 style vector)
+        assert_eq!(cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H"), Some(9.6));
+    }
+
+    #[test]
+    fn cvss2_vectors() {
+        assert_eq!(cvss_vector_to_score("AV:N/AC:L/Au:N/C:P/I:P/A:P"), Some(7.5));
+        assert_eq!(cvss_vector_to_score("AV:L/AC:H/Au:N/C:C/I:C/A:C"), Some(6.2));
+    }
+
+    #[test]
+    fn parses_real_osv_record() {
+        // captured live response for lodash@4.17.15 (see /tmp/osv_lodash.json)
+        let raw = match std::fs::read_to_string("/tmp/osv_lodash.json") {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("skipping: /tmp/osv_lodash.json not present");
+                return;
+            }
+        };
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        let vulns = parse_vulns(
+            json["vulns"].as_array().unwrap().clone(),
+            "npm",
+            "lodash",
+            "4.17.15",
+        );
+        assert!(!vulns.is_empty());
+        let with_sev = vulns
+            .iter()
+            .filter(|v| v.severity.is_some() || v.cvss_score.is_some())
+            .count();
+        assert!(with_sev > 0, "expected severity data in OSV records");
+        assert!(
+            vulns.iter().any(|v| !v.fixed_versions.is_empty()),
+            "expected fixed versions derivable from ranges"
+        );
+        // every record must carry a summary or details
+        for v in &vulns {
+            assert!(v.summary.len() + v.details.len() > 0);
+        }
+    }
+}
