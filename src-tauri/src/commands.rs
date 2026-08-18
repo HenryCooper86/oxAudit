@@ -27,8 +27,9 @@ pub struct AppState {
     pub ai: AiClient,
     pub osv: OsvClient,
     pub cancel_scan: AtomicBool,
-    /// run_id -> cancel flag for in-flight chat turns
-    pub active_chats: Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
+    /// run_id -> cancellation state for in-flight chat turns
+    pub active_chats:
+        Mutex<std::collections::HashMap<String, Arc<crate::agent::tool::RunCancellation>>>,
     /// the project folder agent tools operate on
     pub active_project: Mutex<Option<PathBuf>>,
     /// pending HITL permission approvals: request_id -> answer channel
@@ -233,9 +234,11 @@ pub async fn scan_project(
 
     let (files, skipped, total_bytes) = fs_utils::collect_files(
         root,
-        effective.include_git,
-        effective.follow_symlinks,
-        &effective.ignored_dirs,
+        fs_utils::CollectFilesOptions {
+            include_git: effective.include_git,
+            follow_symlinks: effective.follow_symlinks,
+            extra_ignored: &effective.ignored_dirs,
+        },
     );
 
     if files.is_empty() {
@@ -570,6 +573,10 @@ fn stream_event_payload(run_id: &str, event: crate::ai::AiStreamEvent) -> Result
     Ok(payload)
 }
 
+fn capture_active_project(state: &AppState) -> Option<PathBuf> {
+    state.active_project.lock().unwrap().clone()
+}
+
 /// Start a streaming chat turn. Returns immediately with a `run_id`; the turn
 /// runs on a background task that emits events:
 ///   `ai://started` { runId } · `ai://event` { runId, type, ... }
@@ -588,7 +595,8 @@ pub async fn stream_chat(
     }
     let run_id = resolve_stream_run_id(run_id)?;
     let run_id_response = run_id.clone();
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(crate::agent::tool::RunCancellation::new());
+    let project_root = capture_active_project(&state);
     {
         let mut active_chats = state.active_chats.lock().unwrap();
         if active_chats.contains_key(&run_id) {
@@ -623,6 +631,7 @@ pub async fn stream_chat(
             &registry,
             user_messages,
             conversation_id.clone(),
+            project_root,
             app2.clone(),
             Some(cancel.clone()),
             emitter,
@@ -677,9 +686,10 @@ pub async fn stream_chat(
 
 #[cfg(test)]
 mod stream_protocol_tests {
-    use super::{resolve_stream_run_id, stream_event_payload};
+    use super::{capture_active_project, resolve_stream_run_id, stream_event_payload, AppState};
     use crate::ai::AiStreamEvent;
     use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn caller_owned_run_id_is_preserved_before_stream_start() {
@@ -730,13 +740,24 @@ mod stream_protocol_tests {
         assert_eq!(payload["durationMs"], 12);
         assert_eq!(payload["resultPreview"], "ok");
     }
+
+    #[test]
+    fn chat_run_keeps_the_project_snapshot_taken_at_start() {
+        let state = AppState::new();
+        *state.active_project.lock().unwrap() = Some(PathBuf::from("/first/project"));
+
+        let captured = capture_active_project(&state);
+        *state.active_project.lock().unwrap() = Some(PathBuf::from("/second/project"));
+
+        assert_eq!(captured, Some(PathBuf::from("/first/project")));
+    }
 }
 
 /// Request cancellation of an in-flight chat stream.
 #[tauri::command]
 pub fn cancel_chat(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
-    if let Some(flag) = state.active_chats.lock().unwrap().get(&run_id) {
-        flag.store(true, Ordering::Relaxed);
+    if let Some(cancellation) = state.active_chats.lock().unwrap().get(&run_id) {
+        cancellation.cancel();
     }
     Ok(())
 }

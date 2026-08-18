@@ -21,6 +21,10 @@ import { ToolCallCard } from "../components/chat/ToolCallCard";
 import { streamChat, type StreamHandle } from "../lib/aiEvents";
 import { api } from "../lib/api";
 import {
+  loadLatestSessionMessages,
+  resolveRuntimeProject,
+} from "../lib/assistantSessions";
+import {
   LatestRequestQueue,
   type RequestToken,
 } from "../lib/latestRequest";
@@ -66,12 +70,6 @@ interface AskPrompt {
   questions: AskQuestion[];
 }
 
-interface RuntimeProjectOutcome {
-  runtimePath: string | null;
-  unavailablePath: string | null;
-  warning: string | null;
-}
-
 let assistantBootstrapPromise: Promise<SessionInfo[]> | null = null;
 
 function ensureAssistantSessions(): Promise<SessionInfo[]> {
@@ -97,8 +95,8 @@ function toUiMessages(messages: StoredMessage[]): UiMessage[] {
 }
 
 export function AssistantPage() {
-  const aiReady = useAppStore((state) => state.aiReady);
-  const settingsLoadError = useAppStore((state) => state.settingsLoadError);
+  const aiReadiness = useAppStore((state) => state.aiReadiness);
+  const aiReady = aiReadiness.status === "ready";
   const assistantHandoff = useAppStore((state) => state.assistantHandoff);
   const clearAssistantHandoff = useAppStore(
     (state) => state.clearAssistantHandoff,
@@ -231,40 +229,9 @@ export function AssistantPage() {
     projectPath: string | null,
     token: RequestToken,
   ): Promise<boolean> => {
-    const result = await sessionRequests.run(token, async (): Promise<RuntimeProjectOutcome> => {
-      if (!projectPath) {
-        try {
-          await api.setActiveProject(null);
-          return { runtimePath: null, unavailablePath: null, warning: null };
-        } catch (error) {
-          return {
-            runtimePath: null,
-            unavailablePath: null,
-            warning: `Runtime project context could not be cleared: ${String(error)}`,
-          };
-        }
-      }
-
-      try {
-        await api.setActiveProject(projectPath);
-        return { runtimePath: projectPath, unavailablePath: null, warning: null };
-      } catch (error) {
-        if (!requestIsCurrent(token)) {
-          return { runtimePath: null, unavailablePath: projectPath, warning: null };
-        }
-        let warning: string | null = null;
-        try {
-          await api.setActiveProject(null);
-        } catch (clearError) {
-          warning = `Runtime project context could not be cleared: ${String(clearError)}`;
-        }
-        return {
-          runtimePath: null,
-          unavailablePath: projectPath,
-          warning: warning ?? `Project is unavailable: ${String(error)}`,
-        };
-      }
-    });
+    const result = await sessionRequests.run(token, () =>
+      resolveRuntimeProject(projectPath, api.setActiveProject),
+    );
 
     if (!result.current || !requestIsCurrent(token)) return false;
     setActiveProjectStore(result.value.runtimePath);
@@ -284,7 +251,16 @@ export function AssistantPage() {
     token: RequestToken,
     knownMessages?: StoredMessage[],
   ) => {
-    const storedMessages = knownMessages ?? (await api.sessionGetMessages(info.id));
+    let storedMessages = knownMessages;
+    if (!storedMessages) {
+      const loaded = await loadLatestSessionMessages(
+        sessionRequests,
+        token,
+        () => api.sessionGetMessages(info.id),
+      );
+      if (!loaded.current) return;
+      storedMessages = loaded.value;
+    }
     if (!requestIsCurrent(token)) return;
     setMessages(toUiMessages(storedMessages));
     conversationId.current = info.id;
@@ -504,7 +480,7 @@ export function AssistantPage() {
       busy ||
       sessionActivating ||
       !activeSessionId ||
-      aiReady !== true
+      !aiReady
     ) {
       return;
     }
@@ -678,14 +654,35 @@ export function AssistantPage() {
 
   const showThinking =
     streaming.thinking || streaming.reasoning.trim().length > 0;
-  const availabilityLabel =
-    settingsLoadError
-      ? "AI readiness unavailable"
-      : aiReady === true
-        ? "AI ready"
-        : aiReady === false
-          ? "AI endpoint unavailable"
-          : "AI not configured";
+  const availabilityLabel = {
+    loading: "AI settings loading",
+    checking: "AI endpoint checking",
+    unconfigured: "AI not configured",
+    offline: "AI endpoint unavailable",
+    ready: "AI ready",
+    unavailable: "AI readiness unavailable",
+  }[aiReadiness.status];
+  const unavailableMessage = {
+    loading:
+      "Saved AI settings are loading. Messages remain available; sending will unlock after readiness is known.",
+    checking:
+      "The newly persisted AI endpoint is being checked. Messages remain available; sending is paused until that check finishes.",
+    unconfigured:
+      "Configure an AI provider before sending a message. You can still review and attach context.",
+    offline:
+      "The configured AI endpoint cannot be reached. Messages remain available, but sending is paused.",
+    ready: "",
+    unavailable:
+      "AI readiness could not be loaded from local settings. Messages remain available; review Settings before sending.",
+  }[aiReadiness.status];
+  const composerPlaceholder = {
+    loading: "Loading saved AI settings…",
+    checking: "Checking the newly persisted AI endpoint…",
+    unconfigured: "Configure an AI provider to send messages",
+    offline: "The saved AI endpoint is offline",
+    ready: "Ask a security question or describe what you want to analyze…",
+    unavailable: "Review Settings to restore AI readiness",
+  }[aiReadiness.status];
 
   return (
     <div
@@ -743,10 +740,12 @@ export function AssistantPage() {
               <span
                 aria-hidden="true"
                 className={`h-1.5 w-1.5 rounded-full ${
-                  aiReady === true
+                  aiReady
                     ? "bg-emerald-400"
-                    : aiReady === false
+                    : aiReadiness.status === "offline"
                       ? "bg-red-400"
+                      : aiReadiness.status === "checking"
+                        ? "bg-accent-400"
                       : "bg-stone-500"
                 }`}
               />
@@ -819,17 +818,18 @@ export function AssistantPage() {
           </div>
         )}
 
-        {aiReady !== true && (
+        {!aiReady && (
           <div
-            role={aiReady === false ? "alert" : "status"}
+            role={
+              aiReadiness.status === "offline" ||
+              aiReadiness.status === "unavailable"
+                ? "alert"
+                : "status"
+            }
             className="flex shrink-0 items-center justify-between gap-3 border-b border-ink-800 bg-amber-950/20 px-4 py-2"
           >
             <p className="text-[12px] text-amber-200">
-              {settingsLoadError
-                ? "AI readiness could not be loaded from local settings. Messages remain available; review Settings before sending."
-                : aiReady === false
-                  ? "The configured AI endpoint cannot be reached. Messages remain available, but sending is paused."
-                  : "Configure an AI provider before sending a message. You can still review and attach context."}
+              {unavailableMessage}
             </p>
             <button
               type="button"
@@ -871,7 +871,7 @@ export function AssistantPage() {
                       disabled={
                         busy ||
                         sessionActivating ||
-                        aiReady !== true ||
+                        !aiReady ||
                         !activeSessionId
                       }
                       className="rounded-md border border-ink-700 bg-ink-900/70 px-3 py-2.5 text-left text-[13px] leading-relaxed text-stone-300 transition-colors hover:border-accent-600/50 hover:text-stone-100 disabled:opacity-40"
@@ -1015,14 +1015,8 @@ export function AssistantPage() {
                 }}
                 rows={2}
                 aria-describedby="assistant-composer-help"
-                disabled={aiReady !== true || sessionActivating}
-                placeholder={
-                  aiReady === true
-                    ? "Ask a security question or describe what you want to analyze…"
-                    : settingsLoadError
-                      ? "Review Settings to restore AI readiness"
-                      : "Configure an AI provider to send messages"
-                }
+                disabled={!aiReady || sessionActivating}
+                placeholder={composerPlaceholder}
                 className="selectable min-h-11 flex-1 resize-none rounded-md border border-ink-600 bg-ink-950 px-3.5 py-2.5 text-[13px] leading-relaxed text-stone-200 outline-none placeholder:text-stone-400 focus:border-accent-500/70 disabled:cursor-not-allowed disabled:opacity-60"
               />
               {busy ? (
@@ -1040,7 +1034,7 @@ export function AssistantPage() {
                   disabled={
                     !input.trim() ||
                     sessionActivating ||
-                    aiReady !== true ||
+                    !aiReady ||
                     !activeSessionId
                   }
                   className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-md bg-accent-500 px-3.5 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"

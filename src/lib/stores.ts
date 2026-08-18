@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AiReadiness } from "./settingsRequests";
 import type { AppSettings } from "./types";
 import type { AssistantHandoff, Page, WorkbenchStatus } from "./workbench";
 
@@ -17,8 +18,8 @@ interface AppStore {
   setPage: (p: Page) => void;
   settings: AppSettings | null;
   setSettings: (s: AppSettings) => void;
-  aiReady: boolean | null;
-  setAiReady: (v: boolean | null) => void;
+  aiReadiness: AiReadiness;
+  setAiReadiness: (readiness: AiReadiness) => void;
   settingsLoadError: boolean;
   setSettingsLoadError: (failed: boolean) => void;
   activeProject: string | null;
@@ -48,8 +49,8 @@ export const useAppStore = create<AppStore>((set) => ({
   setPage: (page) => set({ page }),
   settings: null,
   setSettings: (settings) => set({ settings }),
-  aiReady: null,
-  setAiReady: (aiReady) => set({ aiReady }),
+  aiReadiness: { status: "loading", version: 0 },
+  setAiReadiness: (aiReadiness) => set({ aiReadiness }),
   settingsLoadError: false,
   setSettingsLoadError: (settingsLoadError) => set({ settingsLoadError }),
   activeProject: null,

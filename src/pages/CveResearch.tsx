@@ -35,8 +35,7 @@ type PackageLookupResult = {
 };
 
 export function CveResearchPage(): JSX.Element {
-  const aiReady = useAppStore((state) => state.aiReady);
-  const settingsLoadError = useAppStore((state) => state.settingsLoadError);
+  const aiReadiness = useAppStore((state) => state.aiReadiness);
   const setPageStatus = useAppStore((state) => state.setPageStatus);
   const clearPageStatus = useAppStore((state) => state.clearPageStatus);
   const push = useToastStore((state) => state.push);
@@ -332,8 +331,7 @@ export function CveResearchPage(): JSX.Element {
                 <CveDossier
                   detail={detail}
                   loading={detailLoading}
-                  aiReady={!!aiReady}
-                  aiStatusUnavailable={settingsLoadError}
+                  aiReadiness={aiReadiness.status}
                   onOpenUrl={openExternal}
                   onGenerateBriefing={async () => {
                     if (!detail) return null;
