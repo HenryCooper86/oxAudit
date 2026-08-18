@@ -21,9 +21,20 @@ const toolIcons = {
 export function Dashboard() {
   const { recentScans, setPage, aiReady } = useAppStore();
   const recentActivity = recentScans.slice(0, 6);
+  const activityAnnouncement = recentActivity.length === 0
+    ? "No recent activity."
+    : `${recentActivity.length} recent ${recentActivity.length === 1 ? "activity item" : "activity items"} shown.`;
+  const aiAnnouncement = aiReady === null
+    ? "AI assistant not configured."
+    : aiReady
+      ? "AI assistant ready."
+      : "AI assistant unavailable.";
 
   return (
     <ToolPage title="Research Workbench" description="Choose a tool or resume recent work.">
+      <p aria-live="polite" aria-atomic="true" className="sr-only">
+        {activityAnnouncement} {aiAnnouncement}
+      </p>
       <section aria-label="Tools" className="grid gap-3 sm:grid-cols-2">
         {tools.map(([category, title, description, actionLabel, page]) => (
           <ToolLaunchCard
@@ -44,7 +55,7 @@ export function Dashboard() {
             Recent activity
           </h2>
           {recentActivity.length > 0 && (
-            <span className="text-[12px] text-slate-500">Latest {recentActivity.length}</span>
+            <span className="text-[12px] text-slate-400">Latest {recentActivity.length}</span>
           )}
         </div>
         <div className="mt-2 overflow-hidden rounded-lg border border-ink-700 bg-ink-850">
@@ -70,7 +81,7 @@ export function Dashboard() {
             </div>
           ) : (
             <table className="w-full table-fixed text-left text-[13px]">
-              <thead className="border-b border-ink-700 text-[12px] text-slate-500">
+              <thead className="border-b border-ink-700 text-[12px] text-slate-400">
                 <tr>
                   <th scope="col" className="w-[45%] px-4 py-2.5 font-medium">Target</th>
                   <th scope="col" className="w-[20%] px-4 py-2.5 font-medium">Tool</th>
@@ -84,7 +95,7 @@ export function Dashboard() {
                     <td className="truncate px-4 py-2.5 font-mono text-[12px]">{scan.path}</td>
                     <td className="px-4 py-2.5">{scan.kind === "source" ? "Source Scan" : "Dependency Scan"}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums">{scan.findings}</td>
-                    <td className="px-4 py-2.5 text-right text-[12px] text-slate-500">{fmtDate(scan.at)}</td>
+                    <td className="px-4 py-2.5 text-right text-[12px] text-slate-400">{fmtDate(scan.at)}</td>
                   </tr>
                 ))}
               </tbody>
