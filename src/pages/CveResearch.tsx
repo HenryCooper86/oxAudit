@@ -198,6 +198,7 @@ export function CveResearchPage(): JSX.Element {
             onEcosystem={setPkgEco}
             onPackage={setPkgName}
             onLookup={lookupPackage}
+            onOpenUrl={openExternal}
           />
         }
       >
@@ -381,6 +382,7 @@ function PackageLookup({
   onEcosystem,
   onPackage,
   onLookup,
+  onOpenUrl,
 }: {
   ecosystem: string;
   packageName: string;
@@ -390,6 +392,7 @@ function PackageLookup({
   onEcosystem: (value: string) => void;
   onPackage: (value: string) => void;
   onLookup: () => void;
+  onOpenUrl: (url: string) => Promise<void>;
 }): JSX.Element {
   return (
     <details>
@@ -444,6 +447,7 @@ function PackageLookup({
           ecosystem={result.ecosystem}
           packageName={result.packageName}
           result={result.advisories}
+          onOpenUrl={onOpenUrl}
         />
       )}
     </details>
@@ -454,10 +458,12 @@ function PackageResults({
   ecosystem,
   packageName,
   result,
+  onOpenUrl,
 }: {
   ecosystem: string;
   packageName: string;
   result: unknown[];
+  onOpenUrl: (url: string) => Promise<void>;
 }): JSX.Element {
   const advisories = result as Array<{
     id?: string;
@@ -486,7 +492,7 @@ function PackageResults({
                 disabled={!advisory.id}
                 onClick={() =>
                   advisory.id &&
-                  openUrl(`https://osv.dev/vulnerability/${advisory.id}`)
+                  void onOpenUrl(`https://osv.dev/vulnerability/${advisory.id}`)
                 }
                 className="shrink-0 font-mono text-sky-300 hover:underline disabled:cursor-not-allowed disabled:text-stone-500"
               >

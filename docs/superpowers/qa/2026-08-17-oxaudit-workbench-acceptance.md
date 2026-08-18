@@ -173,11 +173,14 @@ network services.
 ### CVE Research
 
 - Exercised NVD failure/retry, successful results, slow detail loading, detail
-  failure, OSV package success/failure, NVD/OSV/reference open actions, and AI
-  briefing generation.
+  failure, OSV package lookup success/failure, NVD/OSV/dossier-reference and
+  package-advisory open actions, and AI briefing generation.
 - Result controls were disabled while detail loading. A failed detail displayed
   one error state and no redundant Select a CVE result prompt.
-- A failed reference open reported `The external reference could not be opened`.
+- Failed dossier-reference and OSV package-advisory opens reported `The external
+  reference could not be opened`. The focused fix-round harness confirmed a
+  successful package advisory still opened the exact
+  `https://osv.dev/vulnerability/GHSA-SUCCESS` URL without an error.
   `CveDetail.osv === null` retained the approved honest copy: no OSV enrichment
   may mean either no matching record or an unavailable source.
 
