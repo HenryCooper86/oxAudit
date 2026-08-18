@@ -39,6 +39,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::scan_project,
             commands::cancel_scan,
+            commands::open_scan_finding,
             commands::scan_dependencies,
             commands::find_lockfiles,
             commands::search_cves,
