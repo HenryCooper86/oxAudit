@@ -23,7 +23,7 @@ export function WorkbenchHeader({
         <Menu aria-hidden="true" size={17} />
       </button>
       <div className="min-w-0 truncate text-[13px]">
-        <span className="text-stone-500">{meta.group}</span>
+        <span className="text-stone-400">{meta.group}</span>
         <span aria-hidden="true" className="px-2 text-stone-700">
           /
         </span>

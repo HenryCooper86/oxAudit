@@ -71,6 +71,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         <button
           type="button"
           aria-label="Close navigation"
+          tabIndex={-1}
           onClick={onClose}
           className="fixed inset-0 z-30 bg-black/60 min-[900px]:hidden"
         />
@@ -89,7 +90,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold tracking-tight text-stone-100">oxAudit</div>
-            <div className="text-[10px] uppercase tracking-[0.16em] text-stone-500">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-stone-400">
               security workbench
             </div>
           </div>
@@ -106,7 +107,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         <nav className="flex-1 space-y-5 overflow-y-auto px-2.5 py-4">
           {NAVIGATION_GROUPS.map((group) => (
             <div key={group.label}>
-              <div className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-stone-600">
+              <div className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400">
                 {group.label}
               </div>
               <div className="space-y-0.5">{group.items.map(navigationButton)}</div>
