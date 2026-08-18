@@ -161,6 +161,7 @@ export function DepsScanPage() {
       );
     } catch (scanError) {
       setError(String(scanError));
+      setFailedOperation("check");
       setPageStatus("deps-scan", { label: "Dependency check failed", tone: "error" });
       push("error", "Dependency checking failed");
     } finally {
