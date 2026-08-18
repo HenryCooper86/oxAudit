@@ -176,7 +176,8 @@ export function CveDossier({
           </>
         ) : (
           <p className="mt-2 text-[12px] text-stone-400">
-            No linked OSV record was returned for this CVE.
+            No OSV enrichment is available for this dossier. The source may not
+            have a matching record, or OSV could not be reached.
           </p>
         )}
       </section>
