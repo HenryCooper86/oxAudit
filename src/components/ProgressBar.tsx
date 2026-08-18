@@ -16,10 +16,10 @@ export function ProgressBar({
   const progressLabel = label ?? (indeterminate ? "Working…" : "Progress");
   return (
     <div className="w-full">
-      <div id={labelId} aria-live="polite" className="mb-1 flex items-center justify-between text-xs text-stone-400">
-        <span>{progressLabel}</span>
+      <div className="mb-1 flex items-center justify-between text-xs text-stone-400">
+        <span id={labelId} aria-live="polite">{progressLabel}</span>
         {!indeterminate && max !== undefined && value !== undefined && (
-          <span className="tabular-nums">
+          <span aria-hidden="true" className="tabular-nums">
             {value.toLocaleString()} / {max.toLocaleString()} ({pct}%)
           </span>
         )}

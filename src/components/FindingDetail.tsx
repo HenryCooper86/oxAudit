@@ -18,17 +18,17 @@ export function FindingDetail({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <SeverityBadge severity={finding.severity} />
-            <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-stone-500">
+            <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400">
               {finding.category === "secret" ? "Secret" : "Vulnerability"}
             </span>
             {finding.cwe && (
-              <span className="rounded border border-ink-600 bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-stone-400">
+              <span className="rounded border border-ink-600 bg-ink-800 px-1.5 py-0.5 font-mono text-[11px] text-stone-400">
                 {finding.cwe}
               </span>
             )}
           </div>
           <h2 className="mt-2 text-[16px] font-semibold leading-snug text-stone-100">{finding.ruleName}</h2>
-          <p className="selectable mt-1 break-all font-mono text-[11px] text-stone-500">
+          <p className="selectable mt-1 break-all font-mono text-[11px] text-stone-400">
             {finding.filePath}:{finding.line}:{finding.column}
           </p>
         </div>
@@ -53,25 +53,25 @@ export function FindingDetail({
       </div>
 
       <section aria-labelledby="finding-description" className="mt-5 border-t border-ink-800 pt-4">
-        <h3 id="finding-description" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-500">
+        <h3 id="finding-description" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
           Description
         </h3>
         <p className="selectable mt-1.5 text-[13px] leading-relaxed text-stone-300">{finding.description}</p>
       </section>
 
       <section aria-labelledby="finding-evidence" className="mt-5">
-        <h3 id="finding-evidence" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-500">
+        <h3 id="finding-evidence" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
           Evidence
         </h3>
         <div className="selectable mt-2 overflow-x-auto rounded-md border border-ink-700 bg-ink-950 p-3">
-          <p className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-stone-500">Match</p>
+          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400">Match</p>
           <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-orange-300/90">
             {finding.matchText}
           </pre>
         </div>
         {finding.context && (
           <div className="selectable mt-2 overflow-x-auto rounded-md border border-ink-800 bg-ink-950 p-3">
-            <p className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-stone-500">Context</p>
+            <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400">Context</p>
             <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-stone-400">{finding.context}</pre>
           </div>
         )}

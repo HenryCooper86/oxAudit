@@ -34,9 +34,11 @@ export function SourceScanPage() {
   const [maxSizeKb, setMaxSizeKb] = useState(1024);
 
   const [running, setRunning] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cancelled, setCancelled] = useState(false);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
 
   const [tab, setTab] = useState<"all" | "secret" | "vulnerability">("all");
@@ -45,6 +47,7 @@ export function SourceScanPage() {
   const [search, setSearch] = useState("");
 
   const unlistenRef = useRef<UnlistenFn[]>([]);
+  const cancellingRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
@@ -115,6 +118,7 @@ export function SourceScanPage() {
   const resetResultState = () => {
     setResult(null);
     setError(null);
+    setCancelled(false);
     setTab("all");
     setSevFilter("all");
     setLangFilter("all");
@@ -134,7 +138,10 @@ export function SourceScanPage() {
   const run = async () => {
     if (!path || running || (!scanSecrets && !scanVulns)) return;
     setRunning(true);
+    cancellingRef.current = false;
+    setCancelling(false);
     setError(null);
+    setCancelled(false);
     setProgress({ phase: "walking" });
     try {
       const res = await api.scanProject({
@@ -168,20 +175,34 @@ export function SourceScanPage() {
       );
     } catch (scanError) {
       const detail = String(scanError);
-      setError(detail);
-      setPageStatus("source-scan", { label: "Scan failed", tone: "error" });
-      push("error", "The selected folder could not be scanned");
+      if (detail.toLowerCase().includes("scan cancelled")) {
+        setError(null);
+        setCancelled(true);
+        setPageStatus("source-scan", { label: "Scan cancelled", tone: "neutral" });
+        push("info", "Scan cancelled");
+      } else {
+        setError(detail);
+        setPageStatus("source-scan", { label: "Scan failed", tone: "error" });
+        push("error", "The selected folder could not be scanned");
+      }
     } finally {
       setRunning(false);
+      cancellingRef.current = false;
+      setCancelling(false);
       setProgress(null);
     }
   };
 
   const cancel = async () => {
+    if (cancellingRef.current) return;
+    cancellingRef.current = true;
+    setCancelling(true);
     try {
       await api.cancelScan();
       push("info", "Cancelling scan…");
     } catch {
+      cancellingRef.current = false;
+      setCancelling(false);
       push("error", "The scan could not be cancelled");
     }
   };
@@ -226,9 +247,7 @@ export function SourceScanPage() {
   const progressLabel =
     progress?.phase === "walking"
       ? "Walking directory tree…"
-      : progress?.file
-        ? `Scanning ${progress.file}`
-        : "Scanning files for secrets and vulnerable patterns…";
+      : "Scanning files for secrets and vulnerable patterns…";
 
   return (
     <ToolPage
@@ -242,10 +261,11 @@ export function SourceScanPage() {
               <button
                 type="button"
                 onClick={cancel}
-                className="inline-flex items-center gap-1.5 rounded-md border border-red-900/80 bg-red-950/30 px-3 py-2 text-[12px] font-medium text-red-300 hover:bg-red-950/60"
+                disabled={cancelling}
+                className="inline-flex items-center gap-1.5 rounded-md border border-red-900/80 bg-red-950/30 px-3 py-2 text-[12px] font-medium text-red-300 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Ban size={13} aria-hidden="true" />
-                Cancel
+                {cancelling ? "Cancelling…" : "Cancel"}
               </button>
             )}
             <button
@@ -311,10 +331,15 @@ export function SourceScanPage() {
                 }
                 action={
                   result ? (
-                    <span className="text-[11px] text-stone-500">Previous results remain available below.</span>
+                    <span className="text-[11px] text-stone-400">Previous results remain available below.</span>
                   ) : undefined
                 }
               />
+            )}
+            {cancelled && result && !running && (
+              <div className="mt-3">
+                <ScanCancelled hasPreviousResults />
+              </div>
             )}
             {scanUnavailable && !running && (
               <div className="mt-3">
@@ -334,7 +359,7 @@ export function SourceScanPage() {
           </>
         }
       >
-        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-500">
+        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
           Project folder
         </label>
         <FolderPicker
@@ -367,7 +392,6 @@ export function SourceScanPage() {
                   value={tab}
                   onChange={(event) => {
                     setTab(event.target.value as typeof tab);
-                    setSelectedFindingId(null);
                   }}
                   className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
                 >
@@ -380,7 +404,6 @@ export function SourceScanPage() {
                   value={sevFilter}
                   onChange={(event) => {
                     setSevFilter(event.target.value);
-                    setSelectedFindingId(null);
                   }}
                   className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
                 >
@@ -395,7 +418,6 @@ export function SourceScanPage() {
                   value={langFilter}
                   onChange={(event) => {
                     setLangFilter(event.target.value);
-                    setSelectedFindingId(null);
                   }}
                   className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
                 >
@@ -419,7 +441,6 @@ export function SourceScanPage() {
                   value={search}
                   onChange={(event) => {
                     setSearch(event.target.value);
-                    setSelectedFindingId(null);
                   }}
                   placeholder="Search findings…"
                   className="w-44 rounded-md border border-ink-600 bg-ink-900 py-1.5 pl-8 pr-2 text-[12px] text-stone-200 placeholder:text-stone-600"
@@ -467,7 +488,7 @@ export function SourceScanPage() {
                             <span className="truncate text-[12px] font-medium text-stone-200">{finding.ruleName}</span>
                             <SeverityBadge severity={finding.severity} />
                           </span>
-                          <span className="mt-1 block truncate font-mono text-[10px] text-stone-500">
+                          <span className="mt-1 block truncate font-mono text-[11px] text-stone-400">
                             {finding.filePath}:{finding.line}
                           </span>
                           <span className="mt-1 block truncate text-[11px] text-stone-400">{finding.matchText}</span>
@@ -498,7 +519,6 @@ export function SourceScanPage() {
                     setSevFilter("all");
                     setLangFilter("all");
                     setSearch("");
-                    setSelectedFindingId(null);
                   }}
                   className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
                 >
@@ -530,7 +550,9 @@ export function SourceScanPage() {
 
       {!result && error && !running && <ScanError detail={error} onRetry={run} />}
 
-      {!result && !error && !running && !scanUnavailable && (
+      {!result && cancelled && !running && <ScanCancelled />}
+
+      {!result && !error && !cancelled && !running && !scanUnavailable && (
         <InlineState
           tone="idle"
           title="Ready to scan"
@@ -548,7 +570,7 @@ export function SourceScanPage() {
 function SummaryMetric({ label, value }: { label: string; value: string }): JSX.Element {
   return (
     <div className="min-w-0 border-b border-r border-ink-800 px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-stone-500">{label}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">{label}</p>
       <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-stone-200" title={value}>
         {value}
       </p>
@@ -574,11 +596,26 @@ function ScanError({ detail, onRetry }: { detail: string; onRetry: () => void })
           </button>
           <details className="text-[11px] text-stone-400">
             <summary className="cursor-pointer hover:text-stone-200">Details</summary>
-            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[10px] text-stone-400">
+            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[11px] text-stone-400">
               {detail}
             </pre>
           </details>
         </>
+      }
+    />
+  );
+}
+
+function ScanCancelled({ hasPreviousResults = false }: { hasPreviousResults?: boolean }): JSX.Element {
+  return (
+    <InlineState
+      tone="idle"
+      compact
+      title="Scan cancelled"
+      description={
+        hasPreviousResults
+          ? "The previous completed results are still available."
+          : "No results were changed. You can run the scan again when ready."
       }
     />
   );
