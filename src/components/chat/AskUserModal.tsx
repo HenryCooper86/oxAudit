@@ -11,10 +11,12 @@ export function AskUserModal({
   requestId,
   questions,
   onClose,
+  onRestoreFocus,
 }: {
   requestId: string;
   questions: AskQuestion[];
   onClose: () => void;
+  onRestoreFocus: () => void;
 }) {
   const [answers, setAnswers] = useState<Record<number, string | string[]>>({});
   const [freeText, setFreeText] = useState<Record<number, string>>({});
@@ -24,6 +26,8 @@ export function AskUserModal({
   const skipButtonRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const onRestoreFocusRef = useRef(onRestoreFocus);
+  onRestoreFocusRef.current = onRestoreFocus;
 
   const skip = useCallback(() => {
     api.respondInteraction(requestId, []).catch(() => undefined);
@@ -33,9 +37,16 @@ export function AskUserModal({
   skipActionRef.current = skip;
 
   useEffect(() => {
-    const timer = setInterval(() => setRemaining((value) => value - 1), 1000);
+    const timer = setInterval(
+      () => setRemaining((value) => Math.max(0, value - 1)),
+      1000,
+    );
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (remaining === 0) skipActionRef.current();
+  }, [remaining]);
 
   useEffect(() => {
     const returnFocus = document.activeElement instanceof HTMLElement
@@ -76,7 +87,11 @@ export function AskUserModal({
       cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown", onKeyDown);
       requestAnimationFrame(() => {
-        if (returnFocus?.isConnected) returnFocus.focus();
+        if (returnFocus?.isConnected && returnFocus !== document.body) {
+          returnFocus.focus();
+          if (document.activeElement === returnFocus) return;
+        }
+        onRestoreFocusRef.current();
       });
     };
   }, []);

@@ -19,6 +19,8 @@ interface AppStore {
   setSettings: (s: AppSettings) => void;
   aiReady: boolean | null;
   setAiReady: (v: boolean | null) => void;
+  settingsLoadError: boolean;
+  setSettingsLoadError: (failed: boolean) => void;
   activeProject: string | null;
   setActiveProject: (p: string | null) => void;
   assistantHandoff: AssistantHandoff | null;
@@ -48,6 +50,8 @@ export const useAppStore = create<AppStore>((set) => ({
   setSettings: (settings) => set({ settings }),
   aiReady: null,
   setAiReady: (aiReady) => set({ aiReady }),
+  settingsLoadError: false,
+  setSettingsLoadError: (settingsLoadError) => set({ settingsLoadError }),
   activeProject: null,
   setActiveProject: (activeProject) => set({ activeProject }),
   assistantHandoff: null,

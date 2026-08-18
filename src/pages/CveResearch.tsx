@@ -36,6 +36,7 @@ type PackageLookupResult = {
 
 export function CveResearchPage(): JSX.Element {
   const aiReady = useAppStore((state) => state.aiReady);
+  const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const setPageStatus = useAppStore((state) => state.setPageStatus);
   const clearPageStatus = useAppStore((state) => state.clearPageStatus);
   const push = useToastStore((state) => state.push);
@@ -123,6 +124,14 @@ export function CveResearchPage(): JSX.Element {
       if (requestId === detailRequestRef.current) setDetailError(String(error));
     } finally {
       if (requestId === detailRequestRef.current) setDetailLoading(false);
+    }
+  };
+
+  const openExternal = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch {
+      push("error", "The external reference could not be opened");
     }
   };
 
@@ -293,36 +302,38 @@ export function CveResearchPage(): JSX.Element {
               <CveList
                 items={result.items}
                 selectedId={selectedCveId}
+                disabled={detailLoading}
                 onSelect={openDetail}
               />
             }
             detail={
-              <>
-                {detailError && (
-                  <div className="p-3">
-                    <InlineState
-                      tone="error"
-                      compact
-                      title="CVE detail unavailable"
-                      description={detailError}
-                      action={
-                        selectedItem ? (
-                          <button
-                            type="button"
-                            onClick={() => void openDetail(selectedItem.id)}
-                            className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
-                          >
-                            Retry details
-                          </button>
-                        ) : undefined
-                      }
-                    />
-                  </div>
-                )}
+              detailError ? (
+                <div className="p-3">
+                  <InlineState
+                    tone="error"
+                    compact
+                    title="CVE detail unavailable"
+                    description={detailError}
+                    action={
+                      selectedItem ? (
+                        <button
+                          type="button"
+                          onClick={() => void openDetail(selectedItem.id)}
+                          className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+                        >
+                          Retry details
+                        </button>
+                      ) : undefined
+                    }
+                  />
+                </div>
+              ) : (
                 <CveDossier
                   detail={detail}
                   loading={detailLoading}
                   aiReady={!!aiReady}
+                  aiStatusUnavailable={settingsLoadError}
+                  onOpenUrl={openExternal}
                   onGenerateBriefing={async () => {
                     if (!detail) return null;
                     try {
@@ -338,7 +349,7 @@ export function CveResearchPage(): JSX.Element {
                     }
                   }}
                 />
-              </>
+              )
             }
           />
         </section>
@@ -497,10 +508,12 @@ function PackageResults({
 function CveList({
   items,
   selectedId,
+  disabled,
   onSelect,
 }: {
   items: CveItem[];
   selectedId: string | null;
+  disabled: boolean;
   onSelect: (id: string) => void;
 }): JSX.Element {
   return (
@@ -511,9 +524,10 @@ function CveList({
           <li key={item.id}>
             <button
               type="button"
+              disabled={disabled}
               aria-current={selected ? "true" : undefined}
               onClick={() => void onSelect(item.id)}
-              className={`block w-full border-l-2 border-b border-ink-800 px-3 py-3 text-left transition-colors ${selected ? "border-l-accent-500 bg-accent-500/5" : "border-l-transparent hover:bg-ink-800"}`}
+              className={`block w-full border-l-2 border-b border-ink-800 px-3 py-3 text-left transition-colors disabled:cursor-wait disabled:opacity-65 ${selected ? "border-l-accent-500 bg-accent-500/5" : "border-l-transparent hover:bg-ink-800"}`}
             >
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="font-mono text-[13px] font-semibold text-sky-300">

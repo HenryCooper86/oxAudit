@@ -52,6 +52,7 @@ export function SettingsPage() {
   const settings = useAppStore((state) => state.settings);
   const setSettings = useAppStore((state) => state.setSettings);
   const setAiReady = useAppStore((state) => state.setAiReady);
+  const setSettingsLoadError = useAppStore((state) => state.setSettingsLoadError);
   const push = useToastStore((state) => state.push);
 
   const [form, setForm] = useState<AppSettings | null>(settings);
@@ -81,17 +82,21 @@ export function SettingsPage() {
       .loadSettings()
       .then((loadedSettings) => {
         if (cancelled) return;
+        setSettingsLoadError(false);
         setSettings(loadedSettings);
         setForm(loadedSettings);
       })
       .catch((error) => {
-        if (!cancelled) setLoadError(String(error));
+        if (!cancelled) {
+          setSettingsLoadError(true);
+          setLoadError(String(error));
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [loadAttempt, setSettings, settings]);
+  }, [loadAttempt, setSettings, setSettingsLoadError, settings]);
 
   useEffect(() => {
     api
@@ -151,6 +156,7 @@ export function SettingsPage() {
     setSaveState(null);
     try {
       await api.saveSettings(form);
+      setSettingsLoadError(false);
       setSettings(form);
       setDirty(false);
       setSaveState({ tone: "success", message: "Settings saved" });

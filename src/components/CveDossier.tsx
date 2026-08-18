@@ -1,4 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { Bot, Calendar, ExternalLink, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import Markdown from "react-markdown";
@@ -12,11 +11,15 @@ export function CveDossier({
   detail,
   loading,
   aiReady,
+  aiStatusUnavailable,
+  onOpenUrl,
   onGenerateBriefing,
 }: {
   detail: CveDetail | null;
   loading: boolean;
   aiReady: boolean;
+  aiStatusUnavailable: boolean;
+  onOpenUrl: (url: string) => Promise<void>;
   onGenerateBriefing: () => Promise<string | null>;
 }): JSX.Element {
   const openAssistant = useAppStore((state) => state.openAssistant);
@@ -162,7 +165,7 @@ export function CveDossier({
           <button
             type="button"
             onClick={() =>
-              openUrl(`https://nvd.nist.gov/vuln/detail/${item.id}`)
+              void onOpenUrl(`https://nvd.nist.gov/vuln/detail/${item.id}`)
             }
             className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[11px] text-sky-300 hover:border-sky-500/50"
           >
@@ -189,7 +192,7 @@ export function CveDossier({
           </h3>
           <button
             type="button"
-            onClick={() => openUrl(`https://osv.dev/vulnerability/${item.id}`)}
+            onClick={() => void onOpenUrl(`https://osv.dev/vulnerability/${item.id}`)}
             className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[11px] text-sky-300 hover:border-sky-500/50"
           >
             <ExternalLink size={11} aria-hidden="true" /> Open OSV
@@ -227,7 +230,7 @@ export function CveDossier({
               <button
                 key={reference}
                 type="button"
-                onClick={() => openUrl(reference)}
+                onClick={() => void onOpenUrl(reference)}
                 className="inline-flex max-w-full items-center gap-1 rounded border border-ink-600 bg-ink-850 px-2 py-1 text-[11px] text-sky-300 hover:border-sky-500/50"
               >
                 <ExternalLink size={10} aria-hidden="true" />
@@ -275,7 +278,9 @@ export function CveDossier({
         </div>
         {!aiReady && (
           <p className="mt-2 text-[12px] text-stone-400">
-            Configure an AI provider in Settings to generate a briefing.
+            {aiStatusUnavailable
+              ? "AI readiness could not be loaded. Review Settings before generating a briefing."
+              : "Configure an AI provider in Settings to generate a briefing."}
           </p>
         )}
         {aiLoading && (

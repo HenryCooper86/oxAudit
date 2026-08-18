@@ -589,7 +589,16 @@ mod active_project_tests {
 
     #[test]
     fn missing_directory_is_rejected() {
-        let path = std::env::temp_dir().join("oxaudit-missing-active-project");
+        let unique = format!(
+            "oxaudit-missing-active-project-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        assert!(!path.exists());
         assert!(active_project_path(Some(path.to_string_lossy().into_owned())).is_err());
     }
 }
