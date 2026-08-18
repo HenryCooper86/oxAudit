@@ -104,7 +104,7 @@ export function AssistantPage() {
   const streamingRef = useRef(streaming);
   streamingRef.current = streaming;
   const bottomRef = useRef<HTMLDivElement>(null);
-  const contextTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const contextCloseRef = useRef<HTMLButtonElement>(null);
   const contextDialogRef = useRef<HTMLElement>(null);
   const contextReturnFocusRef = useRef<HTMLElement | null>(null);
   const contextAttachPendingRef = useRef(false);
@@ -239,7 +239,7 @@ export function AssistantPage() {
   useEffect(() => {
     if (!contextOpen) return;
     const focusFrame = requestAnimationFrame(() =>
-      contextTextareaRef.current?.focus(),
+      contextCloseRef.current?.focus(),
     );
     const root = assistantRootRef.current;
     const main = root?.closest("main");
@@ -950,8 +950,9 @@ export function AssistantPage() {
                 </p>
               </div>
               <button
+                ref={contextCloseRef}
                 type="button"
-                aria-label="Cancel context attachment"
+                aria-label="Close"
                 onClick={discardContext}
                 disabled={contextAttaching}
                 className="rounded p-1 text-stone-400 hover:bg-ink-800 hover:text-stone-200 disabled:opacity-40"
@@ -980,13 +981,12 @@ export function AssistantPage() {
               Context content
             </label>
             <textarea
-              ref={contextTextareaRef}
               id="assistant-context-content"
               value={contextText}
               onChange={(event) => setContextText(event.target.value)}
               readOnly={contextAttaching}
               rows={14}
-              className="selectable mt-2 max-h-[55vh] w-full resize-y rounded-md border border-ink-600 bg-ink-950 px-3 py-2.5 font-mono text-[13px] leading-relaxed text-stone-200 outline-none focus:border-accent-500/70"
+              className="selectable mt-2 max-h-[55vh] w-full resize-y rounded-md border border-ink-600 bg-ink-950 px-3 py-2.5 font-mono text-[13px] leading-relaxed text-stone-200 focus:border-accent-500/70"
             />
             <div className="mt-4 flex justify-end gap-2">
               <button

@@ -210,7 +210,7 @@ export function SourceScanPage() {
   const copyJson = async () => {
     if (!result) return;
     const report = {
-      tool: "VulnCompanion",
+      tool: "oxAudit",
       version: "0.1.0",
       exportedAt: new Date().toISOString(),
       summary: result.summary,
