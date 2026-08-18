@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 
 use super::tool::{
     arg_bool_default, arg_str, arg_str_default, arg_str_opt, arg_u64_default, display_rel,
-    project_root, resolve_in_project, wait_for_pending_response, PendingWaitError, Tool,
+    project_root, resolve_collection_root, resolve_in_project, wait_for_pending_response,
+    PendingWaitError, Tool,
 };
 use rayon::prelude::*;
 use tauri::Manager;
@@ -17,17 +18,35 @@ use crate::fs_utils;
 use crate::models::Vulnerability;
 
 fn collect_agent_files(
+    project_root: &std::path::Path,
     root: &std::path::Path,
     settings: &crate::models::ScanSettings,
 ) -> (Vec<std::path::PathBuf>, usize, u64) {
     fs_utils::collect_files(
         root,
         fs_utils::CollectFilesOptions {
+            project_root,
             include_git: settings.include_git,
             follow_symlinks: settings.follow_symlinks,
             extra_ignored: &settings.ignored_dirs,
         },
     )
+}
+
+fn collect_agent_lockfiles(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+) -> Vec<std::path::PathBuf> {
+    let (files, _, _) = collect_agent_files(project_root, root, settings);
+    files
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(fs_utils::is_lockfile_name)
+        })
+        .collect()
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -113,14 +132,14 @@ pub fn builtins() -> Vec<Tool> {
                 let head_limit = arg_u64_default(&args, "head_limit", 100).min(250) as usize;
                 let proj = project_root(&ctx)?;
                 let root = match arg_str_opt(&args, "path") {
-                    Some(p) => resolve_in_project(&proj, &p)?,
+                    Some(p) => resolve_collection_root(&proj, &p)?,
                     None => proj.clone(),
                 };
                 let re = regex::Regex::new(&pattern).map_err(|e| format!("invalid regex: {e}"))?;
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().scan.clone();
                 drop(st);
-                let (files, _, _) = collect_agent_files(&root, &settings);
+                let (files, _, _) = collect_agent_files(&proj, &root, &settings);
 
                 let mut hits: Vec<Value> = Vec::new();
                 let mut counts: Vec<Value> = Vec::new();
@@ -192,7 +211,7 @@ pub fn builtins() -> Vec<Tool> {
                 let max_results = arg_u64_default(&args, "max_results", 100).min(200) as usize;
                 let proj = project_root(&ctx)?;
                 let root = match arg_str_opt(&args, "path") {
-                    Some(p) => resolve_in_project(&proj, &p)?,
+                    Some(p) => resolve_collection_root(&proj, &p)?,
                     None => proj.clone(),
                 };
                 let mut builder = ignore::gitignore::GitignoreBuilder::new(&root);
@@ -203,7 +222,7 @@ pub fn builtins() -> Vec<Tool> {
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().scan.clone();
                 drop(st);
-                let (files, _, _) = collect_agent_files(&root, &settings);
+                let (files, _, _) = collect_agent_files(&proj, &root, &settings);
                 let mut matched: Vec<String> = Vec::new();
                 for file in &files {
                     if matched.len() >= max_results { break; }
@@ -236,7 +255,7 @@ pub fn builtins() -> Vec<Tool> {
                 let scan_type = arg_str_default(&args, "scan_type", "source");
                 let proj = project_root(&ctx)?;
                 let root = match arg_str_opt(&args, "path") {
-                    Some(p) => resolve_in_project(&proj, &p)?,
+                    Some(p) => resolve_collection_root(&proj, &p)?,
                     None => proj.clone(),
                 };
                 let started = Instant::now();
@@ -245,7 +264,7 @@ pub fn builtins() -> Vec<Tool> {
                 drop(st);
 
                 if scan_type == "dependencies" || scan_type == "deps" {
-                    let lockfiles = fs_utils::collect_lockfiles(&root, &settings.scan.ignored_dirs);
+                    let lockfiles = collect_agent_lockfiles(&proj, &root, &settings.scan);
                     let mut deps = Vec::new();
                     for lf in &lockfiles {
                         let name = lf.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -283,7 +302,7 @@ pub fn builtins() -> Vec<Tool> {
 
                 let scan_secrets = scan_type == "secrets";
                 let scan_vulns = !scan_secrets;
-                let (files, skipped, _) = collect_agent_files(&root, &settings.scan);
+                let (files, skipped, _) = collect_agent_files(&proj, &root, &settings.scan);
                 let findings: Vec<crate::models::Finding> = files
                     .par_iter()
                     .map(|f| crate::scanners::scan_file(&root, f, settings.scan.max_file_size_kb, scan_secrets, scan_vulns))
@@ -572,7 +591,8 @@ fn strip_html(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_agent_files;
+    use super::{collect_agent_files, collect_agent_lockfiles};
+    use crate::agent::tool::resolve_collection_root;
     use crate::models::ScanSettings;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -592,7 +612,7 @@ mod tests {
         let mut settings = ScanSettings::default();
         settings.include_git = include_git;
         settings.ignored_dirs.clear();
-        let (files, _, _) = collect_agent_files(root, &settings);
+        let (files, _, _) = collect_agent_files(root, root, &settings);
         files
             .into_iter()
             .map(|path| path.strip_prefix(root).unwrap().to_path_buf())
@@ -612,5 +632,81 @@ mod tests {
             assert!(!files.contains(&PathBuf::from("ignored.rs")));
             assert!(files.contains(&PathBuf::from("src/main.rs")));
         }
+    }
+
+    #[test]
+    fn assistant_subpath_collection_retains_the_project_policy_root() {
+        let root = fixture();
+        fs::write(root.path().join("src/ignored.rs"), "ignored\n").unwrap();
+        let mut settings = ScanSettings::default();
+        settings.ignored_dirs.clear();
+
+        let (direct_git, _, _) =
+            collect_agent_files(root.path(), &root.path().join(".git/config"), &settings);
+        let (nested, _, _) = collect_agent_files(root.path(), &root.path().join("src"), &settings);
+        assert!(direct_git.is_empty());
+        assert!(!nested.contains(&root.path().join("src/ignored.rs")));
+        assert!(nested.contains(&root.path().join("src/main.rs")));
+
+        settings.include_git = true;
+        let (direct_git, _, _) =
+            collect_agent_files(root.path(), &root.path().join(".git/config"), &settings);
+        assert_eq!(direct_git, [root.path().join(".git/config")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assistant_subpath_collection_uses_saved_follow_symlinks_policy() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture();
+        fs::create_dir(root.path().join("shared")).unwrap();
+        fs::write(root.path().join("shared/lib.rs"), "pub fn shared() {}\n").unwrap();
+        fs::write(root.path().join("shared/private.rs"), "private\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "shared/private.rs\n").unwrap();
+        let alias = root.path().join("alias");
+        symlink(root.path().join("shared"), &alias).unwrap();
+        let collection_root = resolve_collection_root(root.path(), "alias").unwrap();
+        assert_eq!(collection_root, alias);
+        let mut settings = ScanSettings::default();
+        settings.ignored_dirs.clear();
+
+        settings.follow_symlinks = false;
+        let (excluded, _, _) = collect_agent_files(root.path(), &collection_root, &settings);
+        settings.follow_symlinks = true;
+        let (included, _, _) = collect_agent_files(root.path(), &collection_root, &settings);
+
+        assert!(excluded.is_empty());
+        assert_eq!(included, [alias.join("lib.rs")]);
+    }
+
+    #[test]
+    fn assistant_dependency_collection_uses_saved_git_policy() {
+        let root = fixture();
+        fs::write(root.path().join("Cargo.lock"), "").unwrap();
+        fs::write(root.path().join(".git/package-lock.json"), "{}").unwrap();
+        let mut settings = ScanSettings::default();
+        settings.ignored_dirs.clear();
+
+        let excluded = collect_agent_lockfiles(root.path(), root.path(), &settings);
+        settings.include_git = true;
+        let included = collect_agent_lockfiles(root.path(), root.path(), &settings);
+
+        assert_eq!(excluded, [root.path().join("Cargo.lock")]);
+        assert!(included.contains(&root.path().join("Cargo.lock")));
+        assert!(included.contains(&root.path().join(".git/package-lock.json")));
+    }
+
+    #[test]
+    fn assistant_collection_root_rejects_paths_outside_the_project() {
+        let root = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside.rs");
+        fs::write(&outside_file, "outside\n").unwrap();
+
+        assert_eq!(
+            resolve_collection_root(root.path(), &outside_file.to_string_lossy()),
+            Err("path escapes the project root".into())
+        );
     }
 }

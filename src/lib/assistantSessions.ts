@@ -7,6 +7,19 @@ export interface RuntimeProjectOutcome {
   warning: string | null;
 }
 
+// Native active-project state is process-global, so mutations must remain in
+// one invocation-ordered lane even when Assistant components unmount/remount.
+let runtimeProjectMutationTail: Promise<void> = Promise.resolve();
+
+function enqueueRuntimeProjectMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = runtimeProjectMutationTail.then(operation, operation);
+  runtimeProjectMutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 export async function loadLatestSessionMessages(
   requests: LatestRequestQueue,
   token: RequestToken,
@@ -18,37 +31,39 @@ export async function loadLatestSessionMessages(
     : { current: false };
 }
 
-export async function resolveRuntimeProject(
+export function resolveRuntimeProject(
   projectPath: string | null,
   setActiveProject: (path: string | null) => Promise<void>,
 ): Promise<RuntimeProjectOutcome> {
-  if (!projectPath) {
+  return enqueueRuntimeProjectMutation(async () => {
+    if (!projectPath) {
+      try {
+        await setActiveProject(null);
+        return { runtimePath: null, unavailablePath: null, warning: null };
+      } catch (error) {
+        return {
+          runtimePath: null,
+          unavailablePath: null,
+          warning: `Runtime project context could not be cleared: ${String(error)}`,
+        };
+      }
+    }
+
     try {
-      await setActiveProject(null);
-      return { runtimePath: null, unavailablePath: null, warning: null };
+      await setActiveProject(projectPath);
+      return { runtimePath: projectPath, unavailablePath: null, warning: null };
     } catch (error) {
+      let warning = `Project is unavailable: ${String(error)}`;
+      try {
+        await setActiveProject(null);
+      } catch (clearError) {
+        warning = `Runtime project context could not be cleared: ${String(clearError)}`;
+      }
       return {
         runtimePath: null,
-        unavailablePath: null,
-        warning: `Runtime project context could not be cleared: ${String(error)}`,
+        unavailablePath: projectPath,
+        warning,
       };
     }
-  }
-
-  try {
-    await setActiveProject(projectPath);
-    return { runtimePath: projectPath, unavailablePath: null, warning: null };
-  } catch (error) {
-    let warning = `Project is unavailable: ${String(error)}`;
-    try {
-      await setActiveProject(null);
-    } catch (clearError) {
-      warning = `Runtime project context could not be cleared: ${String(clearError)}`;
-    }
-    return {
-      runtimePath: null,
-      unavailablePath: projectPath,
-      warning,
-    };
-  }
+  });
 }
