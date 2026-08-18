@@ -262,6 +262,28 @@ pub fn resolve_in_project(root: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(canon)
 }
 
+/// Resolve and validate a collection root without replacing its lexical path.
+/// Keeping that path lets the walker enforce `follow_symlinks` when the user
+/// selects a symlink itself; canonicalization is used only for containment.
+pub fn resolve_collection_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let requested = Path::new(rel);
+    let full = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    let canon_root = root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve project root: {e}"))?;
+    let canon = full
+        .canonicalize()
+        .map_err(|e| format!("path not found or unreadable: {e}"))?;
+    if !canon.starts_with(&canon_root) {
+        return Err("path escapes the project root".into());
+    }
+    Ok(full)
+}
+
 /// Display path relative to the project root.
 pub fn display_rel(root: &Path, full: &Path) -> String {
     full.strip_prefix(root)

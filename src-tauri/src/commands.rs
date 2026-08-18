@@ -235,6 +235,7 @@ pub async fn scan_project(
     let (files, skipped, total_bytes) = fs_utils::collect_files(
         root,
         fs_utils::CollectFilesOptions {
+            project_root: root,
             include_git: effective.include_git,
             follow_symlinks: effective.follow_symlinks,
             extra_ignored: &effective.ignored_dirs,

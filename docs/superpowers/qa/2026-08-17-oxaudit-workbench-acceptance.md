@@ -450,3 +450,60 @@ unchanged.
 - The formerly force-tracked final-fix report was removed from Git while its
   workspace copy and this cycle's report remain ignored review scratch. Browser,
   native, Vite, and port resources were closed before final verification.
+
+## Residual corrective cycle round 2 — 2026-08-18
+
+This focused round closes four review findings left after the first authorized
+residual commit. It changes no Tauri command name or serialized payload and does
+not broaden the four-tool workflow.
+
+### Collection boundary and Assistant policy
+
+- Real filesystem tests now cover a direct `.git/config` collection root, an
+  internal symlink alias to `.git`, a nested root governed by the project's
+  `.gitignore`, a symlink to an outside directory, and normal `includeGit=true`.
+- Collection keeps a stable canonical project boundary while retaining the
+  lexical requested root so `followSymlinks=false` cannot be bypassed by naming
+  a symlink as the root. Canonical project `.gitignore` matching also prevents a
+  followed internal alias from renaming an ignored path into visibility.
+- Assistant grep, glob, source/secrets scan, and dependency discovery all pass
+  the saved `includeGit`, `followSymlinks`, and ignored-directory policy.
+  Source Scan passes the submitted effective policy. Outside collection roots
+  are rejected before a tool walk.
+
+### Readiness and runtime-project races
+
+- A Settings save attempt now uses a separate serialized lane. A native save
+  failure does not advance persisted-readiness ownership, so the existing
+  snapshot's in-flight check can still publish. Only the latest successful save
+  begins a new persisted generation and synchronously publishes its
+  checking/unconfigured state before publishing settings. Revision-based
+  edit-during-save behavior and draft-local testing are unchanged.
+- Runtime active-project mutations use one module-scoped invocation-ordered
+  lane across Assistant mounts. Permanent tests prove a delayed old rejection
+  cannot clear a newer requested project and a delayed old successful set
+  cannot overwrite it. The current unavailable activation still records the
+  historic path and clears runtime state; standalone activation still clears
+  runtime state without mutating persistence.
+
+### Round-2 verification
+
+- `npm test` — exit 0 (22 passed, 0 failed), including the failed-save/old-check
+  and cross-mount runtime-project races.
+- `npm run check` — exit 0 (`tsc --noEmit`).
+- `npm run build` — exit 0 (Vite 7.3.6; 1,787 modules transformed;
+  JavaScript 458.51 kB, 135.83 kB gzip).
+- `cargo test --manifest-path src-tauri/Cargo.toml` — exit 0 (69 passed,
+  0 failed, 1 ignored). The live OSV ignore retains its documented compiled-
+  binary sandbox rationale.
+- `cargo check --manifest-path src-tauri/Cargo.toml` — exit 0. The only warning
+  remains the pre-existing unused `sessions::transcript_path` function.
+- Production-browser checks at 1,440 x 900, 900 x 700, and 899 x 700 retained
+  exact document/body widths. Settings truthfully rendered unavailable without
+  a Tauri bridge. Assistant rendered readiness unavailable, standalone runtime
+  context, and a disabled composer. Exactly 900 px retained the 208 px sidebar;
+  at 899 px the settled sidebar was at x=-208 and main occupied all 899 px.
+  Browser console inspection returned no warnings or errors.
+- No additional native interaction claim is added by this round. The prior
+  native launch/accessibility boundary remains authoritative; the new Rust
+  behavior is covered by real-filesystem tests plus full Cargo build checks.

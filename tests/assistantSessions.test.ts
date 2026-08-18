@@ -88,3 +88,40 @@ test("a standalone session explicitly clears runtime context without changing pe
     warning: null,
   });
 });
+
+test("a delayed failed activation cannot clear a newer runtime project", async () => {
+  const oldFailure = deferred<void>();
+  let runtimeProject: string | null = null;
+  const setActiveProject = async (path: string | null) => {
+    if (path === "/old/project") {
+      await oldFailure.promise;
+      throw new Error("old project disappeared");
+    }
+    runtimeProject = path;
+  };
+
+  const older = resolveRuntimeProject("/old/project", setActiveProject);
+  const newer = resolveRuntimeProject("/new/project", setActiveProject);
+  oldFailure.resolve(undefined);
+
+  await Promise.all([older, newer]);
+  assert.equal(runtimeProject, "/new/project");
+});
+
+test("a delayed older valid activation cannot overwrite a newer runtime project", async () => {
+  const oldCompletion = deferred<void>();
+  let runtimeProject: string | null = null;
+  const setActiveProject = async (path: string | null) => {
+    if (path === "/old/project") {
+      await oldCompletion.promise;
+    }
+    runtimeProject = path;
+  };
+
+  const older = resolveRuntimeProject("/old/project", setActiveProject);
+  const newer = resolveRuntimeProject("/new/project", setActiveProject);
+  oldCompletion.resolve(undefined);
+
+  await Promise.all([older, newer]);
+  assert.equal(runtimeProject, "/new/project");
+});

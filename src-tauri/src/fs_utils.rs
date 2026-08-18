@@ -78,30 +78,58 @@ pub fn is_lockfile_name(name: &str) -> bool {
 ///
 /// Returns (files, skipped_count, total_bytes).
 pub struct CollectFilesOptions<'a> {
+    /// Stable policy boundary for this walk. `root` may be a file, nested
+    /// directory, or symlink within this project.
+    pub project_root: &'a Path,
     pub include_git: bool,
     pub follow_symlinks: bool,
     pub extra_ignored: &'a [String],
 }
 
-pub fn collect_files(
-    root: &Path,
-    options: CollectFilesOptions<'_>,
-) -> (Vec<PathBuf>, usize, u64) {
+pub fn collect_files(root: &Path, options: CollectFilesOptions<'_>) -> (Vec<PathBuf>, usize, u64) {
     let mut files = Vec::new();
     let mut skipped = 0usize;
     let mut total_bytes = 0u64;
 
+    let Ok(project_root) = options.project_root.canonicalize() else {
+        return (files, skipped, total_bytes);
+    };
+    let Ok(collection_root) = root.canonicalize() else {
+        return (files, skipped, total_bytes);
+    };
+    if !collection_root.starts_with(&project_root)
+        || (!options.include_git && is_git_metadata(&project_root, &collection_root))
+        || (!options.follow_symlinks && collection_root_uses_symlink(root, &project_root))
+    {
+        return (files, skipped, total_bytes);
+    }
+
     let mut builder = WalkBuilder::new(root);
     let ignored: Vec<String> = options.extra_ignored.to_vec();
+    let filter_project_root = project_root.clone();
+    let project_gitignore = load_project_gitignore(&project_root);
     builder
         .hidden(false)
         .follow_links(options.follow_symlinks)
         .git_ignore(true)
         .git_global(false)
         .git_exclude(false)
-        .parents(false)
+        .parents(true)
         .filter_entry(move |entry| {
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let Ok(canonical_path) = entry.path().canonicalize() else {
+                return false;
+            };
+            if !canonical_path.starts_with(&filter_project_root)
+                || (!options.include_git && is_git_metadata(&filter_project_root, &canonical_path))
+                || project_gitignore.as_ref().is_some_and(|gitignore| {
+                    gitignore
+                        .matched_path_or_any_parents(&canonical_path, is_dir)
+                        .is_ignore()
+                })
+            {
+                return false;
+            }
             if !is_dir {
                 return true;
             }
@@ -121,6 +149,16 @@ pub fn collect_files(
                 let ft = e.file_type();
                 if ft.map(|t| t.is_file()).unwrap_or(false) {
                     let p = e.path().to_path_buf();
+                    let Ok(canonical_path) = p.canonicalize() else {
+                        skipped += 1;
+                        continue;
+                    };
+                    if !canonical_path.starts_with(&project_root)
+                        || (!options.include_git && is_git_metadata(&project_root, &canonical_path))
+                    {
+                        skipped += 1;
+                        continue;
+                    }
                     if let Ok(meta) = std::fs::metadata(&p) {
                         total_bytes += meta.len();
                     }
@@ -133,6 +171,44 @@ pub fn collect_files(
         }
     }
     (files, skipped, total_bytes)
+}
+
+fn load_project_gitignore(project_root: &Path) -> Option<ignore::gitignore::Gitignore> {
+    let path = project_root.join(".gitignore");
+    if !path.is_file() {
+        return None;
+    }
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(project_root);
+    let _ = builder.add(path);
+    builder.build().ok()
+}
+
+fn collection_root_uses_symlink(root: &Path, canonical_project_root: &Path) -> bool {
+    for ancestor in root.ancestors() {
+        if ancestor
+            .canonicalize()
+            .is_ok_and(|path| path == canonical_project_root)
+        {
+            return false;
+        }
+        if ancestor
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_git_metadata(project_root: &Path, path: &Path) -> bool {
+    path.strip_prefix(project_root)
+        .ok()
+        .is_some_and(|relative| {
+            relative
+                .components()
+                .any(|component| component.as_os_str() == ".git")
+        })
 }
 
 /// Collect lockfiles under `root`, skipping vendor trees so we don't descend
@@ -212,6 +288,7 @@ mod tests {
         let (files, _, _) = collect_files(
             root,
             CollectFilesOptions {
+                project_root: root,
                 include_git,
                 follow_symlinks: false,
                 extra_ignored: &[],
@@ -248,6 +325,114 @@ mod tests {
                 "Include .git must not invert ordinary .gitignore behavior"
             );
         }
+    }
+
+    #[test]
+    fn direct_git_file_root_is_excluded_unless_git_metadata_is_enabled() {
+        let root = fixture();
+        let git_config = root.path().join(".git/config");
+
+        let (excluded, _, _) = collect_files(
+            &git_config,
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+        );
+        let (included, _, _) = collect_files(
+            &git_config,
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: true,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+        );
+
+        assert!(
+            excluded.is_empty(),
+            "direct .git roots must obey include_git=false"
+        );
+        assert_eq!(included, [git_config]);
+    }
+
+    #[test]
+    fn nested_collection_root_honors_project_gitignore_ancestry() {
+        let root = fixture();
+        fs::write(root.path().join("src/ignored.rs"), "ignored\n").unwrap();
+
+        let (files, _, _) = collect_files(
+            &root.path().join("src"),
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+        );
+
+        assert!(
+            !files.contains(&root.path().join("src/ignored.rs")),
+            "a nested walk must retain the project root's .gitignore rules"
+        );
+        assert!(files.contains(&root.path().join("src/main.rs")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_alias_to_git_metadata_cannot_bypass_exclusion() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture();
+        let alias = root.path().join("metadata");
+        symlink(root.path().join(".git"), &alias).unwrap();
+
+        let (files, _, _) = collect_files(
+            &alias,
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: true,
+                extra_ignored: &[],
+            },
+        );
+
+        assert!(
+            files.is_empty(),
+            "a followed alias must not conceal .git metadata"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn followed_symlinks_remain_contained_in_the_project_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside.rs");
+        fs::write(&outside_file, "outside\n").unwrap();
+        symlink(outside.path(), root.path().join("external")).unwrap();
+        let canonical_root = root.path().canonicalize().unwrap();
+
+        let (files, _, _) = collect_files(
+            root.path(),
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: true,
+                extra_ignored: &[],
+            },
+        );
+
+        assert!(
+            files
+                .iter()
+                .all(|path| path.canonicalize().unwrap().starts_with(&canonical_root)),
+            "followed symlinks must not collect files outside the project root: {files:?}"
+        );
     }
 
     #[test]

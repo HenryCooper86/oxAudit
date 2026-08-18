@@ -21,7 +21,7 @@ import {
   loadingAiReadiness,
   persistedSettingsRequests,
   publishPersistedAiReadiness,
-  publishSavedSettingsSnapshot,
+  savePersistedSettingsSnapshot,
   unavailableAiReadiness,
 } from "../lib/settingsRequests";
 import { useAppStore, useToastStore } from "../lib/stores";
@@ -219,21 +219,18 @@ export function SettingsPage() {
     if (!current || savePendingRef.current) return;
     const snapshot = cloneSettings(current);
     const submittedRevision = editRevisionRef.current;
-    const token = persistedSettingsRequests.begin();
     savePendingRef.current = true;
     setSaving(true);
     setSaveState(null);
     try {
-      await api.saveSettings(snapshot);
-      const readiness = publishSavedSettingsSnapshot(
+      const publication = await savePersistedSettingsSnapshot(
         snapshot,
-        token,
         setSettings,
         setAiReadiness,
       );
-      if (!readiness) return;
+      if (!publication) return;
       setSettingsLoadError(false);
-      void readiness;
+      void publication.readiness;
 
       if (mountedRef.current) {
         const hasNewerEdits = editRevisionRef.current !== submittedRevision;
@@ -247,9 +244,7 @@ export function SettingsPage() {
         push("success", "Settings saved");
       }
     } catch (error) {
-      if (!persistedSettingsRequests.isCurrent(token) || !mountedRef.current) {
-        return;
-      }
+      if (!mountedRef.current) return;
       const message = String(error);
       setSaveState({ tone: "error", message });
     } finally {

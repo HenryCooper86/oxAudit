@@ -5,6 +5,7 @@ import {
   loadingAiReadiness,
   publishPersistedAiReadiness,
   publishSavedSettingsSnapshot,
+  savePersistedSettingsSnapshot,
   unavailableAiReadiness,
   type AiReadiness,
 } from "../src/lib/settingsRequests";
@@ -145,31 +146,52 @@ test("loading, unavailable, and unconfigured remain distinct readiness states", 
 
 test("a superseded save completion cannot publish settings or readiness", async () => {
   const requests = new LatestRequestQueue();
-  const save = deferred<void>();
+  const saveRequests = new LatestRequestQueue();
+  const olderNativeSave = deferred<void>();
+  const newerNativeSave = deferred<void>();
+  const olderStarted = deferred<void>();
+  const newerStarted = deferred<void>();
+  const newerCheck = deferred<AiStatus>();
   const published: string[] = [];
-  const olderToken = requests.begin();
+  const saveSettings = (snapshot: AppSettings) => {
+    if (snapshot.ai.baseUrl.includes("older")) {
+      olderStarted.resolve(undefined);
+      return olderNativeSave.promise;
+    }
+    newerStarted.resolve(undefined);
+    return newerNativeSave.promise;
+  };
 
-  const olderSave = (async () => {
-    await save.promise;
-    return publishSavedSettingsSnapshot(
-      settings("https://older.example/v1"),
-      olderToken,
-      (saved) => published.push(`settings:${saved.ai.baseUrl}`),
-      (readiness) => published.push(`readiness:${readiness.status}`),
-      {
-        requests,
-        testAi: async () => {
-          assert.fail("a stale save must not test its endpoint");
-        },
-      },
-    );
-  })();
+  const olderSave = savePersistedSettingsSnapshot(
+    settings("https://older.example/v1"),
+    (saved) => published.push(`settings:${saved.ai.baseUrl}`),
+    (readiness) => published.push(`readiness:${readiness.status}`),
+    { requests, saveRequests, saveSettings, testAi: () => newerCheck.promise },
+  );
+  await olderStarted.promise;
+  const newerSave = savePersistedSettingsSnapshot(
+    settings("https://newer.example/v1"),
+    (saved) => published.push(`settings:${saved.ai.baseUrl}`),
+    (readiness) => published.push(`readiness:${readiness.status}`),
+    { requests, saveRequests, saveSettings, testAi: () => newerCheck.promise },
+  );
 
-  requests.begin();
-  save.resolve(undefined);
-
+  olderNativeSave.resolve(undefined);
   assert.equal(await olderSave, null);
+  await newerStarted.promise;
   assert.deepEqual(published, []);
+
+  newerNativeSave.resolve(undefined);
+  const newerPublication = await newerSave;
+  assert.notEqual(newerPublication, null);
+  assert.deepEqual(published, [
+    "readiness:checking",
+    "settings:https://newer.example/v1",
+  ]);
+
+  newerCheck.resolve(readyStatus);
+  await newerPublication?.readiness;
+  assert.equal(published.at(-1), "readiness:ready");
 });
 
 test("a current saved snapshot publishes checking before settings and versions its completion", async () => {
@@ -196,4 +218,44 @@ test("a current saved snapshot publishes checking before settings and versions i
   check.resolve(readyStatus);
   await readiness;
   assert.deepEqual(published.at(-1), `readiness:ready:${token.generation}`);
+});
+
+test("a failed save does not invalidate the in-flight readiness check for the persisted snapshot", async () => {
+  const requests = new LatestRequestQueue();
+  const saveRequests = new LatestRequestQueue();
+  const oldCheck = deferred<AiStatus>();
+  const published: AiReadiness[] = [];
+  const persistedToken = requests.begin();
+  const oldCompletion = publishPersistedAiReadiness(
+    settings("https://persisted.example/v1"),
+    persistedToken,
+    (state) => published.push(state),
+    { requests, testAi: () => oldCheck.promise },
+  );
+
+  await assert.rejects(
+    savePersistedSettingsSnapshot(
+      settings("https://candidate.example/v1"),
+      () => assert.fail("failed settings must not publish"),
+      () => assert.fail("failed settings must not publish readiness"),
+      {
+        requests,
+        saveRequests,
+        saveSettings: async () => {
+          throw new Error("disk full");
+        },
+        testAi: async () => {
+          assert.fail("failed settings must not test their endpoint");
+        },
+      },
+    ),
+    /disk full/,
+  );
+  oldCheck.resolve(readyStatus);
+  await oldCompletion;
+
+  assert.deepEqual(published, [
+    { status: "checking", version: persistedToken.generation },
+    { status: "ready", version: persistedToken.generation },
+  ]);
 });
