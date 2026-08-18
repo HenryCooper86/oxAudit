@@ -31,11 +31,13 @@ function Page() {
 export default function App() {
   const setSettings = useAppStore((s) => s.setSettings);
   const setAiReady = useAppStore((s) => s.setAiReady);
+  const setSettingsLoadError = useAppStore((s) => s.setSettingsLoadError);
 
   useEffect(() => {
     api
       .loadSettings()
       .then((s) => {
+        setSettingsLoadError(false);
         setSettings(s);
         if (s.ai.enabled && s.ai.baseUrl) {
           return api
@@ -46,9 +48,10 @@ export default function App() {
         setAiReady(null);
       })
       .catch(() => {
+        setSettingsLoadError(true);
         setAiReady(null);
       });
-  }, [setSettings, setAiReady]);
+  }, [setSettings, setAiReady, setSettingsLoadError]);
 
   return (
     <AppShell>

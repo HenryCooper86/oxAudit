@@ -12,6 +12,7 @@ export function StatusBar(): JSX.Element {
   const page = useAppStore((state) => state.page);
   const status = useAppStore((state) => state.pageStatus[page]);
   const aiReady = useAppStore((state) => state.aiReady);
+  const settingsLoadError = useAppStore((state) => state.settingsLoadError);
 
   return (
     <footer className="flex h-7 items-center gap-4 border-t border-ink-800 bg-ink-900 px-3 text-[11px] text-stone-400">
@@ -25,7 +26,7 @@ export function StatusBar(): JSX.Element {
         {status?.detail && <span className="truncate text-stone-400">{status.detail}</span>}
       </div>
       <span className="shrink-0">
-        AI {aiReady === null ? "not configured" : aiReady ? "ready" : "offline"}
+        AI {settingsLoadError ? "status unavailable" : aiReady === null ? "not configured" : aiReady ? "ready" : "offline"}
       </span>
       <span className="shrink-0">oxAudit v0.1.0</span>
     </footer>

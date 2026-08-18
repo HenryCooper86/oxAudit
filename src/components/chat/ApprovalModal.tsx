@@ -9,22 +9,29 @@ export function ApprovalModal({
   tool,
   argumentsPreview,
   onDecide,
+  onRestoreFocus,
 }: {
   tool: string;
   argumentsPreview: string;
   onDecide: (approve: boolean) => void;
+  onRestoreFocus: () => void;
 }) {
   const [remaining, setRemaining] = useState(120);
   const dialogRef = useRef<HTMLDivElement>(null);
   const denyRef = useRef<HTMLButtonElement>(null);
+  const onRestoreFocusRef = useRef(onRestoreFocus);
+  onRestoreFocusRef.current = onRestoreFocus;
 
   useEffect(() => {
-    const timer = setInterval(() => setRemaining((value) => value - 1), 1000);
+    const timer = setInterval(
+      () => setRemaining((value) => Math.max(0, value - 1)),
+      1000,
+    );
     return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    if (remaining <= 0) onDecide(false);
+    if (remaining === 0) onDecide(false);
     // The decision handler unmounts this prompt after the timeout.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remaining]);
@@ -63,7 +70,11 @@ export function ApprovalModal({
       cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown", onKeyDown);
       requestAnimationFrame(() => {
-        if (returnFocus?.isConnected) returnFocus.focus();
+        if (returnFocus?.isConnected && returnFocus !== document.body) {
+          returnFocus.focus();
+          if (document.activeElement === returnFocus) return;
+        }
+        onRestoreFocusRef.current();
       });
     };
   }, []);

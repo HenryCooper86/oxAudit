@@ -19,16 +19,18 @@ const toolIcons = {
 };
 
 export function Dashboard() {
-  const { recentScans, setPage, aiReady } = useAppStore();
+  const { recentScans, setPage, aiReady, settingsLoadError } = useAppStore();
   const recentActivity = recentScans.slice(0, 6);
   const activityAnnouncement = recentActivity.length === 0
     ? "No recent activity."
     : `${recentActivity.length} recent ${recentActivity.length === 1 ? "activity item" : "activity items"} shown.`;
-  const aiAnnouncement = aiReady === null
-    ? "AI assistant not configured."
-    : aiReady
-      ? "AI assistant ready."
-      : "AI assistant unavailable.";
+  const aiAnnouncement = settingsLoadError
+    ? "AI assistant readiness could not be loaded."
+    : aiReady === null
+      ? "AI assistant not configured."
+      : aiReady
+        ? "AI assistant ready."
+        : "AI assistant unavailable.";
 
   return (
     <ToolPage title="Research Workbench" description="Choose a tool or resume recent work.">
@@ -111,19 +113,21 @@ export function Dashboard() {
               AI Assistant
             </h2>
             <p className="mt-1 text-[13px] text-slate-400">
-              {aiReady === null
-                ? "Not configured. Add an AI endpoint to enable assistant research."
-                : aiReady
-                  ? "Connected and ready for security research."
-                  : "Configured but unreachable. Check the endpoint settings."}
+              {settingsLoadError
+                ? "Readiness could not be loaded from local settings. Review Settings and retry."
+                : aiReady === null
+                  ? "Not configured. Add an AI endpoint to enable assistant research."
+                  : aiReady
+                    ? "Connected and ready for security research."
+                    : "Configured but unreachable. Check the endpoint settings."}
             </p>
           </div>
           <button
             type="button"
-            onClick={() => setPage(aiReady === null ? "settings" : "assistant")}
+            onClick={() => setPage(settingsLoadError || aiReady === null ? "settings" : "assistant")}
             className="shrink-0 rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[13px] font-medium text-slate-200 transition-colors hover:border-ink-500 hover:bg-ink-700"
           >
-            {aiReady === null ? "Configure AI" : "Open assistant"}
+            {settingsLoadError ? "Review settings" : aiReady === null ? "Configure AI" : "Open assistant"}
           </button>
         </div>
       </section>

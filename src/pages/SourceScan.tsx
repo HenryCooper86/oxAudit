@@ -46,28 +46,35 @@ export function SourceScanPage() {
   const [langFilter, setLangFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
 
-  const unlistenRef = useRef<UnlistenFn[]>([]);
   const cancellingRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
+    const unlisteners: UnlistenFn[] = [];
+    const releaseListeners = () => {
+      for (const unlisten of unlisteners.splice(0)) unlisten();
+    };
     const register = async () => {
       try {
-        const [progressUnlisten, doneUnlisten] = await Promise.all([
-          listen<ScanProgress>("scan://progress", (event) => {
-            if (!disposed) setProgress(event.payload);
-          }),
-          listen<ScanProgress>("scan://done", (event) => {
-            if (!disposed) setProgress((current) => ({ ...current, ...event.payload }));
-          }),
-        ]);
+        const progressUnlisten = await listen<ScanProgress>("scan://progress", (event) => {
+          if (!disposed) setProgress(event.payload);
+        });
         if (disposed) {
           progressUnlisten();
-          doneUnlisten();
-        } else {
-          unlistenRef.current = [progressUnlisten, doneUnlisten];
+          return;
         }
+        unlisteners.push(progressUnlisten);
+
+        const doneUnlisten = await listen<ScanProgress>("scan://done", (event) => {
+          if (!disposed) setProgress((current) => ({ ...current, ...event.payload }));
+        });
+        if (disposed) {
+          doneUnlisten();
+          return;
+        }
+        unlisteners.push(doneUnlisten);
       } catch {
+        releaseListeners();
         // The event bridge is unavailable when the UI is exercised in a browser.
       }
     };
@@ -75,8 +82,7 @@ export function SourceScanPage() {
     void register();
     return () => {
       disposed = true;
-      for (const unlisten of unlistenRef.current) unlisten();
-      unlistenRef.current = [];
+      releaseListeners();
     };
   }, []);
 

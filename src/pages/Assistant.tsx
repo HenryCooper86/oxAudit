@@ -64,6 +64,7 @@ interface AskPrompt {
 
 export function AssistantPage() {
   const aiReady = useAppStore((state) => state.aiReady);
+  const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const assistantHandoff = useAppStore((state) => state.assistantHandoff);
   const clearAssistantHandoff = useAppStore(
     (state) => state.clearAssistantHandoff,
@@ -345,6 +346,8 @@ export function AssistantPage() {
     ]);
     setModel(modelName);
     setBusy(false);
+    setPermission(null);
+    setAskUser(null);
     setStreaming({ text: "", reasoning: "", thinking: false });
     setToolRecords([]);
     turnToolsRef.current.clear();
@@ -437,6 +440,8 @@ export function AssistantPage() {
           const tools = Array.from(turnToolsRef.current.values());
           settledRef.current = true;
           setBusy(false);
+          setPermission(null);
+          setAskUser(null);
           runIdRef.current = null;
           setToolRecords([]);
           turnToolsRef.current.clear();
@@ -530,11 +535,13 @@ export function AssistantPage() {
   const showThinking =
     streaming.thinking || streaming.reasoning.trim().length > 0;
   const availabilityLabel =
-    aiReady === true
-      ? "AI ready"
-      : aiReady === false
-        ? "AI endpoint unavailable"
-        : "AI not configured";
+    settingsLoadError
+      ? "AI readiness unavailable"
+      : aiReady === true
+        ? "AI ready"
+        : aiReady === false
+          ? "AI endpoint unavailable"
+          : "AI not configured";
 
   return (
     <div
@@ -651,9 +658,11 @@ export function AssistantPage() {
             className="flex shrink-0 items-center justify-between gap-3 border-b border-ink-800 bg-amber-950/20 px-4 py-2"
           >
             <p className="text-[12px] text-amber-200">
-              {aiReady === false
-                ? "The configured AI endpoint cannot be reached. Messages remain available, but sending is paused."
-                : "Configure an AI provider before sending a message. You can still review and attach context."}
+              {settingsLoadError
+                ? "AI readiness could not be loaded from local settings. Messages remain available; review Settings before sending."
+                : aiReady === false
+                  ? "The configured AI endpoint cannot be reached. Messages remain available, but sending is paused."
+                  : "Configure an AI provider before sending a message. You can still review and attach context."}
             </p>
             <button
               type="button"
@@ -838,7 +847,9 @@ export function AssistantPage() {
                 placeholder={
                   aiReady === true
                     ? "Ask a security question or describe what you want to analyze…"
-                    : "Configure an AI provider to send messages"
+                    : settingsLoadError
+                      ? "Review Settings to restore AI readiness"
+                      : "Configure an AI provider to send messages"
                 }
                 className="selectable min-h-11 flex-1 resize-none rounded-md border border-ink-600 bg-ink-950 px-3.5 py-2.5 text-[13px] leading-relaxed text-stone-200 outline-none placeholder:text-stone-400 focus:border-accent-500/70 disabled:cursor-not-allowed disabled:opacity-60"
               />
@@ -893,6 +904,7 @@ export function AssistantPage() {
         <ApprovalModal
           tool={permission.tool}
           argumentsPreview={permission.arguments}
+          onRestoreFocus={() => assistantFallbackRef.current?.focus()}
           onDecide={(approve) => {
             api
               .respondPermission(permission.requestId, approve)
@@ -907,6 +919,7 @@ export function AssistantPage() {
           requestId={askUser.requestId}
           questions={askUser.questions}
           onClose={() => setAskUser(null)}
+          onRestoreFocus={() => assistantFallbackRef.current?.focus()}
         />
       )}
 

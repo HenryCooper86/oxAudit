@@ -171,6 +171,14 @@ export function DepsScanPage() {
     }
   };
 
+  const openReference = async (reference: string) => {
+    try {
+      await openUrl(reference);
+    } catch {
+      push("error", "The advisory reference could not be opened");
+    }
+  };
+
   const vulns = result?.vulnerabilities ?? [];
   const filteredVulns = vulns.filter((vulnerability) => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -337,7 +345,7 @@ export function DepsScanPage() {
               hasSelection={hasExplicitSelection}
               onBackToList={() => setSelectedKey(null)}
               list={<VulnerabilityTable vulnerabilities={filteredVulns} selected={selected} onSelect={setSelectedKey} />}
-              detail={selected ? <AdvisoryDetail vulnerability={selected} onOpenReference={openUrl} /> : <InlineState tone="empty" compact title="Select an advisory" />}
+              detail={selected ? <AdvisoryDetail vulnerability={selected} onOpenReference={openReference} /> : <InlineState tone="empty" compact title="Select an advisory" />}
             />
           ) : (
             <InlineState

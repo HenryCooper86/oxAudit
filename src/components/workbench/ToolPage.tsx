@@ -10,7 +10,7 @@ export function ToolPage(props: {
   const { title, description, context, actions, children } = props;
 
   return (
-    <div className="mx-auto max-w-6xl px-5 py-5 sm:px-6 sm:py-6">
+    <div className="w-full px-5 py-5 sm:px-6 sm:py-6">
       <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
