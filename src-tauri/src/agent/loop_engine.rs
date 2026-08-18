@@ -2,13 +2,15 @@
 //! execute tool calls → repeat, with dual iteration/call budgets, permission
 //! gate + HITL, loop guard, and cancellation.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 
 use super::guardrails::{classify, LoopGuard, Permission};
-use super::tool::{ToolContext, ToolRegistry};
+use super::tool::{
+    wait_for_pending_response, PendingWaitError, RunCancellation, ToolContext, ToolRegistry,
+};
 use crate::ai::errors::LlmError;
 use crate::ai::{AiClient, AiStreamEvent};
 use crate::commands::AppState;
@@ -33,8 +35,9 @@ pub async fn run_turn(
     registry: &ToolRegistry,
     user_messages: Vec<Value>,
     conversation_id: Option<String>,
+    project_root: Option<PathBuf>,
     app: tauri::AppHandle,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<Arc<RunCancellation>>,
     emit: Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
 ) -> Result<(String, Option<Usage>), LlmError> {
     let hint = "You are running inside VulnCompanion, a security research desktop app. \
@@ -63,8 +66,13 @@ you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Repl
             }));
             // one last chance to answer without tools
             let outcome = client
-                
-                .stream_chat(settings, messages.clone(), vec![], cancel.clone(), |ev| emit(ev))
+                .stream_chat(
+                    settings,
+                    messages.clone(),
+                    vec![],
+                    cancel.as_ref().map(|c| c.flag()),
+                    |ev| emit(ev),
+                )
                 .await?;
             if let Some(u) = &outcome.usage {
                 final_usage = Some(u.clone());
@@ -74,14 +82,19 @@ you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Repl
         iterations_left -= 1;
 
         if let Some(c) = &cancel {
-            if c.load(Ordering::Relaxed) {
+            if c.is_cancelled() {
                 return Err(LlmError::Cancelled);
             }
         }
 
         let outcome = client
-            
-            .stream_chat(settings, messages.clone(), tools.clone(), cancel.clone(), |ev| emit(ev))
+            .stream_chat(
+                settings,
+                messages.clone(),
+                tools.clone(),
+                cancel.as_ref().map(|c| c.flag()),
+                |ev| emit(ev),
+            )
             .await?;
         if let Some(u) = &outcome.usage {
             final_usage = Some(u.clone());
@@ -178,13 +191,21 @@ Let me summarize what I have and ask you how to proceed.",
                         tool: tc.name.clone(),
                         arguments: truncate(&tc.arguments.to_string(), 400),
                     });
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(HITL_TIMEOUT_SECS),
-                        rx,
-                    )
-                    .await
-                    {
-                        Ok(Ok(true)) => Permission::Allow,
+                    let response = if let Some(st) = app.try_state::<AppState>() {
+                        wait_for_pending_response(
+                            &st.pending_permissions,
+                            &req_id,
+                            rx,
+                            std::time::Duration::from_secs(HITL_TIMEOUT_SECS),
+                            cancel.as_deref(),
+                        )
+                        .await
+                    } else {
+                        Err(PendingWaitError::ChannelClosed)
+                    };
+                    match response {
+                        Ok(true) => Permission::Allow,
+                        Err(PendingWaitError::Cancelled) => return Err(LlmError::Cancelled),
                         _ => {
                             messages.push(json!({
                                 "role": "tool",
@@ -210,9 +231,14 @@ Let me summarize what I have and ask you how to proceed.",
             let ctx = ToolContext {
                 app: app.clone(),
                 conversation_id: conversation_id.clone(),
+                project_root: project_root.clone(),
+                cancellation: cancel.clone(),
                 emit: emit.clone(),
             };
             let result = (tool.run)(ctx, tc.arguments.clone()).await;
+            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(LlmError::Cancelled);
+            }
             let duration_ms = started.elapsed().as_millis() as u64;
             let (success, payload) = match result {
                 Ok(v) => (true, v.to_string()),
@@ -235,8 +261,13 @@ Let me summarize what I have and ask you how to proceed.",
         if force_stop {
             // one more model call so the model can answer from what it has
             let outcome = client
-                
-                .stream_chat(settings, messages.clone(), vec![], cancel.clone(), |ev| emit(ev))
+                .stream_chat(
+                    settings,
+                    messages.clone(),
+                    vec![],
+                    cancel.as_ref().map(|c| c.flag()),
+                    |ev| emit(ev),
+                )
                 .await?;
             if let Some(u) = &outcome.usage {
                 final_usage = Some(u.clone());

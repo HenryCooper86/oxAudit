@@ -6,61 +6,119 @@ import {
   LayoutDashboard,
   Settings,
   ShieldHalf,
+  X,
 } from "lucide-react";
-import { useAppStore, type Page } from "../lib/stores";
+import type { JSX } from "react";
+import { useAppStore } from "../lib/stores";
+import type { Page } from "../lib/workbench";
 
-const NAV: { page: Page; label: string; icon: typeof Bug }[] = [
-  { page: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { page: "source-scan", label: "Source Scan", icon: FileSearch },
-  { page: "deps-scan", label: "Dependencies", icon: Boxes },
-  { page: "cve-research", label: "CVE Research", icon: Bug },
-  { page: "assistant", label: "AI Assistant", icon: Bot },
-  { page: "settings", label: "Settings", icon: Settings },
+type NavigationItem = {
+  page: Page;
+  label: string;
+  icon: typeof Bug;
+};
+
+const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
+  {
+    label: "Overview",
+    items: [{ page: "dashboard", label: "Dashboard", icon: LayoutDashboard }],
+  },
+  {
+    label: "Scanning",
+    items: [
+      { page: "source-scan", label: "Source Scan", icon: FileSearch },
+      { page: "deps-scan", label: "Dependencies", icon: Boxes },
+    ],
+  },
+  {
+    label: "Research",
+    items: [
+      { page: "cve-research", label: "CVE Research", icon: Bug },
+      { page: "assistant", label: "AI Assistant", icon: Bot },
+    ],
+  },
 ];
 
-export function Sidebar() {
-  const { page, setPage, aiReady } = useAppStore();
+export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }): JSX.Element {
+  const page = useAppStore((state) => state.page);
+  const setPage = useAppStore((state) => state.setPage);
+
+  const selectPage = (nextPage: Page) => {
+    setPage(nextPage);
+    onClose();
+  };
+
+  const navigationButton = ({ page: itemPage, label, icon: Icon }: NavigationItem) => (
+    <button
+      key={itemPage}
+      type="button"
+      aria-current={page === itemPage ? "page" : undefined}
+      onClick={() => selectPage(itemPage)}
+      className={`flex w-full items-center gap-2.5 rounded px-3 py-2 text-left text-[13px] font-medium transition-colors ${
+        page === itemPage
+          ? "bg-ink-750 text-accent-300"
+          : "text-stone-400 hover:bg-ink-850 hover:text-stone-100"
+      }`}
+    >
+      <Icon aria-hidden="true" size={15} />
+      <span>{label}</span>
+    </button>
+  );
+
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r border-ink-800 bg-ink-900">
-      <div className="flex items-center gap-2.5 px-4 pb-4 pt-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-teal-500 to-emerald-600 shadow-lg shadow-teal-900/40">
-          <ShieldHalf size={17} className="text-ink-950" />
-        </div>
-        <div>
-          <div className="text-sm font-bold tracking-tight text-slate-100">VulnCompanion</div>
-          <div className="text-[10px] uppercase tracking-widest text-slate-500">
-            vuln research
+    <>
+      {open && (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          tabIndex={-1}
+          onClick={onClose}
+          className="fixed inset-0 z-30 bg-black/60 min-[900px]:hidden"
+        />
+      )}
+      <aside
+        aria-label="Primary navigation"
+        className={`z-40 flex h-full w-52 flex-col border-r border-ink-800 bg-ink-900 transition-transform max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 ${
+          open
+            ? "max-[900px]:translate-x-0 max-[900px]:visible"
+            : "max-[900px]:-translate-x-full max-[900px]:invisible"
+        }`}
+      >
+        <div className="flex h-[60px] shrink-0 items-center gap-2.5 border-b border-ink-800 px-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded bg-accent-500 text-ink-950">
+            <ShieldHalf aria-hidden="true" size={17} />
           </div>
-        </div>
-      </div>
-
-      <nav className="flex-1 space-y-0.5 px-2.5">
-        {NAV.map(({ page: p, label, icon: Icon }) => (
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold tracking-tight text-stone-100">oxAudit</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-stone-400">
+              security workbench
+            </div>
+          </div>
           <button
-            key={p}
-            onClick={() => setPage(p)}
-            className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
-              page === p
-                ? "bg-ink-750 text-teal-300"
-                : "text-slate-400 hover:bg-ink-850 hover:text-slate-200"
-            }`}
+            type="button"
+            aria-label="Close navigation"
+            onClick={onClose}
+            className="rounded p-1.5 text-stone-400 hover:bg-ink-800 hover:text-stone-100 min-[900px]:hidden"
           >
-            <Icon size={15} />
-            {label}
+            <X aria-hidden="true" size={16} />
           </button>
-        ))}
-      </nav>
-
-      <div className="border-t border-ink-800 px-4 py-3.5">
-        <div className="flex items-center gap-2 text-[11px] text-slate-500">
-          <span
-            className={`h-2 w-2 rounded-full ${
-              aiReady === null ? "bg-slate-600" : aiReady ? "bg-emerald-500" : "bg-red-500"
-            }`}
-          />
-          AI engine {aiReady === null ? "unconfigured" : aiReady ? "ready" : "offline"}
         </div>
-      </div>
-    </aside>
+
+        <nav className="flex-1 space-y-5 overflow-y-auto px-2.5 py-4">
+          {NAVIGATION_GROUPS.map((group) => (
+            <div key={group.label}>
+              <div className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400">
+                {group.label}
+              </div>
+              <div className="space-y-0.5">{group.items.map(navigationButton)}</div>
+            </div>
+          ))}
+        </nav>
+
+        <div className="border-t border-ink-800 p-2.5">
+          {navigationButton({ page: "settings", label: "Settings", icon: Settings })}
+        </div>
+      </aside>
+    </>
   );
 }

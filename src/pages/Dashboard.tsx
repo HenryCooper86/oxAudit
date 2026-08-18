@@ -1,144 +1,157 @@
-import { Activity, Boxes, Bot, Bug, FileSearch, ShieldAlert } from "lucide-react";
-import { StatCard } from "../components/StatCard";
-import { TopBar } from "../components/TopBar";
+import { Bot, Boxes, Bug, FileSearch } from "lucide-react";
+import { ToolLaunchCard } from "../components/workbench/ToolLaunchCard";
+import { ToolPage } from "../components/workbench/ToolPage";
 import { fmtDate } from "../lib/format";
 import { useAppStore } from "../lib/stores";
 
-export function Dashboard() {
-  const { recentScans, setPage, aiReady } = useAppStore();
+const tools = [
+  ["Scanning", "Source Scan", "Inspect code for dangerous patterns, secrets, and risky APIs.", "Start source scan", "source-scan"],
+  ["Scanning", "Dependency Scan", "Check pinned packages against the OSV advisory database.", "Check dependencies", "deps-scan"],
+  ["Research", "CVE Research", "Search NVD and OSV without requiring an active project.", "Research vulnerabilities", "cve-research"],
+  ["Research", "AI Assistant", "Ask security questions with optional project or finding context.", "Open assistant", "assistant"],
+] as const;
 
-  const totals = recentScans.reduce(
-    (acc, r) => {
-      acc.findings += r.findings;
-      acc.critical += r.critical;
-      acc.high += r.high;
-      return acc;
-    },
-    { findings: 0, critical: 0, high: 0 },
-  );
+const toolIcons = {
+  "source-scan": <FileSearch size={18} strokeWidth={1.8} />,
+  "deps-scan": <Boxes size={18} strokeWidth={1.8} />,
+  "cve-research": <Bug size={18} strokeWidth={1.8} />,
+  assistant: <Bot size={18} strokeWidth={1.8} />,
+};
+
+export function Dashboard() {
+  const { recentScans, setPage, aiReadiness } = useAppStore();
+  const recentActivity = recentScans.slice(0, 6);
+  const activityAnnouncement = recentActivity.length === 0
+    ? "No recent activity."
+    : `${recentActivity.length} recent ${recentActivity.length === 1 ? "activity item" : "activity items"} shown.`;
+  const aiAnnouncement = {
+    loading: "AI assistant settings are loading.",
+    checking: "AI assistant endpoint is being checked.",
+    unconfigured: "AI assistant not configured.",
+    offline: "AI assistant endpoint unavailable.",
+    ready: "AI assistant ready.",
+    unavailable: "AI assistant readiness could not be loaded.",
+  }[aiReadiness.status];
+  const aiDescription = {
+    loading: "Loading the saved AI provider settings.",
+    checking: "Checking the newly persisted AI endpoint before enabling sends.",
+    unconfigured: "Not configured. Add an AI endpoint to enable assistant research.",
+    offline: "Configured but unreachable. Check the endpoint settings.",
+    ready: "Connected and ready for security research.",
+    unavailable: "Readiness could not be loaded from local settings. Review Settings and retry.",
+  }[aiReadiness.status];
+  const readinessPending =
+    aiReadiness.status === "loading" || aiReadiness.status === "checking";
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-6">
-      <TopBar title="Dashboard" subtitle="Your vulnerability research cockpit" />
+    <ToolPage title="Research Workbench" description="Choose a tool or resume recent work.">
+      <p aria-live="polite" aria-atomic="true" className="sr-only">
+        {activityAnnouncement} {aiAnnouncement}
+      </p>
+      <section aria-label="Tools" className="grid gap-3 sm:grid-cols-2">
+        {tools.map(([category, title, description, actionLabel, page]) => (
+          <ToolLaunchCard
+            key={page}
+            category={category}
+            title={title}
+            description={description}
+            actionLabel={actionLabel}
+            icon={toolIcons[page]}
+            onOpen={() => setPage(page)}
+          />
+        ))}
+      </section>
 
-      <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard
-          label="Scans run"
-          value={recentScans.length}
-          icon={<Activity size={15} />}
-          onClick={() => setPage(recentScans.length ? "source-scan" : "source-scan")}
-        />
-        <StatCard label="Findings" value={totals.findings} icon={<ShieldAlert size={15} />} tone="warning" />
-        <StatCard label="Critical" value={totals.critical} icon={<ShieldAlert size={15} />} tone="danger" />
-        <StatCard label="High" value={totals.high} icon={<ShieldAlert size={15} />} tone="warning" />
-      </div>
-
-      <div className="mt-6">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-          Quick actions
-        </h2>
-        <div className="mt-2 grid gap-3 sm:grid-cols-3">
-          <button
-            onClick={() => setPage("source-scan")}
-            className="group rounded-xl border border-ink-700 bg-ink-850 p-4 text-left transition-colors hover:border-teal-500/50 hover:bg-ink-800"
-          >
-            <FileSearch size={20} className="text-teal-400" />
-            <div className="mt-2.5 text-sm font-semibold text-slate-200">Scan source code</div>
-            <div className="mt-0.5 text-xs leading-relaxed text-slate-500">
-              Detect vulnerable patterns & leaked secrets across a codebase.
-            </div>
-          </button>
-          <button
-            onClick={() => setPage("deps-scan")}
-            className="group rounded-xl border border-ink-700 bg-ink-850 p-4 text-left transition-colors hover:border-teal-500/50 hover:bg-ink-800"
-          >
-            <Boxes size={20} className="text-sky-400" />
-            <div className="mt-2.5 text-sm font-semibold text-slate-200">Scan dependencies</div>
-            <div className="mt-0.5 text-xs leading-relaxed text-slate-500">
-              Check your lockfiles against the OSV vulnerability database.
-            </div>
-          </button>
-          <button
-            onClick={() => setPage("cve-research")}
-            className="group rounded-xl border border-ink-700 bg-ink-850 p-4 text-left transition-colors hover:border-teal-500/50 hover:bg-ink-800"
-          >
-            <Bug size={20} className="text-orange-400" />
-            <div className="mt-2.5 text-sm font-semibold text-slate-200">Research a CVE</div>
-            <div className="mt-0.5 text-xs leading-relaxed text-slate-500">
-              Search NVD, browse advisories, and get AI briefings on CVEs.
-            </div>
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-6 grid gap-3 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-            Recent scans
+      <section aria-labelledby="recent-activity-title">
+        <div className="flex items-center justify-between gap-3">
+          <h2 id="recent-activity-title" className="text-[13px] font-semibold text-slate-200">
+            Recent activity
           </h2>
-          <div className="mt-2 overflow-hidden rounded-xl border border-ink-700 bg-ink-850">
-            {recentScans.length === 0 ? (
-              <div className="px-4 py-8 text-center text-xs text-slate-500">
-                No scans yet — pick a folder from the Source Scan or Dependencies page.
+          {recentActivity.length > 0 && (
+            <span className="text-[12px] text-slate-400">Latest {recentActivity.length}</span>
+          )}
+        </div>
+        <div className="mt-2 overflow-hidden rounded-lg border border-ink-700 bg-ink-850">
+          {recentActivity.length === 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+              <p className="text-[13px] text-slate-400">No activity yet</p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage("source-scan")}
+                  className="rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[13px] font-medium text-slate-200 transition-colors hover:border-ink-500 hover:bg-ink-700"
+                >
+                  Start source scan
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPage("deps-scan")}
+                  className="rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[13px] font-medium text-slate-200 transition-colors hover:border-ink-500 hover:bg-ink-700"
+                >
+                  Check dependencies
+                </button>
               </div>
-            ) : (
-              <table className="w-full text-left text-xs">
-                <thead className="border-b border-ink-700 text-[10px] uppercase tracking-wider text-slate-500">
-                  <tr>
-                    <th className="px-4 py-2.5">Target</th>
-                    <th className="px-4 py-2.5">Kind</th>
-                    <th className="px-4 py-2.5 text-right">Findings</th>
-                    <th className="px-4 py-2.5 text-right">Critical</th>
-                    <th className="px-4 py-2.5 text-right">High</th>
-                    <th className="px-4 py-2.5 text-right">When</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-800">
-                  {recentScans.map((r) => (
-                    <tr key={r.id} className="text-slate-300">
-                      <td className="max-w-[260px] truncate px-4 py-2.5 font-mono text-[11px]">
-                        {r.path}
-                      </td>
-                      <td className="px-4 py-2.5 capitalize">{r.kind}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">{r.findings}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-red-400">
-                        {r.critical}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-orange-400">{r.high}</td>
-                      <td className="px-4 py-2.5 text-right text-slate-500">{fmtDate(r.at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-
-        <div>
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-            AI assistant
-          </h2>
-          <div className="mt-2 rounded-xl border border-ink-700 bg-ink-850 p-4">
-            <div className="flex items-center gap-2">
-              <Bot size={16} className="text-teal-400" />
-              <span className="text-sm font-semibold text-slate-200">VulnCompanion AI</span>
             </div>
-            <p className="mt-2 text-xs leading-relaxed text-slate-500">
-              {aiReady === null
-                ? "Not configured. Add an OpenAI-compatible endpoint in Settings to get AI analysis of findings and CVE briefings."
-                : aiReady
-                  ? "Connected. Ask about scan findings, CVE details, exploit patterns or remediation."
-                  : "Configured but unreachable — check your endpoint settings."}
-            </p>
-            <button
-              onClick={() => setPage(aiReady === null ? "settings" : "assistant")}
-              className="mt-3 w-full rounded-lg border border-ink-600 bg-ink-750 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:border-teal-500/50 hover:bg-ink-700"
-            >
-              {aiReady === null ? "Configure AI" : "Open assistant"}
-            </button>
-          </div>
+          ) : (
+            <table className="w-full table-fixed text-left text-[13px]">
+              <thead className="border-b border-ink-700 text-[12px] text-slate-400">
+                <tr>
+                  <th scope="col" className="w-[45%] px-4 py-2.5 font-medium">Target</th>
+                  <th scope="col" className="w-[20%] px-4 py-2.5 font-medium">Tool</th>
+                  <th scope="col" className="w-[15%] px-4 py-2.5 text-right font-medium">Findings</th>
+                  <th scope="col" className="w-[20%] px-4 py-2.5 text-right font-medium">When</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-800">
+                {recentActivity.map((scan) => (
+                  <tr key={scan.id} className="text-slate-300">
+                    <td className="truncate px-4 py-2.5 font-mono text-[12px]">{scan.path}</td>
+                    <td className="px-4 py-2.5">{scan.kind === "source" ? "Source Scan" : "Dependency Scan"}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{scan.findings}</td>
+                    <td className="px-4 py-2.5 text-right text-[12px] text-slate-400">{fmtDate(scan.at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
-      </div>
-    </div>
+      </section>
+
+      <section aria-labelledby="assistant-status-title" className="border-t border-ink-800 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 id="assistant-status-title" className="text-[13px] font-semibold text-slate-200">
+              AI Assistant
+            </h2>
+            <p className="mt-1 text-[13px] text-slate-400">
+              {aiDescription}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setPage(
+                aiReadiness.status === "unavailable" ||
+                  aiReadiness.status === "unconfigured"
+                  ? "settings"
+                  : "assistant",
+              )
+            }
+            disabled={readinessPending}
+            className="shrink-0 rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[13px] font-medium text-slate-200 transition-colors hover:border-ink-500 hover:bg-ink-700"
+          >
+            {aiReadiness.status === "unavailable"
+              ? "Review settings"
+              : aiReadiness.status === "unconfigured"
+                ? "Configure AI"
+                : aiReadiness.status === "loading"
+                  ? "Loading AI…"
+                  : aiReadiness.status === "checking"
+                    ? "Checking AI…"
+                    : "Open assistant"}
+          </button>
+        </div>
+      </section>
+    </ToolPage>
   );
 }

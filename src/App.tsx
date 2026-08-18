@@ -1,7 +1,13 @@
 import { useEffect } from "react";
-import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
+import { AppShell } from "./components/workbench/AppShell";
 import { api } from "./lib/api";
+import {
+  loadingAiReadiness,
+  persistedSettingsRequests,
+  publishPersistedAiReadiness,
+  unavailableAiReadiness,
+} from "./lib/settingsRequests";
 import { useAppStore } from "./lib/stores";
 import { Dashboard } from "./pages/Dashboard";
 import { SourceScanPage } from "./pages/SourceScan";
@@ -30,33 +36,45 @@ function Page() {
 
 export default function App() {
   const setSettings = useAppStore((s) => s.setSettings);
-  const setAiReady = useAppStore((s) => s.setAiReady);
+  const setAiReadiness = useAppStore((s) => s.setAiReadiness);
+  const setSettingsLoadError = useAppStore((s) => s.setSettingsLoadError);
 
   useEffect(() => {
-    api
-      .loadSettings()
-      .then((s) => {
-        setSettings(s);
-        if (s.ai.enabled && s.ai.baseUrl) {
-          return api
-            .testAi()
-            .then((status) => setAiReady(status.ok))
-            .catch(() => setAiReady(false));
-        }
-        setAiReady(null);
-      })
-      .catch(() => {
-        setAiReady(null);
-      });
-  }, [setSettings, setAiReady]);
+    let mounted = true;
+    const token = persistedSettingsRequests.begin();
+    setAiReadiness(loadingAiReadiness(token));
+
+    void (async () => {
+      try {
+        const settings = await api.loadSettings();
+        if (!mounted || !persistedSettingsRequests.isCurrent(token)) return;
+        setSettingsLoadError(false);
+        const readiness = publishPersistedAiReadiness(
+          settings,
+          token,
+          setAiReadiness,
+        );
+        setSettings(settings);
+        await readiness;
+      } catch {
+        if (!mounted || !persistedSettingsRequests.isCurrent(token)) return;
+        setSettingsLoadError(true);
+        setAiReadiness(unavailableAiReadiness(token));
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      if (persistedSettingsRequests.isCurrent(token)) {
+        persistedSettingsRequests.invalidate();
+      }
+    };
+  }, [setSettings, setAiReadiness, setSettingsLoadError]);
 
   return (
-    <div className="flex h-full overflow-hidden bg-ink-950">
-      <Sidebar />
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <Page />
-      </main>
+    <AppShell>
+      <Page />
       <Toasts />
-    </div>
+    </AppShell>
   );
 }

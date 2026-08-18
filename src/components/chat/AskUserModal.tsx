@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { HelpCircle } from "lucide-react";
 import { api } from "../../lib/api";
 import type { AskQuestion } from "../../lib/types";
@@ -11,118 +11,223 @@ export function AskUserModal({
   requestId,
   questions,
   onClose,
+  onRestoreFocus,
 }: {
   requestId: string;
   questions: AskQuestion[];
   onClose: () => void;
+  onRestoreFocus: () => void;
 }) {
   const [answers, setAnswers] = useState<Record<number, string | string[]>>({});
   const [freeText, setFreeText] = useState<Record<number, string>>({});
   const [remaining, setRemaining] = useState(180);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const skipButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const onRestoreFocusRef = useRef(onRestoreFocus);
+  onRestoreFocusRef.current = onRestoreFocus;
+
+  const skip = useCallback(() => {
+    api.respondInteraction(requestId, []).catch(() => undefined);
+    onCloseRef.current();
+  }, [requestId]);
+  const skipActionRef = useRef(skip);
+  skipActionRef.current = skip;
 
   useEffect(() => {
-    const t = setInterval(() => setRemaining((r) => r - 1), 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(
+      () => setRemaining((value) => Math.max(0, value - 1)),
+      1000,
+    );
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (remaining === 0) skipActionRef.current();
+  }, [remaining]);
+
+  useEffect(() => {
+    const returnFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusFrame = requestAnimationFrame(() => skipButtonRef.current?.focus());
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        skipActionRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        dialog.focus();
+      } else if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", onKeyDown);
+      requestAnimationFrame(() => {
+        if (returnFocus?.isConnected && returnFocus !== document.body) {
+          returnFocus.focus();
+          if (document.activeElement === returnFocus) return;
+        }
+        onRestoreFocusRef.current();
+      });
+    };
   }, []);
 
   const submit = async () => {
-    const payload = questions.map((q, i) => {
-      if (q.options?.length) return answers[i] ?? null;
-      return freeText[i]?.trim() || null;
+    const payload = questions.map((question, index) => {
+      if (question.options?.length) return answers[index] ?? null;
+      return freeText[index]?.trim() || null;
     });
-    if (payload.every((a) => a === null)) return;
+    if (payload.every((answer) => answer === null)) return;
+    setSubmitError(null);
     try {
       await api.respondInteraction(requestId, payload);
       onClose();
-    } catch {
-      /* modal stays open */
+    } catch (error) {
+      setSubmitError(String(error));
     }
   };
 
-  const done = questions.every((q, i) =>
-    q.options?.length ? (answers[i] as string[] | string | undefined) !== undefined : !!freeText[i]?.trim(),
+  const done = questions.every((question, index) =>
+    question.options?.length
+      ? (answers[index] as string[] | string | undefined) !== undefined
+      : !!freeText[index]?.trim(),
   );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
-      <div className="w-full max-w-lg rounded-xl border border-teal-500/40 bg-ink-850 p-5 shadow-2xl">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ask-user-dialog-title"
+        aria-describedby="ask-user-dialog-description"
+        className="w-full max-w-lg rounded-lg border border-accent-500/40 bg-ink-850 p-5 shadow-2xl"
+      >
         <div className="flex items-center gap-2">
-          <HelpCircle size={17} className="text-teal-400" />
-          <h3 className="text-sm font-bold text-slate-100">The AI has questions</h3>
+          <HelpCircle size={17} aria-hidden="true" className="text-accent-400" />
+          <h3 id="ask-user-dialog-title" className="text-[14px] font-semibold text-stone-100">
+            The AI has questions
+          </h3>
         </div>
+        <p id="ask-user-dialog-description" className="mt-1 text-[12px] leading-relaxed text-stone-400">
+          Answer every question to continue, or skip this request.
+        </p>
         <div className="mt-3 space-y-4">
-          {questions.map((q, i) => (
-            <div key={i}>
-              <div className="text-xs font-medium leading-relaxed text-slate-300">{q.prompt}</div>
-              {q.options?.length ? (
+          {questions.map((question, index) => (
+            <fieldset key={index}>
+              <legend className="text-[13px] font-medium leading-relaxed text-stone-200">
+                {question.prompt}
+              </legend>
+              {question.options?.length ? (
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {q.options.map((opt) => {
-                    const selected = answers[i] as string[] | string | undefined;
-                    const isSel = q.multi_select
-                      ? Array.isArray(selected) && selected.includes(opt)
-                      : selected === opt;
+                  {question.options.map((option) => {
+                    const selected = answers[index] as string[] | string | undefined;
+                    const isSelected = question.multi_select
+                      ? Array.isArray(selected) && selected.includes(option)
+                      : selected === option;
                     return (
                       <button
-                        key={opt}
+                        key={option}
+                        type="button"
+                        aria-pressed={isSelected}
                         onClick={() => {
-                          setAnswers((prev) => {
-                            const next = { ...prev };
-                            if (q.multi_select) {
-                              const cur = (next[i] as string[] | undefined) ?? [];
-                              if (isSel) {
-                                const filtered = cur.filter((x) => x !== opt);
-                                if (filtered.length) next[i] = filtered;
-                                else delete next[i];
+                          setSubmitError(null);
+                          setAnswers((previous) => {
+                            const next = { ...previous };
+                            if (question.multi_select) {
+                              const current = (next[index] as string[] | undefined) ?? [];
+                              if (isSelected) {
+                                const filtered = current.filter((item) => item !== option);
+                                if (filtered.length) next[index] = filtered;
+                                else delete next[index];
                               } else {
-                                next[i] = [...cur, opt];
+                                next[index] = [...current, option];
                               }
+                            } else if (isSelected) {
+                              delete next[index];
                             } else {
-                              if (isSel) delete next[i];
-                              else next[i] = opt;
+                              next[index] = option;
                             }
                             return next;
                           });
                         }}
-                        className={`rounded-lg border px-3 py-1.5 text-[11px] transition-colors ${
-                          isSel
-                            ? "border-teal-500/60 bg-teal-500/15 text-teal-300"
-                            : "border-ink-600 bg-ink-900 text-slate-400 hover:text-slate-200"
+                        className={`rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
+                          isSelected
+                            ? "border-accent-500/60 bg-accent-500/15 text-accent-300"
+                            : "border-ink-600 bg-ink-900 text-stone-300 hover:text-stone-100"
                         }`}
                       >
-                        {opt}
+                        {option}
                       </button>
                     );
                   })}
                 </div>
               ) : (
                 <input
-                  value={freeText[i] ?? ""}
-                  onChange={(e) => setFreeText((prev) => ({ ...prev, [i]: e.target.value }))}
-                  onKeyDown={(e) => e.key === "Enter" && done && submit()}
+                  id={`ask-user-answer-${index}`}
+                  aria-label={`Answer: ${question.prompt}`}
+                  value={freeText[index] ?? ""}
+                  onChange={(event) => {
+                    setSubmitError(null);
+                    setFreeText((previous) => ({ ...previous, [index]: event.target.value }));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && done) void submit();
+                  }}
                   placeholder="Type your answer…"
-                  className="selectable mt-1.5 w-full rounded-lg border border-ink-600 bg-ink-950 px-3 py-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-teal-500/60"
+                  className="selectable mt-1.5 w-full rounded-md border border-ink-600 bg-ink-950 px-3 py-2 text-[13px] text-stone-200 placeholder:text-stone-500 focus:border-accent-500/70"
                 />
               )}
-            </div>
+            </fieldset>
           ))}
         </div>
-        <div className="mt-2 text-right text-[10px] tabular-nums text-slate-600">
+        {submitError && (
+          <p role="alert" className="mt-3 text-[12px] leading-relaxed text-red-300">
+            {submitError}
+          </p>
+        )}
+        <div className="mt-2 text-right text-[11px] tabular-nums text-stone-400">
           {remaining}s remaining
         </div>
         <div className="mt-3 flex justify-end gap-2">
           <button
-            onClick={() => {
-              api.respondInteraction(requestId, []).catch(() => undefined);
-              onClose();
-            }}
-            className="rounded-lg border border-ink-600 bg-ink-900 px-3 py-2 text-xs text-slate-400 hover:text-slate-200"
+            ref={skipButtonRef}
+            type="button"
+            onClick={skip}
+            className="rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[12px] text-stone-300 hover:text-stone-100"
           >
             Skip
           </button>
           <button
-            onClick={submit}
+            type="button"
+            onClick={() => void submit()}
             disabled={!done}
-            className="rounded-lg bg-gradient-to-r from-teal-500 to-emerald-500 px-4 py-2 text-xs font-bold text-ink-950 hover:opacity-90 disabled:opacity-40"
+            className="rounded-md bg-accent-500 px-4 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:opacity-40"
           >
             Answer
           </button>

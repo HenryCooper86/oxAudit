@@ -18,15 +18,20 @@ export function Toasts() {
         return (
           <div
             key={t.id}
+            role={t.kind === "error" ? "alert" : "status"}
+            aria-live={t.kind === "error" ? "assertive" : "polite"}
+            aria-atomic="true"
             className={`pointer-events-auto flex items-start gap-2.5 rounded-lg border bg-ink-850/95 px-3.5 py-3 shadow-xl backdrop-blur ${color}`}
           >
-            <Icon size={16} className="mt-0.5 shrink-0" />
-            <div className="min-w-0 flex-1 text-xs leading-relaxed text-slate-200">{t.message}</div>
+            <Icon size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
+            <div className="min-w-0 flex-1 text-[12px] leading-relaxed text-stone-200">{t.message}</div>
             <button
+              type="button"
+              aria-label="Dismiss notification"
               onClick={() => dismiss(t.id)}
-              className="shrink-0 text-slate-500 hover:text-slate-300"
+              className="shrink-0 rounded-sm text-stone-400 hover:text-stone-200"
             >
-              <X size={14} />
+              <X size={14} aria-hidden="true" />
             </button>
           </div>
         );
