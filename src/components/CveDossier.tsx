@@ -3,6 +3,7 @@ import { Bot, Calendar, ExternalLink, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import Markdown from "react-markdown";
 import { fmtDateTime } from "../lib/format";
+import { useAppStore } from "../lib/stores";
 import type { CveDetail } from "../lib/types";
 import { SeverityBadge } from "./SeverityBadge";
 import { InlineState } from "./workbench/InlineState";
@@ -18,6 +19,7 @@ export function CveDossier({
   aiReady: boolean;
   onGenerateBriefing: () => Promise<string | null>;
 }): JSX.Element {
+  const openAssistant = useAppStore((state) => state.openAssistant);
   const [briefing, setBriefing] = useState<string | null>(null);
   const [briefingError, setBriefingError] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -72,25 +74,52 @@ export function CveDossier({
 
   const { item } = detail;
 
+  const discussCve = () => {
+    openAssistant({
+      id: crypto.randomUUID(),
+      label: `CVE dossier: ${item.id}`,
+      content: [
+        `CVE: ${item.id}`,
+        `Severity: ${item.severity ?? "Unknown"}`,
+        `CVSS: ${item.cvssScore?.toFixed(1) ?? "Not provided"}`,
+        `Description:\n${item.description}`,
+        `Affected products:\n${item.affectedProducts.length ? item.affectedProducts.join("\n") : "None provided"}`,
+        `CWEs:\n${item.cwes.length ? item.cwes.join("\n") : "None provided"}`,
+        `Source references:\n${item.references.length ? item.references.join("\n") : "None provided"}`,
+      ].join("\n\n"),
+      projectPath: null,
+    });
+  };
+
   return (
     <div className="max-h-[39rem] overflow-y-auto p-4">
       <section
         aria-labelledby="cve-overview-heading"
         className="rounded-lg border border-ink-700 bg-ink-900/45 p-4"
       >
-        <div className="flex flex-wrap items-center gap-2">
-          <h2
-            id="cve-overview-heading"
-            className="font-mono text-[15px] font-semibold text-stone-100"
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2
+              id="cve-overview-heading"
+              className="font-mono text-[15px] font-semibold text-stone-100"
+            >
+              {item.id}
+            </h2>
+            <SeverityBadge severity={item.severity} />
+            {item.cvssScore !== null && (
+              <span className="rounded border border-ink-600 px-1.5 py-0.5 font-mono text-[11px] text-stone-300">
+                CVSS {item.cvssScore.toFixed(1)}
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={discussCve}
+            className="inline-flex items-center gap-1.5 rounded-md border border-accent-600/60 bg-accent-500/10 px-2.5 py-1.5 text-[11px] font-medium text-accent-300 hover:bg-accent-500/20"
           >
-            {item.id}
-          </h2>
-          <SeverityBadge severity={item.severity} />
-          {item.cvssScore !== null && (
-            <span className="rounded border border-ink-600 px-1.5 py-0.5 font-mono text-[11px] text-stone-300">
-              CVSS {item.cvssScore.toFixed(1)}
-            </span>
-          )}
+            <Bot size={12} aria-hidden="true" />
+            Discuss in Assistant
+          </button>
         </div>
         <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
           Overview

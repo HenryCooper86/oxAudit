@@ -19,6 +19,13 @@ export interface WorkbenchStatus {
   detail?: string;
 }
 
+export interface AssistantHandoff {
+  id: string;
+  label: string;
+  content: string;
+  projectPath: string | null;
+}
+
 export const PAGE_META: Record<Page, PageMeta> = {
   dashboard: { title: "Dashboard", group: "Overview" },
   "source-scan": { title: "Source Scan", group: "Scanning" },

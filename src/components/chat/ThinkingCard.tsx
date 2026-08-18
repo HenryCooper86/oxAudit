@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Brain, ChevronDown } from "lucide-react";
 
 /**
@@ -16,6 +16,7 @@ export function ThinkingCard({
   const [open, setOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [finishedAt, setFinishedAt] = useState<number | null>(null);
+  const detailsId = useId();
 
   useEffect(() => {
     if (streaming) {
@@ -31,8 +32,11 @@ export function ThinkingCard({
   const duration = finishedAt ?? elapsed;
 
   return (
-    <div className="selectable mb-1 overflow-hidden rounded-xl border border-ink-800 bg-ink-900/70">
+    <div className="selectable mb-1 overflow-hidden rounded-lg border border-ink-800 bg-ink-900/70">
       <button
+        type="button"
+        aria-expanded={hasContent ? open : undefined}
+        aria-controls={hasContent ? detailsId : undefined}
         onClick={() => hasContent && setOpen(!open)}
         className={`flex w-full items-center gap-2 px-3.5 py-2.5 text-left ${
           hasContent ? "cursor-pointer hover:bg-ink-850" : "cursor-default"
@@ -40,29 +44,32 @@ export function ThinkingCard({
       >
         <span className="relative flex h-2 w-2">
           {streaming && (
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-teal-400 opacity-60" />
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent-400 opacity-60" />
           )}
           <span
             className={`relative inline-flex h-2 w-2 rounded-full ${
-              streaming ? "bg-teal-400" : "bg-slate-500"
+              streaming ? "bg-accent-400" : "bg-stone-500"
             }`}
           />
         </span>
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-400">
           {streaming ? "Thinking" : "Thought"}
           {streaming ? `… ${elapsed}s` : duration > 0 ? ` · ${duration}s` : ""}
         </span>
         {hasContent && (
           <ChevronDown
             size={13}
-            className={`ml-auto text-slate-500 transition-transform ${open ? "rotate-180" : ""}`}
+            aria-hidden="true"
+            className={`ml-auto text-stone-500 transition-transform ${open ? "rotate-180" : ""}`}
           />
         )}
-        {!hasContent && streaming && <Brain size={13} className="ml-auto text-slate-600" />}
+        {!hasContent && streaming && (
+          <Brain size={13} aria-hidden="true" className="ml-auto text-stone-600" />
+        )}
       </button>
       {hasContent && open && (
-        <div className="border-t border-ink-800 px-4 py-3">
-          <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-slate-500">
+        <div id={detailsId} className="border-t border-ink-800 px-4 py-3">
+          <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-stone-400">
             {text}
           </pre>
         </div>
