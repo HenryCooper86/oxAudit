@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { AppSettings } from "./types";
-import type { Page, WorkbenchStatus } from "./workbench";
+import type { AssistantHandoff, Page, WorkbenchStatus } from "./workbench";
 
 export interface RecentScan {
   id: string;
@@ -21,6 +21,9 @@ interface AppStore {
   setAiReady: (v: boolean | null) => void;
   activeProject: string | null;
   setActiveProject: (p: string | null) => void;
+  assistantHandoff: AssistantHandoff | null;
+  openAssistant: (handoff: AssistantHandoff) => void;
+  clearAssistantHandoff: () => void;
   recentScans: RecentScan[];
   addRecentScan: (r: RecentScan) => void;
   pageStatus: Partial<Record<Page, WorkbenchStatus>>;
@@ -47,6 +50,9 @@ export const useAppStore = create<AppStore>((set) => ({
   setAiReady: (aiReady) => set({ aiReady }),
   activeProject: null,
   setActiveProject: (activeProject) => set({ activeProject }),
+  assistantHandoff: null,
+  openAssistant: (assistantHandoff) => set({ assistantHandoff, page: "assistant" }),
+  clearAssistantHandoff: () => set({ assistantHandoff: null }),
   recentScans: loadRecent(),
   addRecentScan: (r) =>
     set((s) => {

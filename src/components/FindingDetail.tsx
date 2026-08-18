@@ -1,5 +1,6 @@
-import { Clipboard, ExternalLink } from "lucide-react";
+import { Bot, Clipboard, ExternalLink } from "lucide-react";
 import type { JSX } from "react";
+import { useAppStore } from "../lib/stores";
 import type { Finding } from "../lib/types";
 import { SeverityBadge } from "./SeverityBadge";
 
@@ -12,6 +13,32 @@ export function FindingDetail({
   onCopy: (finding: Finding) => void;
   onOpenFile: (finding: Finding) => void;
 }): JSX.Element {
+  const activeProject = useAppStore((state) => state.activeProject);
+  const openAssistant = useAppStore((state) => state.openAssistant);
+
+  const discussFinding = () => {
+    const evidence = [
+      `Match:\n${finding.matchText}`,
+      finding.context ? `Context:\n${finding.context}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    openAssistant({
+      id: crypto.randomUUID(),
+      label: `Finding: ${finding.ruleName}`,
+      content: [
+        `Finding: ${finding.ruleName}`,
+        `Severity: ${finding.severity}`,
+        `Location: ${finding.filePath}:${finding.line}:${finding.column}`,
+        `Description:\n${finding.description}`,
+        `Evidence:\n${evidence}`,
+        `Recommendation:\n${finding.recommendation}`,
+      ].join("\n\n"),
+      projectPath: activeProject,
+    });
+  };
+
   return (
     <article className="p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -33,6 +60,14 @@ export function FindingDetail({
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={discussFinding}
+            className="inline-flex items-center gap-1.5 rounded-md border border-accent-600/60 bg-accent-500/10 px-2.5 py-1.5 text-[12px] font-medium text-accent-300 hover:bg-accent-500/20"
+          >
+            <Bot size={13} aria-hidden="true" />
+            Discuss in Assistant
+          </button>
           <button
             type="button"
             onClick={() => onCopy(finding)}
