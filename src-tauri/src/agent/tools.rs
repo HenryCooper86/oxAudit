@@ -8,13 +8,239 @@ use serde_json::{json, Value};
 
 use super::tool::{
     arg_bool_default, arg_str, arg_str_default, arg_str_opt, arg_u64_default, display_rel,
-    project_root, resolve_in_project, Tool,
+    project_root, resolve_collection_root, resolve_in_project, wait_for_pending_response,
+    PendingWaitError, Tool,
 };
 use rayon::prelude::*;
 use tauri::Manager;
 use crate::ai::AiStreamEvent;
 use crate::fs_utils;
 use crate::models::Vulnerability;
+
+#[cfg(test)]
+fn collect_agent_files(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+) -> (Vec<std::path::PathBuf>, usize, u64) {
+    fs_utils::collect_files(
+        root,
+        fs_utils::CollectFilesOptions {
+            project_root,
+            include_git: settings.include_git,
+            follow_symlinks: settings.follow_symlinks,
+            extra_ignored: &settings.ignored_dirs,
+        },
+    )
+}
+
+fn collect_agent_source_files(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+) -> fs_utils::SourceFileCollection {
+    fs_utils::collect_source_files(
+        root,
+        fs_utils::CollectFilesOptions {
+            project_root,
+            include_git: settings.include_git,
+            follow_symlinks: settings.follow_symlinks,
+            extra_ignored: &settings.ignored_dirs,
+        },
+    )
+}
+
+fn source_identity(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn collect_agent_lockfiles(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+) -> Vec<std::path::PathBuf> {
+    fs_utils::discover_lockfiles(project_root, root, &settings.ignored_dirs)
+}
+
+fn grep_project_files(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+    pattern: &str,
+    mode: &str,
+    context: usize,
+    head_limit: usize,
+) -> Result<Value, String> {
+    let re = regex::Regex::new(pattern).map_err(|e| format!("invalid regex: {e}"))?;
+    let collection = collect_agent_source_files(project_root, root, settings);
+    let mut hits: Vec<Value> = Vec::new();
+    let mut counts: Vec<Value> = Vec::new();
+    let mut files_with: Vec<String> = Vec::new();
+    let mut total = 0usize;
+    for file in &collection.files {
+        if total >= head_limit {
+            break;
+        }
+        let Some(content) = fs_utils::read_text_file(&file.canonical_path, 1024 * 1024) else {
+            continue;
+        };
+        let identity = source_identity(&file.collection_relative_path);
+        let lines: Vec<&str> = content.lines().collect();
+        let mut file_count = 0usize;
+        for found in re.find_iter(&content) {
+            if total >= head_limit {
+                break;
+            }
+            total += 1;
+            file_count += 1;
+            let line_no = content[..found.start()].matches('\n').count() + 1;
+            let line_index = line_no - 1;
+            if mode == "content" {
+                let low = line_index.saturating_sub(context);
+                let high = (line_index + 1 + context).min(lines.len());
+                let context_lines: Vec<Value> = (low..high)
+                    .map(|index| Value::String(format!("{:>6} │ {}", index + 1, lines[index])))
+                    .collect();
+                hits.push(json!({
+                    "file": identity,
+                    "line": line_no,
+                    "column": found.start()
+                        - content[..found.start()].rfind('\n').map(|position| position + 1).unwrap_or(0)
+                        + 1,
+                    "text": lines[line_index],
+                    "context": if context > 0 { Value::Array(context_lines) } else { Value::Null },
+                }));
+            }
+        }
+        if mode == "count" {
+            if file_count > 0 {
+                counts.push(json!({ "file": identity, "matches": file_count }));
+            }
+        } else if file_count > 0 && mode == "files_with_matches" {
+            files_with.push(identity);
+        }
+    }
+    if total >= head_limit {
+        hits.push(json!({ "note": "hit head_limit — results truncated" }));
+    }
+    Ok(json!({
+        "total_matches": total,
+        "mode": mode,
+        "files_with_matches": files_with,
+        "counts": counts,
+        "matches": hits,
+    }))
+}
+
+fn glob_project_files(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+    pattern: &str,
+    max_results: usize,
+) -> Result<Value, String> {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+    builder
+        .add_line(None, pattern)
+        .map_err(|e| format!("invalid glob: {e}"))?;
+    let matcher = builder.build().map_err(|e| format!("invalid glob: {e}"))?;
+    let collection = collect_agent_source_files(project_root, root, settings);
+    let mut matched: Vec<String> = Vec::new();
+    for file in &collection.files {
+        if matched.len() >= max_results {
+            break;
+        }
+        let relative = source_identity(&file.collection_relative_path);
+        if matcher
+            .matched(std::path::Path::new(&relative), false)
+            .is_ignore()
+        {
+            matched.push(relative);
+        }
+    }
+    Ok(json!({
+        "pattern": pattern,
+        "matches": matched,
+        "count": matched.len(),
+        "truncated": matched.len() >= max_results,
+    }))
+}
+
+fn scan_agent_code_files(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+    scan_type: &str,
+    scan_secrets: bool,
+    scan_vulnerabilities: bool,
+) -> Value {
+    let started = Instant::now();
+    let collection = collect_agent_source_files(project_root, root, settings);
+    let findings: Vec<crate::models::Finding> = collection
+        .files
+        .par_iter()
+        .flat_map(|file| {
+            crate::scanners::scan_file_with_relative_path(
+                &file.canonical_path,
+                &source_identity(&file.collection_relative_path),
+                settings.max_file_size_kb,
+                scan_secrets,
+                scan_vulnerabilities,
+            )
+        })
+        .collect();
+    let secrets = findings
+        .iter()
+        .filter(|finding| finding.category == "secret")
+        .count();
+    let vulnerabilities = findings
+        .iter()
+        .filter(|finding| finding.category == "vulnerability")
+        .count();
+    let mut sorted = findings.clone();
+    sorted.sort_by(|a, b| b.severity.cmp(&a.severity));
+    let top: Vec<Value> = sorted
+        .iter()
+        .take(25)
+        .map(|finding| {
+            json!({
+                "rule": finding.rule_name,
+                "rule_id": finding.rule_id,
+                "severity": finding.severity,
+                "category": finding.category,
+                "file": finding.file_path,
+                "line": finding.line,
+                "match": truncate(&finding.match_text, 120),
+            })
+        })
+        .collect();
+    json!({
+        "scan_type": scan_type,
+        "files_scanned": collection.files.len(),
+        "files_skipped": collection.skipped,
+        "secrets_found": secrets,
+        "vulnerabilities_found": vulnerabilities,
+        "total_findings": findings.len(),
+        "top_findings": top,
+        "duration_ms": started.elapsed().as_millis() as u64,
+    })
+}
+
+fn scan_agent_source_files(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+) -> Value {
+    scan_agent_code_files(project_root, root, settings, "source", false, true)
+}
+
+fn scan_agent_secret_files(
+    project_root: &std::path::Path,
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+) -> Value {
+    scan_agent_code_files(project_root, root, settings, "secrets", true, false)
+}
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -99,64 +325,21 @@ pub fn builtins() -> Vec<Tool> {
                 let head_limit = arg_u64_default(&args, "head_limit", 100).min(250) as usize;
                 let proj = project_root(&ctx)?;
                 let root = match arg_str_opt(&args, "path") {
-                    Some(p) => resolve_in_project(&proj, &p)?,
+                    Some(p) => resolve_collection_root(&proj, &p)?,
                     None => proj.clone(),
                 };
-                let re = regex::Regex::new(&pattern).map_err(|e| format!("invalid regex: {e}"))?;
                 let st = ctx.state().ok_or("app state unavailable")?;
-                let ignored = st.settings.lock().unwrap().scan.ignored_dirs.clone();
+                let settings = st.settings.lock().unwrap().scan.clone();
                 drop(st);
-                let (files, _, _) = fs_utils::collect_files(&root, true, false, &ignored);
-
-                let mut hits: Vec<Value> = Vec::new();
-                let mut counts: Vec<Value> = Vec::new();
-                let mut files_with: Vec<String> = Vec::new();
-                let mut total = 0usize;
-                for file in &files {
-                    if total >= head_limit { break; }
-                    let Some(content) = fs_utils::read_text_file(file, 1024 * 1024) else { continue };
-                    let lines: Vec<&str> = content.lines().collect();
-                    let mut file_count = 0usize;
-                    for m in re.find_iter(&content) {
-                        if total >= head_limit { break; }
-                        total += 1;
-                        file_count += 1;
-                        let line_no = content[..m.start()].matches('\n').count() + 1;
-                        let li = line_no - 1;
-                        if mode == "content" {
-                            let lo = li.saturating_sub(context);
-                            let hi = (li + 1 + context).min(lines.len());
-                            let mut ctx_lines: Vec<String> = Vec::new();
-                            for i in lo..hi {
-                                ctx_lines.push(format!("{:>6} │ {}", i + 1, lines[i]));
-                            }
-                            hits.push(json!({
-                                "file": display_rel(&root, file),
-                                "line": line_no,
-                                "column": m.start() - content[..m.start()].rfind('\n').map(|p| p + 1).unwrap_or(0) + 1,
-                                "text": lines[li],
-                                "context": if context > 0 { Value::Array(ctx_lines.into_iter().map(Value::String).collect()) } else { Value::Null },
-                            }));
-                        }
-                    }
-                    if mode == "count" {
-                        if file_count > 0 {
-                            counts.push(json!({ "file": display_rel(&root, file), "matches": file_count }));
-                        }
-                    } else if file_count > 0 && mode == "files_with_matches" {
-                        files_with.push(display_rel(&root, file));
-                    }
-                }
-                if total >= head_limit {
-                    hits.push(json!({ "note": "hit head_limit — results truncated" }));
-                }
-                Ok(json!({
-                    "total_matches": total,
-                    "mode": mode,
-                    "files_with_matches": files_with,
-                    "counts": counts,
-                    "matches": hits,
-                }))
+                grep_project_files(
+                    &proj,
+                    &root,
+                    &settings,
+                    &pattern,
+                    &mode,
+                    context,
+                    head_limit,
+                )
             }
         ),
         // ----------------------------------------------------------------- glob
@@ -178,32 +361,13 @@ pub fn builtins() -> Vec<Tool> {
                 let max_results = arg_u64_default(&args, "max_results", 100).min(200) as usize;
                 let proj = project_root(&ctx)?;
                 let root = match arg_str_opt(&args, "path") {
-                    Some(p) => resolve_in_project(&proj, &p)?,
+                    Some(p) => resolve_collection_root(&proj, &p)?,
                     None => proj.clone(),
                 };
-                let mut builder = ignore::gitignore::GitignoreBuilder::new(&root);
-                builder
-                    .add_line(None, &pattern)
-                    .map_err(|e| format!("invalid glob: {e}"))?;
-                let matcher = builder.build().map_err(|e| format!("invalid glob: {e}"))?;
                 let st = ctx.state().ok_or("app state unavailable")?;
-                let ignored = st.settings.lock().unwrap().scan.ignored_dirs.clone();
+                let settings = st.settings.lock().unwrap().scan.clone();
                 drop(st);
-                let (files, _, _) = fs_utils::collect_files(&root, true, false, &ignored);
-                let mut matched: Vec<String> = Vec::new();
-                for file in &files {
-                    if matched.len() >= max_results { break; }
-                    let rel = display_rel(&root, file);
-                    if matcher.matched(std::path::Path::new(&rel), false).is_ignore() {
-                        matched.push(rel);
-                    }
-                }
-                Ok(json!({
-                    "pattern": pattern,
-                    "matches": matched,
-                    "count": matched.len(),
-                    "truncated": matched.len() >= max_results,
-                }))
+                glob_project_files(&proj, &root, &settings, &pattern, max_results)
             }
         ),
         // -------------------------------------------------------------- run_scan
@@ -222,7 +386,7 @@ pub fn builtins() -> Vec<Tool> {
                 let scan_type = arg_str_default(&args, "scan_type", "source");
                 let proj = project_root(&ctx)?;
                 let root = match arg_str_opt(&args, "path") {
-                    Some(p) => resolve_in_project(&proj, &p)?,
+                    Some(p) => resolve_collection_root(&proj, &p)?,
                     None => proj.clone(),
                 };
                 let started = Instant::now();
@@ -231,7 +395,7 @@ pub fn builtins() -> Vec<Tool> {
                 drop(st);
 
                 if scan_type == "dependencies" || scan_type == "deps" {
-                    let lockfiles = fs_utils::collect_lockfiles(&root, &settings.scan.ignored_dirs);
+                    let lockfiles = collect_agent_lockfiles(&proj, &root, &settings.scan);
                     let mut deps = Vec::new();
                     for lf in &lockfiles {
                         let name = lf.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -267,33 +431,11 @@ pub fn builtins() -> Vec<Tool> {
                     }));
                 }
 
-                let scan_secrets = scan_type == "secrets";
-                let scan_vulns = !scan_secrets;
-                let (files, skipped, _) = fs_utils::collect_files(&root, true, false, &settings.scan.ignored_dirs);
-                let findings: Vec<crate::models::Finding> = files
-                    .par_iter()
-                    .map(|f| crate::scanners::scan_file(&root, f, settings.scan.max_file_size_kb, scan_secrets, scan_vulns))
-                    .flatten()
-                    .collect();
-                let secrets = findings.iter().filter(|f| f.category == "secret").count();
-                let vulns = findings.iter().filter(|f| f.category == "vulnerability").count();
-                let mut sorted = findings.clone();
-                sorted.sort_by(|a, b| b.severity.cmp(&a.severity));
-                let top: Vec<Value> = sorted.iter().take(25).map(|f| json!({
-                    "rule": f.rule_name, "rule_id": f.rule_id, "severity": f.severity,
-                    "category": f.category, "file": f.file_path, "line": f.line,
-                    "match": truncate(&f.match_text, 120),
-                })).collect();
-                Ok(json!({
-                    "scan_type": scan_type,
-                    "files_scanned": files.len(),
-                    "files_skipped": skipped,
-                    "secrets_found": secrets,
-                    "vulnerabilities_found": vulns,
-                    "total_findings": findings.len(),
-                    "top_findings": top,
-                    "duration_ms": started.elapsed().as_millis() as u64,
-                }))
+                if scan_type == "secrets" {
+                    Ok(scan_agent_secret_files(&proj, &root, &settings.scan))
+                } else {
+                    Ok(scan_agent_source_files(&proj, &root, &settings.scan))
+                }
             }
         ),
         // ------------------------------------------------------------ search_cve
@@ -464,10 +606,25 @@ pub fn builtins() -> Vec<Tool> {
                     st.pending_interactions.lock().unwrap().insert(req_id.clone(), tx);
                 }
                 (ctx.emit)(AiStreamEvent::AskUser { request_id: req_id.clone(), questions });
-                match tokio::time::timeout(std::time::Duration::from_secs(180), rx).await {
-                    Ok(Ok(answers)) => Ok(json!({ "answers": answers })),
-                    Ok(Err(_)) => Err("interaction channel closed".into()),
-                    Err(_) => Err("ask_user timed out after 180s".into()),
+                let response = if let Some(st) = ctx.state() {
+                    wait_for_pending_response(
+                        &st.pending_interactions,
+                        &req_id,
+                        rx,
+                        std::time::Duration::from_secs(180),
+                        ctx.cancellation.as_deref(),
+                    )
+                    .await
+                } else {
+                    Err(PendingWaitError::ChannelClosed)
+                };
+                match response {
+                    Ok(answers) => Ok(json!({ "answers": answers })),
+                    Err(PendingWaitError::Cancelled) => Err("chat cancelled".into()),
+                    Err(PendingWaitError::ChannelClosed) => {
+                        Err("interaction channel closed".into())
+                    }
+                    Err(PendingWaitError::TimedOut) => Err("ask_user timed out after 180s".into()),
                 }
             }
         ),
@@ -539,4 +696,249 @@ fn strip_html(raw: &str) -> String {
     let s = re_ws.replace_all(&s, " ");
     let s = re_nl.replace_all(&s, "\n\n");
     s.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        collect_agent_files, collect_agent_lockfiles, glob_project_files, grep_project_files,
+        scan_agent_secret_files, scan_agent_source_files,
+    };
+    use crate::agent::tool::resolve_collection_root;
+    use crate::models::ScanSettings;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(root.path().join(".git/config"), "[core]\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "ignored.rs\n").unwrap();
+        fs::write(root.path().join("ignored.rs"), "ignored\n").unwrap();
+        fs::write(root.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        root
+    }
+
+    fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
+        let canonical_root = root.canonicalize().unwrap();
+        let mut settings = ScanSettings::default();
+        settings.include_git = include_git;
+        settings.ignored_dirs.clear();
+        let (files, _, _) = collect_agent_files(root, root, &settings);
+        files
+            .into_iter()
+            .map(|path| path.strip_prefix(&canonical_root).unwrap().to_path_buf())
+            .collect()
+    }
+
+    #[test]
+    fn assistant_file_collection_uses_saved_include_git_policy() {
+        let root = fixture();
+
+        let excluded = relative_files(root.path(), false);
+        let included = relative_files(root.path(), true);
+
+        assert!(!excluded.contains(&PathBuf::from(".git/config")));
+        assert!(included.contains(&PathBuf::from(".git/config")));
+        for files in [excluded, included] {
+            assert!(!files.contains(&PathBuf::from("ignored.rs")));
+            assert!(files.contains(&PathBuf::from("src/main.rs")));
+        }
+    }
+
+    #[test]
+    fn assistant_subpath_collection_retains_the_project_policy_root() {
+        let root = fixture();
+        fs::write(root.path().join("src/ignored.rs"), "ignored\n").unwrap();
+        let mut settings = ScanSettings::default();
+        settings.ignored_dirs.clear();
+
+        let (direct_git, _, _) =
+            collect_agent_files(root.path(), &root.path().join(".git/config"), &settings);
+        let (nested, _, _) = collect_agent_files(root.path(), &root.path().join("src"), &settings);
+        assert!(direct_git.is_empty());
+        assert!(!nested.contains(&root.path().join("src/ignored.rs").canonicalize().unwrap()));
+        assert!(nested.contains(&root.path().join("src/main.rs").canonicalize().unwrap()));
+
+        settings.include_git = true;
+        let (direct_git, _, _) =
+            collect_agent_files(root.path(), &root.path().join(".git/config"), &settings);
+        assert_eq!(
+            direct_git,
+            [root.path().join(".git/config").canonicalize().unwrap()],
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assistant_subpath_collection_uses_saved_follow_symlinks_policy() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture();
+        fs::create_dir(root.path().join("shared")).unwrap();
+        fs::write(root.path().join("shared/lib.rs"), "pub fn shared() {}\n").unwrap();
+        fs::write(root.path().join("shared/private.rs"), "private\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "shared/private.rs\n").unwrap();
+        let alias = root.path().join("alias");
+        symlink(root.path().join("shared"), &alias).unwrap();
+        let collection_root = resolve_collection_root(root.path(), "alias").unwrap();
+        assert_eq!(collection_root, alias);
+        let mut settings = ScanSettings::default();
+        settings.ignored_dirs.clear();
+
+        settings.follow_symlinks = false;
+        let (excluded, _, _) = collect_agent_files(root.path(), &collection_root, &settings);
+        settings.follow_symlinks = true;
+        let (included, _, _) = collect_agent_files(root.path(), &collection_root, &settings);
+
+        assert!(excluded.is_empty());
+        assert_eq!(
+            included,
+            [root.path().join("shared/lib.rs").canonicalize().unwrap()],
+        );
+    }
+
+    #[test]
+    fn assistant_dependency_discovery_is_separate_from_saved_source_git_policy() {
+        let root = fixture();
+        fs::write(root.path().join("Cargo.lock"), "").unwrap();
+        fs::write(root.path().join(".gitignore"), "Cargo.lock\n").unwrap();
+        fs::write(root.path().join(".git/package-lock.json"), "{}").unwrap();
+        let mut settings = ScanSettings::default();
+        settings.ignored_dirs.clear();
+
+        let excluded = collect_agent_lockfiles(root.path(), root.path(), &settings);
+        settings.include_git = true;
+        let included = collect_agent_lockfiles(root.path(), root.path(), &settings);
+
+        let lockfile = root.path().join("Cargo.lock").canonicalize().unwrap();
+        assert_eq!(excluded, [lockfile.clone()]);
+        assert_eq!(included, [lockfile]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn actual_assistant_source_callers_reject_lexical_git_alias_roots() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("ordinary")).unwrap();
+        fs::write(root.path().join("ordinary/config"), "ordinary\n").unwrap();
+        symlink(root.path().join("ordinary"), root.path().join(".git")).unwrap();
+        let mut settings = ScanSettings::default();
+        settings.follow_symlinks = true;
+        settings.include_git = false;
+        settings.ignored_dirs.clear();
+
+        let requested = resolve_collection_root(root.path(), ".git/config").unwrap();
+        let grep = grep_project_files(
+            root.path(),
+            &requested,
+            &settings,
+            "ordinary",
+            "content",
+            0,
+            100,
+        )
+        .unwrap();
+        let glob = glob_project_files(root.path(), &requested, &settings, "*", 100).unwrap();
+        let source = scan_agent_source_files(root.path(), &requested, &settings);
+        let secrets = scan_agent_secret_files(root.path(), &requested, &settings);
+
+        assert_eq!(grep["total_matches"], 0);
+        assert_eq!(glob["count"], 0);
+        assert_eq!(source["files_scanned"], 0);
+        assert_eq!(secrets["files_scanned"], 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn actual_assistant_source_callers_cannot_search_or_scan_an_ignored_alias_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("shared")).unwrap();
+        fs::write(
+            root.path().join("shared/exposed.js"),
+            "eval(userInput);\nconst token = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890';\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".gitignore"), "alias\n").unwrap();
+        let alias = root.path().join("alias");
+        symlink(root.path().join("shared"), &alias).unwrap();
+        let mut settings = ScanSettings::default();
+        settings.follow_symlinks = true;
+        settings.ignored_dirs.clear();
+
+        let grep = grep_project_files(
+            root.path(),
+            &alias,
+            &settings,
+            "eval",
+            "content",
+            0,
+            100,
+        )
+        .unwrap();
+        let glob = glob_project_files(root.path(), &alias, &settings, "*.js", 100).unwrap();
+        let source = scan_agent_source_files(root.path(), &alias, &settings);
+        let secrets = scan_agent_secret_files(root.path(), &alias, &settings);
+
+        assert_eq!(grep["total_matches"], 0);
+        assert_eq!(glob["matches"], serde_json::json!([]));
+        assert_eq!(source["files_scanned"], 0);
+        assert_eq!(secrets["files_scanned"], 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn actual_assistant_source_callers_use_collection_relative_alias_identity() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("shared")).unwrap();
+        fs::write(
+            root.path().join("shared/exposed.js"),
+            "eval(userInput);\nconst token = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890';\n",
+        )
+        .unwrap();
+        let alias = root.path().join("alias");
+        symlink(root.path().join("shared"), &alias).unwrap();
+        let mut settings = ScanSettings::default();
+        settings.follow_symlinks = true;
+        settings.ignored_dirs.clear();
+
+        let grep = grep_project_files(
+            root.path(),
+            &alias,
+            &settings,
+            "eval",
+            "files_with_matches",
+            0,
+            100,
+        )
+        .unwrap();
+        let glob = glob_project_files(root.path(), &alias, &settings, "*.js", 100).unwrap();
+        let source = scan_agent_source_files(root.path(), &alias, &settings);
+        let secrets = scan_agent_secret_files(root.path(), &alias, &settings);
+
+        assert_eq!(grep["files_with_matches"], serde_json::json!(["exposed.js"]));
+        assert_eq!(glob["matches"], serde_json::json!(["exposed.js"]));
+        assert_eq!(source["top_findings"][0]["file"], "exposed.js");
+        assert_eq!(secrets["top_findings"][0]["file"], "exposed.js");
+    }
+
+    #[test]
+    fn assistant_collection_root_rejects_paths_outside_the_project() {
+        let root = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside.rs");
+        fs::write(&outside_file, "outside\n").unwrap();
+
+        assert_eq!(
+            resolve_collection_root(root.path(), &outside_file.to_string_lossy()),
+            Err("path escapes the project root".into())
+        );
+    }
 }

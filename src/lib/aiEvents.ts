@@ -27,75 +27,209 @@ export interface StreamHandlers {
   onError?: (message: string) => void;
 }
 
+export interface StreamHandle {
+  /** Client-owned identity, available before listener setup or command invoke. */
+  runId: string;
+  /** Settles after a matching terminal event, invoke failure, or disposal. */
+  finished: Promise<void>;
+  /** Waits for backend registration before sending cancellation. */
+  cancel: () => Promise<void>;
+  /** Requests native cancellation, stops delivery, and tears down listeners. */
+  dispose: () => void;
+}
+
 /**
  * Start a streaming agent turn: subscribes to the `ai://*` event bus, invokes
- * the `stream_chat` command, and routes events to the handlers. All listeners
- * are torn down when the turn settles (done/error/invoke rejection).
+ * the `stream_chat` command, and routes events to the handlers. The returned
+ * handle exposes the client-owned run id immediately. All listeners are torn
+ * down when this run settles (matching done/error, invoke rejection, disposal).
  */
-export async function streamChat(req: ChatRequest, h: StreamHandlers): Promise<void> {
+export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
+  const runId = crypto.randomUUID();
   const unlisteners: UnlistenFn[] = [];
-  const track = (p: Promise<UnlistenFn>) => p.then((f) => unlisteners.push(f));
+  let disposed = false;
+  let settled = false;
+  let cancellationRequested = false;
+  let cancellation: Promise<void> | null = null;
+  let resolveTerminal!: () => void;
+  let resolveSetup!: (ready: boolean) => void;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const setup = new Promise<boolean>((resolve) => {
+    resolveSetup = resolve;
+  });
 
-  track(
-    listen<{ runId: string }>("ai://started", (e) => h.onStarted?.(e.payload.runId)),
-  );
-  track(
-    listen<AiStreamEvent>("ai://event", (e) => {
-      const ev = e.payload;
-      switch (ev.type) {
-        case "delta":
-          h.onDelta?.(ev.content);
-          break;
-        case "reasoning":
-          h.onReasoning?.(ev.content);
-          break;
-        case "usage":
-          h.onUsage?.(ev.usage);
-          break;
-        case "tool_start":
-          h.onToolStart?.({
-            toolCallId: ev.toolCallId,
-            name: ev.name,
-            arguments: ev.arguments,
-          });
-          break;
-        case "tool_result":
-          h.onToolResult?.({
-            toolCallId: ev.toolCallId,
-            name: ev.name,
-            success: ev.success,
-            durationMs: ev.durationMs,
-            resultPreview: ev.resultPreview,
-          });
-          break;
-        case "permission_request":
-          h.onPermissionRequest?.({
-            requestId: ev.requestId,
-            tool: ev.tool,
-            arguments: ev.arguments,
-          });
-          break;
-        case "ask_user":
-          h.onAskUser?.({
-            requestId: ev.requestId,
-            questions: ev.questions,
-          });
-          break;
+  const requestCancellation = (): Promise<void> => {
+    cancellationRequested = true;
+    cancellation ??= setup.then(async (ready) => {
+      if (ready) await api.cancelChat(runId);
+    });
+    return cancellation;
+  };
+
+  const cleanup = () => {
+    while (unlisteners.length > 0) {
+      try {
+        unlisteners.pop()?.();
+      } catch {
+        /* Listener cleanup is best-effort and idempotent. */
       }
-    }),
-  );
-  track(
-    listen<AiDonePayload>("ai://done", (e) => h.onDone?.(e.payload)),
-  );
-  track(
-    listen<{ runId: string; message: string }>("ai://error", (e) => h.onError?.(e.payload.message)),
-  );
+    }
+  };
 
-  try {
-    await api.streamChat(req);
-  } catch (e) {
-    h.onError?.(String(e));
-  } finally {
-    unlisteners.forEach((f) => f());
-  }
+  const settle = (callback?: () => void) => {
+    if (disposed || settled) return;
+    settled = true;
+    try {
+      callback?.();
+    } finally {
+      cleanup();
+      resolveTerminal();
+    }
+  };
+
+  const reportError = (error: unknown) => {
+    settle(() => h.onError?.(String(error)));
+  };
+
+  const dispatch = (callback: () => void) => {
+    if (disposed || settled) return;
+    try {
+      callback();
+    } catch (error) {
+      reportError(error);
+    }
+  };
+
+  const register = async <T>(
+    event: string,
+    callback: (payload: T) => void,
+  ): Promise<boolean> => {
+    const unlisten = await listen<T>(event, ({ payload }) => callback(payload));
+    if (disposed || settled) {
+      unlisten();
+      return false;
+    }
+    unlisteners.push(unlisten);
+    return true;
+  };
+
+  const launch = (async () => {
+    let ready = false;
+    try {
+      if (
+        !(await register<{ runId: string }>("ai://started", (payload) => {
+          if (payload.runId === runId) dispatch(() => h.onStarted?.(runId));
+        }))
+      ) {
+        return;
+      }
+      if (
+        !(await register<AiStreamEvent>("ai://event", (ev) => {
+          if (ev.runId !== runId) return;
+          dispatch(() => {
+            switch (ev.type) {
+              case "delta":
+                h.onDelta?.(ev.content);
+                break;
+              case "reasoning":
+                h.onReasoning?.(ev.content);
+                break;
+              case "usage":
+                h.onUsage?.(ev.usage);
+                break;
+              case "tool_start":
+                h.onToolStart?.({
+                  toolCallId: ev.toolCallId,
+                  name: ev.name,
+                  arguments: ev.arguments,
+                });
+                break;
+              case "tool_result":
+                h.onToolResult?.({
+                  toolCallId: ev.toolCallId,
+                  name: ev.name,
+                  success: ev.success,
+                  durationMs: ev.durationMs,
+                  resultPreview: ev.resultPreview,
+                });
+                break;
+              case "permission_request":
+                h.onPermissionRequest?.({
+                  requestId: ev.requestId,
+                  tool: ev.tool,
+                  arguments: ev.arguments,
+                });
+                break;
+              case "ask_user":
+                h.onAskUser?.({
+                  requestId: ev.requestId,
+                  questions: ev.questions,
+                });
+                break;
+            }
+          });
+        }))
+      ) {
+        return;
+      }
+      if (
+        !(await register<AiDonePayload>("ai://done", (payload) => {
+          if (payload.runId === runId) settle(() => h.onDone?.(payload));
+        }))
+      ) {
+        return;
+      }
+      if (
+        !(await register<{ runId: string; message: string }>(
+          "ai://error",
+          (payload) => {
+            if (payload.runId === runId) {
+              settle(() => h.onError?.(payload.message));
+            }
+          },
+        ))
+      ) {
+        return;
+      }
+
+      const started = await api.streamChat(req, runId);
+      if (started.runId !== runId) {
+        throw new Error("AI stream started with an unexpected run id");
+      }
+      ready = true;
+    } catch (error) {
+      if (!disposed) reportError(error);
+    } finally {
+      resolveSetup(ready);
+      if (ready && cancellationRequested) {
+        try {
+          await requestCancellation();
+        } catch {
+          /* Disposal still completes when native cancellation cannot be acknowledged. */
+        }
+      }
+    }
+  })();
+
+  const dispose = () => {
+    if (disposed || settled) return;
+    disposed = true;
+    settled = true;
+    cleanup();
+    void requestCancellation()
+      .catch(() => undefined)
+      .finally(resolveTerminal);
+  };
+
+  return {
+    runId,
+    finished: Promise.all([launch, terminal]).then(() => undefined),
+    cancel: async () => {
+      if (settled && !disposed) return;
+      await requestCancellation();
+    },
+    dispose,
+  };
 }

@@ -175,7 +175,7 @@ export interface StreamStarted {
 }
 
 /** Tagged union of live AI stream events (mirrors Rust `AiStreamEvent`). */
-export type AiStreamEvent =
+export type AiStreamEvent = { runId: string } & (
   | { type: "delta"; content: string }
   | { type: "reasoning"; content: string }
   | { type: "usage"; usage: Usage }
@@ -189,7 +189,8 @@ export type AiStreamEvent =
       resultPreview: string;
     }
   | { type: "ask_user"; requestId: string; questions: AskQuestion[] }
-  | { type: "permission_request"; requestId: string; tool: string; arguments: string };
+  | { type: "permission_request"; requestId: string; tool: string; arguments: string }
+);
 
 export interface AskQuestion {
   prompt: string;

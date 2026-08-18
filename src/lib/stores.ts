@@ -1,13 +1,7 @@
 import { create } from "zustand";
+import type { AiReadiness } from "./settingsRequests";
 import type { AppSettings } from "./types";
-
-export type Page =
-  | "dashboard"
-  | "source-scan"
-  | "deps-scan"
-  | "cve-research"
-  | "assistant"
-  | "settings";
+import type { AssistantHandoff, Page, WorkbenchStatus } from "./workbench";
 
 export interface RecentScan {
   id: string;
@@ -24,12 +18,20 @@ interface AppStore {
   setPage: (p: Page) => void;
   settings: AppSettings | null;
   setSettings: (s: AppSettings) => void;
-  aiReady: boolean | null;
-  setAiReady: (v: boolean | null) => void;
+  aiReadiness: AiReadiness;
+  setAiReadiness: (readiness: AiReadiness) => void;
+  settingsLoadError: boolean;
+  setSettingsLoadError: (failed: boolean) => void;
   activeProject: string | null;
   setActiveProject: (p: string | null) => void;
+  assistantHandoff: AssistantHandoff | null;
+  openAssistant: (handoff: AssistantHandoff) => void;
+  clearAssistantHandoff: () => void;
   recentScans: RecentScan[];
   addRecentScan: (r: RecentScan) => void;
+  pageStatus: Partial<Record<Page, WorkbenchStatus>>;
+  setPageStatus: (page: Page, status: WorkbenchStatus) => void;
+  clearPageStatus: (page: Page) => void;
 }
 
 const RECENT_KEY = "vc.recentScans";
@@ -47,10 +49,15 @@ export const useAppStore = create<AppStore>((set) => ({
   setPage: (page) => set({ page }),
   settings: null,
   setSettings: (settings) => set({ settings }),
-  aiReady: null,
-  setAiReady: (aiReady) => set({ aiReady }),
+  aiReadiness: { status: "loading", version: 0 },
+  setAiReadiness: (aiReadiness) => set({ aiReadiness }),
+  settingsLoadError: false,
+  setSettingsLoadError: (settingsLoadError) => set({ settingsLoadError }),
   activeProject: null,
   setActiveProject: (activeProject) => set({ activeProject }),
+  assistantHandoff: null,
+  openAssistant: (assistantHandoff) => set({ assistantHandoff, page: "assistant" }),
+  clearAssistantHandoff: () => set({ assistantHandoff: null }),
   recentScans: loadRecent(),
   addRecentScan: (r) =>
     set((s) => {
@@ -61,6 +68,15 @@ export const useAppStore = create<AppStore>((set) => ({
         /* ignore */
       }
       return { recentScans };
+    }),
+  pageStatus: {},
+  setPageStatus: (page, status) =>
+    set((state) => ({ pageStatus: { ...state.pageStatus, [page]: status } })),
+  clearPageStatus: (page) =>
+    set((state) => {
+      const pageStatus = { ...state.pageStatus };
+      delete pageStatus[page];
+      return { pageStatus };
     }),
 }));
 

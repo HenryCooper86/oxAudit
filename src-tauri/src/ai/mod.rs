@@ -18,7 +18,7 @@ use errors::LlmError;
 
 /// One typed event in the AI stream, emitted to the frontend as `ai://event`.
 #[derive(Serialize, Clone, Debug)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum AiStreamEvent {
     /// A text fragment.
     Delta { content: String },

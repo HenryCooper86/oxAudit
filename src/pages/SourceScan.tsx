@@ -1,81 +1,228 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Ban, Clipboard, Download, Play, ScanLine, X } from "lucide-react";
-import { EmptyState } from "../components/EmptyState";
-import { FindingCard } from "../components/FindingCard";
+import { Ban, Clipboard, FileCode2, KeyRound, Play, Search } from "lucide-react";
+import { FindingDetail } from "../components/FindingDetail";
 import { FolderPicker } from "../components/FolderPicker";
 import { ProgressBar } from "../components/ProgressBar";
-import { StatCard } from "../components/StatCard";
-import { TopBar } from "../components/TopBar";
+import { SeverityBadge } from "../components/SeverityBadge";
+import { InlineState } from "../components/workbench/InlineState";
+import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
+import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
+import { Switch } from "../components/workbench/Switch";
+import { TargetBar } from "../components/workbench/TargetBar";
+import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { resolveRuntimeProject } from "../lib/assistantSessions";
 import { fmtBytes, fmtDuration } from "../lib/format";
+import {
+  buildSourceScanRequest,
+  createSourceScanOptions,
+  editSourceScanOption,
+  hydrateSourceScanOptions,
+  resolveSourceScanOptionsUnavailable,
+  type SourceScanOptionKey,
+  type SourceScanOptionValues,
+} from "../lib/sourceScanOptions";
 import { useAppStore, useToastStore } from "../lib/stores";
-import type { ScanProgress, ScanResult, Severity } from "../lib/types";
+import type { Finding, ScanProgress, ScanResult, Severity } from "../lib/types";
 
 const SEVERITIES: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
 
 export function SourceScanPage() {
-  const addRecentScan = useAppStore((s) => s.addRecentScan);
-  const setActiveProjectStore = useAppStore((s) => s.setActiveProject);
-  const push = useToastStore((s) => s.push);
+  const settings = useAppStore((state) => state.settings);
+  const settingsLoadError = useAppStore((state) => state.settingsLoadError);
+  const addRecentScan = useAppStore((state) => state.addRecentScan);
+  const setActiveProjectStore = useAppStore((state) => state.setActiveProject);
+  const setPageStatus = useAppStore((state) => state.setPageStatus);
+  const clearPageStatus = useAppStore((state) => state.clearPageStatus);
+  const push = useToastStore((state) => state.push);
 
   const [path, setPath] = useState("");
-  const [scanSecrets, setScanSecrets] = useState(true);
-  const [scanVulns, setScanVulns] = useState(true);
-  const [includeGit, setIncludeGit] = useState(false);
-  const [followSymlinks, setFollowSymlinks] = useState(false);
-  const [maxSizeKb, setMaxSizeKb] = useState(1024);
+  const [scanOptions, setScanOptions] = useState(() =>
+    createSourceScanOptions(settings?.scan ?? null),
+  );
+  const {
+    scanSecrets,
+    scanVulnerabilities: scanVulns,
+    includeGit,
+    followSymlinks,
+    maxFileSizeKb: maxSizeKb,
+  } = scanOptions.values;
 
   const [running, setRunning] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [exportOpen, setExportOpen] = useState(false);
+  const [cancelled, setCancelled] = useState(false);
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
 
   const [tab, setTab] = useState<"all" | "secret" | "vulnerability">("all");
   const [sevFilter, setSevFilter] = useState<string>("all");
   const [langFilter, setLangFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
 
-  const unlistenRef = useRef<UnlistenFn | null>(null);
+  const cancellingRef = useRef(false);
+  const pathRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (settings) {
+      setScanOptions((current) =>
+        hydrateSourceScanOptions(current, settings.scan),
+      );
+    } else if (settingsLoadError) {
+      setScanOptions(resolveSourceScanOptionsUnavailable);
+    }
+  }, [settings, settingsLoadError]);
+
+  const updateScanOption = <K extends SourceScanOptionKey>(
+    key: K,
+    value: SourceScanOptionValues[K],
+  ) => {
+    setScanOptions((current) => editSourceScanOption(current, key, value));
+  };
 
   useEffect(() => {
     let disposed = false;
-    listen<ScanProgress>("scan://progress", (e) => {
-      if (!disposed) setProgress(e.payload);
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlistenRef.current = fn;
-    });
-    listen<ScanProgress>("scan://done", (e) => {
-      if (!disposed) setProgress((p) => ({ ...p, ...e.payload }));
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlistenRef.current = fn;
-    });
+    const unlisteners: UnlistenFn[] = [];
+    const releaseListeners = () => {
+      for (const unlisten of unlisteners.splice(0)) unlisten();
+    };
+    const register = async () => {
+      try {
+        const progressUnlisten = await listen<ScanProgress>("scan://progress", (event) => {
+          if (!disposed) setProgress(event.payload);
+        });
+        if (disposed) {
+          progressUnlisten();
+          return;
+        }
+        unlisteners.push(progressUnlisten);
+
+        const doneUnlisten = await listen<ScanProgress>("scan://done", (event) => {
+          if (!disposed) setProgress((current) => ({ ...current, ...event.payload }));
+        });
+        if (disposed) {
+          doneUnlisten();
+          return;
+        }
+        unlisteners.push(doneUnlisten);
+      } catch {
+        releaseListeners();
+        // The event bridge is unavailable when the UI is exercised in a browser.
+      }
+    };
+
+    void register();
     return () => {
       disposed = true;
-      unlistenRef.current?.();
+      releaseListeners();
     };
   }, []);
 
-  const run = async () => {
-    if (!path || running) return;
-    setRunning(true);
-    setError(null);
+  useEffect(() => {
+    if (!running) return;
+    setPageStatus("source-scan", { label: "Scanning", tone: "running", detail: progress?.file });
+  }, [progress?.file, running, setPageStatus]);
+
+  const filtered = useMemo(() => {
+    if (!result) return [];
+    const query = search.trim().toLowerCase();
+    return result.findings.filter((finding) => {
+      if (tab !== "all" && finding.category !== tab) return false;
+      if (sevFilter !== "all" && finding.severity !== sevFilter) return false;
+      if (langFilter !== "all" && finding.language !== langFilter) return false;
+      if (
+        query &&
+        !`${finding.ruleName} ${finding.filePath} ${finding.matchText}`.toLowerCase().includes(query)
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [langFilter, result, search, sevFilter, tab]);
+
+  const selectedFinding = filtered.find((finding) => finding.id === selectedFindingId) ?? filtered[0] ?? null;
+  const hasExplicitSelection =
+    selectedFindingId !== null && selectedFinding?.id === selectedFindingId;
+
+  const languages = useMemo(() => {
+    if (!result) return [];
+    const found = new Set<string>();
+    for (const finding of result.findings) {
+      if (finding.language) found.add(finding.language);
+    }
+    return ["all", ...Array.from(found).sort()];
+  }, [result]);
+
+  const resetResultState = () => {
     setResult(null);
+    setError(null);
+    setCancelled(false);
+    setTab("all");
+    setSevFilter("all");
+    setLangFilter("all");
+    setSearch("");
+    setSelectedFindingId(null);
+    clearPageStatus("source-scan");
+  };
+
+  const changePath = (nextPath: string) => {
+    if (nextPath === path) return;
+    const requestId = ++pathRequestRef.current;
+    setPath(nextPath);
+    resetResultState();
+    void resolveRuntimeProject(nextPath || null, api.setActiveProject).then((outcome) => {
+      setActiveProjectStore(outcome.runtimePath);
+      if (
+        requestId === pathRequestRef.current &&
+        outcome.unavailablePath === nextPath &&
+        outcome.warning
+      ) {
+        push("error", outcome.warning);
+      }
+    });
+  };
+
+  const run = async () => {
+    if (
+      !path ||
+      running ||
+      !scanOptions.resolved ||
+      (!scanSecrets && !scanVulns)
+    ) {
+      return;
+    }
+    setRunning(true);
+    cancellingRef.current = false;
+    setCancelling(false);
+    setError(null);
+    setCancelled(false);
     setProgress({ phase: "walking" });
+    const requestId = ++pathRequestRef.current;
+    const requestedPath = path;
     try {
-      const res = await api.scanProject({
-        path,
-        includeGit,
-        followSymlinks,
-        maxFileSizeKb: maxSizeKb,
-        scanSecrets,
-        scanVulnerabilities: scanVulns,
-        extraIgnoredDirs: [],
-      });
+      const runtime = await resolveRuntimeProject(
+        requestedPath,
+        api.setActiveProject,
+      );
+      setActiveProjectStore(runtime.runtimePath);
+      if (
+        requestId !== pathRequestRef.current ||
+        runtime.runtimePath !== requestedPath
+      ) {
+        return;
+      }
+      const res = await api.scanProject(
+        buildSourceScanRequest(requestedPath, scanOptions),
+      );
       setResult(res);
+      setSelectedFindingId(null);
+      setPageStatus("source-scan", {
+        label: "Scan complete",
+        tone: "success",
+        detail: `${res.summary.totalFindings} findings`,
+      });
       addRecentScan({
         id: `${Date.now()}`,
         kind: "source",
@@ -85,293 +232,490 @@ export function SourceScanPage() {
         critical: res.summary.critical,
         high: res.summary.high,
       });
-      push("success", `Scan complete — ${res.summary.totalFindings} findings in ${fmtDuration(res.summary.durationMs)}`);
-    } catch (e) {
-      setError(String(e));
-      push("error", String(e));
+      push(
+        "success",
+        `Scan complete — ${res.summary.totalFindings} findings in ${fmtDuration(res.summary.durationMs)}`,
+      );
+    } catch (scanError) {
+      const detail = String(scanError);
+      if (detail.toLowerCase().includes("scan cancelled")) {
+        setError(null);
+        setCancelled(true);
+        setPageStatus("source-scan", { label: "Scan cancelled", tone: "neutral" });
+        push("info", "Scan cancelled");
+      } else {
+        setError(detail);
+        setPageStatus("source-scan", { label: "Scan failed", tone: "error" });
+        push("error", "The selected folder could not be scanned");
+      }
     } finally {
       setRunning(false);
+      cancellingRef.current = false;
+      setCancelling(false);
       setProgress(null);
     }
   };
 
   const cancel = async () => {
+    if (cancellingRef.current) return;
+    cancellingRef.current = true;
+    setCancelling(true);
     try {
       await api.cancelScan();
       push("info", "Cancelling scan…");
     } catch {
-      /* ignore */
+      cancellingRef.current = false;
+      setCancelling(false);
+      push("error", "The scan could not be cancelled");
     }
   };
 
-  const filtered = useMemo(() => {
-    if (!result) return [];
-    const q = search.trim().toLowerCase();
-    return result.findings.filter((f) => {
-      if (tab !== "all" && f.category !== tab) return false;
-      if (sevFilter !== "all" && f.severity !== sevFilter) return false;
-      if (langFilter !== "all" && f.language !== langFilter) return false;
-      if (q && !`${f.ruleName} ${f.filePath} ${f.matchText}`.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [result, tab, sevFilter, langFilter, search]);
-
-  const languages = useMemo(() => {
-    if (!result) return [];
-    const set = new Set<string>();
-    for (const f of result.findings) if (f.language) set.add(f.language);
-    return ["all", ...Array.from(set).sort()];
-  }, [result]);
-
-  const grouped = useMemo(() => {
-    const map = new Map<string, typeof filtered>();
-    for (const f of filtered) {
-      const key = `${f.filePath}:${f.line}`;
-      const arr = map.get(key) ?? [];
-      arr.push(f);
-      map.set(key, arr);
-    }
-    return Array.from(map.entries());
-  }, [filtered]);
-
-  const exportJson = () => {
+  const copyJson = async () => {
     if (!result) return;
-    const blob = {
-      tool: "VulnCompanion",
+    const report = {
+      tool: "oxAudit",
       version: "0.1.0",
       exportedAt: new Date().toISOString(),
       summary: result.summary,
       findings: result.findings,
     };
-    const text = JSON.stringify(blob, null, 2);
-    navigator.clipboard?.writeText(text).then(
-      () => push("success", "Scan report copied to clipboard (JSON)"),
-      () => push("error", "Clipboard unavailable"),
-    );
-    setExportOpen(false);
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      push("success", "Scan report copied to clipboard (JSON)");
+    } catch {
+      push("error", "Clipboard unavailable");
+    }
   };
 
-  return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      <TopBar
-        title="Source Code Scanner"
-        subtitle="Pattern-based vulnerability detection + secret leakage scanning"
-      />
+  const copyFinding = async (finding: Finding) => {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(JSON.stringify(finding, null, 2));
+      push("success", "Finding copied to clipboard");
+    } catch {
+      push("error", "Clipboard unavailable");
+    }
+  };
 
-      {/* config panel */}
-      <div className="mt-5 rounded-xl border border-ink-700 bg-ink-850 p-4">
-        <FolderPicker
-          value={path}
-          onChange={(p) => {
-            setPath(p);
-            api.setActiveProject(p).catch(() => undefined);
-            setActiveProjectStore(p);
-          }}
-        />
-        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
-          <Toggle label="Secrets" checked={scanSecrets} onChange={setScanSecrets} />
-          <Toggle label="Vulnerabilities" checked={scanVulns} onChange={setScanVulns} />
-          <Toggle label="Include .git" checked={includeGit} onChange={setIncludeGit} />
-          <Toggle label="Follow symlinks" checked={followSymlinks} onChange={setFollowSymlinks} />
-          <label className="flex items-center gap-2 text-xs text-slate-400">
-            Max file size
-            <input
-              type="number"
-              value={maxSizeKb}
-              min={1}
-              max={10240}
-              onChange={(e) => setMaxSizeKb(Number(e.target.value) || 1024)}
-              className="w-20 rounded border border-ink-600 bg-ink-900 px-2 py-1 font-mono text-xs text-slate-200 outline-none focus:border-teal-500/60"
-            />
-            KB
-          </label>
-          <div className="ml-auto flex gap-2">
+  const openFile = (finding: Finding) => {
+    if (!result) return;
+    void api
+      .openScanFinding(result.summary.path, finding.filePath)
+      .catch((openError) => {
+        push("error", `The finding file could not be opened: ${String(openError)}`);
+      });
+  };
+
+  const scanUnavailable = !scanSecrets && !scanVulns;
+  const progressLabel =
+    progress?.phase === "walking"
+      ? "Walking directory tree…"
+      : "Scanning files for secrets and vulnerable patterns…";
+
+  return (
+    <ToolPage
+      title="Source Scan"
+      description="Scan a local project for exposed secrets and vulnerable source patterns."
+    >
+      <TargetBar
+        primary={
+          <>
             {running && (
               <button
+                type="button"
                 onClick={cancel}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-3.5 py-2 text-xs font-medium text-red-300 hover:bg-red-500/20"
+                disabled={cancelling}
+                className="inline-flex items-center gap-1.5 rounded-md border border-red-900/80 bg-red-950/30 px-3 py-2 text-[12px] font-medium text-red-300 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <Ban size={13} /> Cancel
+                <Ban size={13} aria-hidden="true" />
+                {cancelling ? "Cancelling…" : "Cancel"}
               </button>
             )}
             <button
+              type="button"
               onClick={run}
-              disabled={!path || running}
-              className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-teal-500 to-emerald-500 px-4 py-2 text-xs font-bold text-ink-950 shadow-lg shadow-teal-900/30 transition-opacity hover:opacity-90 disabled:opacity-40"
+              disabled={!path || running || !scanOptions.resolved || scanUnavailable}
+              className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <Play size={13} />
+              <Play size={13} aria-hidden="true" />
               {running ? "Scanning…" : "Run scan"}
             </button>
-          </div>
-        </div>
-        {running && progress && (
-          <div className="mt-4">
-            <ProgressBar
-              indeterminate={!progress.total}
-              value={progress.done ?? 0}
-              max={progress.total ?? 0}
-              label={progress.phase === "walking" ? "Walking directory tree…" : "Scanning files for secrets & vulnerable patterns"}
-            />
-          </div>
-        )}
-        {error && (
-          <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-            {error}
-          </div>
-        )}
-      </div>
-
-      {/* summary */}
-      {result && (
-        <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
-          <StatCard label="Files" value={result.summary.filesScanned.toLocaleString()} />
-          <StatCard label="Secrets" value={result.summary.secretsFound} tone="accent" />
-          <StatCard label="Vuln patterns" value={result.summary.vulnerabilitiesFound} tone="warning" />
-          <StatCard
-            label="Critical / High"
-            value={`${result.summary.critical} / ${result.summary.high}`}
-            tone="danger"
-          />
-          <StatCard label="Duration" value={fmtDuration(result.summary.durationMs)} />
-        </div>
-      )}
-
-      {/* results */}
-      {result && (
-        <div className="mt-6">
-          <div className="flex flex-wrap items-center gap-2">
-            {(
-              [
-                ["all", `All (${result.findings.length})`],
-                ["secret", `Secrets (${result.summary.secretsFound})`],
-                ["vulnerability", `Vulnerabilities (${result.summary.vulnerabilitiesFound})`],
-              ] as const
-            ).map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => setTab(k)}
-                className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-                  tab === k
-                    ? "border-teal-500/50 bg-teal-500/10 text-teal-300"
-                    : "border-ink-600 bg-ink-850 text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-
-            <div className="ml-auto flex items-center gap-2">
-              <select
-                value={sevFilter}
-                onChange={(e) => setSevFilter(e.target.value)}
-                className="rounded-lg border border-ink-600 bg-ink-850 px-2 py-1.5 text-xs text-slate-300 outline-none focus:border-teal-500/60"
-              >
-                {SEVERITIES.map((s) => (
-                  <option key={s} value={s}>
-                    {s === "all" ? "All severities" : s}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={langFilter}
-                onChange={(e) => setLangFilter(e.target.value)}
-                className="rounded-lg border border-ink-600 bg-ink-850 px-2 py-1.5 text-xs text-slate-300 outline-none focus:border-teal-500/60"
-              >
-                {languages.map((l) => (
-                  <option key={l} value={l}>
-                    {l === "all" ? "All languages" : l}
-                  </option>
-                ))}
-              </select>
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search findings…"
-                className="w-44 rounded-lg border border-ink-600 bg-ink-850 px-3 py-1.5 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-teal-500/60"
-              />
-              <button
-                onClick={() => setExportOpen(true)}
-                title="Export JSON report"
-                className="rounded-lg border border-ink-600 bg-ink-850 p-1.5 text-slate-400 hover:text-slate-200"
-              >
-                <Download size={14} />
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-3 space-y-2">
-            {grouped.length === 0 && (
-              <EmptyState
-                title="No findings match the current filters"
-                description="Try widening the severity or category filters, or clear the search box."
+          </>
+        }
+        secondary={
+          <>
+            <details>
+              <summary className="w-fit cursor-pointer text-[12px] font-medium text-stone-300 hover:text-stone-100">
+                Advanced scan settings
+              </summary>
+              <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3">
+                <Switch
+                  checked={scanSecrets}
+                  onChange={(checked) => updateScanOption("scanSecrets", checked)}
+                  label="Secrets"
+                  disabled={running}
+                />
+                <Switch
+                  checked={scanVulns}
+                  onChange={(checked) =>
+                    updateScanOption("scanVulnerabilities", checked)
+                  }
+                  label="Vulnerabilities"
+                  disabled={running}
+                />
+                <Switch
+                  checked={includeGit}
+                  onChange={(checked) => updateScanOption("includeGit", checked)}
+                  label="Include .git"
+                  disabled={running}
+                />
+                <Switch
+                  checked={followSymlinks}
+                  onChange={(checked) =>
+                    updateScanOption("followSymlinks", checked)
+                  }
+                  label="Follow symlinks"
+                  disabled={running}
+                />
+                <label className="flex items-center gap-2 text-[12px] text-stone-400">
+                  Max file size
+                  <input
+                    type="number"
+                    value={maxSizeKb}
+                    min={1}
+                    max={10240}
+                    onChange={(event) =>
+                      updateScanOption(
+                        "maxFileSizeKb",
+                        Number(event.target.value) || 1024,
+                      )
+                    }
+                    disabled={running}
+                    className="w-20 rounded-md border border-ink-600 bg-ink-900 px-2 py-1 font-mono text-xs text-stone-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  KB
+                </label>
+              </div>
+            </details>
+            {!scanOptions.resolved && (
+              <InlineState
+                tone="running"
+                compact
+                title="Loading scan defaults"
+                description="Run scan becomes available after the local settings attempt finishes."
               />
             )}
-            {grouped.map(([key, fs]) => {
-              const f = fs[0];
-              const idx = result.findings.indexOf(f);
-              return <FindingCard key={key} finding={f} fileIndex={idx >= 0 ? idx + 1 : undefined} />;
-            })}
-          </div>
-        </div>
+            {settingsLoadError && settings === null && scanOptions.resolved && (
+              <InlineState
+                tone="unavailable"
+                compact
+                title="Using fallback scan defaults"
+                description="Local settings could not be loaded. The displayed controls are the exact options that will be submitted."
+              />
+            )}
+            {running && progress && (
+              <InlineState
+                tone="running"
+                compact
+                title="Scanning project"
+                description={progress.file}
+                progress={
+                  <ProgressBar
+                    indeterminate={!progress.total}
+                    value={progress.done ?? 0}
+                    max={progress.total ?? 0}
+                    label={progressLabel}
+                  />
+                }
+                action={
+                  result ? (
+                    <span className="text-[11px] text-stone-400">Previous results remain available below.</span>
+                  ) : undefined
+                }
+              />
+            )}
+            {cancelled && result && !running && (
+              <div className="mt-3">
+                <ScanCancelled hasPreviousResults />
+              </div>
+            )}
+            {scanUnavailable && !running && (
+              <div className="mt-3">
+                <InlineState
+                  tone="unavailable"
+                  compact
+                  title="No scan categories selected"
+                  description="Enable secrets or vulnerabilities to run a source scan."
+                />
+              </div>
+            )}
+            {error && result && !running && (
+              <div className="mt-3">
+                <ScanError detail={error} onRetry={run} />
+              </div>
+            )}
+          </>
+        }
+      >
+        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
+          Project folder
+        </label>
+        <FolderPicker
+          value={path}
+          onChange={changePath}
+          disabled={running}
+          inputLabel="Project folder path"
+          buttonLabel="Browse…"
+        />
+      </TargetBar>
+
+      {result && (
+        <section aria-label="Scan summary" className="grid grid-cols-2 overflow-hidden rounded-lg border border-ink-700 bg-ink-850 min-[700px]:grid-cols-5">
+          <SummaryMetric label="Files" value={result.summary.filesScanned.toLocaleString()} />
+          <SummaryMetric label="Secrets" value={result.summary.secretsFound.toLocaleString()} />
+          <SummaryMetric label="Vulnerabilities" value={result.summary.vulnerabilitiesFound.toLocaleString()} />
+          <SummaryMetric label="Critical / High" value={`${result.summary.critical} / ${result.summary.high}`} />
+          <SummaryMetric label="Scanned" value={`${fmtBytes(result.summary.bytesScanned)} · ${fmtDuration(result.summary.durationMs)}`} />
+        </section>
       )}
 
-      {!result && !running && (
-        <div className="mt-6">
-          <EmptyState
-            icon={<ScanLine size={36} />}
-            title="Nothing scanned yet"
-            description="Choose a project folder above and hit Run scan. VulnCompanion will scan text files for 30+ secret patterns (API keys, tokens, private keys…) and 50+ dangerous code patterns (eval, exec, SQL injection, unsafe deserialization…) across 10+ languages."
-          />
-        </div>
-      )}
-
-      {exportOpen && result && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6" onClick={() => setExportOpen(false)}>
-          <div className="w-full max-w-lg rounded-xl border border-ink-600 bg-ink-850 p-5" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-100">Export scan report</h3>
-              <button onClick={() => setExportOpen(false)} className="text-slate-500 hover:text-slate-300">
-                <X size={16} />
+      {result && result.findings.length > 0 && (
+        <section aria-label="Source scan results" className="overflow-hidden rounded-lg border border-ink-700 bg-ink-850">
+          <ResultsToolbar
+            countLabel={`${filtered.length} of ${result.findings.length} findings`}
+            filters={
+              <>
+                <select
+                  aria-label="Finding category"
+                  value={tab}
+                  onChange={(event) => {
+                    setTab(event.target.value as typeof tab);
+                  }}
+                  className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
+                >
+                  <option value="all">All categories</option>
+                  <option value="secret">Secrets ({result.summary.secretsFound})</option>
+                  <option value="vulnerability">Vulnerabilities ({result.summary.vulnerabilitiesFound})</option>
+                </select>
+                <select
+                  aria-label="Finding severity"
+                  value={sevFilter}
+                  onChange={(event) => {
+                    setSevFilter(event.target.value);
+                  }}
+                  className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
+                >
+                  {SEVERITIES.map((severity) => (
+                    <option key={severity} value={severity}>
+                      {severity === "all" ? "All severities" : severity}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Finding language"
+                  value={langFilter}
+                  onChange={(event) => {
+                    setLangFilter(event.target.value);
+                  }}
+                  className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
+                >
+                  {languages.map((language) => (
+                    <option key={language} value={language}>
+                      {language === "all" ? "All languages" : language}
+                    </option>
+                  ))}
+                </select>
+              </>
+            }
+            search={
+              <label className="relative min-w-0">
+                <span className="sr-only">Search findings</span>
+                <Search
+                  size={13}
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-500"
+                />
+                <input
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                  }}
+                  placeholder="Search findings…"
+                  className="w-44 rounded-md border border-ink-600 bg-ink-900 py-1.5 pl-8 pr-2 text-[12px] text-stone-200 placeholder:text-stone-600"
+                />
+              </label>
+            }
+            actions={
+              <button
+                type="button"
+                onClick={copyJson}
+                className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:border-ink-500 hover:bg-ink-700"
+              >
+                <Clipboard size={13} aria-hidden="true" />
+                Copy JSON
               </button>
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              Copies the full report ({result.summary.totalFindings} findings, {fmtBytes(result.summary.bytesScanned)} scanned) as JSON to the clipboard.
-            </p>
-            <button
-              onClick={exportJson}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-teal-500 to-emerald-500 px-4 py-2 text-xs font-bold text-ink-950 hover:opacity-90"
-            >
-              <Clipboard size={14} /> Copy JSON to clipboard
-            </button>
-          </div>
-        </div>
+            }
+          />
+
+          {filtered.length > 0 ? (
+            <SplitWorkspace
+              listLabel="Findings"
+              detailLabel="Finding detail"
+              hasSelection={hasExplicitSelection}
+              onBackToList={() => setSelectedFindingId(null)}
+              list={
+                <div className="max-h-[39rem] overflow-y-auto divide-y divide-ink-800">
+                  {filtered.map((finding) => {
+                    const Icon = finding.category === "secret" ? KeyRound : FileCode2;
+                    const current = selectedFinding?.id === finding.id;
+                    return (
+                      <button
+                        key={finding.id}
+                        type="button"
+                        aria-current={current}
+                        onClick={() => setSelectedFindingId(finding.id)}
+                        className={`flex w-full items-start gap-3 border-l-2 px-3 py-3 text-left transition-colors ${
+                          current
+                            ? "border-accent-500 bg-accent-500/5"
+                            : "border-transparent hover:bg-ink-800"
+                        }`}
+                      >
+                        <Icon size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-stone-500" />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-1.5">
+                            <span className="truncate text-[12px] font-medium text-stone-200">{finding.ruleName}</span>
+                            <SeverityBadge severity={finding.severity} />
+                          </span>
+                          <span className="mt-1 block truncate font-mono text-[11px] text-stone-400">
+                            {finding.filePath}:{finding.line}
+                          </span>
+                          <span className="mt-1 block truncate text-[11px] text-stone-400">{finding.matchText}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              }
+              detail={
+                selectedFinding ? (
+                  <FindingDetail finding={selectedFinding} onCopy={copyFinding} onOpenFile={openFile} />
+                ) : (
+                  <InlineState tone="empty" title="Select a finding" compact />
+                )
+              }
+            />
+          ) : (
+            <InlineState
+              tone="empty"
+              title="No findings match the current filters"
+              description="Widen the category, severity, or language filters, or clear the search."
+              action={
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTab("all");
+                    setSevFilter("all");
+                    setLangFilter("all");
+                    setSearch("");
+                  }}
+                  className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+                >
+                  Clear filters
+                </button>
+              }
+            />
+          )}
+        </section>
       )}
+
+      {result && result.findings.length === 0 && (
+        <InlineState
+          tone="empty"
+          title="No findings detected"
+          description="The scan completed without finding exposed secrets or vulnerable source patterns."
+          action={
+            <button
+              type="button"
+              onClick={copyJson}
+              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+            >
+              <Clipboard size={13} aria-hidden="true" />
+              Copy JSON
+            </button>
+          }
+        />
+      )}
+
+      {!result && error && !running && <ScanError detail={error} onRetry={run} />}
+
+      {!result && cancelled && !running && <ScanCancelled />}
+
+      {!result && !error && !cancelled && !running && !scanUnavailable && (
+        <InlineState
+          tone="idle"
+          title="Ready to scan"
+          description="Choose a project folder, review optional advanced settings, and run the scan."
+        />
+      )}
+
+      {!result && running && !progress && (
+        <InlineState tone="running" title="Starting source scan" description="Preparing the selected project." />
+      )}
+    </ToolPage>
+  );
+}
+
+function SummaryMetric({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div className="min-w-0 border-b border-r border-ink-800 px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">{label}</p>
+      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-stone-200" title={value}>
+        {value}
+      </p>
     </div>
   );
 }
 
-function Toggle({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
+function ScanError({ detail, onRetry }: { detail: string; onRetry: () => void }): JSX.Element {
   return (
-    <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-      <button
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className={`relative h-4 w-7 rounded-full transition-colors ${checked ? "bg-teal-500" : "bg-ink-600"}`}
-      >
-        <span
-          className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${checked ? "left-3.5" : "left-0.5"}`}
-        />
-      </button>
-      {label}
-    </label>
+    <InlineState
+      tone="error"
+      compact
+      title="The selected folder could not be scanned"
+      description="Correct the folder path or scan settings, then try again."
+      action={
+        <>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded-md border border-red-900/80 bg-red-950/40 px-2.5 py-1.5 text-[12px] font-medium text-red-200 hover:bg-red-950/70"
+          >
+            Retry scan
+          </button>
+          <details className="text-[11px] text-stone-400">
+            <summary className="cursor-pointer hover:text-stone-200">Details</summary>
+            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[11px] text-stone-400">
+              {detail}
+            </pre>
+          </details>
+        </>
+      }
+    />
+  );
+}
+
+function ScanCancelled({ hasPreviousResults = false }: { hasPreviousResults?: boolean }): JSX.Element {
+  return (
+    <InlineState
+      tone="idle"
+      compact
+      title="Scan cancelled"
+      description={
+        hasPreviousResults
+          ? "The previous completed results are still available."
+          : "No results were changed. You can run the scan again when ready."
+      }
+    />
   );
 }
