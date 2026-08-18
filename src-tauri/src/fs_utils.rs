@@ -5,7 +5,7 @@ use walkdir::WalkDir;
 
 /// Directories that are always skipped when walking source trees,
 /// regardless of the user-configured ignore list.
-const ALWAYS_IGNORED: &[&str] = &[".git", ".hg", ".svn", ".DS_Store"];
+const ALWAYS_IGNORED: &[&str] = &[".hg", ".svn", ".DS_Store"];
 
 /// File extensions we treat as "known text-ish" to short-circuit binary sniffing
 /// for files we know we want to scan. Empty extension means "sniff content".
@@ -73,14 +73,14 @@ pub fn is_lockfile_name(name: &str) -> bool {
 
 /// Collect candidate files under `root`, applying ignore rules.
 ///
-/// * `git_ignore` — respect `.gitignore` files (via the `ignore` crate)
+/// * `include_git` — include `.git` metadata files when explicitly requested
 /// * `extra_ignored` — additional directory names to skip (node_modules, …)
 /// * `follow_symlinks` — whether to descend into symlinked directories
 ///
 /// Returns (files, skipped_count, total_bytes).
 pub fn collect_files(
     root: &Path,
-    git_ignore: bool,
+    include_git: bool,
     follow_symlinks: bool,
     extra_ignored: &[String],
 ) -> (Vec<PathBuf>, usize, u64) {
@@ -93,7 +93,7 @@ pub fn collect_files(
     builder
         .hidden(false)
         .follow_links(follow_symlinks)
-        .git_ignore(git_ignore)
+        .git_ignore(true)
         .git_global(false)
         .git_exclude(false)
         .parents(false)
@@ -103,6 +103,9 @@ pub fn collect_files(
                 return true;
             }
             let name = entry.file_name().to_string_lossy();
+            if name == ".git" {
+                return include_git;
+            }
             if ALWAYS_IGNORED.contains(&name.as_ref()) {
                 return false;
             }
@@ -142,7 +145,7 @@ pub fn collect_lockfiles(root: &Path, extra_ignored: &[String]) -> Vec<PathBuf> 
                 return true;
             }
             let name = e.file_name().to_string_lossy().to_string();
-            if ALWAYS_IGNORED.contains(&name.as_str()) {
+            if name == ".git" || ALWAYS_IGNORED.contains(&name.as_str()) {
                 return false;
             }
             !ignored.iter().any(|d| d == &name)
@@ -183,6 +186,59 @@ pub fn line_starts(content: &str) -> Vec<usize> {
         }
     }
     starts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_files;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(root.path().join(".git/config"), "[core]\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "ignored.rs\n").unwrap();
+        fs::write(root.path().join("ignored.rs"), "ignored\n").unwrap();
+        fs::write(root.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        root
+    }
+
+    fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
+        let (files, _, _) = collect_files(root, include_git, false, &[]);
+        files
+            .into_iter()
+            .map(|path| path.strip_prefix(root).unwrap().to_path_buf())
+            .collect()
+    }
+
+    #[test]
+    fn include_git_toggle_controls_the_git_metadata_directory() {
+        let root = fixture();
+
+        let excluded = relative_files(root.path(), false);
+        let included = relative_files(root.path(), true);
+
+        assert!(!excluded.contains(&PathBuf::from(".git/config")));
+        assert!(
+            included.contains(&PathBuf::from(".git/config")),
+            "Include .git must make metadata files available to the scan"
+        );
+    }
+
+    #[test]
+    fn gitignore_remains_respected_for_both_metadata_toggle_states() {
+        let root = fixture();
+
+        for include_git in [false, true] {
+            assert!(
+                !relative_files(root.path(), include_git)
+                    .contains(&PathBuf::from("ignored.rs")),
+                "Include .git must not invert ordinary .gitignore behavior"
+            );
+        }
+    }
 }
 
 /// Given a byte offset and the line-start index, return (1-based line, 1-based column).

@@ -18,8 +18,12 @@ import { AskUserModal } from "../components/chat/AskUserModal";
 import { SessionSidebar } from "../components/chat/SessionSidebar";
 import { ThinkingCard } from "../components/chat/ThinkingCard";
 import { ToolCallCard } from "../components/chat/ToolCallCard";
-import { streamChat } from "../lib/aiEvents";
+import { streamChat, type StreamHandle } from "../lib/aiEvents";
 import { api } from "../lib/api";
+import {
+  LatestRequestQueue,
+  type RequestToken,
+} from "../lib/latestRequest";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type {
   AskQuestion,
@@ -62,6 +66,36 @@ interface AskPrompt {
   questions: AskQuestion[];
 }
 
+interface RuntimeProjectOutcome {
+  runtimePath: string | null;
+  unavailablePath: string | null;
+  warning: string | null;
+}
+
+let assistantBootstrapPromise: Promise<SessionInfo[]> | null = null;
+
+function ensureAssistantSessions(): Promise<SessionInfo[]> {
+  if (!assistantBootstrapPromise) {
+    assistantBootstrapPromise = (async () => {
+      const sessions = await api.sessionList();
+      if (sessions.length > 0) return sessions;
+      return [await api.sessionCreate(null, null)];
+    })().finally(() => {
+      assistantBootstrapPromise = null;
+    });
+  }
+  return assistantBootstrapPromise;
+}
+
+function toUiMessages(messages: StoredMessage[]): UiMessage[] {
+  return messages.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    tools: message.tools,
+  }));
+}
+
 export function AssistantPage() {
   const aiReady = useAppStore((state) => state.aiReady);
   const settingsLoadError = useAppStore((state) => state.settingsLoadError);
@@ -80,6 +114,11 @@ export function AssistantPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sessionActivating, setSessionActivating] = useState(false);
+  const [unavailableProject, setUnavailableProject] = useState<{
+    sessionId: string;
+    path: string;
+  } | null>(null);
   const [streaming, setStreaming] = useState<StreamingState>({
     text: "",
     reasoning: "",
@@ -98,7 +137,14 @@ export function AssistantPage() {
   const [askUser, setAskUser] = useState<AskPrompt | null>(null);
 
   const conversationId = useRef<string>(crypto.randomUUID());
-  const runIdRef = useRef<string | null>(null);
+  const streamHandleRef = useRef<StreamHandle | null>(null);
+  const sessionRequestsRef = useRef<LatestRequestQueue | null>(null);
+  if (!sessionRequestsRef.current) {
+    sessionRequestsRef.current = new LatestRequestQueue();
+  }
+  const sessionRequests = sessionRequestsRef.current;
+  const mountedRef = useRef(false);
+  const sessionActivationPendingRef = useRef(false);
   const settledRef = useRef(false);
   const turnToolsRef = useRef<Map<string, ToolRecord>>(new Map());
   const [toolRecords, setToolRecords] = useState<ToolRecord[]>([]);
@@ -116,6 +162,10 @@ export function AssistantPage() {
 
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
+  const activeUnavailableProject =
+    unavailableProject?.sessionId === activeSessionId
+      ? unavailableProject
+      : null;
 
   const closeContext = () => {
     const returnFocus = contextReturnFocusRef.current;
@@ -136,10 +186,36 @@ export function AssistantPage() {
     closeContext();
   };
 
-  const refreshUsage = () => {
+  const requestIsCurrent = (token: RequestToken) =>
+    mountedRef.current && sessionRequests.isCurrent(token);
+
+  const beginSessionRequest = (): RequestToken => {
+    const token = sessionRequests.begin();
+    sessionActivationPendingRef.current = true;
+    setSessionActivating(true);
+    return token;
+  };
+
+  const finishSessionRequest = (token: RequestToken) => {
+    if (!requestIsCurrent(token)) return;
+    sessionActivationPendingRef.current = false;
+    setSessionActivating(false);
+  };
+
+  const refreshUsage = (
+    sessionId = conversationId.current,
+    token = sessionRequests.capture(),
+  ) => {
     api
-      .getConversationUsage(conversationId.current)
-      .then(setConvUsage)
+      .getConversationUsage(sessionId)
+      .then((usage) => {
+        if (
+          requestIsCurrent(token) &&
+          conversationId.current === sessionId
+        ) {
+          setConvUsage(usage);
+        }
+      })
       .catch(() => undefined);
   };
 
@@ -151,72 +227,133 @@ export function AssistantPage() {
     );
   };
 
-  const applyRuntimeProject = async (projectPath: string | null) => {
-    await api.setActiveProject(projectPath);
-    setActiveProjectStore(projectPath);
+  const applyRuntimeProject = async (
+    projectPath: string | null,
+    token: RequestToken,
+  ): Promise<boolean> => {
+    const result = await sessionRequests.run(token, async (): Promise<RuntimeProjectOutcome> => {
+      if (!projectPath) {
+        try {
+          await api.setActiveProject(null);
+          return { runtimePath: null, unavailablePath: null, warning: null };
+        } catch (error) {
+          return {
+            runtimePath: null,
+            unavailablePath: null,
+            warning: `Runtime project context could not be cleared: ${String(error)}`,
+          };
+        }
+      }
+
+      try {
+        await api.setActiveProject(projectPath);
+        return { runtimePath: projectPath, unavailablePath: null, warning: null };
+      } catch (error) {
+        if (!requestIsCurrent(token)) {
+          return { runtimePath: null, unavailablePath: projectPath, warning: null };
+        }
+        let warning: string | null = null;
+        try {
+          await api.setActiveProject(null);
+        } catch (clearError) {
+          warning = `Runtime project context could not be cleared: ${String(clearError)}`;
+        }
+        return {
+          runtimePath: null,
+          unavailablePath: projectPath,
+          warning: warning ?? `Project is unavailable: ${String(error)}`,
+        };
+      }
+    });
+
+    if (!result.current || !requestIsCurrent(token)) return false;
+    setActiveProjectStore(result.value.runtimePath);
+    setUnavailableProject(
+      result.value.unavailablePath
+        ? { sessionId: conversationId.current, path: result.value.unavailablePath }
+        : null,
+    );
+    if (result.value.warning?.startsWith("Runtime project context")) {
+      push("error", result.value.warning);
+    }
+    return true;
+  };
+
+  const activateSession = async (
+    info: SessionInfo,
+    token: RequestToken,
+    knownMessages?: StoredMessage[],
+  ) => {
+    const storedMessages = knownMessages ?? (await api.sessionGetMessages(info.id));
+    if (!requestIsCurrent(token)) return;
+    setMessages(toUiMessages(storedMessages));
+    conversationId.current = info.id;
+    setActiveSessionId(info.id);
+    setModel(null);
+    setConvUsage(null);
+    setUnavailableProject(null);
+
+    if (!(await applyRuntimeProject(info.projectPath, token))) return;
+    refreshUsage(info.id, token);
   };
 
   const loadSession = async (id: string) => {
-    const storedMessages = await api.sessionGetMessages(id);
+    if (sessionActivationPendingRef.current) return;
     const info = sessions.find((session) => session.id === id);
-    await applyRuntimeProject(info?.projectPath ?? null);
-    setMessages(
-      storedMessages.map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        tools: message.tools,
-      })),
-    );
-    conversationId.current = id;
-    setActiveSessionId(id);
-    setModel(null);
-    refreshUsage();
+    if (!info) return;
+    const token = beginSessionRequest();
+    try {
+      await activateSession(info, token);
+    } catch (error) {
+      if (requestIsCurrent(token)) push("error", String(error));
+    } finally {
+      finishSessionRequest(token);
+    }
   };
 
   const createNewChat = async () => {
+    if (sessionActivationPendingRef.current) return;
+    const token = beginSessionRequest();
     try {
       const session = await api.sessionCreate(null, null);
-      await applyRuntimeProject(null);
+      if (!requestIsCurrent(token)) return;
       setSessions((list) => [session, ...list]);
-      setMessages([]);
-      setConvUsage(null);
-      setModel(null);
-      conversationId.current = session.id;
-      setActiveSessionId(session.id);
+      await activateSession(session, token, []);
     } catch (error) {
-      push("error", String(error));
+      if (requestIsCurrent(token)) push("error", String(error));
+    } finally {
+      finishSessionRequest(token);
     }
   };
 
   useEffect(() => {
+    mountedRef.current = true;
+    const token = beginSessionRequest();
     void (async () => {
       try {
-        const list = await api.sessionList();
+        const list = await ensureAssistantSessions();
+        if (!requestIsCurrent(token)) return;
         setSessions(list);
-        if (list.length > 0) {
-          const storedMessages = await api.sessionGetMessages(list[0].id);
-          await applyRuntimeProject(list[0].projectPath);
-          setMessages(
-            storedMessages.map((message) => ({
-              id: message.id,
-              role: message.role,
-              content: message.content,
-              tools: message.tools,
-            })),
-          );
-          conversationId.current = list[0].id;
-          setActiveSessionId(list[0].id);
-          refreshUsage();
-        } else {
-          await createNewChat();
+        await activateSession(list[0], token);
+      } catch (error) {
+        if (requestIsCurrent(token)) {
+          push("error", `Chat sessions could not be loaded: ${String(error)}`);
         }
-      } catch {
-        await createNewChat();
+      } finally {
+        finishSessionRequest(token);
       }
     })();
+    return () => {
+      mountedRef.current = false;
+      sessionActivationPendingRef.current = false;
+      sessionRequests.invalidate();
+    };
     // The Assistant owns this one-time session bootstrap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    return () => streamHandleRef.current?.dispose();
   }, []);
 
   useEffect(() => {
@@ -351,7 +488,6 @@ export function AssistantPage() {
     setStreaming({ text: "", reasoning: "", thinking: false });
     setToolRecords([]);
     turnToolsRef.current.clear();
-    runIdRef.current = null;
     if (usage) refreshUsage();
     if (activeSessionId) {
       api
@@ -363,7 +499,15 @@ export function AssistantPage() {
 
   const send = async (text?: string) => {
     const content = (text ?? input).trim();
-    if (!content || busy || !activeSessionId || aiReady !== true) return;
+    if (
+      !content ||
+      busy ||
+      sessionActivating ||
+      !activeSessionId ||
+      aiReady !== true
+    ) {
+      return;
+    }
     const history: ChatMessage[] = messages.map((message) => ({
       role: message.role,
       content: message.content,
@@ -391,12 +535,9 @@ export function AssistantPage() {
       .then(updateSessionInfo)
       .catch(() => undefined);
 
-    await streamChat(
+    const handle = streamChat(
       { messages: next, conversationId: conversationId.current },
       {
-        onStarted: (runId) => {
-          runIdRef.current = runId;
-        },
         onDelta: (chunk) =>
           setStreaming((current) => ({
             ...current,
@@ -442,7 +583,6 @@ export function AssistantPage() {
           setBusy(false);
           setPermission(null);
           setAskUser(null);
-          runIdRef.current = null;
           setToolRecords([]);
           turnToolsRef.current.clear();
           if (partial || tools.length) {
@@ -464,12 +604,16 @@ export function AssistantPage() {
         },
       },
     );
+    streamHandleRef.current = handle;
+    await handle.finished;
+    if (streamHandleRef.current === handle) streamHandleRef.current = null;
   };
 
   const cancel = async () => {
-    if (!runIdRef.current) return;
+    const handle = streamHandleRef.current;
+    if (!handle) return;
     try {
-      await api.cancelChat(runIdRef.current);
+      await handle.cancel();
     } catch {
       /* The stream error event remains the source of cancellation state. */
     }
@@ -554,33 +698,34 @@ export function AssistantPage() {
         className="flex h-full min-h-0"
       >
         <SessionSidebar
-        sessions={sessions}
-        activeId={activeSessionId}
-        busy={busy}
-        onSelect={(id) => {
-          if (id !== activeSessionId && !busy) {
-            loadSession(id).catch((error) => push("error", String(error)));
-          }
-        }}
-        onCreate={() => {
-          if (!busy) void createNewChat();
-        }}
-        onRename={(id, title) => {
-          api
-            .sessionRename(id, title)
-            .then(() => {
-              const info = sessions.find((session) => session.id === id);
-              if (info) updateSessionInfo({ ...info, title, autoTitle: false });
-            })
-            .catch(() => undefined);
-        }}
-        onDelete={async (id) => {
-          await api.sessionDelete(id).catch(() => undefined);
-          setSessions((list) =>
-            list.filter((session) => session.id !== id),
-          );
-          if (id === activeSessionId) await createNewChat();
-        }}
+          sessions={sessions}
+          activeId={activeSessionId}
+          busy={busy}
+          disabled={sessionActivating}
+          onSelect={(id) => {
+            if (id !== activeSessionId && !busy && !sessionActivating) {
+              void loadSession(id);
+            }
+          }}
+          onCreate={() => {
+            if (!busy && !sessionActivating) void createNewChat();
+          }}
+          onRename={(id, title) => {
+            api
+              .sessionRename(id, title)
+              .then(() => {
+                const info = sessions.find((session) => session.id === id);
+                if (info) updateSessionInfo({ ...info, title, autoTitle: false });
+              })
+              .catch(() => undefined);
+          }}
+          onDelete={async (id) => {
+            await api.sessionDelete(id).catch(() => undefined);
+            setSessions((list) =>
+              list.filter((session) => session.id !== id),
+            );
+            if (id === activeSessionId) await createNewChat();
+          }}
         />
 
         <section
@@ -610,7 +755,18 @@ export function AssistantPage() {
           </div>
 
           <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-            {activeSession?.projectPath ? (
+            {activeUnavailableProject ? (
+              <span
+                title={activeUnavailableProject.path}
+                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-md border border-amber-700/60 bg-amber-950/25 px-2 py-1 text-[11px] text-amber-200"
+              >
+                <FolderOpen size={11} aria-hidden="true" className="shrink-0" />
+                <span className="shrink-0 font-medium">Project unavailable</span>
+                <code className="truncate font-mono">
+                  {activeUnavailableProject.path}
+                </code>
+              </span>
+            ) : activeSession?.projectPath ? (
               <span
                 title={activeSession.projectPath}
                 className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-md border border-accent-600/50 bg-accent-500/10 px-2 py-1 text-[11px] text-accent-300"
@@ -634,7 +790,7 @@ export function AssistantPage() {
             <button
               type="button"
               onClick={openManualContext}
-              disabled={busy}
+              disabled={busy || sessionActivating}
               className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-850 px-2.5 py-1.5 text-[12px] font-medium text-stone-300 hover:border-ink-500 hover:bg-ink-800 disabled:opacity-40"
             >
               <ClipboardPaste size={12} aria-hidden="true" />
@@ -643,7 +799,7 @@ export function AssistantPage() {
             <button
               type="button"
               onClick={() => void clearConversation()}
-              disabled={busy || messages.length === 0}
+              disabled={busy || sessionActivating || messages.length === 0}
               className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-850 px-2.5 py-1.5 text-[12px] text-stone-300 hover:border-red-500/40 hover:text-red-300 disabled:opacity-40"
             >
               <Trash2 size={12} aria-hidden="true" />
@@ -651,6 +807,17 @@ export function AssistantPage() {
             </button>
           </div>
         </header>
+
+        {activeUnavailableProject && (
+          <div
+            role="status"
+            className="shrink-0 border-b border-amber-900/60 bg-amber-950/20 px-4 py-2 text-[12px] text-amber-200"
+          >
+            Project unavailable ·{" "}
+            <code className="font-mono">{activeUnavailableProject.path}</code>.
+            The persisted transcript remains available and runtime project context is cleared.
+          </div>
+        )}
 
         {aiReady !== true && (
           <div
@@ -701,7 +868,12 @@ export function AssistantPage() {
                       key={suggestion}
                       type="button"
                       onClick={() => void send(suggestion)}
-                      disabled={busy || aiReady !== true || !activeSessionId}
+                      disabled={
+                        busy ||
+                        sessionActivating ||
+                        aiReady !== true ||
+                        !activeSessionId
+                      }
                       className="rounded-md border border-ink-700 bg-ink-900/70 px-3 py-2.5 text-left text-[13px] leading-relaxed text-stone-300 transition-colors hover:border-accent-600/50 hover:text-stone-100 disabled:opacity-40"
                     >
                       <Sparkles
@@ -843,7 +1015,7 @@ export function AssistantPage() {
                 }}
                 rows={2}
                 aria-describedby="assistant-composer-help"
-                disabled={aiReady !== true}
+                disabled={aiReady !== true || sessionActivating}
                 placeholder={
                   aiReady === true
                     ? "Ask a security question or describe what you want to analyze…"
@@ -865,7 +1037,12 @@ export function AssistantPage() {
               ) : (
                 <button
                   type="submit"
-                  disabled={!input.trim() || aiReady !== true || !activeSessionId}
+                  disabled={
+                    !input.trim() ||
+                    sessionActivating ||
+                    aiReady !== true ||
+                    !activeSessionId
+                  }
                   className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-md bg-accent-500 px-3.5 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Send size={14} aria-hidden="true" />

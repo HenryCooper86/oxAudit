@@ -7,6 +7,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::agent::tools::TodoItem;
 use crate::ai::usage::{UsageStore, UsageSummary};
@@ -16,7 +17,7 @@ use crate::deps::osv::OsvClient;
 use crate::fs_utils;
 use crate::models::{
     AiSettings, AppSettings, ChatRequest, ChatResponse, DependencyScanResult, Finding,
-    LockfileInfo, ScanOptions, ScanResult, ScanSummary, StreamStarted,
+    LockfileInfo, ScanOptions, ScanResult, ScanSettings, ScanSummary, StreamStarted,
 };
 use crate::scanners;
 
@@ -78,6 +79,140 @@ fn cancel_checked(state: &AppState) -> bool {
 // Source code + secret scanning
 // ---------------------------------------------------------------------------
 
+fn resolve_scan_finding_path(
+    root: impl AsRef<Path>,
+    relative_path: impl AsRef<Path>,
+) -> Result<PathBuf, String> {
+    let root = root
+        .as_ref()
+        .canonicalize()
+        .map_err(|error| format!("scan root is unavailable: {error}"))?;
+    if !root.is_dir() {
+        return Err("scan root is not a directory".into());
+    }
+
+    let relative_path = relative_path.as_ref();
+    if relative_path.as_os_str().is_empty() {
+        return Err("finding path is empty".into());
+    }
+    if relative_path
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("finding path must be a contained relative path".into());
+    }
+
+    let candidate = root
+        .join(relative_path)
+        .canonicalize()
+        .map_err(|error| format!("finding file is unavailable: {error}"))?;
+    if !candidate.starts_with(&root) {
+        return Err("finding path escapes the captured scan root".into());
+    }
+    if !candidate.is_file() {
+        return Err("finding path does not identify a file".into());
+    }
+    Ok(candidate)
+}
+
+/// Open a scanner finding relative to the root captured in its scan result.
+#[tauri::command]
+pub fn open_scan_finding(
+    app: AppHandle,
+    root: String,
+    relative_path: String,
+) -> Result<(), String> {
+    let path = resolve_scan_finding_path(root, relative_path)?;
+    app.opener()
+        .open_path(path.to_string_lossy().into_owned(), None::<String>)
+        .map_err(|error| format!("finding file could not be opened: {error}"))
+}
+
+struct EffectiveScanOptions {
+    include_git: bool,
+    follow_symlinks: bool,
+    max_file_size_kb: u64,
+    scan_secrets: bool,
+    scan_vulnerabilities: bool,
+    ignored_dirs: Vec<String>,
+}
+
+fn effective_scan_options(submitted: &ScanOptions, saved: &ScanSettings) -> EffectiveScanOptions {
+    let mut ignored_dirs = saved.ignored_dirs.clone();
+    ignored_dirs.extend(submitted.extra_ignored_dirs.iter().cloned());
+    EffectiveScanOptions {
+        include_git: submitted.include_git,
+        follow_symlinks: submitted.follow_symlinks,
+        max_file_size_kb: submitted.max_file_size_kb.max(1),
+        scan_secrets: submitted.scan_secrets,
+        scan_vulnerabilities: submitted.scan_vulnerabilities,
+        ignored_dirs,
+    }
+}
+
+#[cfg(test)]
+mod scan_option_contract_tests {
+    use super::effective_scan_options;
+    use crate::models::{ScanOptions, ScanSettings};
+
+    #[test]
+    fn submitted_source_controls_override_every_saved_scan_default() {
+        let saved = ScanSettings {
+            include_git: true,
+            follow_symlinks: true,
+            max_file_size_kb: 4096,
+            scan_secrets: true,
+            scan_vulnerabilities: false,
+            ignored_dirs: vec!["saved-ignore".into()],
+        };
+        let submitted = ScanOptions {
+            path: "/project".into(),
+            include_git: false,
+            follow_symlinks: false,
+            max_file_size_kb: 321,
+            scan_secrets: false,
+            scan_vulnerabilities: true,
+            extra_ignored_dirs: vec!["request-ignore".into()],
+        };
+
+        let effective = effective_scan_options(&submitted, &saved);
+
+        assert!(
+            !effective.include_git,
+            "saved includeGit must not force the submitted control on"
+        );
+        assert!(
+            !effective.follow_symlinks,
+            "saved followSymlinks must not force the submitted control on"
+        );
+        assert_eq!(effective.max_file_size_kb, 321);
+        assert!(!effective.scan_secrets);
+        assert!(effective.scan_vulnerabilities);
+        assert_eq!(effective.ignored_dirs, ["saved-ignore", "request-ignore"]);
+    }
+
+    #[test]
+    fn submitted_true_controls_are_not_replaced_by_saved_false_defaults() {
+        let saved = ScanSettings::default();
+        let submitted = ScanOptions {
+            include_git: true,
+            follow_symlinks: true,
+            max_file_size_kb: 0,
+            scan_secrets: true,
+            scan_vulnerabilities: false,
+            ..ScanOptions::default()
+        };
+
+        let effective = effective_scan_options(&submitted, &saved);
+
+        assert!(effective.include_git);
+        assert!(effective.follow_symlinks);
+        assert_eq!(effective.max_file_size_kb, 1);
+        assert!(effective.scan_secrets);
+        assert!(!effective.scan_vulnerabilities);
+    }
+}
+
 #[tauri::command]
 pub async fn scan_project(
     app: AppHandle,
@@ -91,17 +226,16 @@ pub async fn scan_project(
         return Err(format!("path is not a directory: {}", options.path));
     }
 
-    let settings = state.settings.lock().unwrap().clone();
-    let mut ignored = settings.scan.ignored_dirs.clone();
-    ignored.extend(options.extra_ignored_dirs.iter().cloned());
+    let saved_scan_settings = state.settings.lock().unwrap().scan.clone();
+    let effective = effective_scan_options(&options, &saved_scan_settings);
 
     app.emit("scan://progress", Value::from("walking")).map_err(|e| e.to_string())?;
 
     let (files, skipped, total_bytes) = fs_utils::collect_files(
         root,
-        settings.scan.include_git || options.include_git,
-        settings.scan.follow_symlinks || options.follow_symlinks,
-        &ignored,
+        effective.include_git,
+        effective.follow_symlinks,
+        &effective.ignored_dirs,
     );
 
     if files.is_empty() {
@@ -110,9 +244,9 @@ pub async fn scan_project(
 
     let total = files.len();
     let processed = std::sync::atomic::AtomicUsize::new(0);
-    let max_file_size_kb = options.max_file_size_kb.max(1);
-    let scan_secrets = options.scan_secrets;
-    let scan_vulns = options.scan_vulnerabilities;
+    let max_file_size_kb = effective.max_file_size_kb;
+    let scan_secrets = effective.scan_secrets;
+    let scan_vulns = effective.scan_vulnerabilities;
 
     app.emit(
         "scan://progress",
@@ -418,9 +552,27 @@ pub async fn research_cve(
 // AI streaming chat
 // ---------------------------------------------------------------------------
 
+fn resolve_stream_run_id(requested: Option<String>) -> Result<String, String> {
+    match requested {
+        Some(run_id) if run_id.trim().is_empty() => Err("run id must not be empty".into()),
+        Some(run_id) if run_id.len() > 128 => Err("run id is too long".into()),
+        Some(run_id) => Ok(run_id),
+        None => Ok(uuid::Uuid::new_v4().to_string()),
+    }
+}
+
+fn stream_event_payload(run_id: &str, event: crate::ai::AiStreamEvent) -> Result<Value, String> {
+    let mut payload = serde_json::to_value(event).map_err(|error| error.to_string())?;
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "AI stream event did not serialize to an object".to_string())?;
+    object.insert("runId".into(), Value::String(run_id.into()));
+    Ok(payload)
+}
+
 /// Start a streaming chat turn. Returns immediately with a `run_id`; the turn
 /// runs on a background task that emits events:
-///   `ai://started` { runId } · `ai://event` {type: delta|reasoning|usage}
+///   `ai://started` { runId } · `ai://event` { runId, type, ... }
 ///   `ai://done`    { runId, content, model, usage }
 ///   `ai://error`   { runId, message }
 #[tauri::command]
@@ -428,15 +580,22 @@ pub async fn stream_chat(
     app: AppHandle,
     state: State<'_, AppState>,
     request: ChatRequest,
+    run_id: Option<String>,
 ) -> Result<StreamStarted, String> {
     let settings = state.settings.lock().unwrap().ai.clone();
     if !settings.enabled {
         return Err("AI is disabled — enable it in Settings and configure an endpoint.".into());
     }
-    let run_id = uuid::Uuid::new_v4().to_string();
+    let run_id = resolve_stream_run_id(run_id)?;
     let run_id_response = run_id.clone();
     let cancel = Arc::new(AtomicBool::new(false));
-    state.active_chats.lock().unwrap().insert(run_id.clone(), cancel.clone());
+    {
+        let mut active_chats = state.active_chats.lock().unwrap();
+        if active_chats.contains_key(&run_id) {
+            return Err("a chat stream with that run id is already active".into());
+        }
+        active_chats.insert(run_id.clone(), cancel.clone());
+    }
 
     let client = crate::ai::AiClient::new(state.http.clone());
     let registry = crate::agent::tool::ToolRegistry::from_tools(crate::agent::tools::builtins());
@@ -452,10 +611,12 @@ pub async fn stream_chat(
     tokio::spawn(async move {
         let _ = app2.emit("ai://started", json!({ "runId": run_id.clone() }));
         let app2_emit = app2.clone();
-        let emitter: Arc<dyn Fn(crate::ai::AiStreamEvent) + Send + Sync> =
-            Arc::new(move |ev| {
-                let _ = app2_emit.emit("ai://event", ev);
-            });
+        let event_run_id = run_id.clone();
+        let emitter: Arc<dyn Fn(crate::ai::AiStreamEvent) + Send + Sync> = Arc::new(move |ev| {
+            if let Ok(payload) = stream_event_payload(&event_run_id, ev) {
+                let _ = app2_emit.emit("ai://event", payload);
+            }
+        });
         let result = crate::agent::loop_engine::run_turn(
             &client,
             &settings,
@@ -512,6 +673,63 @@ pub async fn stream_chat(
     });
 
     Ok(StreamStarted { run_id: run_id_response })
+}
+
+#[cfg(test)]
+mod stream_protocol_tests {
+    use super::{resolve_stream_run_id, stream_event_payload};
+    use crate::ai::AiStreamEvent;
+    use serde_json::json;
+
+    #[test]
+    fn caller_owned_run_id_is_preserved_before_stream_start() {
+        assert_eq!(
+            resolve_stream_run_id(Some("run-from-client".into())).unwrap(),
+            "run-from-client"
+        );
+    }
+
+    #[test]
+    fn missing_run_id_keeps_the_legacy_generated_id_contract() {
+        let generated = resolve_stream_run_id(None).unwrap();
+        assert!(uuid::Uuid::parse_str(&generated).is_ok());
+    }
+
+    #[test]
+    fn ordinary_stream_events_carry_their_owning_run_identity() {
+        let payload = stream_event_payload(
+            "run-a",
+            AiStreamEvent::Delta {
+                content: "hello".into(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload,
+            json!({ "type": "delta", "runId": "run-a", "content": "hello" })
+        );
+    }
+
+    #[test]
+    fn tool_stream_payload_keeps_the_frontend_tag_and_field_contract() {
+        let payload = stream_event_payload(
+            "run-tools",
+            AiStreamEvent::ToolResult {
+                tool_call_id: "tool-1".into(),
+                name: "read_file".into(),
+                success: true,
+                duration_ms: 12,
+                result_preview: "ok".into(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(payload["type"], "tool_result");
+        assert_eq!(payload["toolCallId"], "tool-1");
+        assert_eq!(payload["durationMs"], 12);
+        assert_eq!(payload["resultPreview"], "ok");
+    }
 }
 
 /// Request cancellation of an in-flight chat stream.
@@ -600,6 +818,64 @@ mod active_project_tests {
         let path = std::env::temp_dir().join(unique);
         assert!(!path.exists());
         assert!(active_project_path(Some(path.to_string_lossy().into_owned())).is_err());
+    }
+}
+
+#[cfg(test)]
+mod open_scan_finding_tests {
+    use super::resolve_scan_finding_path;
+    use std::fs;
+
+    #[test]
+    fn safe_relative_finding_path_resolves_inside_the_captured_root() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("src");
+        fs::create_dir(&nested).unwrap();
+        let file = nested.join("main.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        assert_eq!(
+            resolve_scan_finding_path(root.path(), "src/main.rs").unwrap(),
+            file.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn absolute_finding_path_is_rejected_even_when_it_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+
+        assert!(resolve_scan_finding_path(root.path(), outside.path()).is_err());
+    }
+
+    #[test]
+    fn parent_traversal_cannot_escape_the_captured_scan_root() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("project");
+        fs::create_dir(&root).unwrap();
+        fs::write(parent.path().join("outside.rs"), "outside\n").unwrap();
+
+        assert!(resolve_scan_finding_path(&root, "../outside.rs").is_err());
+    }
+
+    #[test]
+    fn directories_are_not_opened_as_finding_files() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+
+        assert!(resolve_scan_finding_path(root.path(), "src").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_finding_cannot_escape_the_captured_scan_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        symlink(outside.path(), root.path().join("linked.rs")).unwrap();
+
+        assert!(resolve_scan_finding_path(root.path(), "linked.rs").is_err());
     }
 }
 

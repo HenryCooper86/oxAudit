@@ -51,7 +51,7 @@ Tauri smoke and limitation**.
   0 failed, 1 ignored).
 - `cargo check --manifest-path src-tauri/Cargo.toml` — exit 0.
 
-### Fresh final run after fixes — 2026-08-18
+### Task 9 final run before final-review closure — 2026-08-18
 
 - `npm run check` — exit 0 (`tsc --noEmit`).
 - `npm run build` — exit 0 (Vite 7.3.6; 1,783 modules transformed;
@@ -62,6 +62,18 @@ Tauri smoke and limitation**.
 - `cargo check --manifest-path src-tauri/Cargo.toml` — exit 0.
 - Both final Rust commands emitted the pre-existing unused
   `sessions::transcript_path` warning; no new warning was introduced.
+
+### Final-review closure run — 2026-08-18
+
+- `npm run check` — exit 0 (`tsc --noEmit`).
+- `npm run build` — exit 0 (Vite 7.3.6; 1,785 modules transformed;
+  JavaScript bundle 454.97 kB, 134.59 kB gzip).
+- `cargo test --manifest-path src-tauri/Cargo.toml` — exit 0 (53 passed,
+  0 failed, 1 ignored, 0 measured, 0 filtered out). The ignored live OSV test
+  retains its explicit compiled-binary sandbox rationale.
+- `cargo check --manifest-path src-tauri/Cargo.toml` — exit 0. The only warning
+  remains the pre-existing unused `sessions::transcript_path` function.
+- `git diff --check` — exit 0 after production changes and again before commit.
 
 ## Visual and responsive evidence
 
@@ -252,3 +264,106 @@ network services.
 - The temporary acceptance harness, query gate, browser session, Vite server,
   Tauri process, and ports 1420/1439 were removed or stopped before the final
   production verification.
+
+## Final-review blocker closure — 2026-08-18
+
+This section records the consolidated closure pass for the one Critical and
+five Important review areas. Browser and Node checks used bounded temporary
+harnesses against the real production modules, watched the pre-fix assertion
+failures, and were removed before the final automated commands. They are not
+native-plugin or live-provider evidence.
+
+### Native Assistant stream lifecycle
+
+- RED: the focused frontend lifecycle assertion failed because `streamChat`
+  exposed no synchronous run identity. The old listener/invoke sequence also
+  released listeners when the command acknowledgement returned rather than
+  when the background run terminated.
+- GREEN: the focused harness exercised the production stream module and passed
+  immediate client-owned run ID, four listeners established before invoke,
+  listener retention past command acknowledgement, foreign-run filtering,
+  matching terminal cleanup, partial/late-registration disposal, and early
+  cancellation. Rust protocol tests pass for caller-owned/legacy IDs, ordinary
+  event identity, and the frontend tool-event tag/field contract.
+- Every started/event/done/error payload is correlated by `runId`; Assistant
+  owns and disposes the returned stream handle. Live provider streaming remains
+  under the native prerequisite below.
+
+### Contained Source Open file
+
+- RED: scanner findings are root-relative, while the former UI opener received
+  only that relative value. The new Rust containment tests failed before the
+  resolver/command existed.
+- GREEN: five real filesystem tests pass for a safe nested file and rejection
+  of absolute paths, parent traversal, directories, and a Unix symlink escape.
+  The browser call was exactly
+  `{root: "/captured/project", relativePath: "src/main.ts"}` even after the
+  editable target changed, proving the captured result root is used. Native
+  opener execution itself remains unverified in this environment.
+
+### Assistant session activation
+
+- RED: a historic session whose project moved rendered neither its persisted
+  transcript nor an unavailable state; React strict effects duplicated list,
+  message, and failing project calls and then created replacement sessions.
+- GREEN: the transcript renders before project validation, the page shows
+  `Project unavailable`, the failed historic path is followed by the explicit
+  runtime `set_active_project(null)`, and no replacement session is created.
+  A clean strict-mode reload produced one list, one create, and one message
+  load. During a delayed selection, session/create controls stayed disabled;
+  delayed stale usage could not replace the current transcript or 2.0k-token
+  total.
+
+### Settings draft and async semantics
+
+- RED: a successful test of unsaved AI fields changed the global footer to
+  `AI ready`; a delayed save overwrote edits made during the request and marked
+  them clean.
+- GREEN: the visible result is labeled `Draft test`, while global readiness
+  continues to reflect saved settings. Save submits a cloned snapshot, publishes
+  only that persisted snapshot, and leaves later edits visible and dirty with
+  `Settings saved; newer edits remain unsaved`. Stale startup readiness and
+  stale draft-test completion were both released after newer work and did not
+  change current state.
+
+### Dependency severity text
+
+- RED: the populated RISK cell had an empty accessible text value because its
+  label was suppressed.
+- GREEN: the cell visibly and accessibly reads `HIGH`. The compact badge
+  measured 11 px/600 weight, 55.9 by 22.5 px, with a computed 6.04:1 text
+  contrast ratio against its composited background.
+
+### Source defaults and submitted override contract
+
+- RED: Source rendered hard-coded `true,true,false,false,1024` values instead
+  of saved `false,true,true,true,777`, and the backend could OR saved booleans
+  back on. Real walker tests additionally showed that the `Include .git`
+  argument always excluded `.git` and inverted ordinary `.gitignore` behavior.
+- GREEN: Source initializes once from saved settings without overwriting a
+  pre-load edit. The edited browser request carried exact scanner booleans,
+  `includeGit`, `followSymlinks`, and `maxFileSizeKb: 333`. Backend contract
+  tests prove submitted values win while saved ignored directories remain in
+  force. Filesystem tests prove `Include .git` alone controls metadata traversal
+  and ordinary `.gitignore` remains respected in both states.
+
+### Final responsive, focus, accessibility, and native boundary
+
+- At 1,440 px, all four affected paths had document width equal to viewport
+  width. At exactly 900 px the 208 px labeled sidebar remained visible, the
+  menu was hidden, and main/document widths had no horizontal overflow. At
+  899 px the sidebar was translated off-screen, main/document widths were
+  exactly 899 px, and the menu was visible.
+- The 899 px drawer focused Close, retained focus through keyboard traversal
+  with a visible 2 px outline, closed on Escape, and restored focus to Open
+  navigation. Populated Source, Dependency, Assistant, and Settings paths did
+  not widen the document.
+- Axe WCAG A/AA runs reported zero violations for Source, Assistant, Settings,
+  and Dependency. Dependency retained two `incomplete` checks for existing
+  `aria-label` attributes on roleless `div` elements; this pass did not recast
+  incomplete checks as violations or expand into deferred minor cleanup.
+- The final bounded native retry served Vite on port 1420, finished the Cargo
+  development binary, and exposed a running `target/debug/vulncompanion`
+  process. It was stopped cleanly with no listener or process remaining. With
+  no addressable macOS Computer Use provider in this environment, native
+  stream/open-file interactions and native visual inspection remain unverified.

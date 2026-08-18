@@ -446,7 +446,7 @@ function VulnerabilityTable({
                 <td className="truncate px-3 py-2.5 text-stone-300" title={vulnerability.ecosystem}>
                   {vulnerability.ecosystem}
                 </td>
-                <td className="px-3 py-2.5"><SeverityBadge severity={vulnerability.severity} showLabel={false} /></td>
+                <td className="px-3 py-2.5"><SeverityBadge severity={vulnerability.severity} /></td>
               </tr>
             );
           })}
