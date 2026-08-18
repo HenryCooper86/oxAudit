@@ -23,6 +23,16 @@ const ECOSYSTEMS = [
   "Packagist",
   "Maven",
 ];
+type SearchParameters = {
+  query: string;
+  recent: boolean;
+  startIndex: number;
+};
+type PackageLookupResult = {
+  ecosystem: string;
+  packageName: string;
+  advisories: unknown[];
+};
 
 export function CveResearchPage(): JSX.Element {
   const aiReady = useAppStore((state) => state.aiReady);
@@ -33,8 +43,12 @@ export function CveResearchPage(): JSX.Element {
   const [recent, setRecent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [failedSearch, setFailedSearch] = useState<SearchParameters | null>(
+    null,
+  );
   const [result, setResult] = useState<CveSearchResult | null>(null);
-  const [start, setStart] = useState(0);
+  const [completedSearch, setCompletedSearch] =
+    useState<SearchParameters | null>(null);
   const [selectedCveId, setSelectedCveId] = useState<string | null>(null);
   const [detail, setDetail] = useState<CveDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -42,30 +56,32 @@ export function CveResearchPage(): JSX.Element {
   const [pkgEco, setPkgEco] = useState("npm");
   const [pkgName, setPkgName] = useState("");
   const [pkgLoading, setPkgLoading] = useState(false);
-  const [pkgResult, setPkgResult] = useState<unknown[] | null>(null);
+  const [pkgResult, setPkgResult] = useState<PackageLookupResult | null>(null);
   const [pkgError, setPkgError] = useState<string | null>(null);
   const searchRequestRef = useRef(false);
   const detailRequestRef = useRef(0);
+  const packageRequestRef = useRef(0);
 
   const search = useCallback(
-    async (nextQuery: string, startIndex: number, useRecent: boolean) => {
+    async (parameters: SearchParameters) => {
       if (searchRequestRef.current) return;
       searchRequestRef.current = true;
       setLoading(true);
       setSearchError(null);
+      setFailedSearch(null);
       setPageStatus("cve-research", {
         label: "Searching NVD",
         tone: "running",
       });
       try {
         const res = await api.searchCves(
-          nextQuery,
-          startIndex,
+          parameters.query,
+          parameters.startIndex,
           PER_PAGE,
-          useRecent ? 7 : null,
+          parameters.recent ? 7 : null,
         );
         setResult(res);
-        setStart(startIndex);
+        setCompletedSearch(parameters);
         detailRequestRef.current += 1;
         setSelectedCveId(null);
         setDetail(null);
@@ -78,6 +94,7 @@ export function CveResearchPage(): JSX.Element {
         });
       } catch (error) {
         setSearchError(String(error));
+        setFailedSearch(parameters);
         setPageStatus("cve-research", {
           label: "Research unavailable",
           tone: "error",
@@ -90,9 +107,6 @@ export function CveResearchPage(): JSX.Element {
     [setPageStatus],
   );
 
-  useEffect(() => {
-    void search("", 0, false);
-  }, [search]);
   useEffect(() => () => clearPageStatus("cve-research"), [clearPageStatus]);
 
   const openDetail = async (id: string) => {
@@ -115,14 +129,22 @@ export function CveResearchPage(): JSX.Element {
   const lookupPackage = async () => {
     const packageName = pkgName.trim();
     if (!packageName || pkgLoading) return;
+    const requestId = ++packageRequestRef.current;
+    const parameters = { ecosystem: pkgEco, packageName };
     setPkgLoading(true);
     setPkgError(null);
     try {
-      setPkgResult(await api.osvPackageVulns(pkgEco, packageName));
+      const advisories = await api.osvPackageVulns(
+        parameters.ecosystem,
+        parameters.packageName,
+      );
+      if (requestId === packageRequestRef.current) {
+        setPkgResult({ ...parameters, advisories });
+      }
     } catch (error) {
-      setPkgError(String(error));
+      if (requestId === packageRequestRef.current) setPkgError(String(error));
     } finally {
-      setPkgLoading(false);
+      if (requestId === packageRequestRef.current) setPkgLoading(false);
     }
   };
 
@@ -131,6 +153,7 @@ export function CveResearchPage(): JSX.Element {
     result?.items[0] ??
     null;
   const total = result?.total ?? 0;
+  const start = completedSearch?.startIndex ?? 0;
   const hasPrev = start > 0;
   const hasNext = start + PER_PAGE < total;
 
@@ -148,7 +171,7 @@ export function CveResearchPage(): JSX.Element {
         primary={
           <button
             type="button"
-            onClick={() => void search(query, 0, recent)}
+            onClick={() => void search({ query, recent, startIndex: 0 })}
             disabled={loading}
             className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -181,10 +204,12 @@ export function CveResearchPage(): JSX.Element {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") void search(query, 0, recent);
+              if (event.key === "Enter") {
+                void search({ query, recent, startIndex: 0 });
+              }
             }}
             placeholder="apache log4j rce, nginx, CVE-2024-…"
-            className="min-w-[min(100%,18rem)] flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[13px] text-stone-200 placeholder:text-stone-600"
+            className="min-w-[min(100%,18rem)] flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[13px] text-stone-200 placeholder:text-stone-400"
           />
           <label className="flex cursor-pointer items-center gap-2 text-[12px] text-stone-400">
             <input
@@ -206,7 +231,12 @@ export function CveResearchPage(): JSX.Element {
           action={
             <button
               type="button"
-              onClick={() => void search(query, start, recent)}
+              onClick={() =>
+                void search(
+                  failedSearch ??
+                    completedSearch ?? { query, recent, startIndex: 0 },
+                )
+              }
               className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
             >
               Retry search
@@ -227,22 +257,30 @@ export function CveResearchPage(): JSX.Element {
         />
       )}
 
-      {result && result.items.length > 0 && (
+      {result && completedSearch && result.items.length > 0 && (
         <section
           aria-label="CVE search results"
           className="overflow-hidden rounded-lg border border-ink-700 bg-ink-850"
         >
           <ResultsToolbar
-            countLabel={`${total.toLocaleString()} results${query ? ` for “${query}”` : recent ? " (recent)" : ""} · ${start + 1}–${Math.min(start + PER_PAGE, total)}`}
+            countLabel={`${total.toLocaleString()} results${completedSearch.query ? ` for “${completedSearch.query}”` : completedSearch.recent ? " (recent)" : ""} · ${start + 1}–${Math.min(start + PER_PAGE, total)}`}
             actions={
               <Pagination
                 hasPrev={hasPrev}
                 hasNext={hasNext}
                 loading={loading}
                 onPrevious={() =>
-                  void search(query, Math.max(0, start - PER_PAGE), recent)
+                  void search({
+                    ...completedSearch,
+                    startIndex: Math.max(0, start - PER_PAGE),
+                  })
                 }
-                onNext={() => void search(query, start + PER_PAGE, recent)}
+                onNext={() =>
+                  void search({
+                    ...completedSearch,
+                    startIndex: start + PER_PAGE,
+                  })
+                }
               />
             }
           />
@@ -337,7 +375,7 @@ function PackageLookup({
   packageName: string;
   loading: boolean;
   error: string | null;
-  result: unknown[] | null;
+  result: PackageLookupResult | null;
   onEcosystem: (value: string) => void;
   onPackage: (value: string) => void;
   onLookup: () => void;
@@ -346,7 +384,7 @@ function PackageLookup({
     <details>
       <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-stone-300">
         <PackageSearch size={13} aria-hidden="true" />
-        Package lookup <span className="text-stone-500">(OSV)</span>
+        Package lookup <span className="text-stone-400">(OSV)</span>
       </summary>
       <div className="mt-3 flex flex-wrap items-end gap-2">
         <label className="text-[11px] text-stone-400">
@@ -372,7 +410,7 @@ function PackageLookup({
               if (event.key === "Enter") void onLookup();
             }}
             placeholder="lodash"
-            className="mt-1 block w-full rounded-md border border-ink-600 bg-ink-900 px-3 py-1.5 text-[13px] text-stone-200 placeholder:text-stone-600"
+            className="mt-1 block w-full rounded-md border border-ink-600 bg-ink-900 px-3 py-1.5 text-[13px] text-stone-200 placeholder:text-stone-400"
           />
         </label>
         <button
@@ -392,9 +430,9 @@ function PackageLookup({
       )}
       {result && (
         <PackageResults
-          ecosystem={ecosystem}
-          packageName={packageName}
-          result={result}
+          ecosystem={result.ecosystem}
+          packageName={result.packageName}
+          result={result.advisories}
         />
       )}
     </details>
@@ -466,46 +504,43 @@ function CveList({
   onSelect: (id: string) => void;
 }): JSX.Element {
   return (
-    <div
-      className="max-h-[39rem] overflow-auto"
-      role="listbox"
-      aria-label="CVE results"
-    >
+    <ul className="max-h-[39rem] overflow-auto" aria-label="CVE results">
       {items.map((item) => {
         const selected = item.id === selectedId;
         return (
-          <button
-            key={item.id}
-            type="button"
-            role="option"
-            aria-selected={selected}
-            onClick={() => void onSelect(item.id)}
-            className={`block w-full border-l-2 border-b border-ink-800 px-3 py-3 text-left transition-colors ${selected ? "border-l-accent-500 bg-accent-500/5" : "border-l-transparent hover:bg-ink-800"}`}
-          >
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-mono text-[13px] font-semibold text-sky-300">
-                {item.id}
-              </span>
-              <SeverityBadge severity={item.severity} />
-              {item.cvssScore !== null && (
-                <span className="rounded bg-ink-900 px-1.5 py-0.5 font-mono text-[11px] text-stone-400">
-                  CVSS {item.cvssScore.toFixed(1)}
+          <li key={item.id}>
+            <button
+              type="button"
+              aria-current={selected ? "true" : undefined}
+              aria-label={`Open ${item.id} dossier`}
+              onClick={() => void onSelect(item.id)}
+              className={`block w-full border-l-2 border-b border-ink-800 px-3 py-3 text-left transition-colors ${selected ? "border-l-accent-500 bg-accent-500/5" : "border-l-transparent hover:bg-ink-800"}`}
+            >
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[13px] font-semibold text-sky-300">
+                  {item.id}
                 </span>
-              )}
-              <span className="ml-auto text-[11px] text-stone-500">
-                {fmtDate(item.published)}
-              </span>
-            </div>
-            <p className="mt-1.5 line-clamp-2 text-[13px] leading-relaxed text-stone-300">
-              {item.description}
-            </p>
-            <p className="mt-1 truncate font-mono text-[11px] text-stone-500">
-              {item.affectedProducts.join(" · ")}
-            </p>
-          </button>
+                <SeverityBadge severity={item.severity} />
+                {item.cvssScore !== null && (
+                  <span className="rounded bg-ink-900 px-1.5 py-0.5 font-mono text-[11px] text-stone-400">
+                    CVSS {item.cvssScore.toFixed(1)}
+                  </span>
+                )}
+                <span className="ml-auto text-[11px] text-stone-400">
+                  {fmtDate(item.published)}
+                </span>
+              </div>
+              <p className="mt-1.5 line-clamp-2 text-[13px] leading-relaxed text-stone-300">
+                {item.description}
+              </p>
+              <p className="mt-1 truncate font-mono text-[11px] text-stone-400">
+                {item.affectedProducts.join(" · ")}
+              </p>
+            </button>
+          </li>
         );
       })}
-    </div>
+    </ul>
   );
 }
 
