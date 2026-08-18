@@ -6,6 +6,7 @@ import {
   publishPersistedAiReadiness,
   publishSavedSettingsSnapshot,
   savePersistedSettingsSnapshot,
+  SerializedSettingsWrites,
   unavailableAiReadiness,
   type AiReadiness,
 } from "../src/lib/settingsRequests";
@@ -14,14 +15,17 @@ import type { AiStatus, AppSettings } from "../src/lib/types";
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
 }
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function settings(baseUrl: string, enabled = true): AppSettings {
@@ -144,16 +148,21 @@ test("loading, unavailable, and unconfigured remain distinct readiness states", 
   ]);
 });
 
-test("a superseded save completion cannot publish settings or readiness", async () => {
+test("overlapping successful saves publish every authoritative native snapshot in write order", async () => {
   const requests = new LatestRequestQueue();
-  const saveRequests = new LatestRequestQueue();
+  const saveRequests = new SerializedSettingsWrites();
   const olderNativeSave = deferred<void>();
   const newerNativeSave = deferred<void>();
   const olderStarted = deferred<void>();
   const newerStarted = deferred<void>();
+  const olderCheck = deferred<AiStatus>();
   const newerCheck = deferred<AiStatus>();
+  const checks = [olderCheck, newerCheck];
+  let checkIndex = 0;
+  const writes: string[] = [];
   const published: string[] = [];
   const saveSettings = (snapshot: AppSettings) => {
+    writes.push(snapshot.ai.baseUrl);
     if (snapshot.ai.baseUrl.includes("older")) {
       olderStarted.resolve(undefined);
       return olderNativeSave.promise;
@@ -166,32 +175,224 @@ test("a superseded save completion cannot publish settings or readiness", async 
     settings("https://older.example/v1"),
     (saved) => published.push(`settings:${saved.ai.baseUrl}`),
     (readiness) => published.push(`readiness:${readiness.status}`),
-    { requests, saveRequests, saveSettings, testAi: () => newerCheck.promise },
+    {
+      requests,
+      saveRequests,
+      saveSettings,
+      testAi: () => checks[checkIndex++].promise,
+    },
   );
   await olderStarted.promise;
   const newerSave = savePersistedSettingsSnapshot(
     settings("https://newer.example/v1"),
     (saved) => published.push(`settings:${saved.ai.baseUrl}`),
     (readiness) => published.push(`readiness:${readiness.status}`),
-    { requests, saveRequests, saveSettings, testAi: () => newerCheck.promise },
+    {
+      requests,
+      saveRequests,
+      saveSettings,
+      testAi: () => checks[checkIndex++].promise,
+    },
   );
 
+  assert.deepEqual(writes, ["https://older.example/v1"]);
   olderNativeSave.resolve(undefined);
-  assert.equal(await olderSave, null);
+  const olderPublication = await olderSave;
   await newerStarted.promise;
-  assert.deepEqual(published, []);
+  const publishedAfterOlderWrite = [...published];
 
   newerNativeSave.resolve(undefined);
   const newerPublication = await newerSave;
+
+  olderCheck.resolve(readyStatus);
+  newerCheck.resolve(readyStatus);
+  await olderPublication?.readiness;
+  await newerPublication?.readiness;
+  assert.notEqual(olderPublication, null);
   assert.notEqual(newerPublication, null);
+  assert.deepEqual(writes, [
+    "https://older.example/v1",
+    "https://newer.example/v1",
+  ]);
+  assert.deepEqual(publishedAfterOlderWrite, [
+    "readiness:checking",
+    "settings:https://older.example/v1",
+  ]);
+  assert.deepEqual(published.slice(0, 4), [
+    "readiness:checking",
+    "settings:https://older.example/v1",
+    "readiness:checking",
+    "settings:https://newer.example/v1",
+  ]);
+  assert.equal(checkIndex, 2);
+  assert.equal(published.at(-1), "readiness:ready");
+  assert.equal(
+    published.filter((entry) => entry === "readiness:ready").length,
+    1,
+    "only the latest successful snapshot's readiness completion may publish",
+  );
+});
+
+test("an older successful save remains store-visible when a newer save fails", async () => {
+  const requests = new LatestRequestQueue();
+  const saveRequests = new SerializedSettingsWrites();
+  const olderNativeSave = deferred<void>();
+  const newerNativeSave = deferred<void>();
+  const olderStarted = deferred<void>();
+  const olderCheck = deferred<AiStatus>();
+  const writes: string[] = [];
+  let storeSnapshot = settings("https://before.example/v1");
+  const readiness: AiReadiness[] = [];
+  const saveSettings = (snapshot: AppSettings) => {
+    writes.push(snapshot.ai.baseUrl);
+    if (snapshot.ai.baseUrl.includes("older")) {
+      olderStarted.resolve(undefined);
+      return olderNativeSave.promise;
+    }
+    return newerNativeSave.promise;
+  };
+
+  const older = savePersistedSettingsSnapshot(
+    settings("https://older.example/v1"),
+    (saved) => {
+      storeSnapshot = saved;
+    },
+    (state) => readiness.push(state),
+    { requests, saveRequests, saveSettings, testAi: () => olderCheck.promise },
+  );
+  await olderStarted.promise;
+  const newer = savePersistedSettingsSnapshot(
+    settings("https://newer.example/v1"),
+    (saved) => {
+      storeSnapshot = saved;
+    },
+    (state) => readiness.push(state),
+    { requests, saveRequests, saveSettings, testAi: () => olderCheck.promise },
+  );
+
+  olderNativeSave.resolve(undefined);
+  const olderPublication = await older;
+  const snapshotAfterOlderWrite = storeSnapshot.ai.baseUrl;
+
+  newerNativeSave.reject(new Error("disk full"));
+  await assert.rejects(newer, /disk full/);
+
+  olderCheck.resolve(readyStatus);
+  await olderPublication?.readiness;
+  assert.notEqual(olderPublication, null);
+  assert.equal(snapshotAfterOlderWrite, "https://older.example/v1");
+  assert.deepEqual(writes, [
+    "https://older.example/v1",
+    "https://newer.example/v1",
+  ]);
+  assert.equal(storeSnapshot.ai.baseUrl, "https://older.example/v1");
+  assert.deepEqual(readiness.map((state) => state.status), ["checking", "ready"]);
+});
+
+test("a failed older save cannot prevent a newer successful snapshot publication", async () => {
+  const requests = new LatestRequestQueue();
+  const saveRequests = new SerializedSettingsWrites();
+  const olderNativeSave = deferred<void>();
+  const newerNativeSave = deferred<void>();
+  const olderStarted = deferred<void>();
+  const newerCheck = deferred<AiStatus>();
+  const writes: string[] = [];
+  const published: string[] = [];
+  const saveSettings = (snapshot: AppSettings) => {
+    writes.push(snapshot.ai.baseUrl);
+    if (snapshot.ai.baseUrl.includes("older")) {
+      olderStarted.resolve(undefined);
+      return olderNativeSave.promise;
+    }
+    return newerNativeSave.promise;
+  };
+
+  const older = savePersistedSettingsSnapshot(
+    settings("https://older.example/v1"),
+    (saved) => published.push(`settings:${saved.ai.baseUrl}`),
+    (state) => published.push(`readiness:${state.status}`),
+    { requests, saveRequests, saveSettings, testAi: () => newerCheck.promise },
+  );
+  await olderStarted.promise;
+  const newer = savePersistedSettingsSnapshot(
+    settings("https://newer.example/v1"),
+    (saved) => published.push(`settings:${saved.ai.baseUrl}`),
+    (state) => published.push(`readiness:${state.status}`),
+    { requests, saveRequests, saveSettings, testAi: () => newerCheck.promise },
+  );
+
+  olderNativeSave.reject(new Error("first write failed"));
+  const olderResult = await older.then(
+    () => "fulfilled",
+    (error: unknown) => String(error),
+  );
+  newerNativeSave.resolve(undefined);
+  const publication = await newer;
+  assert.match(olderResult, /first write failed/);
+  assert.notEqual(publication, null);
+  assert.deepEqual(writes, [
+    "https://older.example/v1",
+    "https://newer.example/v1",
+  ]);
   assert.deepEqual(published, [
     "readiness:checking",
     "settings:https://newer.example/v1",
   ]);
 
   newerCheck.resolve(readyStatus);
-  await newerPublication?.readiness;
+  await publication?.readiness;
   assert.equal(published.at(-1), "readiness:ready");
+});
+
+test("a save started by an unmounted Settings page still publishes before a remounted page's failed save", async () => {
+  const requests = new LatestRequestQueue();
+  const saveRequests = new SerializedSettingsWrites();
+  const firstWrite = deferred<void>();
+  const secondWrite = deferred<void>();
+  const firstStarted = deferred<void>();
+  const firstCheck = deferred<AiStatus>();
+  let storeSnapshot = settings("https://before.example/v1");
+  const storeReadiness: AiReadiness[] = [];
+  const saveSettings = (snapshot: AppSettings) => {
+    if (snapshot.ai.baseUrl.includes("first")) {
+      firstStarted.resolve(undefined);
+      return firstWrite.promise;
+    }
+    return secondWrite.promise;
+  };
+  const publishSettings = (saved: AppSettings) => {
+    storeSnapshot = saved;
+  };
+  const publishReadiness = (state: AiReadiness) => storeReadiness.push(state);
+
+  const fromUnmountedPage = savePersistedSettingsSnapshot(
+    settings("https://first.example/v1"),
+    publishSettings,
+    publishReadiness,
+    { requests, saveRequests, saveSettings, testAi: () => firstCheck.promise },
+  );
+  await firstStarted.promise;
+  const fromRemountedPage = savePersistedSettingsSnapshot(
+    settings("https://second.example/v1"),
+    publishSettings,
+    publishReadiness,
+    { requests, saveRequests, saveSettings, testAi: () => firstCheck.promise },
+  );
+
+  firstWrite.resolve(undefined);
+  const firstPublication = await fromUnmountedPage;
+  const snapshotAfterFirstWrite = storeSnapshot.ai.baseUrl;
+  secondWrite.reject(new Error("remounted write failed"));
+  await assert.rejects(fromRemountedPage, /remounted write failed/);
+  assert.equal(snapshotAfterFirstWrite, "https://first.example/v1");
+  assert.equal(storeSnapshot.ai.baseUrl, "https://first.example/v1");
+
+  firstCheck.resolve(readyStatus);
+  await firstPublication?.readiness;
+  assert.deepEqual(storeReadiness.map((state) => state.status), [
+    "checking",
+    "ready",
+  ]);
 });
 
 test("a current saved snapshot publishes checking before settings and versions its completion", async () => {
@@ -222,7 +423,7 @@ test("a current saved snapshot publishes checking before settings and versions i
 
 test("a failed save does not invalidate the in-flight readiness check for the persisted snapshot", async () => {
   const requests = new LatestRequestQueue();
-  const saveRequests = new LatestRequestQueue();
+  const saveRequests = new SerializedSettingsWrites();
   const oldCheck = deferred<AiStatus>();
   const published: AiReadiness[] = [];
   const persistedToken = requests.begin();

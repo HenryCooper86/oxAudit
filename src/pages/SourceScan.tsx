@@ -12,6 +12,7 @@ import { Switch } from "../components/workbench/Switch";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { resolveRuntimeProject } from "../lib/assistantSessions";
 import { fmtBytes, fmtDuration } from "../lib/format";
 import {
   buildSourceScanRequest,
@@ -62,6 +63,7 @@ export function SourceScanPage() {
   const [search, setSearch] = useState("");
 
   const cancellingRef = useRef(false);
+  const pathRequestRef = useRef(0);
 
   useEffect(() => {
     if (settings) {
@@ -167,10 +169,19 @@ export function SourceScanPage() {
 
   const changePath = (nextPath: string) => {
     if (nextPath === path) return;
+    const requestId = ++pathRequestRef.current;
     setPath(nextPath);
     resetResultState();
-    void api.setActiveProject(nextPath).catch(() => undefined);
-    setActiveProjectStore(nextPath || null);
+    void resolveRuntimeProject(nextPath || null, api.setActiveProject).then((outcome) => {
+      setActiveProjectStore(outcome.runtimePath);
+      if (
+        requestId === pathRequestRef.current &&
+        outcome.unavailablePath === nextPath &&
+        outcome.warning
+      ) {
+        push("error", outcome.warning);
+      }
+    });
   };
 
   const run = async () => {
@@ -188,8 +199,23 @@ export function SourceScanPage() {
     setError(null);
     setCancelled(false);
     setProgress({ phase: "walking" });
+    const requestId = ++pathRequestRef.current;
+    const requestedPath = path;
     try {
-      const res = await api.scanProject(buildSourceScanRequest(path, scanOptions));
+      const runtime = await resolveRuntimeProject(
+        requestedPath,
+        api.setActiveProject,
+      );
+      setActiveProjectStore(runtime.runtimePath);
+      if (
+        requestId !== pathRequestRef.current ||
+        runtime.runtimePath !== requestedPath
+      ) {
+        return;
+      }
+      const res = await api.scanProject(
+        buildSourceScanRequest(requestedPath, scanOptions),
+      );
       setResult(res);
       setSelectedFindingId(null);
       setPageStatus("source-scan", {

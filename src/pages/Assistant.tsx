@@ -229,19 +229,17 @@ export function AssistantPage() {
     projectPath: string | null,
     token: RequestToken,
   ): Promise<boolean> => {
-    const result = await sessionRequests.run(token, () =>
-      resolveRuntimeProject(projectPath, api.setActiveProject),
-    );
+    const result = await resolveRuntimeProject(projectPath, api.setActiveProject);
 
-    if (!result.current || !requestIsCurrent(token)) return false;
-    setActiveProjectStore(result.value.runtimePath);
+    setActiveProjectStore(result.runtimePath);
+    if (!requestIsCurrent(token)) return false;
     setUnavailableProject(
-      result.value.unavailablePath
-        ? { sessionId: conversationId.current, path: result.value.unavailablePath }
+      result.unavailablePath
+        ? { sessionId: conversationId.current, path: result.unavailablePath }
         : null,
     );
-    if (result.value.warning?.startsWith("Runtime project context")) {
-      push("error", result.value.warning);
+    if (result.warning?.startsWith("Runtime project context")) {
+      push("error", result.warning);
     }
     return true;
   };

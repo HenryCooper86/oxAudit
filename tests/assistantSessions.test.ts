@@ -10,14 +10,17 @@ import type { StoredMessage } from "../src/lib/types";
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
 }
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function message(id: string): StoredMessage {
@@ -124,4 +127,129 @@ test("a delayed older valid activation cannot overwrite a newer runtime project"
 
   await Promise.all([older, newer]);
   assert.equal(runtimeProject, "/new/project");
+});
+
+test("a queued runtime mutation is skipped when a newer page activation supersedes it", async () => {
+  const sourceStarted = deferred<void>();
+  const sourceCompletion = deferred<void>();
+  const calls: Array<string | null> = [];
+  const setActiveProject = async (path: string | null) => {
+    calls.push(path);
+    if (path === "/source/project") {
+      sourceStarted.resolve(undefined);
+      await sourceCompletion.promise;
+    }
+  };
+
+  const source = resolveRuntimeProject("/source/project", setActiveProject);
+  await sourceStarted.promise;
+  const dependency = resolveRuntimeProject("/dependency/project", setActiveProject);
+  const assistant = resolveRuntimeProject("/assistant/project", setActiveProject);
+
+  sourceCompletion.resolve(undefined);
+  const outcomes = await Promise.all([source, dependency, assistant]);
+
+  assert.deepEqual(calls, ["/source/project", "/assistant/project"]);
+  assert.deepEqual(outcomes.map((outcome) => outcome.runtimePath), [
+    "/assistant/project",
+    "/assistant/project",
+    "/assistant/project",
+  ]);
+});
+
+test("dependent work waits until a newer activation repairs an older in-flight success", async () => {
+  const sourceCompletion = deferred<void>();
+  const assistantStarted = deferred<void>();
+  const assistantCompletion = deferred<void>();
+  const calls: Array<string | null> = [];
+  let sourceSettled = false;
+  let runtimeProject: string | null = null;
+  const setActiveProject = async (path: string | null) => {
+    calls.push(path);
+    if (path === "/source/project") await sourceCompletion.promise;
+    if (path === "/assistant/project") {
+      assistantStarted.resolve(undefined);
+      await assistantCompletion.promise;
+    }
+    runtimeProject = path;
+  };
+
+  const source = resolveRuntimeProject("/source/project", setActiveProject).then(
+    (outcome) => {
+      sourceSettled = true;
+      return outcome;
+    },
+  );
+  const assistant = resolveRuntimeProject("/assistant/project", setActiveProject);
+
+  sourceCompletion.resolve(undefined);
+  await assistantStarted.promise;
+  const callsWhileLatestPending = [...calls];
+  const sourceSettledWhileLatestPending = sourceSettled;
+  const runtimeWhileLatestPending = runtimeProject;
+
+  assistantCompletion.resolve(undefined);
+  const [sourceOutcome, assistantOutcome] = await Promise.all([source, assistant]);
+  assert.deepEqual(callsWhileLatestPending, [
+    "/source/project",
+    "/assistant/project",
+  ]);
+  assert.equal(sourceSettledWhileLatestPending, false);
+  assert.equal(runtimeWhileLatestPending, "/source/project");
+  assert.equal(sourceSettled, true);
+  assert.equal(runtimeProject, "/assistant/project");
+  assert.equal(sourceOutcome.runtimePath, "/assistant/project");
+  assert.equal(assistantOutcome.runtimePath, "/assistant/project");
+});
+
+test("a stale rejected activation never issues a fallback clear after a newer request", async () => {
+  const sourceFailure = deferred<void>();
+  const assistantStarted = deferred<void>();
+  const assistantCompletion = deferred<void>();
+  const calls: Array<string | null> = [];
+  const setActiveProject = async (path: string | null) => {
+    calls.push(path);
+    if (path === "/source/project") {
+      await sourceFailure.promise;
+      throw new Error("source project disappeared");
+    }
+    if (path === "/assistant/project") {
+      assistantStarted.resolve(undefined);
+      await assistantCompletion.promise;
+    }
+  };
+
+  const source = resolveRuntimeProject("/source/project", setActiveProject);
+  const assistant = resolveRuntimeProject("/assistant/project", setActiveProject);
+  sourceFailure.resolve(undefined);
+  await assistantStarted.promise;
+  const callsBeforeLatestSettled = [...calls];
+  assistantCompletion.resolve(undefined);
+  await Promise.all([source, assistant]);
+  assert.deepEqual(callsBeforeLatestSettled, ["/source/project", "/assistant/project"]);
+  assert.deepEqual(calls, ["/source/project", "/assistant/project"]);
+});
+
+test("dependency activation followed by standalone Assistant clears only the latest runtime context", async () => {
+  const dependencyCompletion = deferred<void>();
+  const calls: Array<string | null> = [];
+  let runtimeProject: string | null = "/previous/project";
+  const setActiveProject = async (path: string | null) => {
+    calls.push(path);
+    if (path === "/dependency/project") await dependencyCompletion.promise;
+    runtimeProject = path;
+  };
+
+  const dependency = resolveRuntimeProject("/dependency/project", setActiveProject);
+  const standalone = resolveRuntimeProject(null, setActiveProject);
+  dependencyCompletion.resolve(undefined);
+  const [dependencyOutcome, standaloneOutcome] = await Promise.all([
+    dependency,
+    standalone,
+  ]);
+
+  assert.deepEqual(calls, ["/dependency/project", null]);
+  assert.equal(runtimeProject, null);
+  assert.equal(dependencyOutcome.runtimePath, null);
+  assert.equal(standaloneOutcome.runtimePath, null);
 });
