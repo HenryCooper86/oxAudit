@@ -62,13 +62,36 @@ export function SettingsPage() {
   const [saveState, setSaveState] = useState<
     { tone: "success" | "error"; message: string } | null
   >(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [totalUsage, setTotalUsage] = useState<UsageSummary | null>(null);
   const [usageLoading, setUsageLoading] = useState(true);
   const [usageError, setUsageError] = useState(false);
 
   useEffect(() => {
-    if (settings) setForm(settings);
-  }, [settings]);
+    if (settings) {
+      setForm(settings);
+      setLoadError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadError(null);
+    api
+      .loadSettings()
+      .then((loadedSettings) => {
+        if (cancelled) return;
+        setSettings(loadedSettings);
+        setForm(loadedSettings);
+      })
+      .catch((error) => {
+        if (!cancelled) setLoadError(String(error));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAttempt, setSettings, settings]);
 
   useEffect(() => {
     api
@@ -85,9 +108,24 @@ export function SettingsPage() {
     return (
       <ToolPage title="Settings" description="AI endpoint, scan defaults, and data sources">
         <InlineState
-          tone="running"
-          title="Loading settings"
-          description="Settings are unavailable until the local configuration has loaded."
+          tone={loadError ? "unavailable" : "running"}
+          title={loadError ? "Settings unavailable" : "Loading settings"}
+          description={
+            loadError
+              ? `The local configuration could not be loaded. ${loadError}`
+              : "Settings are unavailable until the local configuration has loaded."
+          }
+          action={
+            loadError ? (
+              <button
+                type="button"
+                onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+                className="rounded-md border border-amber-700 bg-amber-950/30 px-3 py-1.5 text-[12px] font-medium text-amber-200 hover:bg-amber-950/50"
+              >
+                Retry
+              </button>
+            ) : undefined
+          }
           compact
         />
       </ToolPage>
@@ -128,7 +166,6 @@ export function SettingsPage() {
     } catch (error) {
       const message = String(error);
       setSaveState({ tone: "error", message });
-      push("error", message);
     } finally {
       setSaving(false);
     }
