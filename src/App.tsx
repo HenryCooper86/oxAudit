@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
+import { AppShell } from "./components/workbench/AppShell";
 import { api } from "./lib/api";
 import { useAppStore } from "./lib/stores";
 import { Dashboard } from "./pages/Dashboard";
@@ -51,12 +51,9 @@ export default function App() {
   }, [setSettings, setAiReady]);
 
   return (
-    <div className="flex h-full overflow-hidden bg-ink-950">
-      <Sidebar />
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <Page />
-      </main>
+    <AppShell>
+      <Page />
       <Toasts />
-    </div>
+    </AppShell>
   );
 }

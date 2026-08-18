@@ -1,13 +1,6 @@
 import { create } from "zustand";
 import type { AppSettings } from "./types";
-
-export type Page =
-  | "dashboard"
-  | "source-scan"
-  | "deps-scan"
-  | "cve-research"
-  | "assistant"
-  | "settings";
+import type { Page, WorkbenchStatus } from "./workbench";
 
 export interface RecentScan {
   id: string;
@@ -30,6 +23,9 @@ interface AppStore {
   setActiveProject: (p: string | null) => void;
   recentScans: RecentScan[];
   addRecentScan: (r: RecentScan) => void;
+  pageStatus: Partial<Record<Page, WorkbenchStatus>>;
+  setPageStatus: (page: Page, status: WorkbenchStatus) => void;
+  clearPageStatus: (page: Page) => void;
 }
 
 const RECENT_KEY = "vc.recentScans";
@@ -61,6 +57,15 @@ export const useAppStore = create<AppStore>((set) => ({
         /* ignore */
       }
       return { recentScans };
+    }),
+  pageStatus: {},
+  setPageStatus: (page, status) =>
+    set((state) => ({ pageStatus: { ...state.pageStatus, [page]: status } })),
+  clearPageStatus: (page) =>
+    set((state) => {
+      const pageStatus = { ...state.pageStatus };
+      delete pageStatus[page];
+      return { pageStatus };
     }),
 }));
 
