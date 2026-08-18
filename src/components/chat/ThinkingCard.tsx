@@ -52,7 +52,7 @@ export function ThinkingCard({
             }`}
           />
         </span>
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-400">
+        <span className="text-[12px] font-semibold uppercase tracking-wider text-stone-300">
           {streaming ? "Thinking" : "Thought"}
           {streaming ? `… ${elapsed}s` : duration > 0 ? ` · ${duration}s` : ""}
         </span>
@@ -69,7 +69,7 @@ export function ThinkingCard({
       </button>
       {hasContent && open && (
         <div id={detailsId} className="border-t border-ink-800 px-4 py-3">
-          <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-stone-400">
+          <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-stone-300">
             {text}
           </pre>
         </div>

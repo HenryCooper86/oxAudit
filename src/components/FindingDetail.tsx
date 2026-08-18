@@ -100,14 +100,14 @@ export function FindingDetail({
         </h3>
         <div className="selectable mt-2 overflow-x-auto rounded-md border border-ink-700 bg-ink-950 p-3">
           <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400">Match</p>
-          <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-orange-300/90">
+          <pre className="whitespace-pre-wrap break-all font-mono text-[13px] leading-relaxed text-orange-300">
             {finding.matchText}
           </pre>
         </div>
         {finding.context && (
           <div className="selectable mt-2 overflow-x-auto rounded-md border border-ink-800 bg-ink-950 p-3">
             <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400">Context</p>
-            <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-stone-400">{finding.context}</pre>
+            <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-stone-300">{finding.context}</pre>
           </div>
         )}
       </section>

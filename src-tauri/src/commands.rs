@@ -549,15 +549,48 @@ pub fn respond_interaction(
     Ok(())
 }
 
-/// Set the project folder the agent's file tools operate on.
-#[tauri::command]
-pub fn set_active_project(state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let p = PathBuf::from(&path);
-    if p.is_dir() {
-        *state.active_project.lock().unwrap() = Some(p);
-        Ok(())
+fn active_project_path(path: Option<String>) -> Result<Option<PathBuf>, String> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let project = PathBuf::from(&path);
+    if project.is_dir() {
+        Ok(Some(project))
     } else {
         Err(format!("not a directory: {path}"))
+    }
+}
+
+/// Set or explicitly clear the project folder the agent's file tools operate on.
+#[tauri::command]
+pub fn set_active_project(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+    let project = active_project_path(path)?;
+    *state.active_project.lock().unwrap() = project;
+    Ok(())
+}
+
+#[cfg(test)]
+mod active_project_tests {
+    use super::active_project_path;
+
+    #[test]
+    fn null_path_clears_the_runtime_project() {
+        assert_eq!(active_project_path(None).unwrap(), None);
+    }
+
+    #[test]
+    fn existing_directory_sets_the_runtime_project() {
+        let path = std::env::temp_dir();
+        assert_eq!(
+            active_project_path(Some(path.to_string_lossy().into_owned())).unwrap(),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn missing_directory_is_rejected() {
+        let path = std::env::temp_dir().join("oxaudit-missing-active-project");
+        assert!(active_project_path(Some(path.to_string_lossy().into_owned())).is_err());
     }
 }
 

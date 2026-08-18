@@ -38,20 +38,20 @@ export function ToolCallCard({ record }: { record: ToolRecord }) {
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
       >
         <Wrench size={13} aria-hidden="true" className="shrink-0 text-stone-400" />
-        <span className="shrink-0 font-mono text-[11px] font-semibold text-stone-200">
+        <span className="shrink-0 font-mono text-[12px] font-semibold text-stone-200">
           {record.name}
         </span>
         {statusIcon}
-        <span aria-live="polite" className="text-[10px] text-stone-400">
+        <span aria-live="polite" className="text-[11px] text-stone-300">
           {statusLabel}
         </span>
         {record.durationMs !== null && (
-          <span className="shrink-0 font-mono text-[10px] tabular-nums text-stone-500">
+          <span className="shrink-0 font-mono text-[11px] tabular-nums text-stone-400">
             {fmtDuration(record.durationMs)}
           </span>
         )}
         {record.status === "error" && (
-          <span className="truncate text-[10px] text-red-400/80">
+          <span className="truncate text-[11px] text-red-300">
             {record.resultPreview?.slice(0, 60) ?? "failed"}
           </span>
         )}
@@ -65,26 +65,26 @@ export function ToolCallCard({ record }: { record: ToolRecord }) {
         <div id={detailsId} className="selectable space-y-1.5 border-t border-ink-800 px-3 py-2">
           {record.arguments && (
             <div>
-              <div className="text-[9px] font-semibold uppercase tracking-wider text-stone-500">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-stone-300">
                 Arguments
               </div>
-              <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded bg-ink-950 px-2 py-1 font-mono text-[10px] leading-relaxed text-stone-400">
+              <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded bg-ink-950 px-2 py-1 font-mono text-[13px] leading-relaxed text-stone-300">
                 {record.arguments}
               </pre>
             </div>
           )}
           {record.resultPreview && (
             <div>
-              <div className="text-[9px] font-semibold uppercase tracking-wider text-stone-500">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-stone-300">
                 Result
               </div>
-              <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-all rounded bg-ink-950 px-2 py-1 font-mono text-[10px] leading-relaxed text-stone-400">
+              <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-all rounded bg-ink-950 px-2 py-1 font-mono text-[13px] leading-relaxed text-stone-300">
                 {record.resultPreview}
               </pre>
             </div>
           )}
           {running && (
-            <div className="flex items-center gap-1.5 text-[10px] text-stone-500">
+            <div className="flex items-center gap-1.5 text-[11px] text-stone-300">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-400" />
               running…
             </div>

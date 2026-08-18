@@ -50,7 +50,7 @@ export const api = {
     invoke<void>("respond_permission", { requestId, approve }),
   respondInteraction: (requestId: string, answers: unknown) =>
     invoke<void>("respond_interaction", { requestId, answers }),
-  setActiveProject: (path: string) =>
+  setActiveProject: (path: string | null) =>
     invoke<void>("set_active_project", { path }),
   getConversationUsage: (conversationId: string) =>
     invoke<UsageSummary>("get_conversation_usage", { conversationId }),

@@ -72,14 +72,14 @@ export function SessionSidebar({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search sessions…"
-            className="w-full rounded-md border border-ink-600 bg-ink-950 py-1.5 pl-8 pr-2 text-[11px] text-stone-300 outline-none placeholder:text-stone-600 focus:border-accent-500/70"
+            className="w-full rounded-md border border-ink-600 bg-ink-950 py-1.5 pl-8 pr-2 text-[13px] text-stone-200 outline-none placeholder:text-stone-400 focus:border-accent-500/70"
           />
         </label>
       </div>
 
       <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
         {filtered.length === 0 && (
-          <div className="px-3 py-6 text-center text-[11px] text-stone-500">
+          <div className="px-3 py-6 text-center text-[12px] text-stone-400">
             {sessions.length === 0 ? "No chats yet" : "No matches"}
           </div>
         )}
@@ -103,7 +103,7 @@ export function SessionSidebar({
                       if (e.key === "Enter") commitRename();
                       if (e.key === "Escape") setRenamingId(null);
                     }}
-                    className="min-w-0 flex-1 rounded border border-accent-500/60 bg-ink-950 px-1.5 py-0.5 text-[11px] text-stone-200 outline-none"
+                    className="min-w-0 flex-1 rounded border border-accent-500/60 bg-ink-950 px-1.5 py-0.5 text-[13px] text-stone-200 outline-none"
                   />
                   <button
                     type="button"
@@ -117,14 +117,14 @@ export function SessionSidebar({
                     type="button"
                     aria-label="Cancel session rename"
                     onClick={() => setRenamingId(null)}
-                    className="text-stone-500"
+                    className="text-stone-400"
                   >
                     <X size={12} aria-hidden="true" />
                   </button>
                 </div>
               ) : confirmDeleteId === s.id ? (
-                <div className="flex items-center gap-1.5 text-[10px]">
-                  <span className="text-stone-500">Delete?</span>
+                <div className="flex items-center gap-1.5 text-[12px]">
+                  <span className="text-stone-400">Delete?</span>
                   <button
                     type="button"
                     onClick={() => {
@@ -158,13 +158,13 @@ export function SessionSidebar({
                   />
                   <span className="min-w-0 flex-1">
                     <span
-                      className={`block truncate text-[11.5px] font-medium ${
+                      className={`block truncate text-[12px] font-medium ${
                         active ? "text-stone-100" : "text-stone-400"
                       }`}
                     >
                       {s.title}
                     </span>
-                    <span className="block text-[9.5px] text-stone-500">
+                    <span className="block text-[11px] text-stone-400">
                       {fmtDate(s.updatedAt)}
                       {s.messageCount > 0 ? ` · ${s.messageCount} msg` : ""}
                     </span>
@@ -185,7 +185,7 @@ export function SessionSidebar({
                     type="button"
                     aria-label={`Rename ${s.title}`}
                     onClick={() => setRenamingId(s.id)}
-                    className="rounded bg-ink-800 p-0.5 text-stone-500 hover:text-stone-200"
+                    className="rounded bg-ink-800 p-0.5 text-stone-400 hover:text-stone-100"
                     title="Rename"
                   >
                     <Pencil size={11} aria-hidden="true" />
@@ -194,7 +194,7 @@ export function SessionSidebar({
                     type="button"
                     aria-label={`Delete ${s.title}`}
                     onClick={() => setConfirmDeleteId(s.id)}
-                    className="rounded bg-ink-800 p-0.5 text-stone-500 hover:text-red-300"
+                    className="rounded bg-ink-800 p-0.5 text-stone-400 hover:text-red-300"
                     title="Delete"
                   >
                     <Trash2 size={11} aria-hidden="true" />

@@ -169,7 +169,7 @@ export function CveDossier({
             <ExternalLink size={11} aria-hidden="true" /> Open NVD
           </button>
         </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-stone-400">
+        <p className="mt-2 text-[13px] leading-relaxed text-stone-300">
           Verified CVE fields above are normalized from NVD. The unmodified NVD
           response remains available for inspection.
         </p>
@@ -197,7 +197,7 @@ export function CveDossier({
         </div>
         {detail.osv ? (
           <>
-            <p className="mt-2 text-[11px] leading-relaxed text-stone-400">
+            <p className="mt-2 text-[13px] leading-relaxed text-stone-300">
               Raw OSV data is source material and is not merged into the
               verified CVE fields.
             </p>
@@ -336,7 +336,7 @@ function RawRecord({
       <summary className="cursor-pointer text-[12px] text-sky-300 hover:text-sky-200">
         {label}
       </summary>
-      <pre className="selectable mt-2 max-h-72 overflow-auto rounded border border-ink-700 bg-ink-950 p-3 font-mono text-[11px] leading-relaxed text-stone-400">
+      <pre className="selectable mt-2 max-h-72 overflow-auto rounded border border-ink-700 bg-ink-950 p-3 font-mono text-[13px] leading-relaxed text-stone-300">
         {JSON.stringify(value, null, 2) ?? "No raw data was returned."}
       </pre>
     </details>
