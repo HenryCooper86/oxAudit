@@ -12,9 +12,29 @@ const MAX_MATCHES_PER_RULE: usize = 25;
 
 /// Scan a single file and produce findings. Returns an empty vec when the file
 /// is binary, too large, or unreadable.
+#[cfg(test)]
 pub fn scan_file(
     root: &Path,
     path: &Path,
+    max_file_size_kb: u64,
+    scan_secrets: bool,
+    scan_vulnerabilities: bool,
+) -> Vec<Finding> {
+    let relative_path = fs_utils::display_path(root, path);
+    scan_file_with_relative_path(
+        path,
+        &relative_path,
+        max_file_size_kb,
+        scan_secrets,
+        scan_vulnerabilities,
+    )
+}
+
+/// Scan a canonical contained file while preserving its caller-validated
+/// lexical identity in findings.
+pub fn scan_file_with_relative_path(
+    path: &Path,
+    relative_path: &str,
     max_file_size_kb: u64,
     scan_secrets: bool,
     scan_vulnerabilities: bool,
@@ -25,7 +45,7 @@ pub fn scan_file(
         None => return Vec::new(),
     };
     let starts = fs_utils::line_starts(&content);
-    let rel = fs_utils::display_path(root, path);
+    let rel = relative_path.to_string();
     let mut findings = Vec::new();
 
     if scan_secrets {

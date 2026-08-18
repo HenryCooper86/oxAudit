@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
@@ -87,11 +87,18 @@ pub struct CollectFilesOptions<'a> {
     pub extra_ignored: &'a [String],
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceFile {
+    /// Canonical, project-contained path used for metadata and file reads.
+    pub canonical_path: PathBuf,
+    /// Lexical identity relative to the explicit project policy boundary.
+    pub project_relative_path: PathBuf,
+    /// Lexical identity relative to the requested collection file/subtree.
+    pub collection_relative_path: PathBuf,
+}
+
 pub struct SourceFileCollection {
-    /// Canonical collection root used for stable relative paths after policy
-    /// validation. Callers must use this root with the canonical file paths.
-    pub root: PathBuf,
-    pub files: Vec<PathBuf>,
+    pub files: Vec<SourceFile>,
     pub skipped: usize,
     pub total_bytes: u64,
 }
@@ -99,7 +106,6 @@ pub struct SourceFileCollection {
 impl SourceFileCollection {
     fn empty() -> Self {
         Self {
-            root: PathBuf::new(),
             files: Vec::new(),
             skipped: 0,
             total_bytes: 0,
@@ -107,9 +113,18 @@ impl SourceFileCollection {
     }
 }
 
+#[cfg(test)]
 pub fn collect_files(root: &Path, options: CollectFilesOptions<'_>) -> (Vec<PathBuf>, usize, u64) {
     let collection = collect_source_files(root, options);
-    (collection.files, collection.skipped, collection.total_bytes)
+    (
+        collection
+            .files
+            .into_iter()
+            .map(|file| file.canonical_path)
+            .collect(),
+        collection.skipped,
+        collection.total_bytes,
+    )
 }
 
 /// Collect source files under one explicit project policy boundary.
@@ -123,12 +138,14 @@ pub fn collect_source_files(
     root: &Path,
     options: CollectFilesOptions<'_>,
 ) -> SourceFileCollection {
-    let Some((project_root, collection_root)) = validated_collection_scope(
+    let Some((project_root, _, lexical_collection_root, project_relative_root)) =
+        validated_collection_scope(
         options.project_root,
         root,
         options.include_git,
         options.follow_symlinks,
-    ) else {
+    )
+    else {
         return SourceFileCollection::empty();
     };
 
@@ -146,7 +163,6 @@ pub fn collect_source_files(
         .require_git(false)
         .parents(false)
         .filter_entry(move |entry| {
-            let is_dir = entry.file_type().is_some_and(|file_type| file_type.is_dir());
             let Ok(canonical_path) = entry.path().canonicalize() else {
                 return false;
             };
@@ -154,7 +170,7 @@ pub fn collect_source_files(
                 entry.path(),
                 &canonical_path,
                 &filter_project_root,
-                is_dir,
+                canonical_path.is_dir(),
                 include_git,
                 &filter_ignored,
             )
@@ -173,50 +189,114 @@ pub fn collect_source_files(
         }
     }
 
-    let mut files = BTreeSet::new();
-    let mut skipped = 0usize;
-    let walker = WalkDir::new(&collection_root)
+    let filter_project_root = project_root.clone();
+    let filter_collection_root = lexical_collection_root.clone();
+    let filter_ignored = ignored.clone();
+    let include_git = options.include_git;
+    let mut selection_builder = WalkBuilder::new(&project_root);
+    selection_builder
+        .hidden(false)
         .follow_links(options.follow_symlinks)
-        .into_iter()
-        .filter_entry(|entry| {
-            let is_dir = entry.file_type().is_dir();
-            let Ok(canonical_path) = entry.path().canonicalize() else {
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(false)
+        .require_git(false)
+        .parents(false)
+        .filter_entry(move |entry| {
+            let lexical_path = entry.path();
+            if !(filter_collection_root.starts_with(lexical_path)
+                || lexical_path.starts_with(&filter_collection_root))
+            {
+                return false;
+            }
+            let Ok(canonical_path) = lexical_path.canonicalize() else {
                 return false;
             };
             source_entry_allowed(
-                entry.path(),
+                lexical_path,
                 &canonical_path,
-                &project_root,
-                is_dir,
-                options.include_git,
-                &ignored,
+                &filter_project_root,
+                canonical_path.is_dir(),
+                include_git,
+                &filter_ignored,
             )
         });
 
-    for entry in walker {
+    let mut files = BTreeMap::new();
+    let mut skipped = 0usize;
+    for entry in selection_builder.build() {
         match entry {
-            Ok(entry) if entry.file_type().is_file() => {
+            Ok(entry) => {
                 let Ok(canonical_path) = entry.path().canonicalize() else {
+                    continue;
+                };
+                if !canonical_path.is_file() {
+                    continue;
+                }
+                let Ok(project_relative_path) = entry.path().strip_prefix(&project_root) else {
                     skipped += 1;
                     continue;
                 };
-                if allowed_files.contains(&canonical_path) {
-                    files.insert(canonical_path);
+                let mut collection_relative_path = if project_relative_root.as_os_str().is_empty() {
+                    project_relative_path.to_path_buf()
                 } else {
-                    skipped += 1;
+                    let Ok(relative) = project_relative_path.strip_prefix(&project_relative_root)
+                    else {
+                        skipped += 1;
+                        continue;
+                    };
+                    relative.to_path_buf()
+                };
+                if collection_relative_path.as_os_str().is_empty() {
+                    let Some(file_name) = project_relative_path.file_name() else {
+                        skipped += 1;
+                        continue;
+                    };
+                    collection_relative_path = PathBuf::from(file_name);
                 }
+                if !allowed_files.contains(&canonical_path) {
+                    skipped += 1;
+                    continue;
+                }
+                let canonical_relative_path = canonical_path
+                    .strip_prefix(&project_root)
+                    .ok()
+                    .map(Path::to_path_buf);
+                let candidate = SourceFile {
+                    canonical_path: canonical_path.clone(),
+                    project_relative_path: project_relative_path.to_path_buf(),
+                    collection_relative_path,
+                };
+                files
+                    .entry(canonical_path)
+                    .and_modify(|current: &mut SourceFile| {
+                        let candidate_is_direct =
+                            canonical_relative_path.as_ref() == Some(&candidate.project_relative_path);
+                        let current_is_direct =
+                            canonical_relative_path.as_ref() == Some(&current.project_relative_path);
+                        if (candidate_is_direct && !current_is_direct)
+                            || (candidate_is_direct == current_is_direct
+                                && candidate.project_relative_path < current.project_relative_path)
+                        {
+                            *current = candidate.clone();
+                        }
+                    })
+                    .or_insert(candidate);
             }
-            Ok(_) | Err(_) => skipped += 1,
+            Err(_) => skipped += 1,
         }
     }
 
-    let files: Vec<PathBuf> = files.into_iter().collect();
+    let files: Vec<SourceFile> = files.into_values().collect();
     let total_bytes = files
         .iter()
-        .filter_map(|path| std::fs::metadata(path).ok().map(|metadata| metadata.len()))
+        .filter_map(|file| {
+            std::fs::metadata(&file.canonical_path)
+                .ok()
+                .map(|metadata| metadata.len())
+        })
         .sum();
     SourceFileCollection {
-        root: collection_root,
         files,
         skipped,
         total_bytes,
@@ -228,20 +308,62 @@ fn validated_collection_scope(
     root: &Path,
     include_git: bool,
     follow_symlinks: bool,
-) -> Option<(PathBuf, PathBuf)> {
+) -> Option<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     let canonical_project_root = project_root.canonicalize().ok()?;
     let canonical_collection_root = root.canonicalize().ok()?;
+    let lexical_project_root = normalized_lexical_absolute(project_root)?;
+    let lexical_requested_root = normalized_lexical_absolute(root)?;
+    let project_relative_root = lexical_requested_root
+        .strip_prefix(&lexical_project_root)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            canonical_collection_root
+                .strip_prefix(&canonical_project_root)
+                .ok()
+                .map(Path::to_path_buf)
+        })?;
+    let lexical_collection_root = canonical_project_root.join(&project_relative_root);
     if !canonical_collection_root.starts_with(&canonical_project_root)
         || (!include_git
             && (has_git_component(root)
                 || has_git_component(&canonical_collection_root)
                 || has_git_component(project_root)
-                || has_git_component(&canonical_project_root)))
-        || (!follow_symlinks && scoped_path_uses_symlink(project_root, root))
+                || has_git_component(&canonical_project_root)
+                || has_git_component(&project_relative_root)))
+        || lexical_collection_root.canonicalize().ok()? != canonical_collection_root
+        || (!follow_symlinks
+            && scoped_path_uses_symlink(&lexical_project_root, &lexical_requested_root))
     {
         return None;
     }
-    Some((canonical_project_root, canonical_collection_root))
+    Some((
+        canonical_project_root,
+        canonical_collection_root,
+        lexical_collection_root,
+        project_relative_root,
+    ))
+}
+
+fn normalized_lexical_absolute(path: &Path) -> Option<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    Some(normalized)
 }
 
 fn source_entry_allowed(
@@ -299,7 +421,7 @@ pub fn discover_lockfiles(
     root: &Path,
     extra_ignored: &[String],
 ) -> Vec<PathBuf> {
-    let Some((project_root, collection_root)) =
+    let Some((project_root, collection_root, _, _)) =
         validated_collection_scope(project_root, root, false, false)
     else {
         return Vec::new();
@@ -370,7 +492,10 @@ pub fn line_starts(content: &str) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_files, discover_lockfiles, read_text_file, CollectFilesOptions};
+    use super::{
+        collect_files, collect_source_files, discover_lockfiles, read_text_file,
+        CollectFilesOptions,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -657,6 +782,115 @@ mod tests {
         assert_eq!(read_text_file(&included[0], 1024).as_deref(), Some("inside\n"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn project_gitignore_cannot_be_bypassed_by_a_followed_internal_alias_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("shared")).unwrap();
+        fs::write(root.path().join("shared/exposed.rs"), "exposed\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "alias\n").unwrap();
+        let alias = root.path().join("alias");
+        symlink(root.path().join("shared"), &alias).unwrap();
+
+        let (files, _, _) = collect_files(
+            &alias,
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: true,
+                extra_ignored: &[],
+            },
+        );
+
+        assert!(
+            files.is_empty(),
+            "the lexical alias identity must remain subject to project .gitignore: {files:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn followed_internal_alias_retains_safe_lexical_relative_identities() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("shared")).unwrap();
+        fs::write(root.path().join("shared/value.rs"), "inside\n").unwrap();
+        let alias = root.path().join("alias");
+        symlink(root.path().join("shared"), &alias).unwrap();
+
+        let collection = collect_source_files(
+            &alias,
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: true,
+                extra_ignored: &[],
+            },
+        );
+
+        assert_eq!(collection.files.len(), 1);
+        assert_eq!(
+            collection.files[0].canonical_path,
+            root.path().join("shared/value.rs").canonicalize().unwrap(),
+        );
+        assert_eq!(
+            collection.files[0].project_relative_path,
+            PathBuf::from("alias/value.rs"),
+        );
+        assert_eq!(
+            collection.files[0].collection_relative_path,
+            PathBuf::from("value.rs"),
+        );
+
+        let project_collection = collect_source_files(
+            root.path(),
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: true,
+                extra_ignored: &[],
+            },
+        );
+        let physical_file = root.path().join("shared/value.rs").canonicalize().unwrap();
+        let identities: Vec<_> = project_collection
+            .files
+            .iter()
+            .filter(|file| file.canonical_path == physical_file)
+            .map(|file| file.project_relative_path.clone())
+            .collect();
+        assert_eq!(
+            identities,
+            [PathBuf::from("shared/value.rs")],
+            "a project-wide followed walk keeps one canonical file with its direct identity",
+        );
+    }
+
+    #[test]
+    fn skipped_file_metric_does_not_count_traversed_directories() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src/nested")).unwrap();
+        fs::write(root.path().join("src/nested/main.rs"), "fn main() {}\n").unwrap();
+
+        let (files, skipped, _) = collect_files(
+            root.path(),
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            skipped, 0,
+            "walking ordinary directories must not inflate files_skipped",
+        );
+    }
+
     #[test]
     fn ordinary_direct_file_and_subdirectory_roots_use_the_same_source_policy() {
         let root = fixture();
@@ -683,6 +917,21 @@ mod tests {
         let canonical_file = direct_file.canonicalize().unwrap();
         assert_eq!(file, [canonical_file.clone()]);
         assert_eq!(subdirectory, [canonical_file]);
+
+        let direct_collection = collect_source_files(
+            &direct_file,
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+        );
+        assert_eq!(
+            direct_collection.files[0].collection_relative_path,
+            PathBuf::from("main.rs"),
+            "a direct file root needs a safe non-empty matching/display identity",
+        );
     }
 
     #[test]
@@ -748,6 +997,7 @@ pub fn context_lines(content: &str, starts: &[usize], line_index: usize, radius:
 }
 
 /// Turn a relative display path into a cross-platform string.
+#[cfg(test)]
 pub fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)

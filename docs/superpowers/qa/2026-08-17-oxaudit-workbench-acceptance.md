@@ -567,3 +567,49 @@ and `osv: null` rulings.
   global listener, effect dependency problem, or bundle dependency. Async
   page feedback remains request-guarded while authoritative global state is
   always published from the shared coordinators.
+
+## Residual corrective cycle round 5 — 2026-08-19
+
+This final narrow pass closes the remaining followed-alias identity gap and
+strengthens caller-level enforcement without changing settings, runtime-project,
+dependency-walker, command, or payload architecture.
+
+### Lexical identity and caller enforcement
+
+- Source collection now carries a canonical contained read path alongside
+  project-relative and requested-collection-relative lexical identities. A
+  project-rooted followed walk applies project and nested gitignore rules to
+  the lexical alias while the canonical policy walk still prevents an alias
+  from renaming an ignored target into visibility.
+- Assistant grep and glob match and display the collection-relative identity;
+  Assistant source/secrets scanning and the Source command pass that identity
+  into findings while reading only the canonical contained path. Traversed
+  directories no longer inflate the skipped-file metric. Project-wide followed
+  walks retain canonical deduplication and prefer the direct identity, while a
+  direct file root receives its non-empty file-name identity.
+- Permanent real-filesystem tests cover `.gitignore` containing `alias` where
+  `alias` points to an internal `shared` directory, safe `exposed.js` display
+  through an allowed alias, direct execution of grep/glob/source/secrets caller
+  seams, the Source command collection seam, and unchanged dependency policy.
+- Permanent page-source contracts enumerate every Assistant, Source, and
+  Dependency runtime-project mutation, reject direct native mutations, and
+  assert that Source/dependency native work appears only after the shared
+  coordinator is awaited. Existing coordinator tests retain transient call and
+  settlement-order coverage.
+
+### Round-5 verification
+
+- `npm test` — exit 0 (31 passed, 0 failed).
+- `npm run check` — exit 0 (`tsc --noEmit`).
+- `npm run build` — exit 0 (Vite 7.3.6; 1,787 modules transformed;
+  JavaScript 459.58 kB, 136.02 kB gzip).
+- `cargo test --manifest-path src-tauri/Cargo.toml` — exit 0 (82 passed,
+  0 failed, 1 ignored). The ignored live OSV test retains its documented
+  compiled-binary sandbox rationale.
+- `cargo check --manifest-path src-tauri/Cargo.toml` — exit 0. The only warning
+  remains the pre-existing unused `sessions::transcript_path` function.
+- No production TSX changed, so no round-5 React or browser-layout review was
+  triggered. The production frontend build above remains fresh.
+- `npm run tauri dev -- --no-watch` served Vite on port 1420, completed the
+  current Cargo development build, and launched `target/debug/vulncompanion`.
+  Bounded shutdown completed with no remaining listener or native process.

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   loadLatestSessionMessages,
@@ -252,4 +253,61 @@ test("dependency activation followed by standalone Assistant clears only the lat
   assert.equal(runtimeProject, null);
   assert.equal(dependencyOutcome.runtimePath, null);
   assert.equal(standaloneOutcome.runtimePath, null);
+});
+
+function pageSource(relativePath: string): string {
+  return readFileSync(new URL(relativePath, import.meta.url), "utf8");
+}
+
+function functionBody(source: string, start: string, end: string): string {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.notEqual(startIndex, -1, `missing function start: ${start}`);
+  assert.notEqual(endIndex, -1, `missing function end: ${end}`);
+  return source.slice(startIndex, endIndex);
+}
+
+test("Assistant, Source, and Dependency pages route every runtime mutation through the global coordinator", () => {
+  const assistant = pageSource("../src/pages/Assistant.tsx");
+  const source = pageSource("../src/pages/SourceScan.tsx");
+  const dependency = pageSource("../src/pages/DepsScan.tsx");
+
+  for (const [name, page, expectedCalls] of [
+    ["Assistant", assistant, 1],
+    ["Source", source, 2],
+    ["Dependency", dependency, 3],
+  ] as const) {
+    assert.match(
+      page,
+      /import\s*\{[^}]*\bresolveRuntimeProject\b[^}]*\}\s*from\s*"\.\.\/lib\/assistantSessions"/,
+    );
+    assert.equal(page.match(/resolveRuntimeProject\(/g)?.length, expectedCalls, name);
+    assert.doesNotMatch(page, /api\.setActiveProject\s*\(/, name);
+  }
+});
+
+test("Source and Dependency dependent work awaits coordinator settlement before native work", () => {
+  const source = pageSource("../src/pages/SourceScan.tsx");
+  const dependency = pageSource("../src/pages/DepsScan.tsx");
+  const sourceRun = functionBody(source, "const run = async () =>", "const cancel = async");
+  const dependencyDiscovery = functionBody(
+    dependency,
+    "const findLockfiles = async () =>",
+    "const run = async () =>",
+  );
+  const dependencyRun = functionBody(
+    dependency,
+    "const run = async () =>",
+    "const openReference = async",
+  );
+
+  assert.ok(sourceRun.indexOf("await resolveRuntimeProject") < sourceRun.indexOf("api.scanProject"));
+  assert.ok(
+    dependencyDiscovery.indexOf("await resolveRuntimeProject") <
+      dependencyDiscovery.indexOf("api.findLockfiles"),
+  );
+  assert.ok(
+    dependencyRun.indexOf("await resolveRuntimeProject") <
+      dependencyRun.indexOf("api.scanDependencies"),
+  );
 });

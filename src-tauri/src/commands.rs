@@ -151,10 +151,27 @@ fn effective_scan_options(submitted: &ScanOptions, saved: &ScanSettings) -> Effe
     }
 }
 
+fn collect_source_scan_files(
+    root: &Path,
+    effective: &EffectiveScanOptions,
+) -> fs_utils::SourceFileCollection {
+    fs_utils::collect_source_files(
+        root,
+        fs_utils::CollectFilesOptions {
+            project_root: root,
+            include_git: effective.include_git,
+            follow_symlinks: effective.follow_symlinks,
+            extra_ignored: &effective.ignored_dirs,
+        },
+    )
+}
+
 #[cfg(test)]
 mod scan_option_contract_tests {
-    use super::effective_scan_options;
+    use super::{collect_source_scan_files, effective_scan_options};
     use crate::models::{ScanOptions, ScanSettings};
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn submitted_source_controls_override_every_saved_scan_default() {
@@ -212,6 +229,36 @@ mod scan_option_contract_tests {
         assert!(effective.scan_secrets);
         assert!(!effective.scan_vulnerabilities);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_command_collection_keeps_project_relative_alias_policy() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("shared")).unwrap();
+        fs::write(root.path().join("shared/exposed.js"), "eval(userInput);\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "alias\n").unwrap();
+        symlink(root.path().join("shared"), root.path().join("alias")).unwrap();
+        let submitted = ScanOptions {
+            path: root.path().to_string_lossy().into_owned(),
+            follow_symlinks: true,
+            ..ScanOptions::default()
+        };
+        let effective = effective_scan_options(&submitted, &ScanSettings::default());
+
+        let collection = collect_source_scan_files(root.path(), &effective);
+        let project_relative_paths: Vec<_> = collection
+            .files
+            .iter()
+            .map(|file| file.project_relative_path.clone())
+            .collect();
+        assert_eq!(
+            project_relative_paths,
+            [PathBuf::from(".gitignore"), PathBuf::from("shared/exposed.js")],
+        );
+        assert_eq!(collection.skipped, 0);
+    }
 }
 
 #[tauri::command]
@@ -232,16 +279,7 @@ pub async fn scan_project(
 
     app.emit("scan://progress", Value::from("walking")).map_err(|e| e.to_string())?;
 
-    let collection = fs_utils::collect_source_files(
-        root,
-        fs_utils::CollectFilesOptions {
-            project_root: root,
-            include_git: effective.include_git,
-            follow_symlinks: effective.follow_symlinks,
-            extra_ignored: &effective.ignored_dirs,
-        },
-    );
-    let scan_root = collection.root;
+    let collection = collect_source_scan_files(root, &effective);
     let files = collection.files;
     let skipped = collection.skipped;
     let total_bytes = collection.total_bytes;
@@ -268,9 +306,9 @@ pub async fn scan_project(
             if cancel_checked(&state) {
                 return Vec::new();
             }
-            let findings = scanners::scan_file(
-                &scan_root,
-                file,
+            let findings = scanners::scan_file_with_relative_path(
+                &file.canonical_path,
+                &file.collection_relative_path.to_string_lossy().replace('\\', "/"),
                 max_file_size_kb,
                 scan_secrets,
                 scan_vulns,
