@@ -5,9 +5,10 @@ export function SeverityBadge({ severity, showLabel = true }: { severity: Severi
   const sev = severity ?? "info";
   return (
     <span
+      aria-label={showLabel ? undefined : `${sev} severity`}
       className={`inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${severityColor(sev)}`}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${severityDot(sev)}`} />
+      <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${severityDot(sev)}`} />
       {showLabel && sev}
     </span>
   );
