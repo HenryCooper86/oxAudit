@@ -1,466 +1,547 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import {
-  ArrowLeft,
-  Bot,
-  Bug,
-  Calendar,
-  ChevronLeft,
-  ChevronRight,
-  ExternalLink,
-  Loader2,
-  PackageSearch,
-  Search,
-} from "lucide-react";
-import { EmptyState } from "../components/EmptyState";
+import { ChevronLeft, ChevronRight, PackageSearch, Search } from "lucide-react";
+import { CveDossier } from "../components/CveDossier";
 import { SeverityBadge } from "../components/SeverityBadge";
-import { TopBar } from "../components/TopBar";
+import { InlineState } from "../components/workbench/InlineState";
+import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
+import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
+import { TargetBar } from "../components/workbench/TargetBar";
+import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
-import { fmtDate, fmtDateTime } from "../lib/format";
+import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { CveDetail, CveItem, CveSearchResult } from "../lib/types";
-import Markdown from "react-markdown";
 
 const PER_PAGE = 20;
-const ECOSYSTEMS = ["npm", "crates.io", "Go", "PyPI", "RubyGems", "Packagist", "Maven"];
+const ECOSYSTEMS = [
+  "npm",
+  "crates.io",
+  "Go",
+  "PyPI",
+  "RubyGems",
+  "Packagist",
+  "Maven",
+];
 
-export function CveResearchPage() {
-  const aiReady = useAppStore((s) => s.aiReady);
-  const push = useToastStore((s) => s.push);
-
+export function CveResearchPage(): JSX.Element {
+  const aiReady = useAppStore((state) => state.aiReady);
+  const setPageStatus = useAppStore((state) => state.setPageStatus);
+  const clearPageStatus = useAppStore((state) => state.clearPageStatus);
+  const push = useToastStore((state) => state.push);
   const [query, setQuery] = useState("");
   const [recent, setRecent] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [result, setResult] = useState<CveSearchResult | null>(null);
   const [start, setStart] = useState(0);
-
+  const [selectedCveId, setSelectedCveId] = useState<string | null>(null);
   const [detail, setDetail] = useState<CveDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [pkgEco, setPkgEco] = useState("npm");
   const [pkgName, setPkgName] = useState("");
   const [pkgLoading, setPkgLoading] = useState(false);
   const [pkgResult, setPkgResult] = useState<unknown[] | null>(null);
+  const [pkgError, setPkgError] = useState<string | null>(null);
+  const searchRequestRef = useRef(false);
+  const detailRequestRef = useRef(0);
 
   const search = useCallback(
-    async (q: string, startIndex: number, useRecent: boolean) => {
+    async (nextQuery: string, startIndex: number, useRecent: boolean) => {
+      if (searchRequestRef.current) return;
+      searchRequestRef.current = true;
       setLoading(true);
-      setError(null);
+      setSearchError(null);
+      setPageStatus("cve-research", {
+        label: "Searching NVD",
+        tone: "running",
+      });
       try {
         const res = await api.searchCves(
-          q,
+          nextQuery,
           startIndex,
           PER_PAGE,
           useRecent ? 7 : null,
         );
         setResult(res);
         setStart(startIndex);
-      } catch (e) {
-        setError(String(e));
+        detailRequestRef.current += 1;
+        setSelectedCveId(null);
+        setDetail(null);
+        setDetailLoading(false);
+        setDetailError(null);
+        setPageStatus("cve-research", {
+          label: "Research ready",
+          tone: "success",
+          detail: `${res.total} results`,
+        });
+      } catch (error) {
+        setSearchError(String(error));
+        setPageStatus("cve-research", {
+          label: "Research unavailable",
+          tone: "error",
+        });
       } finally {
         setLoading(false);
+        searchRequestRef.current = false;
       }
     },
-    [],
+    [setPageStatus],
   );
 
   useEffect(() => {
-    search("", 0, false);
+    void search("", 0, false);
   }, [search]);
+  useEffect(() => () => clearPageStatus("cve-research"), [clearPageStatus]);
 
   const openDetail = async (id: string) => {
+    if (detailLoading || (id === selectedCveId && detail)) return;
+    const requestId = ++detailRequestRef.current;
+    setSelectedCveId(id);
+    setDetail(null);
+    setDetailError(null);
     setDetailLoading(true);
-    setError(null);
     try {
-      const d = await api.cveDetail(id);
-      setDetail(d);
-    } catch (e) {
-      setError(String(e));
+      const response = await api.cveDetail(id);
+      if (requestId === detailRequestRef.current) setDetail(response);
+    } catch (error) {
+      if (requestId === detailRequestRef.current) setDetailError(String(error));
     } finally {
-      setDetailLoading(false);
+      if (requestId === detailRequestRef.current) setDetailLoading(false);
     }
   };
 
   const lookupPackage = async () => {
-    if (!pkgName.trim()) return;
+    const packageName = pkgName.trim();
+    if (!packageName || pkgLoading) return;
     setPkgLoading(true);
-    setError(null);
+    setPkgError(null);
     try {
-      const res = await api.osvPackageVulns(pkgEco, pkgName.trim());
-      setPkgResult(res);
-    } catch (e) {
-      setError(String(e));
+      setPkgResult(await api.osvPackageVulns(pkgEco, packageName));
+    } catch (error) {
+      setPkgError(String(error));
     } finally {
       setPkgLoading(false);
     }
   };
 
-  if (detail) {
-    return (
-      <CveDetailView
-        detail={detail}
-        loading={detailLoading}
-        aiReady={!!aiReady}
-        onBack={() => setDetail(null)}
-        onAi={async () => {
-          try {
-            const res = await api.researchCve(detail.item, detail.osv);
-            push("success", "AI briefing ready");
-            return res;
-          } catch (e) {
-            push("error", String(e));
-            return null;
-          }
-        }}
-      />
-    );
-  }
-
+  const selectedItem =
+    result?.items.find((item) => item.id === selectedCveId) ??
+    result?.items[0] ??
+    null;
   const total = result?.total ?? 0;
   const hasPrev = start > 0;
   const hasNext = start + PER_PAGE < total;
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      <TopBar
-        title="CVE Research"
-        subtitle="Search the NVD database and query OSV for package advisories"
-      />
-
-      <div className="mt-5 rounded-xl border border-ink-700 bg-ink-850 p-4">
-        <div className="flex items-center gap-2">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && search(query, 0, recent)}
-            placeholder="Search CVEs — e.g. 'apache log4j rce', 'nginx', 'CVE-2024-…'"
-            className="selectable flex-1 rounded-lg border border-ink-600 bg-ink-900 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-teal-500/60"
+    <ToolPage
+      title="CVE Research"
+      description="Search NVD CVEs, inspect source records, and query OSV package advisories."
+      context={
+        <span className="rounded-full border border-ink-600 bg-ink-850 px-2 py-0.5 text-[11px] text-stone-400">
+          No project required
+        </span>
+      }
+    >
+      <TargetBar
+        primary={
+          <button
+            type="button"
+            onClick={() => void search(query, 0, recent)}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Search size={13} aria-hidden="true" />
+            {loading ? "Searching…" : "Search NVD"}
+          </button>
+        }
+        secondary={
+          <PackageLookup
+            ecosystem={pkgEco}
+            packageName={pkgName}
+            loading={pkgLoading}
+            error={pkgError}
+            result={pkgResult}
+            onEcosystem={setPkgEco}
+            onPackage={setPkgName}
+            onLookup={lookupPackage}
           />
-          <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
+        }
+      >
+        <label
+          htmlFor="cve-query"
+          className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400"
+        >
+          CVE ID or keyword
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            id="cve-query"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void search(query, 0, recent);
+            }}
+            placeholder="apache log4j rce, nginx, CVE-2024-…"
+            className="min-w-[min(100%,18rem)] flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[13px] text-stone-200 placeholder:text-stone-600"
+          />
+          <label className="flex cursor-pointer items-center gap-2 text-[12px] text-stone-400">
             <input
               type="checkbox"
               checked={recent}
-              onChange={(e) => setRecent(e.target.checked)}
-              className="accent-teal-500"
+              onChange={(event) => setRecent(event.target.checked)}
+              className="accent-accent-500"
             />
             Modified last 7 days
           </label>
-          <button
-            onClick={() => search(query, 0, recent)}
-            disabled={loading}
-            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-teal-500 to-emerald-500 px-4 py-2 text-xs font-bold text-ink-950 shadow-lg shadow-teal-900/30 hover:opacity-90 disabled:opacity-40"
-          >
-            {loading ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
-            Search
-          </button>
         </div>
+      </TargetBar>
 
-        {/* OSV package lookup */}
-        <div className="mt-3 flex items-center gap-2 border-t border-ink-800 pt-3">
-          <PackageSearch size={14} className="text-sky-400" />
-          <span className="text-xs text-slate-400">Package lookup (OSV):</span>
+      {searchError && (
+        <InlineState
+          tone="error"
+          title="CVE search unavailable"
+          description={searchError}
+          action={
+            <button
+              type="button"
+              onClick={() => void search(query, start, recent)}
+              className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+            >
+              Retry search
+            </button>
+          }
+        />
+      )}
+      {loading && (
+        <InlineState
+          tone="running"
+          compact
+          title="Searching NVD"
+          description={
+            result
+              ? "Previous completed results remain available below."
+              : "Looking for matching CVE records."
+          }
+        />
+      )}
+
+      {result && result.items.length > 0 && (
+        <section
+          aria-label="CVE search results"
+          className="overflow-hidden rounded-lg border border-ink-700 bg-ink-850"
+        >
+          <ResultsToolbar
+            countLabel={`${total.toLocaleString()} results${query ? ` for “${query}”` : recent ? " (recent)" : ""} · ${start + 1}–${Math.min(start + PER_PAGE, total)}`}
+            actions={
+              <Pagination
+                hasPrev={hasPrev}
+                hasNext={hasNext}
+                loading={loading}
+                onPrevious={() =>
+                  void search(query, Math.max(0, start - PER_PAGE), recent)
+                }
+                onNext={() => void search(query, start + PER_PAGE, recent)}
+              />
+            }
+          />
+          <SplitWorkspace
+            listLabel="CVE results"
+            detailLabel="CVE dossier"
+            hasSelection={selectedCveId !== null}
+            onBackToList={() => setSelectedCveId(null)}
+            list={
+              <CveList
+                items={result.items}
+                selectedId={selectedCveId}
+                onSelect={openDetail}
+              />
+            }
+            detail={
+              <>
+                {detailError && (
+                  <div className="p-3">
+                    <InlineState
+                      tone="error"
+                      compact
+                      title="CVE detail unavailable"
+                      description={detailError}
+                      action={
+                        selectedItem ? (
+                          <button
+                            type="button"
+                            onClick={() => void openDetail(selectedItem.id)}
+                            className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+                          >
+                            Retry details
+                          </button>
+                        ) : undefined
+                      }
+                    />
+                  </div>
+                )}
+                <CveDossier
+                  detail={detail}
+                  loading={detailLoading}
+                  aiReady={!!aiReady}
+                  onGenerateBriefing={async () => {
+                    if (!detail) return null;
+                    try {
+                      const response = await api.researchCve(
+                        detail.item,
+                        detail.osv,
+                      );
+                      push("success", "AI briefing ready");
+                      return response.content;
+                    } catch (error) {
+                      push("error", "AI briefing failed");
+                      throw error;
+                    }
+                  }}
+                />
+              </>
+            }
+          />
+        </section>
+      )}
+      {result && result.items.length === 0 && (
+        <InlineState
+          tone="empty"
+          title="No CVEs found"
+          description="Try a broader keyword, or use Package lookup for OSV advisories."
+        />
+      )}
+      {!result && !loading && !searchError && (
+        <InlineState
+          tone="idle"
+          title="Start CVE research"
+          description="Search by CVE ID or keyword to begin reviewing NVD records."
+        />
+      )}
+    </ToolPage>
+  );
+}
+
+function PackageLookup({
+  ecosystem,
+  packageName,
+  loading,
+  error,
+  result,
+  onEcosystem,
+  onPackage,
+  onLookup,
+}: {
+  ecosystem: string;
+  packageName: string;
+  loading: boolean;
+  error: string | null;
+  result: unknown[] | null;
+  onEcosystem: (value: string) => void;
+  onPackage: (value: string) => void;
+  onLookup: () => void;
+}): JSX.Element {
+  return (
+    <details>
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-stone-300">
+        <PackageSearch size={13} aria-hidden="true" />
+        Package lookup <span className="text-stone-500">(OSV)</span>
+      </summary>
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        <label className="text-[11px] text-stone-400">
+          Ecosystem
           <select
-            value={pkgEco}
-            onChange={(e) => setPkgEco(e.target.value)}
-            className="rounded-lg border border-ink-600 bg-ink-900 px-2 py-1.5 text-xs text-slate-300 outline-none"
+            value={ecosystem}
+            onChange={(event) => onEcosystem(event.target.value)}
+            className="mt-1 block rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-200"
           >
-            {ECOSYSTEMS.map((e) => (
-              <option key={e} value={e}>
-                {e}
+            {ECOSYSTEMS.map((value) => (
+              <option key={value} value={value}>
+                {value}
               </option>
             ))}
           </select>
+        </label>
+        <label className="min-w-[min(100%,16rem)] flex-1 text-[11px] text-stone-400">
+          Package name
           <input
-            value={pkgName}
-            onChange={(e) => setPkgName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && lookupPackage()}
-            placeholder="package name, e.g. lodash"
-            className="selectable flex-1 rounded-lg border border-ink-600 bg-ink-900 px-3 py-1.5 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-teal-500/60"
+            value={packageName}
+            onChange={(event) => onPackage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void onLookup();
+            }}
+            placeholder="lodash"
+            className="mt-1 block w-full rounded-md border border-ink-600 bg-ink-900 px-3 py-1.5 text-[13px] text-stone-200 placeholder:text-stone-600"
           />
-          <button
-            onClick={lookupPackage}
-            disabled={pkgLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-ink-600 bg-ink-750 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-ink-500"
-          >
-            {pkgLoading ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
-            Look up
-          </button>
-        </div>
+        </label>
+        <button
+          type="button"
+          onClick={() => void onLookup()}
+          disabled={loading || !packageName.trim()}
+          className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Search size={12} aria-hidden="true" />
+          {loading ? "Looking up…" : "Look up"}
+        </button>
       </div>
-
       {error && (
-        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-          {error}
-        </div>
+        <p role="alert" className="mt-2 text-[12px] text-red-300">
+          OSV package lookup unavailable: {error}
+        </p>
       )}
-
-      {pkgResult && (
-        <div className="mt-4 rounded-xl border border-ink-700 bg-ink-850 p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-            OSV advisories for {pkgName} ({pkgEco}) — {pkgResult.length}
-          </h3>
-          {pkgResult.length === 0 ? (
-            <p className="mt-2 text-xs text-slate-500">No known advisories for this package.</p>
-          ) : (
-            <div className="mt-2 space-y-1.5">
-              {pkgResult.slice(0, 15).map((v: any, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs">
-                  <a
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      openUrl(`https://osv.dev/vulnerability/${v.id}`);
-                    }}
-                    className="font-mono text-sky-300 hover:underline"
-                  >
-                    {v.id}
-                  </a>
-                  <span className="truncate text-slate-400">
-                    {v.summary || (v.details || "").slice(0, 120)}
-                  </span>
-                  <span className="ml-auto shrink-0 text-[10px] text-slate-600">
-                    {fmtDate(v.published)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {result && (
-        <div className="mt-6">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>
-              {total.toLocaleString()} results
-              {query ? ` for “${query}”` : recent ? " (recent)" : ""}
-            </span>
-            <span className="tabular-nums">
-              {start + 1}–{Math.min(start + PER_PAGE, total)} of {total.toLocaleString()}
-            </span>
-          </div>
-          <div className="mt-2 space-y-2">
-            {result.items.length === 0 && (
-              <EmptyState
-                icon={<Bug size={32} />}
-                title="No CVEs found"
-                description="Try a broader keyword, or use the package lookup for OSV advisories."
-              />
-            )}
-            {result.items.map((c) => (
-              <CveRow key={c.id} cve={c} onOpen={() => openDetail(c.id)} />
-            ))}
-          </div>
-          <div className="mt-4 flex items-center justify-center gap-3">
-            <button
-              onClick={() => search(query, Math.max(0, start - PER_PAGE), recent)}
-              disabled={!hasPrev || loading}
-              className="inline-flex items-center gap-1 rounded-lg border border-ink-600 bg-ink-850 px-3 py-1.5 text-xs text-slate-300 disabled:opacity-40"
+        <PackageResults
+          ecosystem={ecosystem}
+          packageName={packageName}
+          result={result}
+        />
+      )}
+    </details>
+  );
+}
+
+function PackageResults({
+  ecosystem,
+  packageName,
+  result,
+}: {
+  ecosystem: string;
+  packageName: string;
+  result: unknown[];
+}): JSX.Element {
+  const advisories = result as Array<{
+    id?: string;
+    summary?: string;
+    details?: string;
+    published?: string;
+  }>;
+  return (
+    <div className="mt-3 border-t border-ink-800 pt-3">
+      <p className="text-[12px] text-stone-300">
+        OSV advisories for {packageName} ({ecosystem}) — {advisories.length}
+      </p>
+      {advisories.length === 0 ? (
+        <p className="mt-1 text-[12px] text-stone-400">
+          No known advisories for this package.
+        </p>
+      ) : (
+        <ul className="mt-2 space-y-1.5">
+          {advisories.slice(0, 15).map((advisory, index) => (
+            <li
+              key={`${advisory.id ?? "advisory"}-${index}`}
+              className="flex items-start gap-1.5 text-[12px] text-stone-400"
             >
-              <ChevronLeft size={13} /> Prev
-            </button>
-            <button
-              onClick={() => search(query, start + PER_PAGE, recent)}
-              disabled={!hasNext || loading}
-              className="inline-flex items-center gap-1 rounded-lg border border-ink-600 bg-ink-850 px-3 py-1.5 text-xs text-slate-300 disabled:opacity-40"
-            >
-              Next <ChevronRight size={13} />
-            </button>
-          </div>
-        </div>
+              <button
+                type="button"
+                disabled={!advisory.id}
+                onClick={() =>
+                  advisory.id &&
+                  openUrl(`https://osv.dev/vulnerability/${advisory.id}`)
+                }
+                className="shrink-0 font-mono text-sky-300 hover:underline disabled:cursor-not-allowed disabled:text-stone-500"
+              >
+                {advisory.id ?? "OSV advisory"}
+              </button>
+              {advisory.summary || advisory.details ? (
+                <span>
+                  — {advisory.summary || advisory.details?.slice(0, 120)}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
 }
 
-function CveRow({ cve, onOpen }: { cve: CveItem; onOpen: () => void }) {
-  return (
-    <button
-      onClick={onOpen}
-      className="w-full rounded-xl border border-ink-700 bg-ink-850 px-4 py-3 text-left transition-colors hover:border-teal-500/40 hover:bg-ink-800"
-    >
-      <div className="flex items-center gap-2.5">
-        <span className="font-mono text-[13px] font-bold text-sky-300">{cve.id}</span>
-        <SeverityBadge severity={cve.severity} />
-        {cve.cvssScore !== null && (
-          <span className="rounded bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
-            CVSS {cve.cvssScore.toFixed(1)}
-          </span>
-        )}
-        {cve.cwes.slice(0, 3).map((c) => (
-          <span key={c} className="rounded bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
-            {c}
-          </span>
-        ))}
-        <span className="ml-auto shrink-0 text-[11px] text-slate-600">{fmtDate(cve.published)}</span>
-      </div>
-      <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-slate-400">{cve.description}</p>
-      {cve.affectedProducts.length > 0 && (
-        <p className="mt-1 truncate font-mono text-[10px] text-slate-600">
-          {cve.affectedProducts.join(" · ")}
-        </p>
-      )}
-    </button>
-  );
-}
-
-function CveDetailView({
-  detail,
-  loading,
-  aiReady,
-  onBack,
-  onAi,
+function CveList({
+  items,
+  selectedId,
+  onSelect,
 }: {
-  detail: CveDetail;
-  loading: boolean;
-  aiReady: boolean;
-  onBack: () => void;
-  onAi: () => Promise<unknown>;
-}) {
-  const { item } = detail;
-  const [briefing, setBriefing] = useState<string | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [showOsv, setShowOsv] = useState(false);
-
-  const runAi = async () => {
-    if (!aiReady) return;
-    setAiLoading(true);
-    try {
-      const res = (await onAi()) as { content: string } | null;
-      if (res) setBriefing(res.content);
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
+  items: CveItem[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}): JSX.Element {
   return (
-    <div className="mx-auto max-w-4xl px-6 py-6">
-      <button
-        onClick={onBack}
-        className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200"
-      >
-        <ArrowLeft size={14} /> Back to results
-      </button>
-
-      {loading ? (
-        <div className="mt-8 flex items-center justify-center gap-2 text-sm text-slate-500">
-          <Loader2 size={16} className="animate-spin" /> Loading CVE details…
-        </div>
-      ) : (
-        <>
-          <div className="mt-4 rounded-xl border border-ink-700 bg-ink-850 p-5">
-            <div className="flex flex-wrap items-center gap-2.5">
-              <h1 className="font-mono text-lg font-bold text-slate-100">{item.id}</h1>
+    <div
+      className="max-h-[39rem] overflow-auto"
+      role="listbox"
+      aria-label="CVE results"
+    >
+      {items.map((item) => {
+        const selected = item.id === selectedId;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="option"
+            aria-selected={selected}
+            onClick={() => void onSelect(item.id)}
+            className={`block w-full border-l-2 border-b border-ink-800 px-3 py-3 text-left transition-colors ${selected ? "border-l-accent-500 bg-accent-500/5" : "border-l-transparent hover:bg-ink-800"}`}
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-[13px] font-semibold text-sky-300">
+                {item.id}
+              </span>
               <SeverityBadge severity={item.severity} />
               {item.cvssScore !== null && (
-                <span className="rounded border border-ink-600 bg-ink-900 px-2 py-0.5 font-mono text-xs text-slate-300">
+                <span className="rounded bg-ink-900 px-1.5 py-0.5 font-mono text-[11px] text-stone-400">
                   CVSS {item.cvssScore.toFixed(1)}
                 </span>
               )}
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
-              <span className="inline-flex items-center gap-1">
-                <Calendar size={11} /> Published {fmtDateTime(item.published)}
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <Calendar size={11} /> Modified {fmtDateTime(item.modified)}
+              <span className="ml-auto text-[11px] text-stone-500">
+                {fmtDate(item.published)}
               </span>
             </div>
+            <p className="mt-1.5 line-clamp-2 text-[13px] leading-relaxed text-stone-300">
+              {item.description}
+            </p>
+            <p className="mt-1 truncate font-mono text-[11px] text-stone-500">
+              {item.affectedProducts.join(" · ")}
+            </p>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
-            {item.cwes.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {item.cwes.map((c) => (
-                  <span key={c} className="rounded bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-sky-300">
-                    {c}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            <p className="selectable mt-4 text-[13px] leading-relaxed text-slate-300">{item.description}</p>
-
-            {item.affectedProducts.length > 0 && (
-              <div className="mt-4">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Affected products
-                </div>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {item.affectedProducts.map((p) => (
-                    <span key={p} className="rounded border border-ink-600 bg-ink-900 px-2 py-0.5 font-mono text-[10px] text-slate-400">
-                      {p}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {item.references.length > 0 && (
-              <div className="mt-4">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  References
-                </div>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {item.references.slice(0, 8).map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => openUrl(r)}
-                      className="inline-flex max-w-[300px] items-center gap-1 truncate rounded border border-ink-600 bg-ink-900 px-2 py-1 text-[11px] text-sky-300 hover:border-sky-500/50"
-                    >
-                      <ExternalLink size={10} />
-                      <span className="truncate">{r.replace(/^https?:\/\//, "")}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="mt-4 flex items-center gap-2">
-            <button
-              onClick={runAi}
-              disabled={!aiReady || aiLoading}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-teal-500/40 bg-teal-500/10 px-3.5 py-2 text-xs font-medium text-teal-300 hover:bg-teal-500/20 disabled:opacity-40"
-            >
-              {aiLoading ? <Loader2 size={13} className="animate-spin" /> : <Bot size={13} />}
-              {aiLoading ? "Generating research briefing…" : briefing ? "Regenerate AI briefing" : "Generate AI research briefing"}
-            </button>
-            {detail.osv ? (
-              <button
-                onClick={() => setShowOsv(!showOsv)}
-                className="rounded-lg border border-ink-600 bg-ink-850 px-3 py-2 text-xs text-slate-400 hover:text-slate-200"
-              >
-                {showOsv ? "Hide" : "Show"} OSV record
-              </button>
-            ) : null}
-            <button
-              onClick={() => openUrl(`https://nvd.nist.gov/vuln/detail/${item.id}`)}
-              className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-ink-600 bg-ink-850 px-3 py-2 text-xs text-slate-400 hover:text-slate-200"
-            >
-              <ExternalLink size={12} /> NVD page
-            </button>
-          </div>
-
-          {aiLoading && (
-            <div className="mt-3 animate-pulse rounded-lg border border-ink-700 bg-ink-900 px-4 py-3 text-xs text-slate-500">
-              Consulting the model… this can take 20–90s.
-            </div>
-          )}
-          {briefing && (
-            <div className="md-body selectable mt-3 max-h-[480px] overflow-y-auto rounded-xl border border-ink-700 bg-ink-900 px-5 py-4 text-xs">
-              <Markdown>{briefing}</Markdown>
-            </div>
-          )}
-
-          {showOsv && detail.osv && (
-            <div className="selectable mt-3 overflow-x-auto rounded-xl border border-ink-700 bg-ink-950 p-4">
-              <pre className="font-mono text-[10px] leading-relaxed text-slate-400">
-                {JSON.stringify(detail.osv, null, 2)}
-              </pre>
-            </div>
-          )}
-        </>
-      )}
+function Pagination({
+  hasPrev,
+  hasNext,
+  loading,
+  onPrevious,
+  onNext,
+}: {
+  hasPrev: boolean;
+  hasNext: boolean;
+  loading: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
+}): JSX.Element {
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={onPrevious}
+        disabled={!hasPrev || loading}
+        className="inline-flex items-center gap-1 rounded-md border border-ink-600 bg-ink-750 px-2 py-1.5 text-[11px] text-stone-300 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <ChevronLeft size={12} aria-hidden="true" />
+        Prev
+      </button>
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={!hasNext || loading}
+        className="inline-flex items-center gap-1 rounded-md border border-ink-600 bg-ink-750 px-2 py-1.5 text-[11px] text-stone-300 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Next
+        <ChevronRight size={12} aria-hidden="true" />
+      </button>
     </div>
   );
 }
