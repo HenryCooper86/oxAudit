@@ -11,6 +11,7 @@ import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { resolveRuntimeProject } from "../lib/assistantSessions";
 import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
@@ -40,6 +41,7 @@ export function DepsScanPage() {
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const discoveryRequestRef = useRef(0);
+  const pathRequestRef = useRef(0);
   useEffect(() => {
     let disposed = false;
     const register = async () => {
@@ -80,6 +82,7 @@ export function DepsScanPage() {
 
   const changePath = (nextPath: string) => {
     if (nextPath === path) return;
+    const activationId = ++pathRequestRef.current;
     discoveryRequestRef.current += 1;
     setPath(nextPath);
     setDiscovering(false);
@@ -92,8 +95,16 @@ export function DepsScanPage() {
     setSelectedKey(null);
     setQuery("");
     clearPageStatus("deps-scan");
-    void api.setActiveProject(nextPath).catch(() => undefined);
-    setActiveProjectStore(nextPath || null);
+    void resolveRuntimeProject(nextPath || null, api.setActiveProject).then((outcome) => {
+      setActiveProjectStore(outcome.runtimePath);
+      if (
+        activationId === pathRequestRef.current &&
+        outcome.unavailablePath === nextPath &&
+        outcome.warning
+      ) {
+        push("error", outcome.warning);
+      }
+    });
   };
 
   const findLockfiles = async () => {
@@ -105,6 +116,17 @@ export function DepsScanPage() {
     setFailedOperation(null);
     setPageStatus("deps-scan", { label: "Finding lockfiles", tone: "running" });
     try {
+      const runtime = await resolveRuntimeProject(
+        requestedPath,
+        api.setActiveProject,
+      );
+      setActiveProjectStore(runtime.runtimePath);
+      if (
+        requestId !== discoveryRequestRef.current ||
+        runtime.runtimePath !== requestedPath
+      ) {
+        return;
+      }
       const foundLockfiles = await api.findLockfiles(requestedPath);
       if (requestId !== discoveryRequestRef.current) return;
       setPreview(foundLockfiles);
@@ -132,8 +154,21 @@ export function DepsScanPage() {
     setError(null);
     setFailedOperation(null);
     setProgress({ done: 0, total: 0 });
+    const requestId = ++discoveryRequestRef.current;
+    const requestedPath = path;
     try {
-      const scanResult = await api.scanDependencies(path);
+      const runtime = await resolveRuntimeProject(
+        requestedPath,
+        api.setActiveProject,
+      );
+      setActiveProjectStore(runtime.runtimePath);
+      if (
+        requestId !== discoveryRequestRef.current ||
+        runtime.runtimePath !== requestedPath
+      ) {
+        return;
+      }
+      const scanResult = await api.scanDependencies(requestedPath);
       setResult(scanResult);
       setSelectedKey(null);
       setPreview(

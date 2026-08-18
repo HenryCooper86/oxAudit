@@ -32,12 +32,25 @@ interface PersistedReadinessDependencies {
 }
 
 interface PersistedSaveDependencies extends PersistedReadinessDependencies {
-  saveRequests?: LatestRequestQueue;
+  saveRequests?: SerializedSettingsWrites;
   saveSettings?: (settings: AppSettings) => Promise<void>;
 }
 
-/** Save attempts are ordered independently from the currently persisted snapshot. */
-export const persistedSettingsSaveRequests = new LatestRequestQueue();
+/** Native writes are serialized without suppressing any successful snapshot. */
+export class SerializedSettingsWrites {
+  private tail: Promise<void> = Promise.resolve();
+
+  run<T>(write: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(write, write);
+    this.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+}
+
+export const persistedSettingsSaveRequests = new SerializedSettingsWrites();
 
 /**
  * Publishes readiness for one persisted settings snapshot. Configured snapshots
@@ -101,9 +114,8 @@ export interface SavedSettingsPublication {
 }
 
 /**
- * Saves a candidate without disturbing readiness ownership. Only the latest
- * successfully persisted candidate claims a new settings generation and
- * synchronously publishes its checking/unconfigured state.
+ * Serializes native writes and publishes every successfully persisted snapshot
+ * before the next queued write begins.
  */
 export async function savePersistedSettingsSnapshot(
   settings: AppSettings,
@@ -115,18 +127,9 @@ export async function savePersistedSettingsSnapshot(
   const saveRequests =
     dependencies.saveRequests ?? persistedSettingsSaveRequests;
   const saveSettings = dependencies.saveSettings ?? api.saveSettings;
-  const saveToken = saveRequests.begin();
 
-  const saved = await saveRequests.run(saveToken, async () => {
-    try {
-      await saveSettings(settings);
-    } catch (error) {
-      return { status: "failed" as const, error };
-    }
-    if (!saveRequests.isCurrent(saveToken)) {
-      return { status: "stale" as const };
-    }
-
+  return saveRequests.run(async () => {
+    await saveSettings(settings);
     const token = requests.begin();
     const readiness = publishSavedSettingsSnapshot(
       settings,
@@ -135,11 +138,6 @@ export async function savePersistedSettingsSnapshot(
       publishReadiness,
       { requests, testAi: dependencies.testAi },
     );
-    return readiness
-      ? { status: "saved" as const, publication: { token, readiness } }
-      : { status: "stale" as const };
+    return readiness ? { token, readiness } : null;
   });
-  if (!saved.current) return null;
-  if (saved.value.status === "failed") throw saved.value.error;
-  return saved.value.status === "saved" ? saved.value.publication : null;
 }

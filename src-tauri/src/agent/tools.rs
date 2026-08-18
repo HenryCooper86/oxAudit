@@ -38,15 +38,7 @@ fn collect_agent_lockfiles(
     root: &std::path::Path,
     settings: &crate::models::ScanSettings,
 ) -> Vec<std::path::PathBuf> {
-    let (files, _, _) = collect_agent_files(project_root, root, settings);
-    files
-        .into_iter()
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(fs_utils::is_lockfile_name)
-        })
-        .collect()
+    fs_utils::discover_lockfiles(project_root, root, &settings.ignored_dirs)
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -609,13 +601,14 @@ mod tests {
     }
 
     fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
+        let canonical_root = root.canonicalize().unwrap();
         let mut settings = ScanSettings::default();
         settings.include_git = include_git;
         settings.ignored_dirs.clear();
         let (files, _, _) = collect_agent_files(root, root, &settings);
         files
             .into_iter()
-            .map(|path| path.strip_prefix(root).unwrap().to_path_buf())
+            .map(|path| path.strip_prefix(&canonical_root).unwrap().to_path_buf())
             .collect()
     }
 
@@ -645,13 +638,16 @@ mod tests {
             collect_agent_files(root.path(), &root.path().join(".git/config"), &settings);
         let (nested, _, _) = collect_agent_files(root.path(), &root.path().join("src"), &settings);
         assert!(direct_git.is_empty());
-        assert!(!nested.contains(&root.path().join("src/ignored.rs")));
-        assert!(nested.contains(&root.path().join("src/main.rs")));
+        assert!(!nested.contains(&root.path().join("src/ignored.rs").canonicalize().unwrap()));
+        assert!(nested.contains(&root.path().join("src/main.rs").canonicalize().unwrap()));
 
         settings.include_git = true;
         let (direct_git, _, _) =
             collect_agent_files(root.path(), &root.path().join(".git/config"), &settings);
-        assert_eq!(direct_git, [root.path().join(".git/config")]);
+        assert_eq!(
+            direct_git,
+            [root.path().join(".git/config").canonicalize().unwrap()],
+        );
     }
 
     #[cfg(unix)]
@@ -677,13 +673,17 @@ mod tests {
         let (included, _, _) = collect_agent_files(root.path(), &collection_root, &settings);
 
         assert!(excluded.is_empty());
-        assert_eq!(included, [alias.join("lib.rs")]);
+        assert_eq!(
+            included,
+            [root.path().join("shared/lib.rs").canonicalize().unwrap()],
+        );
     }
 
     #[test]
-    fn assistant_dependency_collection_uses_saved_git_policy() {
+    fn assistant_dependency_discovery_is_separate_from_saved_source_git_policy() {
         let root = fixture();
         fs::write(root.path().join("Cargo.lock"), "").unwrap();
+        fs::write(root.path().join(".gitignore"), "Cargo.lock\n").unwrap();
         fs::write(root.path().join(".git/package-lock.json"), "{}").unwrap();
         let mut settings = ScanSettings::default();
         settings.ignored_dirs.clear();
@@ -692,9 +692,33 @@ mod tests {
         settings.include_git = true;
         let included = collect_agent_lockfiles(root.path(), root.path(), &settings);
 
-        assert_eq!(excluded, [root.path().join("Cargo.lock")]);
-        assert!(included.contains(&root.path().join("Cargo.lock")));
-        assert!(included.contains(&root.path().join(".git/package-lock.json")));
+        let lockfile = root.path().join("Cargo.lock").canonicalize().unwrap();
+        assert_eq!(excluded, [lockfile.clone()]);
+        assert_eq!(included, [lockfile]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assistant_source_callers_reject_lexical_git_alias_roots() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("ordinary")).unwrap();
+        fs::write(root.path().join("ordinary/config"), "ordinary\n").unwrap();
+        symlink(root.path().join("ordinary"), root.path().join(".git")).unwrap();
+        let mut settings = ScanSettings::default();
+        settings.follow_symlinks = true;
+        settings.include_git = false;
+        settings.ignored_dirs.clear();
+
+        let requested = resolve_collection_root(root.path(), ".git/config").unwrap();
+        for caller in ["grep_project", "glob", "run_scan:source", "run_scan:secrets"] {
+            let (files, _, _) = collect_agent_files(root.path(), &requested, &settings);
+            assert!(
+                files.is_empty(),
+                "{caller} must not bypass source policy through a lexical .git root",
+            );
+        }
     }
 
     #[test]

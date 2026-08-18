@@ -507,3 +507,63 @@ not broaden the four-tool workflow.
 - No additional native interaction claim is added by this round. The prior
   native launch/accessibility boundary remains authoritative; the new Rust
   behavior is covered by real-filesystem tests plus full Cargo build checks.
+
+## Residual corrective cycle round 4 — 2026-08-18
+
+This replacement round closes the four Important findings that remained after
+round 2. It preserves every serialized Tauri/frontend payload, the four direct
+tools, runtime-only nullable project clearing, and the established responsive
+and `osv: null` rulings.
+
+### Boundary-owned collection and dependency discovery
+
+- Source/code collection now evaluates ignore rules from one explicit project
+  boundary with no parent leakage, retains project and nested negation
+  semantics, rejects lexical and canonical `.git` bypasses, and returns stable
+  canonical contained file paths for reads.
+- A separate dependency walker deliberately ignores ordinary gitignore rules,
+  always excludes `.git`, never inherits Source `includeGit`, and rejects
+  symlink/outside-root traversal. Source Scan, Assistant grep/glob/source and
+  secrets scans, and Assistant dependency discovery use their intended seam.
+- Permanent real-filesystem coverage includes direct `.git/config`, lexical
+  aliases both to ordinary content and real metadata, nested ignores with
+  negation and no parent leakage, internal/external symlinks, direct file and
+  subdirectory roots, both include/follow states, all Assistant collection
+  callers, and gitignored dependency lockfiles.
+
+### Authoritative saves and runtime project ordering
+
+- Native settings writes are serialized. Every successful write publishes its
+  exact persisted snapshot and synchronous checking/unconfigured readiness
+  before the next write starts; a later failed write cannot suppress that
+  snapshot. Tests cover success/success, success/failure, failure/success,
+  readiness versions/completions, write order, store visibility, and
+  unmount/remount ownership.
+- One module-global monotonic runtime-project coordinator now owns Assistant,
+  Source Scan, and Dependency Scan mutations. It skips stale queued effects,
+  holds older callers behind the latest activation barrier, prevents stale
+  rejection clears, and retains current-failure and standalone-clear behavior.
+  Rust scan commands no longer perform hidden active-project mutations.
+
+### Round-4 verification
+
+- `npm test` — exit 0 (29 passed, 0 failed).
+- `npm run check` — exit 0 (`tsc --noEmit`).
+- `npm run build` — exit 0 (Vite 7.3.6; 1,787 modules transformed;
+  JavaScript 459.58 kB, 136.02 kB gzip).
+- `cargo test --manifest-path src-tauri/Cargo.toml` — exit 0 (76 passed,
+  0 failed, 1 ignored). The ignored live OSV test retains its documented
+  compiled-binary sandbox rationale.
+- `cargo check --manifest-path src-tauri/Cargo.toml` — exit 0. The only warning
+  is the pre-existing unused `sessions::transcript_path` function.
+- Browser-only smoke checks rendered meaningful Dashboard, Source Scan,
+  Dependency Scan, and AI Assistant content with no Vite overlay or console
+  warning/error entry. Native IPC-unavailable copy remained honest rather than
+  simulating a Tauri bridge.
+- `npm run tauri dev -- --no-watch` finished the current Cargo development
+  build, launched `target/debug/vulncompanion`, and served Vite on port 1420.
+  Process/listener checks confirmed both before shutdown and neither afterward.
+- The React best-practices review found no added render-time side effect,
+  global listener, effect dependency problem, or bundle dependency. Async
+  page feedback remains request-guarded while authoritative global state is
+  always published from the shared coordinators.

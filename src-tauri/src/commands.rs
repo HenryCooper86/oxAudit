@@ -232,7 +232,7 @@ pub async fn scan_project(
 
     app.emit("scan://progress", Value::from("walking")).map_err(|e| e.to_string())?;
 
-    let (files, skipped, total_bytes) = fs_utils::collect_files(
+    let collection = fs_utils::collect_source_files(
         root,
         fs_utils::CollectFilesOptions {
             project_root: root,
@@ -241,6 +241,10 @@ pub async fn scan_project(
             extra_ignored: &effective.ignored_dirs,
         },
     );
+    let scan_root = collection.root;
+    let files = collection.files;
+    let skipped = collection.skipped;
+    let total_bytes = collection.total_bytes;
 
     if files.is_empty() {
         return Err("no files found to scan (check ignore rules / path)".into());
@@ -264,7 +268,13 @@ pub async fn scan_project(
             if cancel_checked(&state) {
                 return Vec::new();
             }
-            let findings = scanners::scan_file(root, file, max_file_size_kb, scan_secrets, scan_vulns);
+            let findings = scanners::scan_file(
+                &scan_root,
+                file,
+                max_file_size_kb,
+                scan_secrets,
+                scan_vulns,
+            );
             let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
             if done % 25 == 0 || done == total {
                 let _ = app.emit(
@@ -327,9 +337,6 @@ pub async fn scan_project(
     app.emit("scan://done", serde_json::json!({ "findings": findings.len() }))
         .ok();
 
-    // make this the project the agent's file tools operate on
-    *state.active_project.lock().unwrap() = Some(root.to_path_buf());
-
     Ok(ScanResult { summary, findings })
 }
 
@@ -366,7 +373,8 @@ pub async fn scan_dependencies(
     }
 
     let settings = state.settings.lock().unwrap().clone();
-    let lockfiles = fs_utils::collect_lockfiles(root, &settings.scan.ignored_dirs);
+    let lockfiles =
+        fs_utils::discover_lockfiles(root, root, &settings.scan.ignored_dirs);
 
     let mut all_deps = Vec::new();
     let mut lockfile_infos = Vec::new();
@@ -437,7 +445,6 @@ pub async fn scan_dependencies(
     };
     app.emit("deps://done", serde_json::json!({ "vulnerabilities": result.summary.vulnerabilities_found }))
         .ok();
-    *state.active_project.lock().unwrap() = Some(root.to_path_buf());
     Ok(result)
 }
 
@@ -448,7 +455,7 @@ pub fn find_lockfiles(state: State<'_, AppState>, path: String) -> Result<Vec<Lo
         return Err(format!("path is not a directory: {path}"));
     }
     let settings = state.settings.lock().unwrap().clone();
-    let files = fs_utils::collect_lockfiles(root, &settings.scan.ignored_dirs);
+    let files = fs_utils::discover_lockfiles(root, root, &settings.scan.ignored_dirs);
     let mut out = Vec::new();
     for f in files {
         let name = f.file_name().and_then(|s| s.to_str()).unwrap_or("");
