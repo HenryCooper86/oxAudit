@@ -512,7 +512,6 @@ function CveList({
             <button
               type="button"
               aria-current={selected ? "true" : undefined}
-              aria-label={`Open ${item.id} dossier`}
               onClick={() => void onSelect(item.id)}
               className={`block w-full border-l-2 border-b border-ink-800 px-3 py-3 text-left transition-colors ${selected ? "border-l-accent-500 bg-accent-500/5" : "border-l-transparent hover:bg-ink-800"}`}
             >
