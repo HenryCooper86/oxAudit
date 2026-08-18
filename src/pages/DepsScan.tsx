@@ -16,6 +16,7 @@ import { useAppStore, useToastStore } from "../lib/stores";
 import type { DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
 
 const vulnerabilityKey = (v: Vulnerability) => `${v.id}:${v.packageName}:${v.installedVersion}`;
+type FailedOperation = "discovery" | "check";
 
 export function DepsScanPage() {
   const addRecentScan = useAppStore((state) => state.addRecentScan);
@@ -26,15 +27,19 @@ export function DepsScanPage() {
 
   const [path, setPath] = useState("");
   const [running, setRunning] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [preview, setPreview] = useState<LockfileInfo[] | null>(null);
   const [result, setResult] = useState<DependencyScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failedOperation, setFailedOperation] = useState<FailedOperation | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [progressBridgeAvailable, setProgressBridgeAvailable] = useState<boolean | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
+  const discoveryRequestRef = useRef(0);
   useEffect(() => {
     let disposed = false;
     const register = async () => {
@@ -45,10 +50,14 @@ export function DepsScanPage() {
             setProgress({ done: event.payload.done ?? 0, total: event.payload.total ?? 0 });
           }
         });
-        if (disposed) unlisten();
-        else unlistenRef.current = unlisten;
+        if (disposed) {
+          unlisten();
+        } else {
+          setProgressBridgeAvailable(true);
+          unlistenRef.current = unlisten;
+        }
       } catch {
-        // The event bridge is unavailable when the UI is exercised in a browser.
+        if (!disposed) setProgressBridgeAvailable(false);
       }
     };
 
@@ -71,10 +80,13 @@ export function DepsScanPage() {
 
   const changePath = (nextPath: string) => {
     if (nextPath === path) return;
+    discoveryRequestRef.current += 1;
     setPath(nextPath);
+    setDiscovering(false);
     setPreview(null);
     setResult(null);
     setError(null);
+    setFailedOperation(null);
     setProgress(null);
     setPhase(null);
     setSelectedKey(null);
@@ -85,20 +97,40 @@ export function DepsScanPage() {
   };
 
   const findLockfiles = async () => {
-    if (!path || running) return;
+    if (!path || running || discovering) return;
+    const requestId = ++discoveryRequestRef.current;
+    const requestedPath = path;
+    setDiscovering(true);
     setError(null);
+    setFailedOperation(null);
+    setPageStatus("deps-scan", { label: "Finding lockfiles", tone: "running" });
     try {
-      setPreview(await api.findLockfiles(path));
+      const foundLockfiles = await api.findLockfiles(requestedPath);
+      if (requestId !== discoveryRequestRef.current) return;
+      setPreview(foundLockfiles);
+      if (result) {
+        setPageStatus("deps-scan", {
+          label: `Dependencies checked · ${result.summary.vulnerabilitiesFound} vulnerabilities`,
+          tone: "success",
+        });
+      } else {
+        clearPageStatus("deps-scan");
+      }
     } catch (findError) {
+      if (requestId !== discoveryRequestRef.current) return;
       setError(String(findError));
-      setPageStatus("deps-scan", { label: "Dependency check failed", tone: "error" });
+      setFailedOperation("discovery");
+      setPageStatus("deps-scan", { label: "Lockfile discovery failed", tone: "error" });
+    } finally {
+      if (requestId === discoveryRequestRef.current) setDiscovering(false);
     }
   };
 
   const run = async () => {
-    if (!path || running) return;
+    if (!path || running || discovering) return;
     setRunning(true);
     setError(null);
+    setFailedOperation(null);
     setProgress({ done: 0, total: 0 });
     try {
       const scanResult = await api.scanDependencies(path);
@@ -168,16 +200,16 @@ export function DepsScanPage() {
             <button
               type="button"
               onClick={findLockfiles}
-              disabled={!path || running}
+              disabled={!path || running || discovering}
               className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-3 py-2 text-[12px] font-medium text-stone-200 hover:border-ink-500 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Search size={13} aria-hidden="true" />
-              Find lockfiles
+              {discovering ? "Finding…" : "Find lockfiles"}
             </button>
             <button
               type="button"
               onClick={run}
-              disabled={!path || running}
+              disabled={!path || running || discovering}
               className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Play size={13} aria-hidden="true" />
@@ -192,15 +224,39 @@ export function DepsScanPage() {
                 tone="running"
                 compact
                 title="Checking dependencies"
-                description={result ? "Previous completed results remain available below." : undefined}
-                progress={
-                  <ProgressBar
-                    indeterminate={!progress?.total}
-                    value={progress?.done ?? 0}
-                    max={progress?.total ?? 0}
-                    label={progressLabel}
-                  />
+                description={
+                  result
+                    ? "Previous completed results remain available below."
+                    : progressBridgeAvailable === false
+                      ? "Live progress is unavailable; the dependency check is still running."
+                      : undefined
                 }
+                progress={
+                  progressBridgeAvailable === false ? undefined : (
+                    <ProgressBar
+                      indeterminate={!progress?.total}
+                      value={progress?.done ?? 0}
+                      max={progress?.total ?? 0}
+                      label={progressLabel}
+                    />
+                  )
+                }
+              />
+            )}
+            {discovering && (
+              <InlineState
+                tone="running"
+                compact
+                title="Finding lockfiles"
+                description="Looking for supported lockfiles in the selected project."
+              />
+            )}
+            {progressBridgeAvailable === false && (
+              <InlineState
+                tone="unavailable"
+                compact
+                title="Live progress unavailable"
+                description="Dependency checks can still run, but live progress updates are unavailable in this environment."
               />
             )}
             {preview && preview.length > 0 && !running && (
@@ -212,12 +268,18 @@ export function DepsScanPage() {
                   >
                     <Boxes size={11} aria-hidden="true" className="text-sky-400" />
                     {lockfile.path.split(/[\\/]/).pop()}
-                    <span className="text-stone-600">({lockfile.packages} pkgs)</span>
+                    <span className="text-stone-400">({lockfile.packages} pkgs)</span>
                   </span>
                 ))}
               </div>
             )}
-            {error && result && !running && <DependencyError detail={error} onRetry={run} />}
+            {error && result && !running && failedOperation && (
+              <DependencyError
+                detail={error}
+                operation={failedOperation}
+                onRetry={failedOperation === "discovery" ? findLockfiles : run}
+              />
+            )}
           </>
         }
       >
@@ -227,7 +289,7 @@ export function DepsScanPage() {
         <FolderPicker
           value={path}
           onChange={changePath}
-          disabled={running}
+          disabled={running || discovering}
           inputLabel="Project folder path"
           buttonLabel="Browse…"
         />
@@ -300,7 +362,13 @@ export function DepsScanPage() {
         <InlineState tone="empty" title="OSV returned no published vulnerabilities for the queried packages." />
       )}
 
-      {!result && error && !running && <DependencyError detail={error} onRetry={run} />}
+      {!result && error && !running && failedOperation && (
+        <DependencyError
+          detail={error}
+          operation={failedOperation}
+          onRetry={failedOperation === "discovery" ? findLockfiles : run}
+        />
+      )}
 
       {!result && !error && !running && preview?.length === 0 && (
         <InlineState tone="empty" title="No supported lockfiles were found in this project." />
@@ -323,45 +391,58 @@ function VulnerabilityTable({
   onSelect: (key: string) => void;
 }): JSX.Element {
   return (
-    <div className="max-h-[39rem] overflow-y-auto">
-      <div className="grid grid-cols-[minmax(7rem,1.5fr)_minmax(4rem,.8fr)_minmax(4rem,.8fr)_minmax(4rem,.8fr)_auto] gap-2 border-b border-ink-700 bg-ink-900/45 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-stone-500">
-        <span>Package</span>
-        <span>Installed</span>
-        <span>Fixed</span>
-        <span>Ecosystem</span>
-        <span>Risk</span>
-      </div>
-      <div className="divide-y divide-ink-800">
-        {vulnerabilities.map((vulnerability) => {
-          const current = selected !== null && vulnerabilityKey(selected) === vulnerabilityKey(vulnerability);
-          return (
-            <button
-              key={vulnerabilityKey(vulnerability)}
-              type="button"
-              aria-current={current}
-              onClick={() => onSelect(vulnerabilityKey(vulnerability))}
-              className={`grid w-full grid-cols-[minmax(7rem,1.5fr)_minmax(4rem,.8fr)_minmax(4rem,.8fr)_minmax(4rem,.8fr)_auto] items-center gap-2 border-l-2 px-3 py-2.5 text-left text-[11px] transition-colors ${
-                current ? "border-accent-500 bg-accent-500/5" : "border-transparent hover:bg-ink-800"
-              }`}
-            >
-              <span className="min-w-0">
-                <span className="block truncate font-mono font-medium text-stone-200">{vulnerability.packageName}</span>
-                <span className="mt-0.5 block truncate text-stone-500">{vulnerability.id}</span>
-              </span>
-              <span className="truncate font-mono text-stone-400" title={vulnerability.installedVersion}>
-                {vulnerability.installedVersion}
-              </span>
-              <span className="truncate font-mono text-stone-400" title={vulnerability.fixedVersions.join(", ")}>
-                {vulnerability.fixedVersions[0] ?? "—"}
-              </span>
-              <span className="truncate text-stone-400" title={vulnerability.ecosystem}>
-                {vulnerability.ecosystem}
-              </span>
-              <SeverityBadge severity={vulnerability.severity} showLabel={false} />
-            </button>
-          );
-        })}
-      </div>
+    <div className="max-h-[39rem] min-w-0 overflow-auto" aria-label="Scrollable vulnerable package table">
+      <table className="min-w-[44rem] w-full table-fixed border-collapse text-left">
+        <caption className="sr-only">Vulnerable packages and their advisory risk</caption>
+        <thead className="border-b border-ink-700 bg-ink-900/45 text-[12px] font-semibold uppercase tracking-[0.1em] text-stone-400">
+          <tr>
+            <th scope="col" className="w-[31%] px-3 py-2">Package</th>
+            <th scope="col" className="w-[17%] px-3 py-2">Installed</th>
+            <th scope="col" className="w-[18%] px-3 py-2">Fixed</th>
+            <th scope="col" className="w-[18%] px-3 py-2">Ecosystem</th>
+            <th scope="col" className="w-[16%] px-3 py-2">Risk</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-ink-800">
+          {vulnerabilities.map((vulnerability) => {
+            const current = selected !== null && vulnerabilityKey(selected) === vulnerabilityKey(vulnerability);
+            const select = () => onSelect(vulnerabilityKey(vulnerability));
+            return (
+              <tr
+                key={vulnerabilityKey(vulnerability)}
+                tabIndex={0}
+                aria-current={current}
+                aria-label={`Select ${vulnerability.packageName} advisory ${vulnerability.id}`}
+                onClick={select}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    select();
+                  }
+                }}
+                className={`cursor-pointer border-l-2 text-[13px] text-stone-300 transition-colors ${
+                  current ? "border-accent-500 bg-accent-500/5" : "border-transparent hover:bg-ink-800"
+                }`}
+              >
+                <td className="min-w-0 px-3 py-2.5">
+                  <span className="block truncate font-mono text-[14px] font-medium text-stone-200">{vulnerability.packageName}</span>
+                  <span className="mt-0.5 block truncate text-[11px] text-stone-400">{vulnerability.id}</span>
+                </td>
+                <td className="truncate px-3 py-2.5 font-mono text-stone-300" title={vulnerability.installedVersion}>
+                  {vulnerability.installedVersion}
+                </td>
+                <td className="truncate px-3 py-2.5 font-mono text-stone-300" title={vulnerability.fixedVersions.join(", ")}>
+                  {vulnerability.fixedVersions[0] ?? "—"}
+                </td>
+                <td className="truncate px-3 py-2.5 text-stone-300" title={vulnerability.ecosystem}>
+                  {vulnerability.ecosystem}
+                </td>
+                <td className="px-3 py-2.5"><SeverityBadge severity={vulnerability.severity} showLabel={false} /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -379,12 +460,12 @@ function AdvisoryDetail({
         <div className="min-w-0">
           <p className="font-mono text-[12px] text-sky-300">{vulnerability.id}</p>
           <h2 className="mt-1 break-words text-[16px] font-semibold text-stone-100">{vulnerability.packageName}</h2>
-          <p className="mt-1 text-[12px] text-stone-400">{vulnerability.summary || "No advisory summary provided."}</p>
+          <p className="mt-1 text-[13px] text-stone-400">{vulnerability.summary || "No advisory summary provided."}</p>
         </div>
         <SeverityBadge severity={vulnerability.severity} />
       </div>
 
-      <section className="mt-5 space-y-4 text-[12px]">
+      <section className="mt-5 space-y-4 text-[13px]">
         <DetailSection label="Details">
           <p className="whitespace-pre-wrap leading-relaxed text-stone-300">{vulnerability.details || vulnerability.summary || "No additional details provided."}</p>
         </DetailSection>
@@ -418,7 +499,7 @@ function AdvisoryDetail({
               ))}
             </div>
           ) : (
-            <p className="text-stone-500">No aliases reported.</p>
+            <p className="text-stone-400">No aliases reported.</p>
           )}
         </DetailSection>
         <DetailSection label="Fixed versions">
@@ -444,7 +525,7 @@ function AdvisoryDetail({
                   onClick={() => {
                     void onOpenReference(reference);
                   }}
-                  className="inline-flex max-w-full items-center gap-1 rounded border border-ink-600 bg-ink-800 px-2 py-1 text-[11px] text-sky-300 hover:border-sky-500/50"
+                  className="inline-flex max-w-full items-center gap-1 rounded border border-ink-600 bg-ink-800 px-2 py-1 text-[12px] text-sky-300 hover:border-sky-500/50"
                 >
                   <ExternalLink size={10} aria-hidden="true" />
                   <span className="max-w-64 truncate">{reference.replace(/^https?:\/\//, "")}</span>
@@ -461,7 +542,7 @@ function AdvisoryDetail({
 function DetailSection({ label, children }: { label: string; children: JSX.Element }): JSX.Element {
   return (
     <div>
-      <h3 className="mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-stone-500">{label}</h3>
+      <h3 className="mb-1 text-[12px] font-semibold uppercase tracking-[0.1em] text-stone-400">{label}</h3>
       {children}
     </div>
   );
@@ -478,12 +559,21 @@ function SummaryMetric({ label, value }: { label: string; value: string }): JSX.
   );
 }
 
-function DependencyError({ detail, onRetry }: { detail: string; onRetry: () => void }): JSX.Element {
+function DependencyError({
+  detail,
+  operation,
+  onRetry,
+}: {
+  detail: string;
+  operation: FailedOperation;
+  onRetry: () => void;
+}): JSX.Element {
+  const discovery = operation === "discovery";
   return (
     <InlineState
       tone="error"
       compact
-      title="Dependency checking failed"
+      title={discovery ? "Lockfile discovery failed" : "Dependency checking failed"}
       action={
         <>
           <button
@@ -491,7 +581,7 @@ function DependencyError({ detail, onRetry }: { detail: string; onRetry: () => v
             onClick={onRetry}
             className="rounded-md border border-red-900/80 bg-red-950/40 px-2.5 py-1.5 text-[12px] font-medium text-red-200 hover:bg-red-950/70"
           >
-            Retry
+            {discovery ? "Retry discovery" : "Retry dependency check"}
           </button>
           <details className="text-[11px] text-stone-400">
             <summary className="cursor-pointer hover:text-stone-200">Technical details</summary>
