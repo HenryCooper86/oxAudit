@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   Coins,
@@ -16,6 +16,11 @@ import { Switch } from "../components/workbench/Switch";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import { DEFAULT_SYSTEM_PROMPT } from "../lib/defaults";
+import { LatestRequestQueue } from "../lib/latestRequest";
+import {
+  persistedAiReadiness,
+  persistedSettingsRequests,
+} from "../lib/settingsRequests";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { AiSettings, AiStatus, AppSettings, UsageSummary } from "../lib/types";
 
@@ -48,83 +53,125 @@ const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
 };
 
+function cloneSettings(settings: AppSettings): AppSettings {
+  return {
+    ...settings,
+    ai: { ...settings.ai },
+    scan: {
+      ...settings.scan,
+      ignoredDirs: [...settings.scan.ignoredDirs],
+    },
+  };
+}
+
 export function SettingsPage() {
   const settings = useAppStore((state) => state.settings);
   const setSettings = useAppStore((state) => state.setSettings);
   const setAiReady = useAppStore((state) => state.setAiReady);
+  const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const setSettingsLoadError = useAppStore((state) => state.setSettingsLoadError);
   const push = useToastStore((state) => state.push);
 
-  const [form, setForm] = useState<AppSettings | null>(settings);
+  const [form, setForm] = useState<AppSettings | null>(() =>
+    settings ? cloneSettings(settings) : null,
+  );
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [status, setStatus] = useState<AiStatus | null>(null);
+  const [draftStatus, setDraftStatus] = useState<AiStatus | null>(null);
   const [saveState, setSaveState] = useState<
     { tone: "success" | "error"; message: string } | null
   >(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [loadAttempt, setLoadAttempt] = useState(0);
   const [totalUsage, setTotalUsage] = useState<UsageSummary | null>(null);
   const [usageLoading, setUsageLoading] = useState(true);
   const [usageError, setUsageError] = useState(false);
+  const formRef = useRef<AppSettings | null>(form);
+  const formInitializedRef = useRef(form !== null);
+  const editRevisionRef = useRef(0);
+  const savePendingRef = useRef(false);
+  const testPendingRef = useRef(false);
+  const mountedRef = useRef(false);
+  const draftRequestsRef = useRef<LatestRequestQueue | null>(null);
+  if (!draftRequestsRef.current) {
+    draftRequestsRef.current = new LatestRequestQueue();
+  }
+  const draftRequests = draftRequestsRef.current;
 
   useEffect(() => {
-    if (settings) {
-      setForm(settings);
-      setLoadError(null);
-      return;
-    }
-
-    let cancelled = false;
-    setLoadError(null);
-    api
-      .loadSettings()
-      .then((loadedSettings) => {
-        if (cancelled) return;
-        setSettingsLoadError(false);
-        setSettings(loadedSettings);
-        setForm(loadedSettings);
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setSettingsLoadError(true);
-          setLoadError(String(error));
-        }
-      });
-
+    mountedRef.current = true;
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
+      testPendingRef.current = false;
+      draftRequests.invalidate();
     };
-  }, [loadAttempt, setSettings, setSettingsLoadError, settings]);
+  }, [draftRequests]);
 
   useEffect(() => {
+    if (!settings || formInitializedRef.current) return;
+    const initial = cloneSettings(settings);
+    formInitializedRef.current = true;
+    formRef.current = initial;
+    setForm(initial);
+    setDirty(false);
+    setLoadError(null);
+  }, [settings]);
+
+  useEffect(() => {
+    let cancelled = false;
     api
       .getTotalUsage()
       .then((usage) => {
+        if (cancelled) return;
         setTotalUsage(usage);
         setUsageError(false);
       })
-      .catch(() => setUsageError(true))
-      .finally(() => setUsageLoading(false));
+      .catch(() => {
+        if (!cancelled) setUsageError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setUsageLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  const retryLoad = async () => {
+    const token = persistedSettingsRequests.begin();
+    if (mountedRef.current) setLoadError(null);
+    setSettingsLoadError(false);
+    try {
+      const loaded = await api.loadSettings();
+      if (!persistedSettingsRequests.isCurrent(token)) return;
+      setSettingsLoadError(false);
+      setSettings(loaded);
+      const ready = await persistedAiReadiness(loaded);
+      if (persistedSettingsRequests.isCurrent(token)) setAiReady(ready);
+    } catch (error) {
+      if (!persistedSettingsRequests.isCurrent(token)) return;
+      setSettingsLoadError(true);
+      setAiReady(null);
+      if (mountedRef.current) setLoadError(String(error));
+    }
+  };
 
   if (!form) {
     return (
       <ToolPage title="Settings" description="AI endpoint, scan defaults, and data sources">
         <InlineState
-          tone={loadError ? "unavailable" : "running"}
-          title={loadError ? "Settings unavailable" : "Loading settings"}
+          tone={loadError || settingsLoadError ? "unavailable" : "running"}
+          title={loadError || settingsLoadError ? "Settings unavailable" : "Loading settings"}
           description={
-            loadError
-              ? `The local configuration could not be loaded. ${loadError}`
+            loadError || settingsLoadError
+              ? `The local configuration could not be loaded.${loadError ? ` ${loadError}` : ""}`
               : "Settings are unavailable until the local configuration has loaded."
           }
           action={
-            loadError ? (
+            loadError || settingsLoadError ? (
               <button
                 type="button"
-                onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+                onClick={() => void retryLoad()}
                 className="rounded-md border border-amber-700 bg-amber-950/30 px-3 py-1.5 text-[12px] font-medium text-amber-200 hover:bg-amber-950/50"
               >
                 Retry
@@ -137,74 +184,110 @@ export function SettingsPage() {
     );
   }
 
-  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
-    setForm({ ...form, [key]: value } as AppSettings);
+  const publishDraft = (next: AppSettings) => {
+    formRef.current = next;
+    editRevisionRef.current += 1;
+    setForm(next);
     setDirty(true);
-    setStatus(null);
+    draftRequests.invalidate();
+    testPendingRef.current = false;
+    setTesting(false);
+    setDraftStatus(null);
     setSaveState(null);
+  };
+
+  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+    const current = formRef.current ?? form;
+    publishDraft({ ...current, [key]: value } as AppSettings);
   };
 
   const updateAi = (patch: Partial<AiSettings>) => {
-    setForm({ ...form, ai: { ...form.ai, ...patch } });
-    setDirty(true);
-    setStatus(null);
-    setSaveState(null);
+    const current = formRef.current ?? form;
+    publishDraft({ ...current, ai: { ...current.ai, ...patch } });
   };
 
   const save = async () => {
+    const current = formRef.current;
+    if (!current || savePendingRef.current) return;
+    const snapshot = cloneSettings(current);
+    const submittedRevision = editRevisionRef.current;
+    const token = persistedSettingsRequests.begin();
+    savePendingRef.current = true;
     setSaving(true);
     setSaveState(null);
     try {
-      await api.saveSettings(form);
+      await api.saveSettings(snapshot);
+      if (!persistedSettingsRequests.isCurrent(token)) return;
       setSettingsLoadError(false);
-      setSettings(form);
-      setDirty(false);
-      setSaveState({ tone: "success", message: "Settings saved" });
-      if (form.ai.enabled && form.ai.baseUrl) {
-        api
-          .testAi()
-          .then((result) => setAiReady(result.ok))
-          .catch(() => setAiReady(false));
-      } else {
-        setAiReady(null);
+      setSettings(snapshot);
+
+      if (mountedRef.current) {
+        const hasNewerEdits = editRevisionRef.current !== submittedRevision;
+        setDirty(hasNewerEdits);
+        setSaveState({
+          tone: "success",
+          message: hasNewerEdits
+            ? "Settings saved; newer edits remain unsaved"
+            : "Settings saved",
+        });
+        push("success", "Settings saved");
       }
-      push("success", "Settings saved");
+
+      void persistedAiReadiness(snapshot).then((ready) => {
+        if (persistedSettingsRequests.isCurrent(token)) setAiReady(ready);
+      });
     } catch (error) {
+      if (!persistedSettingsRequests.isCurrent(token) || !mountedRef.current) {
+        return;
+      }
       const message = String(error);
       setSaveState({ tone: "error", message });
     } finally {
-      setSaving(false);
+      savePendingRef.current = false;
+      if (mountedRef.current) setSaving(false);
     }
   };
 
   const reset = () => {
-    setForm({
+    publishDraft({
       ...DEFAULT_SETTINGS,
       ai: { ...DEFAULT_SETTINGS.ai },
       scan: { ...DEFAULT_SETTINGS.scan, ignoredDirs: [...DEFAULT_SETTINGS.scan.ignoredDirs] },
     });
-    setDirty(true);
-    setStatus(null);
-    setSaveState(null);
   };
 
   const test = async () => {
+    const current = formRef.current;
+    if (!current || testPendingRef.current) return;
+    const snapshot = { ...current.ai };
+    const token = draftRequests.begin();
+    testPendingRef.current = true;
     setTesting(true);
-    setStatus(null);
+    setDraftStatus(null);
     try {
-      const result = await api.testAiWith(form.ai);
-      setStatus(result);
-      setAiReady(result.ok);
+      const result = await api.testAiWith(snapshot);
+      if (mountedRef.current && draftRequests.isCurrent(token)) {
+        setDraftStatus(result);
+      }
     } catch (error) {
-      setStatus({ ok: false, message: String(error), model: null, latencyMs: 0 });
-      setAiReady(false);
+      if (mountedRef.current && draftRequests.isCurrent(token)) {
+        setDraftStatus({
+          ok: false,
+          message: String(error),
+          model: null,
+          latencyMs: 0,
+        });
+      }
     } finally {
-      setTesting(false);
+      if (draftRequests.isCurrent(token)) {
+        testPendingRef.current = false;
+        if (mountedRef.current) setTesting(false);
+      }
     }
   };
 
-  const statusMessage = status
-    ? `${status.message}${status.latencyMs > 0 ? ` (${status.latencyMs} ms)` : ""}`
+  const statusMessage = draftStatus
+    ? `Draft test: ${draftStatus.message}${draftStatus.latencyMs > 0 ? ` (${draftStatus.latencyMs} ms)` : ""}`
     : null;
 
   return (
@@ -372,12 +455,12 @@ export function SettingsPage() {
             </button>
             {statusMessage && (
               <span
-                role={status?.ok ? "status" : "alert"}
+                role={draftStatus?.ok ? "status" : "alert"}
                 className={`inline-flex items-center gap-1.5 text-[12px] ${
-                  status?.ok ? "text-emerald-300" : "text-red-300"
+                  draftStatus?.ok ? "text-emerald-300" : "text-red-300"
                 }`}
               >
-                {status?.ok ? (
+                {draftStatus?.ok ? (
                   <CheckCircle2 size={13} aria-hidden="true" />
                 ) : (
                   <XCircle size={13} aria-hidden="true" />
@@ -386,6 +469,9 @@ export function SettingsPage() {
               </span>
             )}
           </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-stone-400">
+            This checks the current draft only. Assistant readiness continues to reflect saved settings.
+          </p>
         </section>
 
         <section className={sectionCls} aria-labelledby="scan-defaults-title">

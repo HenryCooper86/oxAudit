@@ -2,6 +2,10 @@ import { useEffect } from "react";
 import { Toasts } from "./components/Toasts";
 import { AppShell } from "./components/workbench/AppShell";
 import { api } from "./lib/api";
+import {
+  persistedAiReadiness,
+  persistedSettingsRequests,
+} from "./lib/settingsRequests";
 import { useAppStore } from "./lib/stores";
 import { Dashboard } from "./pages/Dashboard";
 import { SourceScanPage } from "./pages/SourceScan";
@@ -34,23 +38,31 @@ export default function App() {
   const setSettingsLoadError = useAppStore((s) => s.setSettingsLoadError);
 
   useEffect(() => {
-    api
-      .loadSettings()
-      .then((s) => {
+    let mounted = true;
+    const token = persistedSettingsRequests.begin();
+
+    void (async () => {
+      try {
+        const settings = await api.loadSettings();
+        if (!mounted || !persistedSettingsRequests.isCurrent(token)) return;
         setSettingsLoadError(false);
-        setSettings(s);
-        if (s.ai.enabled && s.ai.baseUrl) {
-          return api
-            .testAi()
-            .then((status) => setAiReady(status.ok))
-            .catch(() => setAiReady(false));
-        }
-        setAiReady(null);
-      })
-      .catch(() => {
+        setSettings(settings);
+        const ready = await persistedAiReadiness(settings);
+        if (!mounted || !persistedSettingsRequests.isCurrent(token)) return;
+        setAiReady(ready);
+      } catch {
+        if (!mounted || !persistedSettingsRequests.isCurrent(token)) return;
         setSettingsLoadError(true);
         setAiReady(null);
-      });
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      if (persistedSettingsRequests.isCurrent(token)) {
+        persistedSettingsRequests.invalidate();
+      }
+    };
   }, [setSettings, setAiReady, setSettingsLoadError]);
 
   return (

@@ -11,6 +11,7 @@ export function SessionSidebar({
   sessions,
   activeId,
   busy,
+  disabled = false,
   onSelect,
   onCreate,
   onRename,
@@ -19,11 +20,13 @@ export function SessionSidebar({
   sessions: SessionInfo[];
   activeId: string | null;
   busy: boolean;
+  disabled?: boolean;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const controlsDisabled = busy || disabled;
   const [query, setQuery] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -56,7 +59,7 @@ export function SessionSidebar({
         <button
           type="button"
           onClick={onCreate}
-          disabled={busy}
+          disabled={controlsDisabled}
           className="flex w-full items-center justify-center gap-1.5 rounded-md bg-accent-500 px-3 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus size={14} aria-hidden="true" /> New chat
@@ -146,8 +149,8 @@ export function SessionSidebar({
               ) : (
                 <button
                   type="button"
-                  onClick={() => !busy && onSelect(s.id)}
-                  disabled={busy}
+                  onClick={() => !controlsDisabled && onSelect(s.id)}
+                  disabled={controlsDisabled}
                   aria-current={active ? "true" : undefined}
                   className="flex w-full items-start gap-2 text-left disabled:cursor-default"
                 >
@@ -179,7 +182,7 @@ export function SessionSidebar({
                 </button>
               )}
 
-              {!busy && renamingId !== s.id && confirmDeleteId !== s.id && (
+              {!controlsDisabled && renamingId !== s.id && confirmDeleteId !== s.id && (
                 <div className="absolute right-1.5 top-1.5 hidden items-center gap-0.5 group-hover:flex group-focus-within:flex">
                   <button
                     type="button"

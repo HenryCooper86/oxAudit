@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { Ban, Clipboard, FileCode2, KeyRound, Play, Search } from "lucide-react";
 import { FindingDetail } from "../components/FindingDetail";
 import { FolderPicker } from "../components/FolderPicker";
@@ -20,6 +19,7 @@ import type { Finding, ScanProgress, ScanResult, Severity } from "../lib/types";
 const SEVERITIES: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
 
 export function SourceScanPage() {
+  const settings = useAppStore((state) => state.settings);
   const addRecentScan = useAppStore((state) => state.addRecentScan);
   const setActiveProjectStore = useAppStore((state) => state.setActiveProject);
   const setPageStatus = useAppStore((state) => state.setPageStatus);
@@ -27,11 +27,21 @@ export function SourceScanPage() {
   const push = useToastStore((state) => state.push);
 
   const [path, setPath] = useState("");
-  const [scanSecrets, setScanSecrets] = useState(true);
-  const [scanVulns, setScanVulns] = useState(true);
-  const [includeGit, setIncludeGit] = useState(false);
-  const [followSymlinks, setFollowSymlinks] = useState(false);
-  const [maxSizeKb, setMaxSizeKb] = useState(1024);
+  const [scanSecrets, setScanSecrets] = useState(
+    () => settings?.scan.scanSecrets ?? true,
+  );
+  const [scanVulns, setScanVulns] = useState(
+    () => settings?.scan.scanVulnerabilities ?? true,
+  );
+  const [includeGit, setIncludeGit] = useState(
+    () => settings?.scan.includeGit ?? false,
+  );
+  const [followSymlinks, setFollowSymlinks] = useState(
+    () => settings?.scan.followSymlinks ?? false,
+  );
+  const [maxSizeKb, setMaxSizeKb] = useState(
+    () => settings?.scan.maxFileSizeKb ?? 1024,
+  );
 
   const [running, setRunning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -47,6 +57,24 @@ export function SourceScanPage() {
   const [search, setSearch] = useState("");
 
   const cancellingRef = useRef(false);
+  const scanOptionsInitializedRef = useRef(settings !== null);
+  const scanOptionsEditedRef = useRef(false);
+
+  useEffect(() => {
+    if (scanOptionsInitializedRef.current || !settings) return;
+    scanOptionsInitializedRef.current = true;
+    if (scanOptionsEditedRef.current) return;
+    setScanSecrets(settings.scan.scanSecrets);
+    setScanVulns(settings.scan.scanVulnerabilities);
+    setIncludeGit(settings.scan.includeGit);
+    setFollowSymlinks(settings.scan.followSymlinks);
+    setMaxSizeKb(settings.scan.maxFileSizeKb);
+  }, [settings]);
+
+  const updateScanOption = (update: () => void) => {
+    scanOptionsEditedRef.current = true;
+    update();
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -241,12 +269,13 @@ export function SourceScanPage() {
     }
   };
 
-  const openFindingFile = (finding: Finding) => openPath(finding.filePath);
-
   const openFile = (finding: Finding) => {
-    void openFindingFile(finding).catch(() => {
-      push("error", "The finding file could not be opened");
-    });
+    if (!result) return;
+    void api
+      .openScanFinding(result.summary.path, finding.filePath)
+      .catch((openError) => {
+        push("error", `The finding file could not be opened: ${String(openError)}`);
+      });
   };
 
   const scanUnavailable = !scanSecrets && !scanVulns;
@@ -292,17 +321,27 @@ export function SourceScanPage() {
                 Advanced scan settings
               </summary>
               <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3">
-                <Switch checked={scanSecrets} onChange={setScanSecrets} label="Secrets" disabled={running} />
+                <Switch
+                  checked={scanSecrets}
+                  onChange={(checked) => updateScanOption(() => setScanSecrets(checked))}
+                  label="Secrets"
+                  disabled={running}
+                />
                 <Switch
                   checked={scanVulns}
-                  onChange={setScanVulns}
+                  onChange={(checked) => updateScanOption(() => setScanVulns(checked))}
                   label="Vulnerabilities"
                   disabled={running}
                 />
-                <Switch checked={includeGit} onChange={setIncludeGit} label="Include .git" disabled={running} />
+                <Switch
+                  checked={includeGit}
+                  onChange={(checked) => updateScanOption(() => setIncludeGit(checked))}
+                  label="Include .git"
+                  disabled={running}
+                />
                 <Switch
                   checked={followSymlinks}
-                  onChange={setFollowSymlinks}
+                  onChange={(checked) => updateScanOption(() => setFollowSymlinks(checked))}
                   label="Follow symlinks"
                   disabled={running}
                 />
@@ -313,7 +352,11 @@ export function SourceScanPage() {
                     value={maxSizeKb}
                     min={1}
                     max={10240}
-                    onChange={(event) => setMaxSizeKb(Number(event.target.value) || 1024)}
+                    onChange={(event) =>
+                      updateScanOption(() =>
+                        setMaxSizeKb(Number(event.target.value) || 1024),
+                      )
+                    }
                     disabled={running}
                     className="w-20 rounded-md border border-ink-600 bg-ink-900 px-2 py-1 font-mono text-xs text-stone-200 disabled:cursor-not-allowed disabled:opacity-50"
                   />

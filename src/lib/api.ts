@@ -23,6 +23,8 @@ export const api = {
   scanProject: (options: ScanOptions) =>
     invoke<ScanResult>("scan_project", { options }),
   cancelScan: () => invoke<void>("cancel_scan"),
+  openScanFinding: (root: string, relativePath: string) =>
+    invoke<void>("open_scan_finding", { root, relativePath }),
   scanDependencies: (path: string) =>
     invoke<DependencyScanResult>("scan_dependencies", { path }),
   findLockfiles: (path: string) =>
@@ -43,8 +45,11 @@ export const api = {
   osvPackageVulns: (ecosystem: string, name: string) =>
     invoke<unknown[]>("osv_package_vulns", { ecosystem, name }),
   chat: (request: ChatRequest) => invoke<ChatResponse>("chat", { request }),
-  streamChat: (request: ChatRequest) =>
-    invoke<StreamStarted>("stream_chat", { request }),
+  streamChat: (request: ChatRequest, runId?: string) =>
+    invoke<StreamStarted>("stream_chat", {
+      request,
+      ...(runId ? { runId } : {}),
+    }),
   cancelChat: (runId: string) => invoke<void>("cancel_chat", { runId }),
   respondPermission: (requestId: string, approve: boolean) =>
     invoke<void>("respond_permission", { requestId, approve }),
