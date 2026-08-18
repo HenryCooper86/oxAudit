@@ -30,7 +30,7 @@ export function InlineState(props: {
 
   return (
     <div
-      role={tone === "error" ? "alert" : "status"}
+      role={tone === "error" ? "alert" : progress ? undefined : "status"}
       className={`border ${TONE_STYLES[tone]} ${compact ? "px-3 py-2.5" : "px-4 py-4"}`}
     >
       <div className="flex items-start gap-3">
