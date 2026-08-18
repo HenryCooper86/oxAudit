@@ -8,13 +8,27 @@ use serde_json::{json, Value};
 
 use super::tool::{
     arg_bool_default, arg_str, arg_str_default, arg_str_opt, arg_u64_default, display_rel,
-    project_root, resolve_in_project, Tool,
+    project_root, resolve_in_project, wait_for_pending_response, PendingWaitError, Tool,
 };
 use rayon::prelude::*;
 use tauri::Manager;
 use crate::ai::AiStreamEvent;
 use crate::fs_utils;
 use crate::models::Vulnerability;
+
+fn collect_agent_files(
+    root: &std::path::Path,
+    settings: &crate::models::ScanSettings,
+) -> (Vec<std::path::PathBuf>, usize, u64) {
+    fs_utils::collect_files(
+        root,
+        fs_utils::CollectFilesOptions {
+            include_git: settings.include_git,
+            follow_symlinks: settings.follow_symlinks,
+            extra_ignored: &settings.ignored_dirs,
+        },
+    )
+}
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -104,9 +118,9 @@ pub fn builtins() -> Vec<Tool> {
                 };
                 let re = regex::Regex::new(&pattern).map_err(|e| format!("invalid regex: {e}"))?;
                 let st = ctx.state().ok_or("app state unavailable")?;
-                let ignored = st.settings.lock().unwrap().scan.ignored_dirs.clone();
+                let settings = st.settings.lock().unwrap().scan.clone();
                 drop(st);
-                let (files, _, _) = fs_utils::collect_files(&root, true, false, &ignored);
+                let (files, _, _) = collect_agent_files(&root, &settings);
 
                 let mut hits: Vec<Value> = Vec::new();
                 let mut counts: Vec<Value> = Vec::new();
@@ -187,9 +201,9 @@ pub fn builtins() -> Vec<Tool> {
                     .map_err(|e| format!("invalid glob: {e}"))?;
                 let matcher = builder.build().map_err(|e| format!("invalid glob: {e}"))?;
                 let st = ctx.state().ok_or("app state unavailable")?;
-                let ignored = st.settings.lock().unwrap().scan.ignored_dirs.clone();
+                let settings = st.settings.lock().unwrap().scan.clone();
                 drop(st);
-                let (files, _, _) = fs_utils::collect_files(&root, true, false, &ignored);
+                let (files, _, _) = collect_agent_files(&root, &settings);
                 let mut matched: Vec<String> = Vec::new();
                 for file in &files {
                     if matched.len() >= max_results { break; }
@@ -269,7 +283,7 @@ pub fn builtins() -> Vec<Tool> {
 
                 let scan_secrets = scan_type == "secrets";
                 let scan_vulns = !scan_secrets;
-                let (files, skipped, _) = fs_utils::collect_files(&root, true, false, &settings.scan.ignored_dirs);
+                let (files, skipped, _) = collect_agent_files(&root, &settings.scan);
                 let findings: Vec<crate::models::Finding> = files
                     .par_iter()
                     .map(|f| crate::scanners::scan_file(&root, f, settings.scan.max_file_size_kb, scan_secrets, scan_vulns))
@@ -464,10 +478,25 @@ pub fn builtins() -> Vec<Tool> {
                     st.pending_interactions.lock().unwrap().insert(req_id.clone(), tx);
                 }
                 (ctx.emit)(AiStreamEvent::AskUser { request_id: req_id.clone(), questions });
-                match tokio::time::timeout(std::time::Duration::from_secs(180), rx).await {
-                    Ok(Ok(answers)) => Ok(json!({ "answers": answers })),
-                    Ok(Err(_)) => Err("interaction channel closed".into()),
-                    Err(_) => Err("ask_user timed out after 180s".into()),
+                let response = if let Some(st) = ctx.state() {
+                    wait_for_pending_response(
+                        &st.pending_interactions,
+                        &req_id,
+                        rx,
+                        std::time::Duration::from_secs(180),
+                        ctx.cancellation.as_deref(),
+                    )
+                    .await
+                } else {
+                    Err(PendingWaitError::ChannelClosed)
+                };
+                match response {
+                    Ok(answers) => Ok(json!({ "answers": answers })),
+                    Err(PendingWaitError::Cancelled) => Err("chat cancelled".into()),
+                    Err(PendingWaitError::ChannelClosed) => {
+                        Err("interaction channel closed".into())
+                    }
+                    Err(PendingWaitError::TimedOut) => Err("ask_user timed out after 180s".into()),
                 }
             }
         ),
@@ -539,4 +568,49 @@ fn strip_html(raw: &str) -> String {
     let s = re_ws.replace_all(&s, " ");
     let s = re_nl.replace_all(&s, "\n\n");
     s.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_agent_files;
+    use crate::models::ScanSettings;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(root.path().join(".git/config"), "[core]\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "ignored.rs\n").unwrap();
+        fs::write(root.path().join("ignored.rs"), "ignored\n").unwrap();
+        fs::write(root.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        root
+    }
+
+    fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
+        let mut settings = ScanSettings::default();
+        settings.include_git = include_git;
+        settings.ignored_dirs.clear();
+        let (files, _, _) = collect_agent_files(root, &settings);
+        files
+            .into_iter()
+            .map(|path| path.strip_prefix(root).unwrap().to_path_buf())
+            .collect()
+    }
+
+    #[test]
+    fn assistant_file_collection_uses_saved_include_git_policy() {
+        let root = fixture();
+
+        let excluded = relative_files(root.path(), false);
+        let included = relative_files(root.path(), true);
+
+        assert!(!excluded.contains(&PathBuf::from(".git/config")));
+        assert!(included.contains(&PathBuf::from(".git/config")));
+        for files in [excluded, included] {
+            assert!(!files.contains(&PathBuf::from("ignored.rs")));
+            assert!(files.contains(&PathBuf::from("src/main.rs")));
+        }
+    }
 }

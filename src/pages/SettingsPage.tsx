@@ -18,8 +18,11 @@ import { api } from "../lib/api";
 import { DEFAULT_SYSTEM_PROMPT } from "../lib/defaults";
 import { LatestRequestQueue } from "../lib/latestRequest";
 import {
-  persistedAiReadiness,
+  loadingAiReadiness,
   persistedSettingsRequests,
+  publishPersistedAiReadiness,
+  publishSavedSettingsSnapshot,
+  unavailableAiReadiness,
 } from "../lib/settingsRequests";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { AiSettings, AiStatus, AppSettings, UsageSummary } from "../lib/types";
@@ -67,7 +70,7 @@ function cloneSettings(settings: AppSettings): AppSettings {
 export function SettingsPage() {
   const settings = useAppStore((state) => state.settings);
   const setSettings = useAppStore((state) => state.setSettings);
-  const setAiReady = useAppStore((state) => state.setAiReady);
+  const setAiReadiness = useAppStore((state) => state.setAiReadiness);
   const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const setSettingsLoadError = useAppStore((state) => state.setSettingsLoadError);
   const push = useToastStore((state) => state.push);
@@ -139,19 +142,24 @@ export function SettingsPage() {
 
   const retryLoad = async () => {
     const token = persistedSettingsRequests.begin();
+    setAiReadiness(loadingAiReadiness(token));
     if (mountedRef.current) setLoadError(null);
     setSettingsLoadError(false);
     try {
       const loaded = await api.loadSettings();
       if (!persistedSettingsRequests.isCurrent(token)) return;
       setSettingsLoadError(false);
+      const readiness = publishPersistedAiReadiness(
+        loaded,
+        token,
+        setAiReadiness,
+      );
       setSettings(loaded);
-      const ready = await persistedAiReadiness(loaded);
-      if (persistedSettingsRequests.isCurrent(token)) setAiReady(ready);
+      await readiness;
     } catch (error) {
       if (!persistedSettingsRequests.isCurrent(token)) return;
       setSettingsLoadError(true);
-      setAiReady(null);
+      setAiReadiness(unavailableAiReadiness(token));
       if (mountedRef.current) setLoadError(String(error));
     }
   };
@@ -217,9 +225,15 @@ export function SettingsPage() {
     setSaveState(null);
     try {
       await api.saveSettings(snapshot);
-      if (!persistedSettingsRequests.isCurrent(token)) return;
+      const readiness = publishSavedSettingsSnapshot(
+        snapshot,
+        token,
+        setSettings,
+        setAiReadiness,
+      );
+      if (!readiness) return;
       setSettingsLoadError(false);
-      setSettings(snapshot);
+      void readiness;
 
       if (mountedRef.current) {
         const hasNewerEdits = editRevisionRef.current !== submittedRevision;
@@ -232,10 +246,6 @@ export function SettingsPage() {
         });
         push("success", "Settings saved");
       }
-
-      void persistedAiReadiness(snapshot).then((ready) => {
-        if (persistedSettingsRequests.isCurrent(token)) setAiReady(ready);
-      });
     } catch (error) {
       if (!persistedSettingsRequests.isCurrent(token) || !mountedRef.current) {
         return;

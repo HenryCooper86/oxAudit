@@ -2,7 +2,7 @@ import type { Severity } from "../lib/types";
 import { severityColor, severityDot } from "../lib/format";
 
 export function SeverityBadge({ severity, showLabel = true }: { severity: Severity | string | null; showLabel?: boolean }) {
-  const sev = severity ?? "info";
+  const sev = severity?.trim().toLowerCase() || "unknown";
   return (
     <span
       aria-label={showLabel ? undefined : `${sev} severity`}

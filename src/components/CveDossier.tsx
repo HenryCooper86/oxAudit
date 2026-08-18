@@ -2,6 +2,7 @@ import { Bot, Calendar, ExternalLink, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import Markdown from "react-markdown";
 import { fmtDateTime } from "../lib/format";
+import type { AiReadinessStatus } from "../lib/settingsRequests";
 import { useAppStore } from "../lib/stores";
 import type { CveDetail } from "../lib/types";
 import { SeverityBadge } from "./SeverityBadge";
@@ -10,15 +11,13 @@ import { InlineState } from "./workbench/InlineState";
 export function CveDossier({
   detail,
   loading,
-  aiReady,
-  aiStatusUnavailable,
+  aiReadiness,
   onOpenUrl,
   onGenerateBriefing,
 }: {
   detail: CveDetail | null;
   loading: boolean;
-  aiReady: boolean;
-  aiStatusUnavailable: boolean;
+  aiReadiness: AiReadinessStatus;
   onOpenUrl: (url: string) => Promise<void>;
   onGenerateBriefing: () => Promise<string | null>;
 }): JSX.Element {
@@ -27,6 +26,15 @@ export function CveDossier({
   const [briefingError, setBriefingError] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const briefingRequestRef = useRef(0);
+  const aiReady = aiReadiness === "ready";
+  const unavailableMessage = {
+    loading: "Saved AI settings are still loading.",
+    checking: "The newly persisted AI endpoint is still being checked.",
+    unconfigured: "Configure an AI provider in Settings to generate a briefing.",
+    offline: "The saved AI endpoint is offline. Review Settings before generating a briefing.",
+    ready: "",
+    unavailable: "AI readiness could not be loaded. Review Settings before generating a briefing.",
+  }[aiReadiness];
 
   useEffect(() => {
     briefingRequestRef.current += 1;
@@ -278,9 +286,7 @@ export function CveDossier({
         </div>
         {!aiReady && (
           <p className="mt-2 text-[12px] text-stone-400">
-            {aiStatusUnavailable
-              ? "AI readiness could not be loaded. Review Settings before generating a briefing."
-              : "Configure an AI provider in Settings to generate a briefing."}
+            {unavailableMessage}
           </p>
         )}
         {aiLoading && (

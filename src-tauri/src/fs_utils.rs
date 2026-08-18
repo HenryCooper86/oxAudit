@@ -73,26 +73,29 @@ pub fn is_lockfile_name(name: &str) -> bool {
 
 /// Collect candidate files under `root`, applying ignore rules.
 ///
-/// * `include_git` — include `.git` metadata files when explicitly requested
-/// * `extra_ignored` — additional directory names to skip (node_modules, …)
-/// * `follow_symlinks` — whether to descend into symlinked directories
+/// The named policy keeps `.git` inclusion distinct from ordinary git-ignore
+/// handling at every call site.
 ///
 /// Returns (files, skipped_count, total_bytes).
+pub struct CollectFilesOptions<'a> {
+    pub include_git: bool,
+    pub follow_symlinks: bool,
+    pub extra_ignored: &'a [String],
+}
+
 pub fn collect_files(
     root: &Path,
-    include_git: bool,
-    follow_symlinks: bool,
-    extra_ignored: &[String],
+    options: CollectFilesOptions<'_>,
 ) -> (Vec<PathBuf>, usize, u64) {
     let mut files = Vec::new();
     let mut skipped = 0usize;
     let mut total_bytes = 0u64;
 
     let mut builder = WalkBuilder::new(root);
-    let ignored: Vec<String> = extra_ignored.to_vec();
+    let ignored: Vec<String> = options.extra_ignored.to_vec();
     builder
         .hidden(false)
-        .follow_links(follow_symlinks)
+        .follow_links(options.follow_symlinks)
         .git_ignore(true)
         .git_global(false)
         .git_exclude(false)
@@ -104,7 +107,7 @@ pub fn collect_files(
             }
             let name = entry.file_name().to_string_lossy();
             if name == ".git" {
-                return include_git;
+                return options.include_git;
             }
             if ALWAYS_IGNORED.contains(&name.as_ref()) {
                 return false;
@@ -190,7 +193,7 @@ pub fn line_starts(content: &str) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_files;
+    use super::{collect_files, CollectFilesOptions};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -206,7 +209,14 @@ mod tests {
     }
 
     fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
-        let (files, _, _) = collect_files(root, include_git, false, &[]);
+        let (files, _, _) = collect_files(
+            root,
+            CollectFilesOptions {
+                include_git,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+        );
         files
             .into_iter()
             .map(|path| path.strip_prefix(root).unwrap().to_path_buf())
@@ -238,6 +248,18 @@ mod tests {
                 "Include .git must not invert ordinary .gitignore behavior"
             );
         }
+    }
+
+    #[test]
+    fn lockfile_discovery_never_descends_into_git_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        fs::write(root.path().join("Cargo.lock"), "").unwrap();
+        fs::write(root.path().join(".git/package-lock.json"), "{}").unwrap();
+
+        let files = super::collect_lockfiles(root.path(), &[]);
+
+        assert_eq!(files, [root.path().join("Cargo.lock")]);
     }
 }
 

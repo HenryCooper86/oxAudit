@@ -19,18 +19,29 @@ const toolIcons = {
 };
 
 export function Dashboard() {
-  const { recentScans, setPage, aiReady, settingsLoadError } = useAppStore();
+  const { recentScans, setPage, aiReadiness } = useAppStore();
   const recentActivity = recentScans.slice(0, 6);
   const activityAnnouncement = recentActivity.length === 0
     ? "No recent activity."
     : `${recentActivity.length} recent ${recentActivity.length === 1 ? "activity item" : "activity items"} shown.`;
-  const aiAnnouncement = settingsLoadError
-    ? "AI assistant readiness could not be loaded."
-    : aiReady === null
-      ? "AI assistant not configured."
-      : aiReady
-        ? "AI assistant ready."
-        : "AI assistant unavailable.";
+  const aiAnnouncement = {
+    loading: "AI assistant settings are loading.",
+    checking: "AI assistant endpoint is being checked.",
+    unconfigured: "AI assistant not configured.",
+    offline: "AI assistant endpoint unavailable.",
+    ready: "AI assistant ready.",
+    unavailable: "AI assistant readiness could not be loaded.",
+  }[aiReadiness.status];
+  const aiDescription = {
+    loading: "Loading the saved AI provider settings.",
+    checking: "Checking the newly persisted AI endpoint before enabling sends.",
+    unconfigured: "Not configured. Add an AI endpoint to enable assistant research.",
+    offline: "Configured but unreachable. Check the endpoint settings.",
+    ready: "Connected and ready for security research.",
+    unavailable: "Readiness could not be loaded from local settings. Review Settings and retry.",
+  }[aiReadiness.status];
+  const readinessPending =
+    aiReadiness.status === "loading" || aiReadiness.status === "checking";
 
   return (
     <ToolPage title="Research Workbench" description="Choose a tool or resume recent work.">
@@ -113,21 +124,31 @@ export function Dashboard() {
               AI Assistant
             </h2>
             <p className="mt-1 text-[13px] text-slate-400">
-              {settingsLoadError
-                ? "Readiness could not be loaded from local settings. Review Settings and retry."
-                : aiReady === null
-                  ? "Not configured. Add an AI endpoint to enable assistant research."
-                  : aiReady
-                    ? "Connected and ready for security research."
-                    : "Configured but unreachable. Check the endpoint settings."}
+              {aiDescription}
             </p>
           </div>
           <button
             type="button"
-            onClick={() => setPage(settingsLoadError || aiReady === null ? "settings" : "assistant")}
+            onClick={() =>
+              setPage(
+                aiReadiness.status === "unavailable" ||
+                  aiReadiness.status === "unconfigured"
+                  ? "settings"
+                  : "assistant",
+              )
+            }
+            disabled={readinessPending}
             className="shrink-0 rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[13px] font-medium text-slate-200 transition-colors hover:border-ink-500 hover:bg-ink-700"
           >
-            {settingsLoadError ? "Review settings" : aiReady === null ? "Configure AI" : "Open assistant"}
+            {aiReadiness.status === "unavailable"
+              ? "Review settings"
+              : aiReadiness.status === "unconfigured"
+                ? "Configure AI"
+                : aiReadiness.status === "loading"
+                  ? "Loading AI…"
+                  : aiReadiness.status === "checking"
+                    ? "Checking AI…"
+                    : "Open assistant"}
           </button>
         </div>
       </section>

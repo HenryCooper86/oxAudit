@@ -6,6 +6,7 @@ below; it does not turn bounded browser evidence into native evidence.
 
 ## Automated
 
+- [x] npm test
 - [x] npm run check
 - [x] npm run build
 - [x] cargo test --manifest-path src-tauri/Cargo.toml
@@ -367,3 +368,85 @@ native-plugin or live-provider evidence.
   process. It was stopped cleanly with no listener or process remaining. With
   no addressable macOS Computer Use provider in this environment, native
   stream/open-file interactions and native visual inspection remain unverified.
+
+## Authorized residual corrective cycle — 2026-08-18
+
+This cycle addresses the residual ownership, collection-policy, hydration,
+readiness, and nullable-severity findings discovered after the normal final
+wave. Evidence below supersedes narrower lifecycle and Source-default claims
+above where they overlap. The four tools and their direct-entry workflow remain
+unchanged.
+
+### Permanent regression coverage
+
+- `npm test` is now a checked-in Node-environment gate using `tsx --test`.
+  The final run passed 19 of 19 tests: six native-stream ownership cases, three
+  session activation cases, five persisted-readiness/save-race cases, three
+  Source hydration/request cases, and two severity-rendering cases.
+- Assistant disposal now requests native cancellation and synchronously releases
+  its listeners. The production-module tests cover completion, early explicit
+  cancel, navigation disposal, late listener registration, foreign-run event
+  filtering, stream-command rejection, and rejected cancellation transport.
+- Rust cancellation tests poll real pending permission and interaction waits
+  before cancelling them, prove both wake within the bounded test timeout, and
+  prove pending senders are removed. Normal response and timeout cleanup are
+  covered separately. A run-start snapshot test proves a later global project
+  change cannot replace the captured project context used by tools.
+- Real filesystem tests prove the named collection policy controls `.git`
+  traversal, continues respecting ordinary `.gitignore`, carries saved policy
+  into Assistant file tools, and keeps dependency lockfile discovery out of
+  `.git`.
+- Source tests preserve one pre-load edit while hydrating every untouched saved
+  default, release fallback controls after load failure, and compare the exact
+  displayed-effective request. Settings tests prove a newly persisted snapshot
+  publishes its versioned `checking` state before settings consumers see it,
+  stale completion cannot publish, and a superseded save publishes nothing.
+- A nullable dependency severity now renders visible `UNKNOWN` text with the
+  neutral slate badge treatment; known severity labels retain their compact
+  colors.
+
+### Final automated evidence
+
+- `npm test` — exit 0 (19 passed, 0 failed).
+- `npm run check` — exit 0 (`tsc --noEmit`).
+- `npm run build` — exit 0 (Vite 7.3.6; 1,787 modules transformed;
+  JavaScript 457.91 kB, 135.61 kB gzip).
+- `cargo test --manifest-path src-tauri/Cargo.toml` — exit 0 (61 passed,
+  0 failed, 1 ignored). The ignored live OSV test retains its explicit
+  compiled-binary sandbox rationale.
+- `cargo check --manifest-path src-tauri/Cargo.toml` — exit 0. The only warning
+  remains the pre-existing unused `sessions::transcript_path` function.
+- Cached and uncached `git diff --check` both exited 0 before final staging.
+
+### Rendered and native boundary evidence
+
+- Production-frontend checks rendered Source, Assistant, Settings, and
+  Dependency at 1,440 x 900, 900 x 700, and 899 x 700. Browser-only execution
+  truthfully showed Source fallback defaults, Assistant readiness unavailable,
+  Settings unavailable with Retry, and Dependency live-progress unavailable;
+  it did not claim native plugin or configured-provider success.
+- At all checked widths, document and body scroll widths equaled their client
+  widths. Exactly 900 px retained the 208 px desktop sidebar, hid the menu, and
+  began main content at x=208. At 899 px the sidebar settled hidden at x=-208,
+  the menu was visible, and main content occupied x=0 through all 899 px.
+  Browser console inspection reported no warnings or errors.
+- `npm run tauri dev -- --no-watch` rebuilt and launched the current
+  `target/debug/vulncompanion` binary while Vite listened on port 1420. Process
+  and port checks confirmed both, and shutdown left neither behind. Computer
+  Use still returned `Invalid app` for the executable name, configured bundle
+  identifier, and exact binary path, and the running app was absent from its app
+  list. Native accessibility/visual/provider-stream interaction therefore
+  remains unverified rather than inferred from browser or unit evidence.
+
+### Preserved rulings and cleanup
+
+- Tailwind `max-[900px]` still means desktop at exactly 900 px and drawer below
+  900 px. `CveDetail.osv === null` remains absent-or-unavailable, not a claimed
+  negative result. `set_active_project(null)` remains a runtime-only clear and
+  does not mutate persisted sessions.
+- Source Scan, Dependency Scan, CVE Research, and AI Assistant remain four
+  independent tools; no project wizard, score, compliance step, or mandatory
+  shared workflow was introduced.
+- The formerly force-tracked final-fix report was removed from Git while its
+  workspace copy and this cycle's report remain ignored review scratch. Browser,
+  native, Vite, and port resources were closed before final verification.

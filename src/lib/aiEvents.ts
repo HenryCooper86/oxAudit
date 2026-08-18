@@ -34,7 +34,7 @@ export interface StreamHandle {
   finished: Promise<void>;
   /** Waits for backend registration before sending cancellation. */
   cancel: () => Promise<void>;
-  /** Stops delivery and tears down this run's listeners. */
+  /** Requests native cancellation, stops delivery, and tears down listeners. */
   dispose: () => void;
 }
 
@@ -49,6 +49,8 @@ export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
   const unlisteners: UnlistenFn[] = [];
   let disposed = false;
   let settled = false;
+  let cancellationRequested = false;
+  let cancellation: Promise<void> | null = null;
   let resolveTerminal!: () => void;
   let resolveSetup!: (ready: boolean) => void;
   const terminal = new Promise<void>((resolve) => {
@@ -57,6 +59,14 @@ export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
   const setup = new Promise<boolean>((resolve) => {
     resolveSetup = resolve;
   });
+
+  const requestCancellation = (): Promise<void> => {
+    cancellationRequested = true;
+    cancellation ??= setup.then(async (ready) => {
+      if (ready) await api.cancelChat(runId);
+    });
+    return cancellation;
+  };
 
   const cleanup = () => {
     while (unlisteners.length > 0) {
@@ -193,23 +203,32 @@ export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
       if (!disposed) reportError(error);
     } finally {
       resolveSetup(ready);
+      if (ready && cancellationRequested) {
+        try {
+          await requestCancellation();
+        } catch {
+          /* Disposal still completes when native cancellation cannot be acknowledged. */
+        }
+      }
     }
   })();
 
   const dispose = () => {
-    if (disposed) return;
+    if (disposed || settled) return;
     disposed = true;
     settled = true;
     cleanup();
-    resolveTerminal();
+    void requestCancellation()
+      .catch(() => undefined)
+      .finally(resolveTerminal);
   };
 
   return {
     runId,
     finished: Promise.all([launch, terminal]).then(() => undefined),
     cancel: async () => {
-      const ready = await setup;
-      if (ready && !disposed && !settled) await api.cancelChat(runId);
+      if (settled && !disposed) return;
+      await requestCancellation();
     },
     dispose,
   };
