@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import {
   Ban,
   Bot,
@@ -92,6 +92,7 @@ export function AssistantPage() {
   const [contextProjectPath, setContextProjectPath] = useState<string | null>(
     null,
   );
+  const [contextAttaching, setContextAttaching] = useState(false);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [askUser, setAskUser] = useState<AskPrompt | null>(null);
 
@@ -104,15 +105,34 @@ export function AssistantPage() {
   streamingRef.current = streaming;
   const bottomRef = useRef<HTMLDivElement>(null);
   const contextTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const contextDialogRef = useRef<HTMLElement>(null);
+  const contextReturnFocusRef = useRef<HTMLElement | null>(null);
+  const contextAttachPendingRef = useRef(false);
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+  const assistantRootRef = useRef<HTMLDivElement>(null);
+  const assistantFallbackRef = useRef<HTMLElement>(null);
 
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
 
-  const discardContext = () => {
+  const closeContext = () => {
+    const returnFocus = contextReturnFocusRef.current;
+    contextReturnFocusRef.current = null;
     setContextOpen(false);
     setContextText("");
     setContextLabel("Manual context");
     setContextProjectPath(null);
+    setContextAttaching(false);
+    requestAnimationFrame(() => {
+      if (returnFocus?.isConnected) returnFocus.focus();
+      else assistantFallbackRef.current?.focus();
+    });
+  };
+
+  const discardContext = () => {
+    if (contextAttachPendingRef.current) return;
+    closeContext();
   };
 
   const refreshUsage = () => {
@@ -130,8 +150,15 @@ export function AssistantPage() {
     );
   };
 
+  const applyRuntimeProject = async (projectPath: string | null) => {
+    await api.setActiveProject(projectPath);
+    setActiveProjectStore(projectPath);
+  };
+
   const loadSession = async (id: string) => {
     const storedMessages = await api.sessionGetMessages(id);
+    const info = sessions.find((session) => session.id === id);
+    await applyRuntimeProject(info?.projectPath ?? null);
     setMessages(
       storedMessages.map((message) => ({
         id: message.id,
@@ -143,17 +170,13 @@ export function AssistantPage() {
     conversationId.current = id;
     setActiveSessionId(id);
     setModel(null);
-    const info = sessions.find((session) => session.id === id);
-    if (info?.projectPath) {
-      api.setActiveProject(info.projectPath).catch(() => undefined);
-      setActiveProjectStore(info.projectPath);
-    }
     refreshUsage();
   };
 
   const createNewChat = async () => {
     try {
       const session = await api.sessionCreate(null, null);
+      await applyRuntimeProject(null);
       setSessions((list) => [session, ...list]);
       setMessages([]);
       setConvUsage(null);
@@ -172,6 +195,7 @@ export function AssistantPage() {
         setSessions(list);
         if (list.length > 0) {
           const storedMessages = await api.sessionGetMessages(list[0].id);
+          await applyRuntimeProject(list[0].projectPath);
           setMessages(
             storedMessages.map((message) => ({
               id: message.id,
@@ -182,10 +206,6 @@ export function AssistantPage() {
           );
           conversationId.current = list[0].id;
           setActiveSessionId(list[0].id);
-          if (list[0].projectPath) {
-            api.setActiveProject(list[0].projectPath).catch(() => undefined);
-            setActiveProjectStore(list[0].projectPath);
-          }
           refreshUsage();
         } else {
           await createNewChat();
@@ -200,6 +220,7 @@ export function AssistantPage() {
 
   useEffect(() => {
     if (!assistantHandoff) return;
+    contextReturnFocusRef.current = null;
     setContextText(assistantHandoff.content);
     setContextLabel(assistantHandoff.label);
     setContextProjectPath(assistantHandoff.projectPath);
@@ -208,17 +229,88 @@ export function AssistantPage() {
   }, [assistantHandoff, clearAssistantHandoff]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)")
+      .matches
+      ? "auto"
+      : "smooth";
+    bottomRef.current?.scrollIntoView({ behavior });
   }, [messages, busy, streaming.text, toolRecords]);
 
   useEffect(() => {
     if (!contextOpen) return;
-    requestAnimationFrame(() => contextTextareaRef.current?.focus());
+    const focusFrame = requestAnimationFrame(() =>
+      contextTextareaRef.current?.focus(),
+    );
+    const root = assistantRootRef.current;
+    const main = root?.closest("main");
+    const shellSection = main?.parentElement;
+    const appShell = shellSection?.parentElement;
+    const outsideRegions = [
+      ...Array.from(main?.children ?? []).filter((element) => element !== root),
+      ...Array.from(shellSection?.children ?? []).filter(
+        (element) => element !== main,
+      ),
+      ...Array.from(appShell?.children ?? []).filter(
+        (element) => element !== shellSection,
+      ),
+    ] as HTMLElement[];
+    const previousIsolation = outsideRegions.map((element) => ({
+      element,
+      inert: element.inert,
+      ariaHidden: element.getAttribute("aria-hidden"),
+    }));
+    for (const { element } of previousIsolation) {
+      element.inert = true;
+      element.setAttribute("aria-hidden", "true");
+    }
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") discardContext();
+      if (event.key === "Escape") {
+        if (!contextAttachPendingRef.current) {
+          event.preventDefault();
+          discardContext();
+        }
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = contextDialogRef.current;
+      if (!dialog) return;
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      if (
+        event.shiftKey &&
+        (document.activeElement === first || !dialog.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last || !dialog.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", onKeyDown);
+      for (const { element, inert, ariaHidden } of previousIsolation) {
+        element.inert = inert;
+        if (ariaHidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", ariaHidden);
+      }
+    };
   }, [contextOpen]);
 
   const upsertTool = (record: ToolRecord) => {
@@ -379,23 +471,39 @@ export function AssistantPage() {
   };
 
   const attachContext = async () => {
-    if (!contextText.trim() || !activeSessionId) return;
+    const targetSessionId = activeSessionIdRef.current;
+    if (
+      contextAttachPendingRef.current ||
+      !contextText.trim() ||
+      !targetSessionId
+    ) {
+      return;
+    }
     const stored: StoredMessage = {
       id: crypto.randomUUID(),
       role: "user",
       content: `[User-attached source context: ${contextLabel}]\n\n${contextText}`,
       at: new Date().toISOString(),
     };
+    contextAttachPendingRef.current = true;
+    setContextAttaching(true);
     try {
-      const info = await api.sessionAppend(activeSessionId, stored);
-      setMessages((current) => [
-        ...current,
-        { id: stored.id, role: stored.role, content: stored.content },
-      ]);
+      const info = await api.sessionAppend(targetSessionId, stored);
+      if (activeSessionIdRef.current === targetSessionId) {
+        setMessages((current) => [
+          ...current,
+          { id: stored.id, role: stored.role, content: stored.content },
+        ]);
+      }
       updateSessionInfo(info);
-      discardContext();
+      contextAttachPendingRef.current = false;
+      setContextAttaching(false);
+      closeContext();
     } catch (error) {
       push("error", `Context could not be attached: ${String(error)}`);
+    } finally {
+      contextAttachPendingRef.current = false;
+      setContextAttaching(false);
     }
   };
 
@@ -411,7 +519,8 @@ export function AssistantPage() {
     if (info) updateSessionInfo({ ...info, messageCount: 0 });
   };
 
-  const openManualContext = () => {
+  const openManualContext = (event: MouseEvent<HTMLButtonElement>) => {
+    contextReturnFocusRef.current = event.currentTarget;
     setContextLabel("Manual context");
     setContextText("");
     setContextProjectPath(null);
@@ -428,8 +537,16 @@ export function AssistantPage() {
         : "AI not configured";
 
   return (
-    <div className="flex h-full min-h-0 overflow-hidden bg-ink-950">
-      <SessionSidebar
+    <div
+      ref={assistantRootRef}
+      className="relative h-full min-h-0 overflow-hidden bg-ink-950"
+    >
+      <div
+        inert={contextOpen}
+        aria-hidden={contextOpen ? "true" : undefined}
+        className="flex h-full min-h-0"
+      >
+        <SessionSidebar
         sessions={sessions}
         activeId={activeSessionId}
         busy={busy}
@@ -457,18 +574,20 @@ export function AssistantPage() {
           );
           if (id === activeSessionId) await createNewChat();
         }}
-      />
+        />
 
-      <section
-        aria-label="Assistant conversation"
-        className="flex min-w-0 flex-1 flex-col"
-      >
+        <section
+          ref={assistantFallbackRef}
+          tabIndex={-1}
+          aria-label="Assistant conversation"
+          className="flex min-w-0 flex-1 flex-col"
+        >
         <header className="flex min-h-[52px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-ink-800 bg-ink-900/80 px-4 py-2">
           <div className="min-w-0">
-            <p className="text-[12px] font-semibold text-stone-200">
+            <p className="text-[13px] font-semibold text-stone-200">
               Conversation
             </p>
-            <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-stone-400">
+            <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-stone-400">
               <span
                 aria-hidden="true"
                 className={`h-1.5 w-1.5 rounded-full ${
@@ -487,7 +606,7 @@ export function AssistantPage() {
             {activeSession?.projectPath ? (
               <span
                 title={activeSession.projectPath}
-                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-md border border-accent-600/50 bg-accent-500/10 px-2 py-1 text-[10px] text-accent-300"
+                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-md border border-accent-600/50 bg-accent-500/10 px-2 py-1 text-[11px] text-accent-300"
               >
                 <FolderOpen size={11} aria-hidden="true" className="shrink-0" />
                 <span className="shrink-0 font-medium">Project context</span>
@@ -496,12 +615,12 @@ export function AssistantPage() {
                 </code>
               </span>
             ) : (
-              <span className="rounded-md border border-ink-600 bg-ink-850 px-2 py-1 text-[10px] text-stone-400">
+              <span className="rounded-md border border-ink-600 bg-ink-850 px-2 py-1 text-[11px] text-stone-400">
                 Standalone · no project context
               </span>
             )}
             {model && (
-              <span className="rounded-md border border-ink-600 bg-ink-850 px-2 py-1 font-mono text-[10px] text-stone-400">
+              <span className="rounded-md border border-ink-600 bg-ink-850 px-2 py-1 font-mono text-[11px] text-stone-400">
                 {model}
               </span>
             )}
@@ -509,7 +628,7 @@ export function AssistantPage() {
               type="button"
               onClick={openManualContext}
               disabled={busy}
-              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-850 px-2.5 py-1.5 text-[11px] font-medium text-stone-300 hover:border-ink-500 hover:bg-ink-800 disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-850 px-2.5 py-1.5 text-[12px] font-medium text-stone-300 hover:border-ink-500 hover:bg-ink-800 disabled:opacity-40"
             >
               <ClipboardPaste size={12} aria-hidden="true" />
               Attach context
@@ -518,7 +637,7 @@ export function AssistantPage() {
               type="button"
               onClick={() => void clearConversation()}
               disabled={busy || messages.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-850 px-2.5 py-1.5 text-[11px] text-stone-400 hover:border-red-500/40 hover:text-red-300 disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-850 px-2.5 py-1.5 text-[12px] text-stone-300 hover:border-red-500/40 hover:text-red-300 disabled:opacity-40"
             >
               <Trash2 size={12} aria-hidden="true" />
               Clear
@@ -531,7 +650,7 @@ export function AssistantPage() {
             role={aiReady === false ? "alert" : "status"}
             className="flex shrink-0 items-center justify-between gap-3 border-b border-ink-800 bg-amber-950/20 px-4 py-2"
           >
-            <p className="text-[11px] text-amber-200/90">
+            <p className="text-[12px] text-amber-200">
               {aiReady === false
                 ? "The configured AI endpoint cannot be reached. Messages remain available, but sending is paused."
                 : "Configure an AI provider before sending a message. You can still review and attach context."}
@@ -539,7 +658,7 @@ export function AssistantPage() {
             <button
               type="button"
               onClick={() => setPage("settings")}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-amber-700/50 bg-amber-900/20 px-2.5 py-1 text-[11px] font-medium text-amber-200 hover:bg-amber-900/35"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-amber-700/50 bg-amber-900/20 px-2.5 py-1 text-[12px] font-medium text-amber-200 hover:bg-amber-900/35"
             >
               <Settings2 size={11} aria-hidden="true" />
               Open Settings
@@ -561,7 +680,7 @@ export function AssistantPage() {
                   <h2 className="text-[14px] font-semibold text-stone-100">
                     Start a standalone security conversation
                   </h2>
-                  <p className="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-stone-400">
+                  <p className="mx-auto mt-1 max-w-md text-[13px] leading-relaxed text-stone-300">
                     Ask a security question or explicitly attach source material.
                     A project is available only when this conversation shows a
                     project context chip above.
@@ -574,7 +693,7 @@ export function AssistantPage() {
                       type="button"
                       onClick={() => void send(suggestion)}
                       disabled={busy || aiReady !== true || !activeSessionId}
-                      className="rounded-md border border-ink-700 bg-ink-900/70 px-3 py-2.5 text-left text-[11px] leading-relaxed text-stone-400 transition-colors hover:border-accent-600/50 hover:text-stone-200 disabled:opacity-40"
+                      className="rounded-md border border-ink-700 bg-ink-900/70 px-3 py-2.5 text-left text-[13px] leading-relaxed text-stone-300 transition-colors hover:border-accent-600/50 hover:text-stone-100 disabled:opacity-40"
                     >
                       <Sparkles
                         size={11}
@@ -614,7 +733,7 @@ export function AssistantPage() {
                       </div>
                     )}
                     <div
-                      className={`rounded-lg px-4 py-3 text-[12px] leading-relaxed ${
+                      className={`rounded-lg px-4 py-3 text-[13px] leading-relaxed ${
                         message.role === "user"
                           ? "selectable ml-auto rounded-tr-sm border border-accent-600/30 bg-accent-500/10 text-stone-200"
                           : "selectable md-body rounded-tl-sm border border-ink-700 bg-ink-900/70 text-stone-300"
@@ -665,7 +784,7 @@ export function AssistantPage() {
                       />
                     )}
                     {streaming.text && (
-                      <div className="selectable md-body rounded-lg rounded-tl-sm border border-ink-700 bg-ink-900/70 px-4 py-3 text-[12px] text-stone-300">
+                      <div className="selectable md-body rounded-lg rounded-tl-sm border border-ink-700 bg-ink-900/70 px-4 py-3 text-[13px] text-stone-300">
                         <Markdown>{streaming.text}</Markdown>
                         <span
                           aria-hidden="true"
@@ -674,7 +793,7 @@ export function AssistantPage() {
                       </div>
                     )}
                     {!streaming.text && toolRecords.length === 0 && (
-                      <div className="flex items-center gap-2 rounded-lg border border-ink-700 bg-ink-900/70 px-4 py-3 text-[11px] text-stone-400">
+                      <div className="flex items-center gap-2 rounded-lg border border-ink-700 bg-ink-900/70 px-4 py-3 text-[12px] text-stone-300">
                         <Loader2
                           size={13}
                           aria-hidden="true"
@@ -721,7 +840,7 @@ export function AssistantPage() {
                     ? "Ask a security question or describe what you want to analyze…"
                     : "Configure an AI provider to send messages"
                 }
-                className="selectable min-h-11 flex-1 resize-none rounded-md border border-ink-600 bg-ink-950 px-3.5 py-2.5 text-[13px] leading-relaxed text-stone-200 outline-none placeholder:text-stone-600 focus:border-accent-500/70 disabled:cursor-not-allowed disabled:opacity-60"
+                className="selectable min-h-11 flex-1 resize-none rounded-md border border-ink-600 bg-ink-950 px-3.5 py-2.5 text-[13px] leading-relaxed text-stone-200 outline-none placeholder:text-stone-400 focus:border-accent-500/70 disabled:cursor-not-allowed disabled:opacity-60"
               />
               {busy ? (
                 <button
@@ -745,7 +864,7 @@ export function AssistantPage() {
             </div>
             <div
               id="assistant-composer-help"
-              className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-stone-500"
+              className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-stone-400"
             >
               <span>
                 Enter to send · Shift+Enter for a new line · tools require approval
@@ -767,7 +886,8 @@ export function AssistantPage() {
               : "The Assistant is idle."}
           </p>
         </div>
-      </section>
+        </section>
+      </div>
 
       {permission && (
         <ApprovalModal
@@ -794,12 +914,20 @@ export function AssistantPage() {
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4 sm:p-6"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) discardContext();
+            if (
+              !contextAttachPendingRef.current &&
+              event.target === event.currentTarget
+            ) {
+              discardContext();
+            }
           }}
         >
           <section
+            ref={contextDialogRef}
+            tabIndex={-1}
             role="dialog"
             aria-modal="true"
+            aria-busy={contextAttaching}
             aria-labelledby="assistant-context-title"
             aria-describedby="assistant-context-description"
             className="w-full max-w-2xl rounded-lg border border-ink-600 bg-ink-850 p-5 shadow-2xl"
@@ -817,7 +945,7 @@ export function AssistantPage() {
                   />
                   Review context before attaching
                 </h2>
-                <p className="mt-1 truncate text-[12px] font-medium text-accent-300">
+                <p className="mt-1 truncate text-[13px] font-medium text-accent-300">
                   {contextLabel}
                 </p>
               </div>
@@ -825,14 +953,15 @@ export function AssistantPage() {
                 type="button"
                 aria-label="Cancel context attachment"
                 onClick={discardContext}
-                className="rounded p-1 text-stone-500 hover:bg-ink-800 hover:text-stone-200"
+                disabled={contextAttaching}
+                className="rounded p-1 text-stone-400 hover:bg-ink-800 hover:text-stone-200 disabled:opacity-40"
               >
                 <X size={15} aria-hidden="true" />
               </button>
             </div>
             <p
               id="assistant-context-description"
-              className="mt-2 text-[11px] leading-relaxed text-stone-400"
+              className="mt-2 text-[13px] leading-relaxed text-stone-300"
             >
               Review and edit this source material before it is saved to the
               current conversation. Findings can contain source code or secrets.
@@ -840,13 +969,13 @@ export function AssistantPage() {
               only on your next explicit Send.
             </p>
             {contextProjectPath && (
-              <p className="mt-2 break-all rounded-md border border-ink-700 bg-ink-900 px-2.5 py-2 font-mono text-[10px] text-stone-400">
+              <p className="mt-2 break-all rounded-md border border-ink-700 bg-ink-900 px-2.5 py-2 font-mono text-[12px] text-stone-300">
                 Source scope: {contextProjectPath}
               </p>
             )}
             <label
               htmlFor="assistant-context-content"
-              className="mt-4 block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400"
+              className="mt-4 block text-[12px] font-semibold uppercase tracking-[0.12em] text-stone-300"
             >
               Context content
             </label>
@@ -855,13 +984,15 @@ export function AssistantPage() {
               id="assistant-context-content"
               value={contextText}
               onChange={(event) => setContextText(event.target.value)}
+              readOnly={contextAttaching}
               rows={14}
-              className="selectable mt-2 max-h-[55vh] w-full resize-y rounded-md border border-ink-600 bg-ink-950 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-stone-200 outline-none focus:border-accent-500/70"
+              className="selectable mt-2 max-h-[55vh] w-full resize-y rounded-md border border-ink-600 bg-ink-950 px-3 py-2.5 font-mono text-[13px] leading-relaxed text-stone-200 outline-none focus:border-accent-500/70"
             />
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={discardContext}
+                disabled={contextAttaching}
                 className="rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[12px] font-medium text-stone-300 hover:bg-ink-800"
               >
                 Cancel
@@ -869,11 +1000,17 @@ export function AssistantPage() {
               <button
                 type="button"
                 onClick={() => void attachContext()}
-                disabled={!contextText.trim() || !activeSessionId}
+                disabled={
+                  contextAttaching || !contextText.trim() || !activeSessionId
+                }
                 className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <ClipboardPaste size={13} aria-hidden="true" />
-                Attach context
+                {contextAttaching ? (
+                  <Loader2 size={13} aria-hidden="true" className="animate-spin" />
+                ) : (
+                  <ClipboardPaste size={13} aria-hidden="true" />
+                )}
+                {contextAttaching ? "Attaching…" : "Attach context"}
               </button>
             </div>
           </section>
