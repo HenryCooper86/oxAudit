@@ -2,34 +2,34 @@
 export function severityColor(sev: string | null | undefined): string {
   switch (sev) {
     case "critical":
-      return "text-red-400 border-red-500/40 bg-red-500/10";
+      return "text-sev-critical border-sev-critical-border bg-sev-critical-subtle";
     case "high":
-      return "text-orange-400 border-orange-500/40 bg-orange-500/10";
+      return "text-sev-high border-sev-high-border bg-sev-high-subtle";
     case "medium":
-      return "text-amber-300 border-amber-400/40 bg-amber-400/10";
+      return "text-sev-medium border-sev-medium-border bg-sev-medium-subtle";
     case "low":
-      return "text-yellow-200 border-yellow-300/40 bg-yellow-200/10";
+      return "text-sev-low border-sev-low-border bg-sev-low-subtle";
     case "info":
-      return "text-sky-300 border-sky-400/40 bg-sky-400/10";
+      return "text-sev-info border-sev-info-border bg-sev-info-subtle";
     default:
-      return "text-slate-400 border-slate-500/40 bg-slate-500/10";
+      return "text-sev-unknown border-sev-unknown-border bg-sev-unknown-subtle";
   }
 }
 
 export function severityDot(sev: string | null | undefined): string {
   switch (sev) {
     case "critical":
-      return "bg-red-500";
+      return "bg-sev-critical";
     case "high":
-      return "bg-orange-500";
+      return "bg-sev-high";
     case "medium":
-      return "bg-amber-400";
+      return "bg-sev-medium";
     case "low":
-      return "bg-yellow-200";
+      return "bg-sev-low";
     case "info":
-      return "bg-sky-400";
+      return "bg-sev-info";
     default:
-      return "bg-slate-500";
+      return "bg-sev-unknown";
   }
 }
 

@@ -11,7 +11,7 @@ test("missing dependency severity renders UNKNOWN with neutral accessible stylin
 
   assert.match(markup, />unknown</i);
   assert.doesNotMatch(markup, />info</i);
-  assert.match(markup, /text-slate-400/);
+  assert.match(markup, /text-sev-unknown\b/);
 });
 
 test("known dependency severity retains its compact label", () => {
@@ -20,5 +20,5 @@ test("known dependency severity retains its compact label", () => {
   );
 
   assert.match(markup, />high</i);
-  assert.match(markup, /text-orange-400/);
+  assert.match(markup, /text-sev-high\b/);
 });

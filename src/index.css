@@ -1,5 +1,248 @@
 @import "tailwindcss";
 
+/* ============================================================
+   oxAudit — Global Design System
+
+   Token names and values follow y-agent's `y-gui/src/styles/index.css`
+   so the two products read as one design language. Two layers:
+
+     1. Runtime layer — plain CSS variables on `:root` / `[data-theme]`.
+        These are what the theme switch swaps.
+     2. Tailwind layer — `@theme inline` aliases that turn each runtime
+        variable into a utility (`bg-surface-secondary`, `text-text-muted`,
+        `border-border`, `shadow-md`, `rounded-sm`…). `inline` is what keeps
+        the utility pointing at the live variable instead of baking a value.
+
+   Deviation from y-agent: no `@import` of Google Fonts. oxAudit only talks
+   to NVD, OSV, and the configured AI endpoint, so remote font fetching is
+   out; the stacks below degrade to the same system faces.
+   ============================================================ */
+
+/* ---- Runtime variables: dark theme (default) ---- */
+:root,
+[data-theme="dark"] {
+  /* Surface hierarchy — near-black, layered */
+  --surface-primary: #0f0f0f;
+  --surface-secondary: #141414;
+  --surface-tertiary: #1c1c1c;
+  --surface-hover: rgba(255, 255, 255, 0.03);
+  --surface-active: rgba(255, 255, 255, 0.06);
+  --surface-code: #1a1a1a;
+
+  /* Text hierarchy */
+  --text-primary: #e8e6e1;
+  --text-secondary: #8a8680;
+  --text-muted: #555250;
+
+  /* Accent — warm gold, used sparingly */
+  --accent: #c8b560;
+  --accent-hover: #d4c26e;
+  --accent-subtle: rgba(200, 181, 96, 0.1);
+  --accent-glow: rgba(200, 181, 96, 0.15);
+  --accent-contrast: #0f0f0f;
+
+  /* Semantic */
+  --success: #6fcf97;
+  --success-subtle: rgba(111, 207, 151, 0.08);
+  --success-border: rgba(111, 207, 151, 0.2);
+  --error: #e57373;
+  --error-subtle: rgba(229, 115, 115, 0.08);
+  --error-border: rgba(229, 115, 115, 0.2);
+  --warning: #f0c050;
+  --warning-subtle: rgba(240, 192, 80, 0.1);
+  --warning-border: rgba(240, 192, 80, 0.25);
+  --warning-contrast: #1a1917;
+  --info: #60a5fa;
+  --info-subtle: rgba(96, 165, 250, 0.12);
+  --info-border: rgba(96, 165, 250, 0.2);
+
+  /* Borders — very subtle */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --border-focus: rgba(255, 255, 255, 0.15);
+
+  /* Elevation (aliased to Tailwind's shadow-* below) */
+  --elevation-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --elevation-md: 0 4px 16px rgba(0, 0, 0, 0.55);
+  --elevation-lg: 0 16px 40px rgba(0, 0, 0, 0.65);
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+
+
+  /* Severity scale — oxAudit's own axis, shaped like the semantic triplets
+     above. Five distinguishable steps plus an unknown fallback; the scanner
+     UI depends on these reading apart at badge size. */
+  --sev-critical: #e5484d;
+  --sev-critical-subtle: rgba(229, 72, 77, 0.1);
+  --sev-critical-border: rgba(229, 72, 77, 0.28);
+  --sev-high: #f0883e;
+  --sev-high-subtle: rgba(240, 136, 62, 0.1);
+  --sev-high-border: rgba(240, 136, 62, 0.28);
+  --sev-medium: #f0c050;
+  --sev-medium-subtle: rgba(240, 192, 80, 0.1);
+  --sev-medium-border: rgba(240, 192, 80, 0.28);
+  --sev-low: #ddd08c;
+  --sev-low-subtle: rgba(221, 208, 140, 0.1);
+  --sev-low-border: rgba(221, 208, 140, 0.28);
+  --sev-info: #60a5fa;
+  --sev-info-subtle: rgba(96, 165, 250, 0.1);
+  --sev-info-border: rgba(96, 165, 250, 0.28);
+  --sev-unknown: #8a8680;
+  --sev-unknown-subtle: rgba(255, 255, 255, 0.04);
+  --sev-unknown-border: rgba(255, 255, 255, 0.12);
+
+  color-scheme: dark;
+}
+
+/* ---- Runtime variables: light theme ---- */
+[data-theme="light"] {
+  --surface-primary: #ffffff;
+  --surface-secondary: #f5f4f1;
+  --surface-tertiary: #edecea;
+  --surface-hover: rgba(0, 0, 0, 0.03);
+  --surface-active: rgba(0, 0, 0, 0.06);
+  --surface-code: #f1efed;
+
+  --text-primary: #1a1917;
+  --text-secondary: #6b6560;
+  --text-muted: #9c9894;
+
+  --accent: #9a7c2a;
+  --accent-hover: #7e6420;
+  --accent-subtle: rgba(154, 124, 42, 0.08);
+  --accent-glow: rgba(154, 124, 42, 0.12);
+  --accent-contrast: #ffffff;
+
+  --success: #3a9d6b;
+  --success-subtle: rgba(58, 157, 107, 0.08);
+  --success-border: rgba(58, 157, 107, 0.2);
+  --error: #c0392b;
+  --error-subtle: rgba(192, 57, 43, 0.07);
+  --error-border: rgba(192, 57, 43, 0.2);
+  --warning: #c0880a;
+  --warning-subtle: rgba(192, 136, 10, 0.1);
+  --warning-border: rgba(192, 136, 10, 0.25);
+  --warning-contrast: #1a1917;
+  --info: #2563eb;
+  --info-subtle: rgba(37, 99, 235, 0.08);
+  --info-border: rgba(37, 99, 235, 0.2);
+
+  --border: rgba(0, 0, 0, 0.09);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --border-focus: rgba(0, 0, 0, 0.18);
+
+  --elevation-sm: 0 1px 3px rgba(0, 0, 0, 0.07);
+  --elevation-md: 0 4px 16px rgba(0, 0, 0, 0.09);
+  --elevation-lg: 0 16px 40px rgba(0, 0, 0, 0.12);
+
+  --scrollbar-thumb: rgba(0, 0, 0, 0.12);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.2);
+
+
+  --sev-critical: #c0392b;
+  --sev-critical-subtle: rgba(192, 57, 43, 0.08);
+  --sev-critical-border: rgba(192, 57, 43, 0.24);
+  --sev-high: #b4530a;
+  --sev-high-subtle: rgba(180, 83, 10, 0.08);
+  --sev-high-border: rgba(180, 83, 10, 0.24);
+  --sev-medium: #a67c0a;
+  --sev-medium-subtle: rgba(166, 124, 10, 0.08);
+  --sev-medium-border: rgba(166, 124, 10, 0.24);
+  --sev-low: #8a7320;
+  --sev-low-subtle: rgba(138, 115, 32, 0.08);
+  --sev-low-border: rgba(138, 115, 32, 0.24);
+  --sev-info: #2563eb;
+  --sev-info-subtle: rgba(37, 99, 235, 0.08);
+  --sev-info-border: rgba(37, 99, 235, 0.24);
+  --sev-unknown: #6b6560;
+  --sev-unknown-subtle: rgba(0, 0, 0, 0.04);
+  --sev-unknown-border: rgba(0, 0, 0, 0.12);
+
+  color-scheme: light;
+}
+
+/* ---- Tailwind theme: aliases over the runtime layer ---- */
+@theme inline {
+  --color-surface-primary: var(--surface-primary);
+  --color-surface-secondary: var(--surface-secondary);
+  --color-surface-tertiary: var(--surface-tertiary);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-active: var(--surface-active);
+  --color-surface-code: var(--surface-code);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-glow: var(--accent-glow);
+  --color-accent-contrast: var(--accent-contrast);
+
+  --color-success: var(--success);
+  --color-success-subtle: var(--success-subtle);
+  --color-success-border: var(--success-border);
+  --color-error: var(--error);
+  --color-error-subtle: var(--error-subtle);
+  --color-error-border: var(--error-border);
+  --color-warning: var(--warning);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-warning-border: var(--warning-border);
+  --color-warning-contrast: var(--warning-contrast);
+  --color-info: var(--info);
+  --color-info-subtle: var(--info-subtle);
+  --color-info-border: var(--info-border);
+
+  --color-sev-critical: var(--sev-critical);
+  --color-sev-critical-subtle: var(--sev-critical-subtle);
+  --color-sev-critical-border: var(--sev-critical-border);
+  --color-sev-high: var(--sev-high);
+  --color-sev-high-subtle: var(--sev-high-subtle);
+  --color-sev-high-border: var(--sev-high-border);
+  --color-sev-medium: var(--sev-medium);
+  --color-sev-medium-subtle: var(--sev-medium-subtle);
+  --color-sev-medium-border: var(--sev-medium-border);
+  --color-sev-low: var(--sev-low);
+  --color-sev-low-subtle: var(--sev-low-subtle);
+  --color-sev-low-border: var(--sev-low-border);
+  --color-sev-info: var(--sev-info);
+  --color-sev-info-subtle: var(--sev-info-subtle);
+  --color-sev-info-border: var(--sev-info-border);
+  --color-sev-unknown: var(--sev-unknown);
+  --color-sev-unknown-subtle: var(--sev-unknown-subtle);
+  --color-sev-unknown-border: var(--sev-unknown-border);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-border-focus: var(--border-focus);
+
+  --shadow-sm: var(--elevation-sm);
+  --shadow-md: var(--elevation-md);
+  --shadow-lg: var(--elevation-lg);
+}
+
+/* ---- Tailwind theme: static scales ----
+   The radius system is deliberately two-step: 4px for controls, 8px for
+   overlays. There is no 12px application radius (see the design contract
+   test in tests/designSystem.test.ts). */
+@theme {
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  --font-sans:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif,
+    system-ui, sans-serif;
+  --font-mono:
+    "SF Mono", "Fira Code", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
+  --font-display:
+    "SF Pro Display", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial,
+    sans-serif;
+}
+
 @keyframes vc-slide {
   0% {
     transform: translateX(-100%);
@@ -9,22 +252,14 @@
   }
 }
 
-@theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-
-  --color-ink-950: #0f0f0f;
-  --color-ink-900: #141414;
-  --color-ink-850: #181818;
-  --color-ink-800: #202020;
-  --color-ink-750: #242424;
-  --color-ink-700: #303030;
-  --color-ink-600: #454545;
-
-  --color-accent-300: #e2d58a;
-  --color-accent-400: #d4c26e;
-  --color-accent-500: #c8b560;
-  --color-accent-600: #a99649;
+@keyframes vc-breathe {
+  0%,
+  100% {
+    opacity: 0.68;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 html,
@@ -35,25 +270,31 @@ body,
 
 body {
   margin: 0;
-  background: var(--color-ink-950);
-  color: #e8e6e1;
+  background: var(--surface-primary);
+  color: var(--text-primary);
   font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   user-select: none;
 }
 
 :where(button, a, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--color-accent-400) !important;
+  outline: 2px solid var(--accent) !important;
   outline-offset: 2px;
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-accent-500) 35%, transparent);
-  color: #f4f1e9;
+  background: var(--accent-subtle);
+  color: var(--text-primary);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
@@ -67,21 +308,35 @@ body {
   user-select: text;
 }
 
-/* slim scrollbars */
+/* thin, discreet scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-ink-600) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 4px;
+  height: 4px;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--color-ink-600);
-  border-radius: 4px;
+  background: var(--scrollbar-thumb);
+  border-radius: 2px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* hide native number steppers for a consistent control look */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 /* markdown-ish content styling for AI answers */
@@ -89,8 +344,8 @@ body {
 .md-body h2,
 .md-body h3,
 .md-body h4 {
-  color: #e8e6e1;
-  font-weight: 650;
+  color: var(--text-primary);
+  font-weight: 600;
   margin: 1.1em 0 0.45em;
   line-height: 1.3;
 }
@@ -125,16 +380,16 @@ body {
 .md-body code {
   font-family: var(--font-mono);
   font-size: 0.86em;
-  background: var(--color-ink-800);
-  border: 1px solid var(--color-ink-700);
-  border-radius: 4px;
+  background: var(--surface-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 0.1em 0.35em;
-  color: #7dd3fc;
+  color: var(--accent);
 }
 .md-body pre {
-  background: var(--color-ink-900);
-  border: 1px solid var(--color-ink-700);
-  border-radius: 8px;
+  background: var(--surface-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 0.8em 1em;
   overflow-x: auto;
   margin: 0.7em 0;
@@ -143,19 +398,19 @@ body {
   background: transparent;
   border: none;
   padding: 0;
-  color: #cbd5e1;
+  color: var(--text-primary);
   font-size: 0.82em;
 }
 .md-body a {
-  color: var(--color-accent-400);
+  color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 .md-body blockquote {
-  border-left: 3px solid var(--color-accent-400);
+  border-left: 3px solid var(--accent);
   margin: 0.6em 0;
   padding-left: 0.9em;
-  color: #aaa59e;
+  color: var(--text-secondary);
 }
 .md-body table {
   border-collapse: collapse;
@@ -165,18 +420,18 @@ body {
 }
 .md-body th,
 .md-body td {
-  border: 1px solid var(--color-ink-700);
+  border: 1px solid var(--border);
   padding: 0.35em 0.6em;
   text-align: left;
 }
 .md-body th {
-  background: var(--color-ink-800);
+  background: var(--surface-tertiary);
 }
 .md-body strong {
-  color: #e8e6e1;
+  color: var(--text-primary);
 }
 .md-body hr {
   border: none;
-  border-top: 1px solid var(--color-ink-700);
+  border-top: 1px solid var(--border);
   margin: 1em 0;
 }
