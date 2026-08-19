@@ -11,25 +11,25 @@ export function Toasts() {
           t.kind === "error" ? AlertCircle : t.kind === "success" ? CheckCircle2 : Info;
         const color =
           t.kind === "error"
-            ? "border-red-500/40 text-red-300"
+            ? "border-error-border text-error"
             : t.kind === "success"
-              ? "border-emerald-500/40 text-emerald-300"
-              : "border-sky-500/40 text-sky-300";
+              ? "border-success-border text-success"
+              : "border-info-border text-info";
         return (
           <div
             key={t.id}
             role={t.kind === "error" ? "alert" : "status"}
             aria-live={t.kind === "error" ? "assertive" : "polite"}
             aria-atomic="true"
-            className={`pointer-events-auto flex items-start gap-2.5 rounded-lg border bg-ink-850/95 px-3.5 py-3 shadow-xl backdrop-blur ${color}`}
+            className={`pointer-events-auto flex items-start gap-2.5 rounded-md border bg-surface-secondary px-3.5 py-3 shadow-md backdrop-blur ${color}`}
           >
             <Icon size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
-            <div className="min-w-0 flex-1 text-[12px] leading-relaxed text-stone-200">{t.message}</div>
+            <div className="min-w-0 flex-1 text-[12px] leading-relaxed text-text-primary">{t.message}</div>
             <button
               type="button"
               aria-label="Dismiss notification"
               onClick={() => dismiss(t.id)}
-              className="shrink-0 rounded-sm text-stone-400 hover:text-stone-200"
+              className="shrink-0 rounded-sm text-text-muted hover:text-text-primary"
             >
               <X size={14} aria-hidden="true" />
             </button>

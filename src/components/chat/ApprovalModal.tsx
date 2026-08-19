@@ -88,27 +88,27 @@ export function ApprovalModal({
         aria-modal="true"
         aria-labelledby="approval-dialog-title"
         aria-describedby="approval-dialog-description"
-        className="w-full max-w-md rounded-lg border border-amber-500/40 bg-ink-850 p-5 shadow-2xl"
+        className="w-full max-w-md rounded-md border border-warning-border bg-surface-secondary p-5 shadow-lg"
       >
         <div className="flex items-center gap-2">
-          <ShieldAlert size={17} aria-hidden="true" className="text-amber-400" />
-          <h3 id="approval-dialog-title" className="text-[14px] font-semibold text-stone-100">
+          <ShieldAlert size={17} aria-hidden="true" className="text-warning" />
+          <h3 id="approval-dialog-title" className="text-[14px] font-semibold text-text-primary">
             Tool permission required
           </h3>
         </div>
-        <p id="approval-dialog-description" className="mt-2 text-[13px] leading-relaxed text-stone-300">
+        <p id="approval-dialog-description" className="mt-2 text-[13px] leading-relaxed text-text-secondary">
           The AI wants to call{" "}
-          <span className="rounded bg-ink-800 px-1.5 py-0.5 font-mono text-[12px] text-accent-300">
+          <span className="rounded-sm bg-surface-tertiary px-1.5 py-0.5 font-mono text-[12px] text-accent">
             {tool}
           </span>
           . Approve to let it run, or deny to skip it.
         </p>
         {argumentsPreview && (
-          <pre className="selectable mt-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-[12px] leading-relaxed text-stone-300">
+          <pre className="selectable mt-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] leading-relaxed text-text-secondary">
             {argumentsPreview}
           </pre>
         )}
-        <div className="mt-2 text-right text-[11px] tabular-nums text-stone-400">
+        <div className="mt-2 text-right text-[11px] tabular-nums text-text-muted">
           Auto-denies in {remaining}s
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -116,14 +116,14 @@ export function ApprovalModal({
             ref={denyRef}
             type="button"
             onClick={() => onDecide(false)}
-            className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-[12px] font-semibold text-red-300 hover:bg-red-500/20"
+            className="rounded-sm border border-error-border bg-transparent px-3 py-2 text-[12px] font-semibold text-error hover:bg-error-subtle"
           >
             Deny
           </button>
           <button
             type="button"
             onClick={() => onDecide(true)}
-            className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-[12px] font-semibold text-emerald-300 hover:bg-emerald-500/20"
+            className="rounded-sm border border-success-border bg-transparent px-3 py-2 text-[12px] font-semibold text-success hover:bg-success-subtle"
           >
             Approve
           </button>

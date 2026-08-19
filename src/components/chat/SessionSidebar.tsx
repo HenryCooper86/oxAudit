@@ -53,36 +53,39 @@ export function SessionSidebar({
   return (
     <aside
       aria-label="Chat sessions"
-      className="flex w-60 shrink-0 flex-col border-r border-ink-800 bg-ink-900/60"
+      className="flex w-60 shrink-0 flex-col border-r border-border bg-surface-secondary"
     >
       <div className="p-3">
         <button
           type="button"
           onClick={onCreate}
           disabled={controlsDisabled}
-          className="flex w-full items-center justify-center gap-1.5 rounded-md bg-accent-500 px-3 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex w-full items-center gap-2 rounded-sm border border-transparent px-2.5 py-[7px] text-left text-[13px] leading-tight font-medium text-text-primary transition-colors duration-150 hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <Plus size={14} aria-hidden="true" /> New chat
+          <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center text-accent">
+            <Plus size={15} aria-hidden="true" />
+          </span>
+          New chat
         </button>
         <label className="relative mt-2 block">
           <span className="sr-only">Search chat sessions</span>
           <Search
             size={12}
             aria-hidden="true"
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-500"
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
           />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search sessions…"
-            className="w-full rounded-md border border-ink-600 bg-ink-950 py-1.5 pl-8 pr-2 text-[13px] text-stone-200 outline-none placeholder:text-stone-400 focus:border-accent-500/70"
+            className="w-full rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
           />
         </label>
       </div>
 
       <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
         {filtered.length === 0 && (
-          <div className="px-3 py-6 text-center text-[12px] text-stone-400">
+          <div className="px-3 py-6 text-center text-[12px] text-text-muted">
             {sessions.length === 0 ? "No chats yet" : "No matches"}
           </div>
         )}
@@ -91,9 +94,7 @@ export function SessionSidebar({
           return (
             <div
               key={s.id}
-              className={`group relative rounded-lg px-2.5 py-2 transition-colors ${
-                active ? "bg-ink-750" : "hover:bg-ink-850"
-              }`}
+              className={`group relative rounded-sm px-2.5 py-2 transition-colors ${ active ? "bg-surface-active" : "hover:bg-surface-hover" }`}
             >
               {renamingId === s.id ? (
                 <div className="flex items-center gap-1">
@@ -106,13 +107,13 @@ export function SessionSidebar({
                       if (e.key === "Enter") commitRename();
                       if (e.key === "Escape") setRenamingId(null);
                     }}
-                    className="min-w-0 flex-1 rounded border border-accent-500/60 bg-ink-950 px-1.5 py-0.5 text-[13px] text-stone-200 outline-none"
+                    className="min-w-0 flex-1 rounded-sm border border-accent-glow bg-surface-primary px-1.5 py-0.5 text-[13px] text-text-primary outline-none"
                   />
                   <button
                     type="button"
                     aria-label="Save session name"
                     onClick={commitRename}
-                    className="text-emerald-400"
+                    className="text-success"
                   >
                     <Check size={12} aria-hidden="true" />
                   </button>
@@ -120,28 +121,28 @@ export function SessionSidebar({
                     type="button"
                     aria-label="Cancel session rename"
                     onClick={() => setRenamingId(null)}
-                    className="text-stone-400"
+                    className="text-text-muted"
                   >
                     <X size={12} aria-hidden="true" />
                   </button>
                 </div>
               ) : confirmDeleteId === s.id ? (
                 <div className="flex items-center gap-1.5 text-[12px]">
-                  <span className="text-stone-400">Delete?</span>
+                  <span className="text-text-muted">Delete?</span>
                   <button
                     type="button"
                     onClick={() => {
                       onDelete(s.id);
                       setConfirmDeleteId(null);
                     }}
-                    className="rounded bg-red-500/15 px-1.5 py-0.5 text-red-300 hover:bg-red-500/25"
+                    className="rounded-sm bg-transparent px-1.5 py-0.5 text-error hover:bg-error-subtle"
                   >
                     Yes
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmDeleteId(null)}
-                    className="rounded bg-ink-800 px-1.5 py-0.5 text-stone-400 hover:text-stone-200"
+                    className="rounded-sm bg-surface-tertiary px-1.5 py-0.5 text-text-muted hover:text-text-primary"
                   >
                     No
                   </button>
@@ -157,17 +158,15 @@ export function SessionSidebar({
                   <MessageSquare
                     size={12}
                     aria-hidden="true"
-                    className={`mt-0.5 shrink-0 ${active ? "text-accent-400" : "text-stone-600"}`}
+                    className={`mt-0.5 shrink-0 ${active ? "text-accent" : "text-text-muted"}`}
                   />
                   <span className="min-w-0 flex-1">
                     <span
-                      className={`block truncate text-[12px] font-medium ${
-                        active ? "text-stone-100" : "text-stone-400"
-                      }`}
+                      className={`block truncate text-[12px] font-medium ${ active ? "text-text-primary" : "text-text-muted" }`}
                     >
                       {s.title}
                     </span>
-                    <span className="block text-[11px] text-stone-400">
+                    <span className="block text-[11px] text-text-muted">
                       {fmtDate(s.updatedAt)}
                       {s.messageCount > 0 ? ` · ${s.messageCount} msg` : ""}
                     </span>
@@ -176,7 +175,7 @@ export function SessionSidebar({
                     <span
                       role="status"
                       aria-label="Assistant is responding"
-                      className="mt-1 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent-400"
+                      className="mt-1 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
                     />
                   )}
                 </button>
@@ -188,7 +187,7 @@ export function SessionSidebar({
                     type="button"
                     aria-label={`Rename ${s.title}`}
                     onClick={() => setRenamingId(s.id)}
-                    className="rounded bg-ink-800 p-0.5 text-stone-400 hover:text-stone-100"
+                    className="rounded-sm bg-surface-tertiary p-0.5 text-text-muted hover:text-text-primary"
                     title="Rename"
                   >
                     <Pencil size={11} aria-hidden="true" />
@@ -197,7 +196,7 @@ export function SessionSidebar({
                     type="button"
                     aria-label={`Delete ${s.title}`}
                     onClick={() => setConfirmDeleteId(s.id)}
-                    className="rounded bg-ink-800 p-0.5 text-stone-400 hover:text-red-300"
+                    className="rounded-sm bg-surface-tertiary p-0.5 text-text-muted hover:text-error"
                     title="Delete"
                   >
                     <Trash2 size={11} aria-hidden="true" />

@@ -38,6 +38,7 @@ import type {
   Usage,
   UsageSummary,
 } from "../lib/types";
+import { Button } from "../components/ui";
 
 const SUGGESTIONS = [
   "Explain the difference between stored, reflected and DOM XSS with code examples.",
@@ -685,7 +686,7 @@ export function AssistantPage() {
   return (
     <div
       ref={assistantRootRef}
-      className="relative h-full min-h-0 overflow-hidden bg-ink-950"
+      className="relative h-full min-h-0 overflow-hidden bg-surface-primary"
     >
       <div
         inert={contextOpen}
@@ -729,23 +730,15 @@ export function AssistantPage() {
           aria-label="Assistant conversation"
           className="flex min-w-0 flex-1 flex-col"
         >
-        <header className="flex min-h-[52px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-ink-800 bg-ink-900/80 px-4 py-2">
+        <header className="flex min-h-[52px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-surface-secondary px-4 py-2">
           <div className="min-w-0">
-            <p className="text-[13px] font-semibold text-stone-200">
+            <p className="text-[13px] font-semibold text-text-primary">
               Conversation
             </p>
-            <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-stone-400">
+            <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-text-muted">
               <span
                 aria-hidden="true"
-                className={`h-1.5 w-1.5 rounded-full ${
-                  aiReady
-                    ? "bg-emerald-400"
-                    : aiReadiness.status === "offline"
-                      ? "bg-red-400"
-                      : aiReadiness.status === "checking"
-                        ? "bg-accent-400"
-                      : "bg-stone-500"
-                }`}
+                className={`h-1.5 w-1.5 rounded-full ${ aiReady ? "bg-success" : aiReadiness.status === "offline" ? "bg-error" : aiReadiness.status === "checking" ? "bg-accent" : "bg-text-muted" }`}
               />
               {availabilityLabel}
             </p>
@@ -755,7 +748,7 @@ export function AssistantPage() {
             {activeUnavailableProject ? (
               <span
                 title={activeUnavailableProject.path}
-                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-md border border-amber-700/60 bg-amber-950/25 px-2 py-1 text-[11px] text-amber-200"
+                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-sm border border-warning-border bg-warning-subtle px-2 py-1 text-[11px] text-warning"
               >
                 <FolderOpen size={11} aria-hidden="true" className="shrink-0" />
                 <span className="shrink-0 font-medium">Project unavailable</span>
@@ -766,7 +759,7 @@ export function AssistantPage() {
             ) : activeSession?.projectPath ? (
               <span
                 title={activeSession.projectPath}
-                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-md border border-accent-600/50 bg-accent-500/10 px-2 py-1 text-[11px] text-accent-300"
+                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-sm border border-accent-glow bg-accent-subtle px-2 py-1 text-[11px] text-accent"
               >
                 <FolderOpen size={11} aria-hidden="true" className="shrink-0" />
                 <span className="shrink-0 font-medium">Project context</span>
@@ -775,29 +768,30 @@ export function AssistantPage() {
                 </code>
               </span>
             ) : (
-              <span className="rounded-md border border-ink-600 bg-ink-850 px-2 py-1 text-[11px] text-stone-400">
+              <span className="rounded-sm border border-border bg-surface-secondary px-2 py-1 text-[11px] text-text-muted">
                 Standalone · no project context
               </span>
             )}
             {model && (
-              <span className="rounded-md border border-ink-600 bg-ink-850 px-2 py-1 font-mono text-[11px] text-stone-400">
+              <span className="rounded-sm border border-border bg-surface-secondary px-2 py-1 font-mono text-[11px] text-text-muted">
                 {model}
               </span>
             )}
-            <button
+            <Button
               type="button"
               onClick={openManualContext}
               disabled={busy || sessionActivating}
-              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-850 px-2.5 py-1.5 text-[12px] font-medium text-stone-300 hover:border-ink-500 hover:bg-ink-800 disabled:opacity-40"
+              variant="ghost"
+              size="md"
             >
               <ClipboardPaste size={12} aria-hidden="true" />
               Attach context
-            </button>
+            </Button>
             <button
               type="button"
               onClick={() => void clearConversation()}
               disabled={busy || sessionActivating || messages.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-850 px-2.5 py-1.5 text-[12px] text-stone-300 hover:border-red-500/40 hover:text-red-300 disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-secondary px-2.5 py-1.5 text-[12px] text-text-secondary hover:border-error hover:text-error disabled:opacity-40"
             >
               <Trash2 size={12} aria-hidden="true" />
               Clear
@@ -808,7 +802,7 @@ export function AssistantPage() {
         {activeUnavailableProject && (
           <div
             role="status"
-            className="shrink-0 border-b border-amber-900/60 bg-amber-950/20 px-4 py-2 text-[12px] text-amber-200"
+            className="shrink-0 border-b border-warning-border bg-warning-subtle px-4 py-2 text-[12px] text-warning"
           >
             Project unavailable ·{" "}
             <code className="font-mono">{activeUnavailableProject.path}</code>.
@@ -824,15 +818,15 @@ export function AssistantPage() {
                 ? "alert"
                 : "status"
             }
-            className="flex shrink-0 items-center justify-between gap-3 border-b border-ink-800 bg-amber-950/20 px-4 py-2"
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-warning-subtle px-4 py-2"
           >
-            <p className="text-[12px] text-amber-200">
+            <p className="text-[12px] text-warning">
               {unavailableMessage}
             </p>
             <button
               type="button"
               onClick={() => setPage("settings")}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-amber-700/50 bg-amber-900/20 px-2.5 py-1 text-[12px] font-medium text-amber-200 hover:bg-amber-900/35"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-sm border border-warning-border bg-transparent px-2.5 py-1 text-[12px] font-medium text-warning hover:bg-warning-subtle"
             >
               <Settings2 size={11} aria-hidden="true" />
               Open Settings
@@ -847,14 +841,14 @@ export function AssistantPage() {
           <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 py-4 sm:px-6">
             {messages.length === 0 && !busy && (
               <div className="flex flex-1 flex-col items-center justify-center gap-4 py-8">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-accent-600/50 bg-accent-500/10">
-                  <Bot size={19} aria-hidden="true" className="text-accent-300" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-sm border border-accent-glow bg-accent-subtle">
+                  <Bot size={19} aria-hidden="true" className="text-accent" />
                 </div>
                 <div className="text-center">
-                  <h2 className="text-[14px] font-semibold text-stone-100">
+                  <h2 className="text-[14px] font-semibold text-text-primary">
                     Start a standalone security conversation
                   </h2>
-                  <p className="mx-auto mt-1 max-w-md text-[13px] leading-relaxed text-stone-300">
+                  <p className="mx-auto mt-1 max-w-md text-[13px] leading-relaxed text-text-secondary">
                     Ask a security question or explicitly attach source material.
                     A project is available only when this conversation shows a
                     project context chip above.
@@ -872,12 +866,12 @@ export function AssistantPage() {
                         !aiReady ||
                         !activeSessionId
                       }
-                      className="rounded-md border border-ink-700 bg-ink-900/70 px-3 py-2.5 text-left text-[13px] leading-relaxed text-stone-300 transition-colors hover:border-accent-600/50 hover:text-stone-100 disabled:opacity-40"
+                      className="rounded-sm border border-border bg-surface-secondary px-3 py-2.5 text-left text-[13px] leading-relaxed text-text-secondary transition-colors hover:border-accent hover:text-text-primary disabled:opacity-40"
                     >
                       <Sparkles
                         size={11}
                         aria-hidden="true"
-                        className="mr-1.5 inline text-accent-400"
+                        className="mr-1.5 inline text-accent"
                       />
                       {suggestion}
                     </button>
@@ -890,16 +884,14 @@ export function AssistantPage() {
               {messages.map((message) => (
                 <div
                   key={message.id}
-                  className={`flex gap-2.5 ${
-                    message.role === "user" ? "justify-end" : ""
-                  }`}
+                  className={`flex gap-2.5 ${ message.role === "user" ? "justify-end" : "" }`}
                 >
                   {message.role !== "user" && (
-                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-accent-600/40 bg-accent-500/10">
+                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-accent-glow bg-accent-subtle">
                       <Bot
                         size={13}
                         aria-hidden="true"
-                        className="text-accent-300"
+                        className="text-accent"
                       />
                     </div>
                   )}
@@ -912,11 +904,7 @@ export function AssistantPage() {
                       </div>
                     )}
                     <div
-                      className={`rounded-lg px-4 py-3 text-[13px] leading-relaxed ${
-                        message.role === "user"
-                          ? "selectable ml-auto rounded-tr-sm border border-accent-600/30 bg-accent-500/10 text-stone-200"
-                          : "selectable md-body rounded-tl-sm border border-ink-700 bg-ink-900/70 text-stone-300"
-                      }`}
+                      className={`rounded-sm px-4 py-3 text-[13px] leading-relaxed ${ message.role === "user" ? "selectable ml-auto rounded-tr-sm border border-accent-glow bg-accent-subtle text-text-primary" : "selectable md-body rounded-tl-sm border border-border bg-surface-secondary text-text-secondary" }`}
                     >
                       {message.role === "user" ? (
                         <div className="whitespace-pre-wrap break-words">
@@ -928,11 +916,11 @@ export function AssistantPage() {
                     </div>
                   </div>
                   {message.role === "user" && (
-                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-ink-700 bg-ink-800">
+                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-border bg-surface-tertiary">
                       <User
                         size={13}
                         aria-hidden="true"
-                        className="text-stone-400"
+                        className="text-text-muted"
                       />
                     </div>
                   )}
@@ -941,11 +929,11 @@ export function AssistantPage() {
 
               {busy && (
                 <div className="flex gap-2.5">
-                  <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-accent-600/40 bg-accent-500/10">
+                  <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-accent-glow bg-accent-subtle">
                     <Bot
                       size={13}
                       aria-hidden="true"
-                      className="text-accent-300"
+                      className="text-accent"
                     />
                   </div>
                   <div className="min-w-0 max-w-[88%] flex-1">
@@ -963,16 +951,16 @@ export function AssistantPage() {
                       />
                     )}
                     {streaming.text && (
-                      <div className="selectable md-body rounded-lg rounded-tl-sm border border-ink-700 bg-ink-900/70 px-4 py-3 text-[13px] text-stone-300">
+                      <div className="selectable md-body rounded-sm rounded-tl-sm border border-border bg-surface-secondary px-4 py-3 text-[13px] text-text-secondary">
                         <Markdown>{streaming.text}</Markdown>
                         <span
                           aria-hidden="true"
-                          className="ml-0.5 inline-block h-3.5 w-[6px] animate-pulse rounded-[2px] bg-accent-400 align-middle"
+                          className="ml-0.5 inline-block h-3.5 w-[6px] animate-pulse rounded-[2px] bg-accent align-middle"
                         />
                       </div>
                     )}
                     {!streaming.text && toolRecords.length === 0 && (
-                      <div className="flex items-center gap-2 rounded-lg border border-ink-700 bg-ink-900/70 px-4 py-3 text-[12px] text-stone-300">
+                      <div className="flex items-center gap-2 rounded-sm border border-border bg-surface-secondary px-4 py-3 text-[12px] text-text-secondary">
                         <Loader2
                           size={13}
                           aria-hidden="true"
@@ -989,7 +977,7 @@ export function AssistantPage() {
           </div>
         </div>
 
-        <div className="shrink-0 border-t border-ink-800 bg-ink-900/90 px-4 py-3 backdrop-blur sm:px-6">
+        <div className="shrink-0 border-t border-border bg-surface-secondary px-4 py-3 backdrop-blur sm:px-6">
           <form
             className="mx-auto w-full max-w-4xl"
             onSubmit={(event) => {
@@ -1015,19 +1003,19 @@ export function AssistantPage() {
                 aria-describedby="assistant-composer-help"
                 disabled={!aiReady || sessionActivating}
                 placeholder={composerPlaceholder}
-                className="selectable min-h-11 flex-1 resize-none rounded-md border border-ink-600 bg-ink-950 px-3.5 py-2.5 text-[13px] leading-relaxed text-stone-200 outline-none placeholder:text-stone-400 focus:border-accent-500/70 disabled:cursor-not-allowed disabled:opacity-60"
+                className="selectable min-h-11 flex-1 resize-none rounded-sm border border-border bg-surface-primary px-3.5 py-2.5 text-[13px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
               />
               {busy ? (
                 <button
                   type="button"
                   onClick={() => void cancel()}
-                  className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-3 text-[12px] font-medium text-red-300 hover:bg-red-500/20"
+                  className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-sm border border-error-border bg-transparent px-3 text-[12px] font-medium text-error hover:bg-error-subtle"
                 >
                   <Ban size={14} aria-hidden="true" />
                   Cancel
                 </button>
               ) : (
-                <button
+                <Button
                   type="submit"
                   disabled={
                     !input.trim() ||
@@ -1035,16 +1023,18 @@ export function AssistantPage() {
                     !aiReady ||
                     !activeSessionId
                   }
-                  className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-md bg-accent-500 px-3.5 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
+                  variant="primary"
+                  size="md"
+                  className="h-11 px-3.5"
                 >
                   <Send size={14} aria-hidden="true" />
                   Send
-                </button>
+                </Button>
               )}
             </div>
             <div
               id="assistant-composer-help"
-              className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-stone-400"
+              className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted"
             >
               <span>
                 Enter to send · Shift+Enter for a new line · tools require approval
@@ -1112,22 +1102,22 @@ export function AssistantPage() {
             aria-busy={contextAttaching}
             aria-labelledby="assistant-context-title"
             aria-describedby="assistant-context-description"
-            className="w-full max-w-2xl rounded-lg border border-ink-600 bg-ink-850 p-5 shadow-2xl"
+            className="w-full max-w-2xl rounded-md border border-border bg-surface-secondary p-5 shadow-lg"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2
                   id="assistant-context-title"
-                  className="flex items-center gap-2 text-[14px] font-semibold text-stone-100"
+                  className="flex items-center gap-2 text-[14px] font-semibold text-text-primary"
                 >
                   <ClipboardPaste
                     size={15}
                     aria-hidden="true"
-                    className="text-accent-400"
+                    className="text-accent"
                   />
                   Review context before attaching
                 </h2>
-                <p className="mt-1 truncate text-[13px] font-medium text-accent-300">
+                <p className="mt-1 truncate text-[13px] font-medium text-accent">
                   {contextLabel}
                 </p>
               </div>
@@ -1137,14 +1127,14 @@ export function AssistantPage() {
                 aria-label="Close"
                 onClick={discardContext}
                 disabled={contextAttaching}
-                className="rounded p-1 text-stone-400 hover:bg-ink-800 hover:text-stone-200 disabled:opacity-40"
+                className="rounded-sm p-1 text-text-muted hover:bg-surface-hover hover:text-text-primary disabled:opacity-40"
               >
                 <X size={15} aria-hidden="true" />
               </button>
             </div>
             <p
               id="assistant-context-description"
-              className="mt-2 text-[13px] leading-relaxed text-stone-300"
+              className="mt-2 text-[13px] leading-relaxed text-text-secondary"
             >
               Review and edit this source material before it is saved to the
               current conversation. Findings can contain source code or secrets.
@@ -1152,13 +1142,13 @@ export function AssistantPage() {
               only on your next explicit Send.
             </p>
             {contextProjectPath && (
-              <p className="mt-2 break-all rounded-md border border-ink-700 bg-ink-900 px-2.5 py-2 font-mono text-[12px] text-stone-300">
+              <p className="mt-2 break-all rounded-sm border border-border bg-surface-secondary px-2.5 py-2 font-mono text-[12px] text-text-secondary">
                 Source scope: {contextProjectPath}
               </p>
             )}
             <label
               htmlFor="assistant-context-content"
-              className="mt-4 block text-[12px] font-semibold uppercase tracking-[0.12em] text-stone-300"
+              className="mt-4 block text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
             >
               Context content
             </label>
@@ -1168,24 +1158,25 @@ export function AssistantPage() {
               onChange={(event) => setContextText(event.target.value)}
               readOnly={contextAttaching}
               rows={14}
-              className="selectable mt-2 max-h-[55vh] w-full resize-y rounded-md border border-ink-600 bg-ink-950 px-3 py-2.5 font-mono text-[13px] leading-relaxed text-stone-200 focus:border-accent-500/70"
+              className="selectable mt-2 max-h-[55vh] w-full resize-y rounded-sm border border-border bg-surface-primary px-3 py-2.5 font-mono text-[13px] leading-relaxed text-text-primary focus:border-accent"
             />
             <div className="mt-4 flex justify-end gap-2">
-              <button
+              <Button
                 type="button"
                 onClick={discardContext}
                 disabled={contextAttaching}
-                className="rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[12px] font-medium text-stone-300 hover:bg-ink-800"
+                variant="ghost"
+                size="md"
               >
                 Cancel
-              </button>
+              </Button>
               <button
                 type="button"
                 onClick={() => void attachContext()}
                 disabled={
                   contextAttaching || !contextText.trim() || !activeSessionId
                 }
-                className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 rounded-sm bg-accent px-3.5 py-2 text-[12px] font-semibold text-accent-contrast hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {contextAttaching ? (
                   <Loader2 size={13} aria-hidden="true" className="animate-spin" />

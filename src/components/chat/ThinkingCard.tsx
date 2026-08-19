@@ -32,27 +32,23 @@ export function ThinkingCard({
   const duration = finishedAt ?? elapsed;
 
   return (
-    <div className="selectable mb-1 overflow-hidden rounded-lg border border-ink-800 bg-ink-900/70">
+    <div className="selectable mb-1 overflow-hidden rounded-sm border border-border bg-surface-secondary">
       <button
         type="button"
         aria-expanded={hasContent ? open : undefined}
         aria-controls={hasContent ? detailsId : undefined}
         onClick={() => hasContent && setOpen(!open)}
-        className={`flex w-full items-center gap-2 px-3.5 py-2.5 text-left ${
-          hasContent ? "cursor-pointer hover:bg-ink-850" : "cursor-default"
-        }`}
+        className={`flex w-full items-center gap-2 px-3.5 py-2.5 text-left ${ hasContent ? "cursor-pointer hover:bg-surface-hover" : "cursor-default" }`}
       >
         <span className="relative flex h-2 w-2">
           {streaming && (
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent-400 opacity-60" />
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
           )}
           <span
-            className={`relative inline-flex h-2 w-2 rounded-full ${
-              streaming ? "bg-accent-400" : "bg-stone-500"
-            }`}
+            className={`relative inline-flex h-2 w-2 rounded-full ${ streaming ? "bg-accent" : "bg-text-muted" }`}
           />
         </span>
-        <span className="text-[12px] font-semibold uppercase tracking-wider text-stone-300">
+        <span className="text-[12px] font-semibold uppercase tracking-wider text-text-secondary">
           {streaming ? "Thinking" : "Thought"}
           {streaming ? `… ${elapsed}s` : duration > 0 ? ` · ${duration}s` : ""}
         </span>
@@ -60,16 +56,16 @@ export function ThinkingCard({
           <ChevronDown
             size={13}
             aria-hidden="true"
-            className={`ml-auto text-stone-500 transition-transform ${open ? "rotate-180" : ""}`}
+            className={`ml-auto text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
           />
         )}
         {!hasContent && streaming && (
-          <Brain size={13} aria-hidden="true" className="ml-auto text-stone-600" />
+          <Brain size={13} aria-hidden="true" className="ml-auto text-text-muted" />
         )}
       </button>
       {hasContent && open && (
-        <div id={detailsId} className="border-t border-ink-800 px-4 py-3">
-          <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-stone-300">
+        <div id={detailsId} className="border-t border-border px-4 py-3">
+          <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-text-secondary">
             {text}
           </pre>
         </div>
