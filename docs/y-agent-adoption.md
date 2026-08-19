@@ -1,6 +1,9 @@
 # Adopting y-agent into VulnCompanion — Design, Architecture & AI-Harness Study
 
 > Research date: 2026-08. Source studied: https://github.com/gorgiaxx/y-agent (`main`).
+> **Update 2026-08-19:** the visual layer is now ported — see
+> [`design-system.md`](./design-system.md). Remaining feature candidates are ranked in
+> [`y-agent-port-candidates.md`](./y-agent-port-candidates.md).
 > Deep-dive reports with full code sketches: [`yagent-research/adoption-report.md`](../yagent-research/adoption-report.md)
 > (tool loop, guardrails, transcripts) plus the three subsystem studies summarized here.
 
@@ -184,7 +187,17 @@ History messages are the single source of truth.
 > project path restored on resume. Tests: 37 passing (added session-store
 > suite).
 >
-> P1 left over for later: per-model `context_window` field (P5 preflight), and
+> **P-design — implemented (2026-08-19).** y-agent's two-layer token model
+> (`:root`/`[data-theme]` runtime variables aliased into Tailwind via `@theme
+> inline`), both themes, the 4px/8px radius contract, the sm/md/lg elevation
+> scale, the NavSidebar-style 240px rail, the 52px header with display-italic
+> title, `ui/` primitives (Button/Input/Textarea/Select/Switch/SectionLabel), and
+> a port of their `designSystemCompliance.test.ts`. Deviations: no Google Fonts
+> import (offline/privacy), a five-step `sev-*` severity scale with no y-agent
+> counterpart, and a tinted rather than solid `danger` button. Tests: 47 passing
+> (added design-contract + theme suites).
+>
+> > P1 left over for later: per-model `context_window` field (P5 preflight), and
 > wiring `analyze_finding`/`research_cve` onto the streaming path.
 
 | Phase | Contents | Est. effort | Outcome |

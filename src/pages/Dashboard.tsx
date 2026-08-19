@@ -64,29 +64,29 @@ export function Dashboard() {
 
       <section aria-labelledby="recent-activity-title">
         <div className="flex items-center justify-between gap-3">
-          <h2 id="recent-activity-title" className="text-[13px] font-semibold text-slate-200">
+          <h2 id="recent-activity-title" className="text-[13px] font-semibold text-text-primary">
             Recent activity
           </h2>
           {recentActivity.length > 0 && (
-            <span className="text-[12px] text-slate-400">Latest {recentActivity.length}</span>
+            <span className="text-[12px] text-text-muted">Latest {recentActivity.length}</span>
           )}
         </div>
-        <div className="mt-2 overflow-hidden rounded-lg border border-ink-700 bg-ink-850">
+        <div className="mt-2 overflow-hidden rounded-sm border border-border bg-surface-secondary">
           {recentActivity.length === 0 ? (
             <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-              <p className="text-[13px] text-slate-400">No activity yet</p>
+              <p className="text-[13px] text-text-muted">No activity yet</p>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => setPage("source-scan")}
-                  className="rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[13px] font-medium text-slate-200 transition-colors hover:border-ink-500 hover:bg-ink-700"
+                  className="rounded-sm border border-border bg-surface-tertiary px-3 py-1.5 text-[13px] font-medium text-text-primary transition-colors hover:border-border-strong hover:bg-surface-active"
                 >
                   Start source scan
                 </button>
                 <button
                   type="button"
                   onClick={() => setPage("deps-scan")}
-                  className="rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[13px] font-medium text-slate-200 transition-colors hover:border-ink-500 hover:bg-ink-700"
+                  className="rounded-sm border border-border bg-surface-tertiary px-3 py-1.5 text-[13px] font-medium text-text-primary transition-colors hover:border-border-strong hover:bg-surface-active"
                 >
                   Check dependencies
                 </button>
@@ -94,7 +94,7 @@ export function Dashboard() {
             </div>
           ) : (
             <table className="w-full table-fixed text-left text-[13px]">
-              <thead className="border-b border-ink-700 text-[12px] text-slate-400">
+              <thead className="border-b border-border text-[12px] text-text-muted">
                 <tr>
                   <th scope="col" className="w-[45%] px-4 py-2.5 font-medium">Target</th>
                   <th scope="col" className="w-[20%] px-4 py-2.5 font-medium">Tool</th>
@@ -102,13 +102,13 @@ export function Dashboard() {
                   <th scope="col" className="w-[20%] px-4 py-2.5 text-right font-medium">When</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-ink-800">
+              <tbody className="divide-y divide-border">
                 {recentActivity.map((scan) => (
-                  <tr key={scan.id} className="text-slate-300">
+                  <tr key={scan.id} className="text-text-secondary">
                     <td className="truncate px-4 py-2.5 font-mono text-[12px]">{scan.path}</td>
                     <td className="px-4 py-2.5">{scan.kind === "source" ? "Source Scan" : "Dependency Scan"}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums">{scan.findings}</td>
-                    <td className="px-4 py-2.5 text-right text-[12px] text-slate-400">{fmtDate(scan.at)}</td>
+                    <td className="px-4 py-2.5 text-right text-[12px] text-text-muted">{fmtDate(scan.at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -117,13 +117,13 @@ export function Dashboard() {
         </div>
       </section>
 
-      <section aria-labelledby="assistant-status-title" className="border-t border-ink-800 pt-4">
+      <section aria-labelledby="assistant-status-title" className="border-t border-border pt-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 id="assistant-status-title" className="text-[13px] font-semibold text-slate-200">
+            <h2 id="assistant-status-title" className="text-[13px] font-semibold text-text-primary">
               AI Assistant
             </h2>
-            <p className="mt-1 text-[13px] text-slate-400">
+            <p className="mt-1 text-[13px] text-text-muted">
               {aiDescription}
             </p>
           </div>
@@ -138,7 +138,7 @@ export function Dashboard() {
               )
             }
             disabled={readinessPending}
-            className="shrink-0 rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[13px] font-medium text-slate-200 transition-colors hover:border-ink-500 hover:bg-ink-700"
+            className="shrink-0 rounded-sm border border-border bg-surface-tertiary px-3 py-1.5 text-[13px] font-medium text-text-primary transition-colors hover:border-border-strong hover:bg-surface-active"
           >
             {aiReadiness.status === "unavailable"
               ? "Review settings"

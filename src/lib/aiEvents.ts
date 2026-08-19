@@ -5,6 +5,7 @@ import type {
   AiStreamEvent,
   AskQuestion,
   ChatRequest,
+  TodoItem,
   Usage,
 } from "./types";
 
@@ -23,6 +24,10 @@ export interface StreamHandlers {
   }) => void;
   onPermissionRequest?: (p: { requestId: string; tool: string; arguments: string }) => void;
   onAskUser?: (a: { requestId: string; questions: AskQuestion[] }) => void;
+  /** A queued mid-run message was folded into the conversation. */
+  onSteer?: (text: string) => void;
+  /** The agent's todo list changed; carries the whole list. */
+  onTodos?: (items: TodoItem[]) => void;
   onDone?: (payload: AiDonePayload) => void;
   onError?: (message: string) => void;
 }
@@ -154,6 +159,12 @@ export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
                   durationMs: ev.durationMs,
                   resultPreview: ev.resultPreview,
                 });
+                break;
+              case "steer":
+                h.onSteer?.(ev.text);
+                break;
+              case "todos":
+                h.onTodos?.(ev.items);
                 break;
               case "permission_request":
                 h.onPermissionRequest?.({

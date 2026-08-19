@@ -4,17 +4,22 @@ import {
   Coins,
   Database,
   Loader2,
+  Monitor,
+  Moon,
+  Palette,
   RotateCcw,
   Save,
   ShieldCheck,
   SlidersHorizontal,
+  Sun,
   XCircle,
 } from "lucide-react";
 import { Field } from "../components/workbench/Field";
 import { InlineState } from "../components/workbench/InlineState";
-import { Switch } from "../components/workbench/Switch";
+import { Input, Switch, Textarea } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { normalizeThemePreference, THEME_PREFERENCES, type ThemePreference } from "../lib/theme";
 import { DEFAULT_SYSTEM_PROMPT } from "../lib/defaults";
 import { LatestRequestQueue } from "../lib/latestRequest";
 import {
@@ -22,6 +27,7 @@ import {
   persistedSettingsRequests,
   publishPersistedAiReadiness,
   savePersistedSettingsSnapshot,
+  savePersistedThemePreference,
   unavailableAiReadiness,
 } from "../lib/settingsRequests";
 import { useAppStore, useToastStore } from "../lib/stores";
@@ -180,7 +186,7 @@ export function SettingsPage() {
               <button
                 type="button"
                 onClick={() => void retryLoad()}
-                className="rounded-md border border-amber-700 bg-amber-950/30 px-3 py-1.5 text-[12px] font-medium text-amber-200 hover:bg-amber-950/50"
+                className="rounded-sm border border-warning-border bg-transparent px-3 py-1.5 text-[12px] font-medium text-warning hover:bg-warning-subtle"
               >
                 Retry
               </button>
@@ -202,6 +208,26 @@ export function SettingsPage() {
     setTesting(false);
     setDraftStatus(null);
     setSaveState(null);
+  };
+
+  const applyTheme = (preference: ThemePreference) => {
+    const current = formRef.current ?? form;
+    if (!current || current.theme === preference) return;
+
+    // Mirror into the draft first so `dirty` never reports a phantom theme
+    // diff, then persist. Theme cannot affect AI readiness, so this write
+    // skips the connection test a full save performs.
+    const next = { ...current, theme: preference };
+    formRef.current = next;
+    setForm(next);
+
+    void savePersistedThemePreference(
+      () => useAppStore.getState().settings,
+      preference,
+      setSettings,
+    ).catch(() => {
+      push("error", "Could not save the theme preference.");
+    });
   };
 
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
@@ -299,15 +325,13 @@ export function SettingsPage() {
     <ToolPage
       title="Settings"
       description="AI endpoint, scan defaults, and data sources"
-      context={dirty ? <span className="text-[11px] font-medium text-amber-300">Unsaved changes</span> : undefined}
+      context={dirty ? <span className="text-[11px] font-medium text-warning">Unsaved changes</span> : undefined}
       actions={
         <>
           {saveState && (
             <span
               role={saveState.tone === "error" ? "alert" : "status"}
-              className={`inline-flex max-w-52 items-center gap-1.5 text-[12px] ${
-                saveState.tone === "success" ? "text-emerald-300" : "text-red-300"
-              }`}
+              className={`inline-flex max-w-52 items-center gap-1.5 text-[12px] ${ saveState.tone === "success" ? "text-success" : "text-error" }`}
             >
               {saveState.tone === "success" ? (
                 <CheckCircle2 size={13} aria-hidden="true" />
@@ -341,7 +365,7 @@ export function SettingsPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 id="ai-engine-title" className={sectionTitleCls}>
-                <ShieldCheck size={15} aria-hidden="true" className="text-accent-400" />
+                <ShieldCheck size={15} aria-hidden="true" className="text-accent" />
                 AI Engine
               </h2>
               <p className={sectionDescriptionCls}>
@@ -361,22 +385,20 @@ export function SettingsPage() {
               htmlFor="ai-base-url"
               hint="Examples include OpenAI, Ollama, LM Studio, vLLM, Groq, and OpenRouter."
             >
-              <input
+              <Input
                 id="ai-base-url"
                 aria-describedby="ai-base-url-hint"
                 value={form.ai.baseUrl}
                 onChange={(event) => updateAi({ baseUrl: event.target.value })}
                 placeholder="https://api.openai.com/v1"
-                className={inputCls}
               />
             </Field>
             <Field label="Model" htmlFor="ai-model">
-              <input
+              <Input
                 id="ai-model"
                 value={form.ai.model}
                 onChange={(event) => updateAi({ model: event.target.value })}
                 placeholder="gpt-4o-mini"
-                className={inputCls}
               />
             </Field>
             <Field
@@ -384,7 +406,7 @@ export function SettingsPage() {
               htmlFor="ai-api-key"
               hint="Stored in the local app configuration and sent only to this endpoint."
             >
-              <input
+              <Input
                 id="ai-api-key"
                 aria-describedby="ai-api-key-hint"
                 type="password"
@@ -392,18 +414,16 @@ export function SettingsPage() {
                 value={form.ai.apiKey}
                 onChange={(event) => updateAi({ apiKey: event.target.value })}
                 placeholder="sk-…"
-                className={inputCls}
               />
             </Field>
             <Field label="Timeout (seconds)" htmlFor="ai-timeout">
-              <input
+              <Input
                 id="ai-timeout"
                 type="number"
                 value={form.ai.timeoutSecs}
                 min={10}
                 max={600}
                 onChange={(event) => updateAi({ timeoutSecs: Number(event.target.value) || 120 })}
-                className={inputCls}
               />
             </Field>
             <Field label={`Temperature — ${form.ai.temperature.toFixed(2)}`} htmlFor="ai-temperature">
@@ -415,11 +435,11 @@ export function SettingsPage() {
                 step={0.05}
                 value={form.ai.temperature}
                 onChange={(event) => updateAi({ temperature: Number(event.target.value) })}
-                className="h-9 w-full accent-[var(--color-accent-500)]"
+                className="h-9 w-full accent-[var(--accent)]"
               />
             </Field>
             <Field label="Max tokens" htmlFor="ai-max-tokens">
-              <input
+              <Input
                 id="ai-max-tokens"
                 type="number"
                 value={form.ai.maxTokens}
@@ -427,19 +447,18 @@ export function SettingsPage() {
                 max={8192}
                 step={256}
                 onChange={(event) => updateAi({ maxTokens: Number(event.target.value) || 2048 })}
-                className={inputCls}
               />
             </Field>
           </div>
 
           <div className="mt-3">
             <Field label="System prompt" htmlFor="ai-system-prompt">
-              <textarea
+              <Textarea
                 id="ai-system-prompt"
                 value={form.ai.systemPrompt}
                 onChange={(event) => updateAi({ systemPrompt: event.target.value })}
                 rows={4}
-                className={`${inputCls} selectable resize-y`}
+                className="selectable resize-y"
               />
             </Field>
           </div>
@@ -461,9 +480,7 @@ export function SettingsPage() {
             {statusMessage && (
               <span
                 role={draftStatus?.ok ? "status" : "alert"}
-                className={`inline-flex items-center gap-1.5 text-[12px] ${
-                  draftStatus?.ok ? "text-emerald-300" : "text-red-300"
-                }`}
+                className={`inline-flex items-center gap-1.5 text-[12px] ${ draftStatus?.ok ? "text-success" : "text-error" }`}
               >
                 {draftStatus?.ok ? (
                   <CheckCircle2 size={13} aria-hidden="true" />
@@ -474,14 +491,52 @@ export function SettingsPage() {
               </span>
             )}
           </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-stone-400">
+          <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
             This checks the current draft only. Assistant readiness continues to reflect saved settings.
           </p>
         </section>
 
+        <section className={sectionCls} aria-labelledby="appearance-title">
+          <h2 id="appearance-title" className={sectionTitleCls}>
+            <Palette size={15} aria-hidden="true" className="text-accent" />
+            Appearance
+          </h2>
+          <p className={sectionDescriptionCls}>
+            Choose the workbench theme. &ldquo;System&rdquo; follows the OS colour scheme and
+            updates live when it changes.
+          </p>
+          <div
+            role="radiogroup"
+            aria-labelledby="appearance-title"
+            className="mt-3 flex flex-wrap items-center gap-2"
+          >
+            {THEME_PREFERENCES.map((preference) => {
+              const Icon = THEME_ICON[preference];
+              const selected = normalizeThemePreference(form.theme) === preference;
+              return (
+                <button
+                  key={preference}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => applyTheme(preference)}
+                  className={`inline-flex items-center gap-2 rounded-sm border px-3 py-2 text-[12px] font-medium capitalize transition-colors ${
+                    selected
+                      ? "border-accent-glow bg-accent-subtle text-accent"
+                      : "border-border bg-surface-primary text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+                  }`}
+                >
+                  <Icon size={14} aria-hidden="true" />
+                  {preference}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
         <section className={sectionCls} aria-labelledby="scan-defaults-title">
           <h2 id="scan-defaults-title" className={sectionTitleCls}>
-            <SlidersHorizontal size={15} aria-hidden="true" className="text-accent-400" />
+            <SlidersHorizontal size={15} aria-hidden="true" className="text-accent" />
             Scan Defaults
           </h2>
           <p className={sectionDescriptionCls}>Set the initial scope and limits for new local scans.</p>
@@ -493,14 +548,13 @@ export function SettingsPage() {
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <Field label="Max file size (KB)" htmlFor="scan-max-file-size">
-              <input
+              <Input
                 id="scan-max-file-size"
                 type="number"
                 value={form.scan.maxFileSizeKb}
                 min={1}
                 max={10240}
                 onChange={(event) => update("scan", { ...form.scan, maxFileSizeKb: Number(event.target.value) || 1024 })}
-                className={inputCls}
               />
             </Field>
           </div>
@@ -510,18 +564,17 @@ export function SettingsPage() {
               htmlFor="scan-ignored-directories"
               hint="Enter one directory name per line."
             >
-              <textarea
+              <Textarea
                 id="scan-ignored-directories"
                 aria-describedby="scan-ignored-directories-hint"
                 value={form.scan.ignoredDirs.join("\n")}
                 onChange={(event) =>
-                  update("scan", {
-                    ...form.scan,
-                    ignoredDirs: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
-                  })
+                update("scan", {
+                ...form.scan,
+                ignoredDirs: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
+                })
                 }
                 rows={4}
-                className={`${inputCls} selectable resize-y font-mono text-[12px]`}
               />
             </Field>
           </div>
@@ -529,7 +582,7 @@ export function SettingsPage() {
 
         <section className={sectionCls} aria-labelledby="data-sources-title">
           <h2 id="data-sources-title" className={sectionTitleCls}>
-            <Database size={15} aria-hidden="true" className="text-accent-400" />
+            <Database size={15} aria-hidden="true" className="text-accent" />
             Data Sources
           </h2>
           <p className={sectionDescriptionCls}>Configure credentials used to enrich vulnerability results.</p>
@@ -539,7 +592,7 @@ export function SettingsPage() {
               htmlFor="nvd-api-key"
               hint="Optional. Raises the NVD rate limit from 5 to 50 requests per 30 seconds."
             >
-              <input
+              <Input
                 id="nvd-api-key"
                 aria-describedby="nvd-api-key-hint"
                 type="password"
@@ -547,18 +600,17 @@ export function SettingsPage() {
                 value={form.nvdApiKey ?? ""}
                 onChange={(event) => update("nvdApiKey", event.target.value || null)}
                 placeholder="Get a key at nvd.nist.gov/developers"
-                className={inputCls}
               />
             </Field>
           </div>
-          <p className="mt-3 text-[11px] leading-relaxed text-stone-400">
+          <p className="mt-3 text-[11px] leading-relaxed text-text-muted">
             Scanning stays on this machine. Keys are stored in the app configuration directory and sent only to the services you configure.
           </p>
         </section>
 
         <section className={sectionCls} aria-labelledby="usage-title">
           <h2 id="usage-title" className={sectionTitleCls}>
-            <Coins size={15} aria-hidden="true" className="text-accent-400" />
+            <Coins size={15} aria-hidden="true" className="text-accent" />
             Usage
           </h2>
           <p className={sectionDescriptionCls}>Lifetime AI token and estimated cost totals stored locally.</p>
@@ -585,19 +637,23 @@ export function SettingsPage() {
 
 function UsageMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-ink-700 bg-ink-900 px-3 py-2.5">
-      <dt className="text-[11px] font-medium uppercase tracking-[0.08em] text-stone-400">{label}</dt>
-      <dd className="mt-1 text-[14px] font-semibold tabular-nums text-stone-100">{value}</dd>
+    <div className="rounded-sm border border-border bg-surface-secondary px-3 py-2.5">
+      <dt className="text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">{label}</dt>
+      <dd className="mt-1 text-[14px] font-semibold tabular-nums text-text-primary">{value}</dd>
     </div>
   );
 }
 
-const inputCls =
-  "w-full rounded-md border border-ink-600 bg-ink-950 px-3 py-2 text-[13px] text-stone-200 placeholder:text-stone-500 focus:border-accent-500/70";
-const sectionCls = "rounded-lg border border-ink-700 bg-ink-850 p-4";
-const sectionTitleCls = "flex items-center gap-2 text-[14px] font-semibold text-stone-100";
-const sectionDescriptionCls = "mt-1 text-[12px] leading-relaxed text-stone-400";
+const THEME_ICON: Record<ThemePreference, typeof Moon> = {
+  dark: Moon,
+  light: Sun,
+  system: Monitor,
+};
+
+const sectionCls = "rounded-sm border border-border bg-surface-secondary p-4";
+const sectionTitleCls = "flex items-center gap-2 text-[14px] font-semibold text-text-primary";
+const sectionDescriptionCls = "mt-1 text-[12px] leading-relaxed text-text-muted";
 const secondaryButtonCls =
-  "inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[12px] font-medium text-stone-300 hover:bg-ink-800 hover:text-stone-100 disabled:cursor-not-allowed disabled:opacity-40";
+  "inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-secondary px-3 py-2 text-[12px] font-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40";
 const primaryButtonCls =
-  "inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40";
+  "inline-flex items-center gap-1.5 rounded-sm bg-accent px-3.5 py-2 text-[12px] font-semibold text-accent-contrast hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40";

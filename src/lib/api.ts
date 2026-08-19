@@ -16,6 +16,7 @@ import type {
   SessionInfo,
   StoredMessage,
   StreamStarted,
+  TodoItem,
   UsageSummary,
 } from "./types";
 
@@ -51,6 +52,12 @@ export const api = {
       ...(runId ? { runId } : {}),
     }),
   cancelChat: (runId: string) => invoke<void>("cancel_chat", { runId }),
+  /** Queue a message for a run already in flight. `false` = run already ended. */
+  steerChat: (runId: string, message: string) =>
+    invoke<boolean>("steer_chat", { runId, message }),
+  /** The agent's todo list for a conversation, for restoring it between turns. */
+  todoList: (conversationId: string) =>
+    invoke<TodoItem[]>("todo_list", { conversationId }),
   respondPermission: (requestId: string, approve: boolean) =>
     invoke<void>("respond_permission", { requestId, approve }),
   respondInteraction: (requestId: string, answers: unknown) =>

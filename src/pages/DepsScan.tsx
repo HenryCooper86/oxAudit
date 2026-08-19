@@ -15,6 +15,7 @@ import { resolveRuntimeProject } from "../lib/assistantSessions";
 import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
+import { Button } from "../components/ui";
 
 const vulnerabilityKey = (v: Vulnerability) => `${v.id}:${v.packageName}:${v.installedVersion}`;
 type FailedOperation = "discovery" | "check";
@@ -241,24 +242,26 @@ export function DepsScanPage() {
       <TargetBar
         primary={
           <>
-            <button
+            <Button
               type="button"
               onClick={findLockfiles}
               disabled={!path || running || discovering}
-              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-3 py-2 text-[12px] font-medium text-stone-200 hover:border-ink-500 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
+              variant="outline"
+              size="md"
             >
               <Search size={13} aria-hidden="true" />
               {discovering ? "Finding…" : "Find lockfiles"}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={run}
               disabled={!path || running || discovering}
-              className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
+              variant="primary"
+              size="md"
             >
               <Play size={13} aria-hidden="true" />
               {running ? "Checking…" : "Check dependencies"}
-            </button>
+            </Button>
           </>
         }
         secondary={
@@ -308,11 +311,11 @@ export function DepsScanPage() {
                 {preview.map((lockfile) => (
                   <span
                     key={lockfile.path}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-900 px-2.5 py-1 font-mono text-[11px] text-stone-400"
+                    className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-secondary px-2.5 py-1 font-mono text-[11px] text-text-muted"
                   >
-                    <Boxes size={11} aria-hidden="true" className="text-sky-400" />
+                    <Boxes size={11} aria-hidden="true" className="text-info" />
                     {lockfile.path.split(/[\\/]/).pop()}
-                    <span className="text-stone-400">({lockfile.packages} pkgs)</span>
+                    <span className="text-text-muted">({lockfile.packages} pkgs)</span>
                   </span>
                 ))}
               </div>
@@ -327,7 +330,7 @@ export function DepsScanPage() {
           </>
         }
       >
-        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
+        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
           Project folder
         </label>
         <FolderPicker
@@ -342,7 +345,7 @@ export function DepsScanPage() {
       {result && (
         <section
           aria-label="Dependency scan summary"
-          className="grid grid-cols-2 overflow-hidden rounded-lg border border-ink-700 bg-ink-850 min-[700px]:grid-cols-5"
+          className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[700px]:grid-cols-5"
         >
           <SummaryMetric label="Lockfiles" value={result.summary.lockfilesFound.length.toLocaleString()} />
           <SummaryMetric label="Packages found" value={result.summary.packagesFound.toLocaleString()} />
@@ -353,7 +356,7 @@ export function DepsScanPage() {
       )}
 
       {result && vulns.length > 0 && (
-        <section aria-label="Dependency vulnerabilities" className="overflow-hidden rounded-lg border border-ink-700 bg-ink-850">
+        <section aria-label="Dependency vulnerabilities" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <ResultsToolbar
             countLabel={`${filteredVulns.length} of ${vulns.length} vulnerabilities`}
             search={
@@ -362,13 +365,13 @@ export function DepsScanPage() {
                 <Search
                   size={13}
                   aria-hidden="true"
-                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-500"
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
                 />
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="Search package or advisory…"
-                  className="w-52 rounded-md border border-ink-600 bg-ink-900 py-1.5 pl-8 pr-2 text-[12px] text-stone-200 placeholder:text-stone-600"
+                  className="w-52 rounded-sm border border-border bg-surface-secondary py-1.5 pl-8 pr-2 text-[12px] text-text-primary placeholder:text-text-muted"
                 />
               </label>
             }
@@ -392,7 +395,7 @@ export function DepsScanPage() {
                 <button
                   type="button"
                   onClick={() => setQuery("")}
-                  className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+                  className="rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active"
                 >
                   Clear search
                 </button>
@@ -438,7 +441,7 @@ function VulnerabilityTable({
     <div className="max-h-[39rem] min-w-0 overflow-auto" aria-label="Scrollable vulnerable package table">
       <table className="min-w-[44rem] w-full table-fixed border-collapse text-left">
         <caption className="sr-only">Vulnerable packages and their advisory risk</caption>
-        <thead className="border-b border-ink-700 bg-ink-900/45 text-[12px] font-semibold uppercase tracking-[0.1em] text-stone-400">
+        <thead className="border-b border-border bg-surface-secondary text-[12px] font-semibold uppercase tracking-[0.1em] text-text-muted">
           <tr>
             <th scope="col" className="w-[31%] px-3 py-2">Package</th>
             <th scope="col" className="w-[17%] px-3 py-2">Installed</th>
@@ -447,7 +450,7 @@ function VulnerabilityTable({
             <th scope="col" className="w-[16%] px-3 py-2">Risk</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-ink-800">
+        <tbody className="divide-y divide-border">
           {vulnerabilities.map((vulnerability) => {
             const current = selected !== null && vulnerabilityKey(selected) === vulnerabilityKey(vulnerability);
             const select = () => onSelect(vulnerabilityKey(vulnerability));
@@ -464,21 +467,19 @@ function VulnerabilityTable({
                     select();
                   }
                 }}
-                className={`cursor-pointer border-l-2 text-[13px] text-stone-300 transition-colors ${
-                  current ? "border-accent-500 bg-accent-500/5" : "border-transparent hover:bg-ink-800"
-                }`}
+                className={`cursor-pointer border-l-2 text-[13px] text-text-secondary transition-colors ${ current ? "border-accent-glow bg-accent-subtle" : "border-transparent hover:bg-surface-hover" }`}
               >
                 <td className="min-w-0 px-3 py-2.5">
-                  <span className="block truncate font-mono text-[14px] font-medium text-stone-200">{vulnerability.packageName}</span>
-                  <span className="mt-0.5 block truncate text-[11px] text-stone-400">{vulnerability.id}</span>
+                  <span className="block truncate font-mono text-[14px] font-medium text-text-primary">{vulnerability.packageName}</span>
+                  <span className="mt-0.5 block truncate text-[11px] text-text-muted">{vulnerability.id}</span>
                 </td>
-                <td className="truncate px-3 py-2.5 font-mono text-stone-300" title={vulnerability.installedVersion}>
+                <td className="truncate px-3 py-2.5 font-mono text-text-secondary" title={vulnerability.installedVersion}>
                   {vulnerability.installedVersion}
                 </td>
-                <td className="truncate px-3 py-2.5 font-mono text-stone-300" title={vulnerability.fixedVersions.join(", ")}>
+                <td className="truncate px-3 py-2.5 font-mono text-text-secondary" title={vulnerability.fixedVersions.join(", ")}>
                   {vulnerability.fixedVersions[0] ?? "—"}
                 </td>
-                <td className="truncate px-3 py-2.5 text-stone-300" title={vulnerability.ecosystem}>
+                <td className="truncate px-3 py-2.5 text-text-secondary" title={vulnerability.ecosystem}>
                   {vulnerability.ecosystem}
                 </td>
                 <td className="px-3 py-2.5"><SeverityBadge severity={vulnerability.severity} /></td>
@@ -502,61 +503,61 @@ function AdvisoryDetail({
     <article className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-mono text-[12px] text-sky-300">{vulnerability.id}</p>
-          <h2 className="mt-1 break-words text-[16px] font-semibold text-stone-100">{vulnerability.packageName}</h2>
-          <p className="mt-1 text-[13px] text-stone-400">{vulnerability.summary || "No advisory summary provided."}</p>
+          <p className="font-mono text-[12px] text-info">{vulnerability.id}</p>
+          <h2 className="mt-1 break-words text-[16px] font-semibold text-text-primary">{vulnerability.packageName}</h2>
+          <p className="mt-1 text-[13px] text-text-muted">{vulnerability.summary || "No advisory summary provided."}</p>
         </div>
         <SeverityBadge severity={vulnerability.severity} />
       </div>
 
       <section className="mt-5 space-y-4 text-[13px]">
         <DetailSection label="Details">
-          <p className="whitespace-pre-wrap leading-relaxed text-stone-300">{vulnerability.details || vulnerability.summary || "No additional details provided."}</p>
+          <p className="whitespace-pre-wrap leading-relaxed text-text-secondary">{vulnerability.details || vulnerability.summary || "No additional details provided."}</p>
         </DetailSection>
         <div className="grid gap-4 min-[540px]:grid-cols-2">
           <DetailSection label="Installed version">
-            <p className="font-mono text-stone-200">{vulnerability.installedVersion}</p>
+            <p className="font-mono text-text-primary">{vulnerability.installedVersion}</p>
           </DetailSection>
           <DetailSection label="Ecosystem">
-            <p className="text-stone-200">{vulnerability.ecosystem}</p>
+            <p className="text-text-primary">{vulnerability.ecosystem}</p>
           </DetailSection>
           <DetailSection label="CVSS">
-            <p className="font-mono text-stone-200">{vulnerability.cvssScore === null ? "Not published" : vulnerability.cvssScore.toFixed(1)}</p>
+            <p className="font-mono text-text-primary">{vulnerability.cvssScore === null ? "Not published" : vulnerability.cvssScore.toFixed(1)}</p>
           </DetailSection>
           <DetailSection label="Published">
-            <p className="text-stone-200">{vulnerability.published ? fmtDate(vulnerability.published) : "Not published"}</p>
+            <p className="text-text-primary">{vulnerability.published ? fmtDate(vulnerability.published) : "Not published"}</p>
           </DetailSection>
           <DetailSection label="Affected range">
-            <p className="font-mono text-stone-200">{vulnerability.affectedRange ?? "Not published"}</p>
+            <p className="font-mono text-text-primary">{vulnerability.affectedRange ?? "Not published"}</p>
           </DetailSection>
           <DetailSection label="Lockfile">
-            <p className="break-all font-mono text-stone-200">{vulnerability.lockfile || "Not reported"}</p>
+            <p className="break-all font-mono text-text-primary">{vulnerability.lockfile || "Not reported"}</p>
           </DetailSection>
         </div>
         <DetailSection label="Advisory aliases">
           {vulnerability.aliases.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {vulnerability.aliases.map((alias) => (
-                <span key={alias} className="rounded border border-ink-600 bg-ink-800 px-1.5 py-0.5 font-mono text-[11px] text-sky-300">
+                <span key={alias} className="rounded-sm border border-border bg-surface-tertiary px-1.5 py-0.5 font-mono text-[11px] text-info">
                   {alias}
                 </span>
               ))}
             </div>
           ) : (
-            <p className="text-stone-400">No aliases reported.</p>
+            <p className="text-text-muted">No aliases reported.</p>
           )}
         </DetailSection>
         <DetailSection label="Fixed versions">
           {vulnerability.fixedVersions.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {vulnerability.fixedVersions.map((version) => (
-                <span key={version} className="rounded border border-emerald-900/70 bg-emerald-950/25 px-1.5 py-0.5 font-mono text-[11px] text-emerald-300">
+                <span key={version} className="rounded-sm border border-success-border bg-success-subtle px-1.5 py-0.5 font-mono text-[11px] text-success">
                   {version}
                 </span>
               ))}
             </div>
           ) : (
-            <p className="text-amber-300">No fixed version published yet.</p>
+            <p className="text-warning">No fixed version published yet.</p>
           )}
         </DetailSection>
         {vulnerability.references.length > 0 && (
@@ -569,7 +570,7 @@ function AdvisoryDetail({
                   onClick={() => {
                     void onOpenReference(reference);
                   }}
-                  className="inline-flex max-w-full items-center gap-1 rounded border border-ink-600 bg-ink-800 px-2 py-1 text-[12px] text-sky-300 hover:border-sky-500/50"
+                  className="inline-flex max-w-full items-center gap-1 rounded-sm border border-border bg-surface-tertiary px-2 py-1 text-[12px] text-info hover:border-info"
                 >
                   <ExternalLink size={10} aria-hidden="true" />
                   <span className="max-w-64 truncate">{reference.replace(/^https?:\/\//, "")}</span>
@@ -586,7 +587,7 @@ function AdvisoryDetail({
 function DetailSection({ label, children }: { label: string; children: JSX.Element }): JSX.Element {
   return (
     <div>
-      <h3 className="mb-1 text-[12px] font-semibold uppercase tracking-[0.1em] text-stone-400">{label}</h3>
+      <h3 className="mb-1 text-[12px] font-semibold uppercase tracking-[0.1em] text-text-muted">{label}</h3>
       {children}
     </div>
   );
@@ -594,9 +595,9 @@ function DetailSection({ label, children }: { label: string; children: JSX.Eleme
 
 function SummaryMetric({ label, value }: { label: string; value: string }): JSX.Element {
   return (
-    <div className="min-w-0 border-b border-r border-ink-800 px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">{label}</p>
-      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-stone-200" title={value}>
+    <div className="min-w-0 border-b border-r border-border px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">{label}</p>
+      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-text-primary" title={value}>
         {value}
       </p>
     </div>
@@ -620,16 +621,17 @@ function DependencyError({
       title={discovery ? "Lockfile discovery failed" : "Dependency checking failed"}
       action={
         <>
-          <button
+          <Button
             type="button"
             onClick={onRetry}
-            className="rounded-md border border-red-900/80 bg-red-950/40 px-2.5 py-1.5 text-[12px] font-medium text-red-200 hover:bg-red-950/70"
+            variant="danger"
+            size="md"
           >
             {discovery ? "Retry discovery" : "Retry dependency check"}
-          </button>
-          <details className="text-[11px] text-stone-400">
-            <summary className="cursor-pointer hover:text-stone-200">Technical details</summary>
-            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[11px] text-stone-400">
+          </Button>
+          <details className="text-[11px] text-text-muted">
+            <summary className="cursor-pointer hover:text-text-primary">Technical details</summary>
+            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-sm border border-border bg-surface-primary p-2 font-mono text-[11px] text-text-muted">
               {detail}
             </pre>
           </details>

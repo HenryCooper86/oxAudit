@@ -8,7 +8,6 @@ import { SeverityBadge } from "../components/SeverityBadge";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
-import { Switch } from "../components/workbench/Switch";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
@@ -25,6 +24,7 @@ import {
 } from "../lib/sourceScanOptions";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { Finding, ScanProgress, ScanResult, Severity } from "../lib/types";
+import { Button, Select, Switch } from "../components/ui";
 
 const SEVERITIES: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
 
@@ -322,31 +322,33 @@ export function SourceScanPage() {
         primary={
           <>
             {running && (
-              <button
+              <Button
                 type="button"
                 onClick={cancel}
                 disabled={cancelling}
-                className="inline-flex items-center gap-1.5 rounded-md border border-red-900/80 bg-red-950/30 px-3 py-2 text-[12px] font-medium text-red-300 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-60"
+                variant="danger"
+                size="md"
               >
                 <Ban size={13} aria-hidden="true" />
                 {cancelling ? "Cancelling…" : "Cancel"}
-              </button>
+              </Button>
             )}
-            <button
+            <Button
               type="button"
               onClick={run}
               disabled={!path || running || !scanOptions.resolved || scanUnavailable}
-              className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
+              variant="primary"
+              size="md"
             >
               <Play size={13} aria-hidden="true" />
               {running ? "Scanning…" : "Run scan"}
-            </button>
+            </Button>
           </>
         }
         secondary={
           <>
             <details>
-              <summary className="w-fit cursor-pointer text-[12px] font-medium text-stone-300 hover:text-stone-100">
+              <summary className="w-fit cursor-pointer text-[12px] font-medium text-text-secondary hover:text-text-primary">
                 Advanced scan settings
               </summary>
               <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3">
@@ -378,7 +380,7 @@ export function SourceScanPage() {
                   label="Follow symlinks"
                   disabled={running}
                 />
-                <label className="flex items-center gap-2 text-[12px] text-stone-400">
+                <label className="flex items-center gap-2 text-[12px] text-text-muted">
                   Max file size
                   <input
                     type="number"
@@ -392,7 +394,7 @@ export function SourceScanPage() {
                       )
                     }
                     disabled={running}
-                    className="w-20 rounded-md border border-ink-600 bg-ink-900 px-2 py-1 font-mono text-xs text-stone-200 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="w-20 rounded-sm border border-border bg-surface-secondary px-2 py-1 font-mono text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                   />
                   KB
                 </label>
@@ -430,7 +432,7 @@ export function SourceScanPage() {
                 }
                 action={
                   result ? (
-                    <span className="text-[11px] text-stone-400">Previous results remain available below.</span>
+                    <span className="text-[11px] text-text-muted">Previous results remain available below.</span>
                   ) : undefined
                 }
               />
@@ -458,7 +460,7 @@ export function SourceScanPage() {
           </>
         }
       >
-        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
+        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
           Project folder
         </label>
         <FolderPicker
@@ -471,7 +473,7 @@ export function SourceScanPage() {
       </TargetBar>
 
       {result && (
-        <section aria-label="Scan summary" className="grid grid-cols-2 overflow-hidden rounded-lg border border-ink-700 bg-ink-850 min-[700px]:grid-cols-5">
+        <section aria-label="Scan summary" className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[700px]:grid-cols-5">
           <SummaryMetric label="Files" value={result.summary.filesScanned.toLocaleString()} />
           <SummaryMetric label="Secrets" value={result.summary.secretsFound.toLocaleString()} />
           <SummaryMetric label="Vulnerabilities" value={result.summary.vulnerabilitiesFound.toLocaleString()} />
@@ -481,51 +483,51 @@ export function SourceScanPage() {
       )}
 
       {result && result.findings.length > 0 && (
-        <section aria-label="Source scan results" className="overflow-hidden rounded-lg border border-ink-700 bg-ink-850">
+        <section aria-label="Source scan results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <ResultsToolbar
             countLabel={`${filtered.length} of ${result.findings.length} findings`}
             filters={
               <>
-                <select
+                <Select
                   aria-label="Finding category"
                   value={tab}
                   onChange={(event) => {
                     setTab(event.target.value as typeof tab);
                   }}
-                  className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
+                  variant="compact"
                 >
                   <option value="all">All categories</option>
                   <option value="secret">Secrets ({result.summary.secretsFound})</option>
                   <option value="vulnerability">Vulnerabilities ({result.summary.vulnerabilitiesFound})</option>
-                </select>
-                <select
+                </Select>
+                <Select
                   aria-label="Finding severity"
                   value={sevFilter}
                   onChange={(event) => {
                     setSevFilter(event.target.value);
                   }}
-                  className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
+                  variant="compact"
                 >
                   {SEVERITIES.map((severity) => (
                     <option key={severity} value={severity}>
                       {severity === "all" ? "All severities" : severity}
                     </option>
                   ))}
-                </select>
-                <select
+                </Select>
+                <Select
                   aria-label="Finding language"
                   value={langFilter}
                   onChange={(event) => {
                     setLangFilter(event.target.value);
                   }}
-                  className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-300"
+                  variant="compact"
                 >
                   {languages.map((language) => (
                     <option key={language} value={language}>
                       {language === "all" ? "All languages" : language}
                     </option>
                   ))}
-                </select>
+                </Select>
               </>
             }
             search={
@@ -534,7 +536,7 @@ export function SourceScanPage() {
                 <Search
                   size={13}
                   aria-hidden="true"
-                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-500"
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
                 />
                 <input
                   value={search}
@@ -542,19 +544,20 @@ export function SourceScanPage() {
                     setSearch(event.target.value);
                   }}
                   placeholder="Search findings…"
-                  className="w-44 rounded-md border border-ink-600 bg-ink-900 py-1.5 pl-8 pr-2 text-[12px] text-stone-200 placeholder:text-stone-600"
+                  className="w-44 rounded-sm border border-border bg-surface-secondary py-1.5 pl-8 pr-2 text-[12px] text-text-primary placeholder:text-text-muted"
                 />
               </label>
             }
             actions={
-              <button
+              <Button
                 type="button"
                 onClick={copyJson}
-                className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:border-ink-500 hover:bg-ink-700"
+                variant="outline"
+                size="md"
               >
                 <Clipboard size={13} aria-hidden="true" />
                 Copy JSON
-              </button>
+              </Button>
             }
           />
 
@@ -565,7 +568,7 @@ export function SourceScanPage() {
               hasSelection={hasExplicitSelection}
               onBackToList={() => setSelectedFindingId(null)}
               list={
-                <div className="max-h-[39rem] overflow-y-auto divide-y divide-ink-800">
+                <div className="max-h-[39rem] overflow-y-auto divide-y divide-border">
                   {filtered.map((finding) => {
                     const Icon = finding.category === "secret" ? KeyRound : FileCode2;
                     const current = selectedFinding?.id === finding.id;
@@ -575,22 +578,18 @@ export function SourceScanPage() {
                         type="button"
                         aria-current={current}
                         onClick={() => setSelectedFindingId(finding.id)}
-                        className={`flex w-full items-start gap-3 border-l-2 px-3 py-3 text-left transition-colors ${
-                          current
-                            ? "border-accent-500 bg-accent-500/5"
-                            : "border-transparent hover:bg-ink-800"
-                        }`}
+                        className={`flex w-full items-start gap-3 border-l-2 px-3 py-3 text-left transition-colors ${ current ? "border-accent-glow bg-accent-subtle" : "border-transparent hover:bg-surface-hover" }`}
                       >
-                        <Icon size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-stone-500" />
+                        <Icon size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-text-muted" />
                         <span className="min-w-0 flex-1">
                           <span className="flex flex-wrap items-center gap-1.5">
-                            <span className="truncate text-[12px] font-medium text-stone-200">{finding.ruleName}</span>
+                            <span className="truncate text-[12px] font-medium text-text-primary">{finding.ruleName}</span>
                             <SeverityBadge severity={finding.severity} />
                           </span>
-                          <span className="mt-1 block truncate font-mono text-[11px] text-stone-400">
+                          <span className="mt-1 block truncate font-mono text-[11px] text-text-muted">
                             {finding.filePath}:{finding.line}
                           </span>
-                          <span className="mt-1 block truncate text-[11px] text-stone-400">{finding.matchText}</span>
+                          <span className="mt-1 block truncate text-[11px] text-text-muted">{finding.matchText}</span>
                         </span>
                       </button>
                     );
@@ -619,7 +618,7 @@ export function SourceScanPage() {
                     setLangFilter("all");
                     setSearch("");
                   }}
-                  className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+                  className="rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active"
                 >
                   Clear filters
                 </button>
@@ -635,14 +634,15 @@ export function SourceScanPage() {
           title="No findings detected"
           description="The scan completed without finding exposed secrets or vulnerable source patterns."
           action={
-            <button
+            <Button
               type="button"
               onClick={copyJson}
-              className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+              variant="outline"
+              size="md"
             >
               <Clipboard size={13} aria-hidden="true" />
               Copy JSON
-            </button>
+            </Button>
           }
         />
       )}
@@ -668,9 +668,9 @@ export function SourceScanPage() {
 
 function SummaryMetric({ label, value }: { label: string; value: string }): JSX.Element {
   return (
-    <div className="min-w-0 border-b border-r border-ink-800 px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">{label}</p>
-      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-stone-200" title={value}>
+    <div className="min-w-0 border-b border-r border-border px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">{label}</p>
+      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-text-primary" title={value}>
         {value}
       </p>
     </div>
@@ -686,16 +686,17 @@ function ScanError({ detail, onRetry }: { detail: string; onRetry: () => void })
       description="Correct the folder path or scan settings, then try again."
       action={
         <>
-          <button
+          <Button
             type="button"
             onClick={onRetry}
-            className="rounded-md border border-red-900/80 bg-red-950/40 px-2.5 py-1.5 text-[12px] font-medium text-red-200 hover:bg-red-950/70"
+            variant="danger"
+            size="md"
           >
             Retry scan
-          </button>
-          <details className="text-[11px] text-stone-400">
-            <summary className="cursor-pointer hover:text-stone-200">Details</summary>
-            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[11px] text-stone-400">
+          </Button>
+          <details className="text-[11px] text-text-muted">
+            <summary className="cursor-pointer hover:text-text-primary">Details</summary>
+            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-sm border border-border bg-surface-primary p-2 font-mono text-[11px] text-text-muted">
               {detail}
             </pre>
           </details>

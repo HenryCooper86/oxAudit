@@ -59,6 +59,67 @@ impl RunCancellation {
     }
 }
 
+/// Messages the user submitted while a turn was already running.
+///
+/// The loop drains this only at iteration boundaries — never between an
+/// assistant message carrying `tool_calls` and the `tool` results answering
+/// them, which would violate the provider's message protocol.
+///
+/// The queue can also be *closed*. Closing is how the run and the UI agree,
+/// without a race, on who owns a message: once closed the queue rejects pushes,
+/// so `steer_chat` reports failure and the caller sends an ordinary new turn
+/// instead. A run only ever closes the queue while it is empty, so a message
+/// accepted here is always honored.
+#[derive(Default)]
+pub struct SteerQueue {
+    state: Mutex<SteerState>,
+}
+
+#[derive(Default)]
+struct SteerState {
+    messages: Vec<String>,
+    closed: bool,
+}
+
+impl SteerQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Queue a message. Returns `false` if the run has stopped accepting them.
+    pub fn push(&self, message: String) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return false;
+        }
+        state.messages.push(message);
+        true
+    }
+
+    /// Take everything queued so far, leaving the queue empty but still open.
+    pub fn drain(&self) -> Vec<String> {
+        std::mem::take(&mut self.state.lock().unwrap().messages)
+    }
+
+    /// Close only if nothing is pending, so a run can never finish while
+    /// holding a message it accepted. Returns whether the queue is now closed.
+    pub fn close_if_empty(&self) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.messages.is_empty() {
+            state.closed = true;
+        }
+        state.closed
+    }
+
+    /// Close unconditionally and hand back anything still queued, so the caller
+    /// can fold it into a final model call rather than drop it.
+    pub fn close(&self) -> Vec<String> {
+        let mut state = self.state.lock().unwrap();
+        state.closed = true;
+        std::mem::take(&mut state.messages)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum PendingWaitError {
     Cancelled,
