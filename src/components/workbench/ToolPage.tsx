@@ -14,10 +14,10 @@ export function ToolPage(props: {
       <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-[15px] font-semibold tracking-tight text-slate-100">{title}</h1>
+            <h1 className="text-[15px] font-semibold tracking-tight text-text-primary">{title}</h1>
             {context}
           </div>
-          <p className="mt-1 text-[13px] text-slate-400">{description}</p>
+          <p className="mt-1 text-[13px] text-text-muted">{description}</p>
         </div>
         {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </header>

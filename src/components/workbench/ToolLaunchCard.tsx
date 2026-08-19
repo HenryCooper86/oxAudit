@@ -17,19 +17,19 @@ export function ToolLaunchCard(props: ToolLaunchCardProps): JSX.Element {
     <button
       type="button"
       onClick={onOpen}
-      className="group flex min-h-[108px] w-full flex-col items-start rounded-lg border border-ink-700 bg-ink-850 px-4 py-3.5 text-left transition-colors hover:border-ink-600 hover:bg-ink-800"
+      className="group flex min-h-[108px] w-full flex-col items-start rounded-sm border border-border bg-surface-secondary px-4 py-3.5 text-left transition-colors hover:border-border-strong hover:bg-surface-hover"
     >
       <div className="flex w-full items-center justify-between gap-3">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-accent-400">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
           {category}
         </span>
-        <span className="text-slate-400" aria-hidden="true">
+        <span className="text-text-muted" aria-hidden="true">
           {icon}
         </span>
       </div>
-      <span className="mt-2 text-[14px] font-semibold text-slate-100">{title}</span>
-      <span className="mt-1 text-[13px] leading-5 text-slate-400">{description}</span>
-      <span className="mt-auto inline-flex items-center gap-1 pt-3 text-[13px] font-medium text-accent-400">
+      <span className="mt-2 text-[14px] font-semibold text-text-primary">{title}</span>
+      <span className="mt-1 text-[13px] leading-5 text-text-muted">{description}</span>
+      <span className="mt-auto inline-flex items-center gap-1 pt-3 text-[13px] font-medium text-accent">
         {actionLabel}
         <ArrowUpRight size={14} strokeWidth={1.8} aria-hidden="true" />
       </span>

@@ -1,0 +1,135 @@
+/* App layout */
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background: var(--surface-primary);
+}
+
+/* Expose the native vibrancy layer below the app. The sidebar remains
+   transparent while `.main-panel` provides an opaque content surface. */
+html[data-host="tauri"][data-platform="macos"] .app {
+  background: transparent;
+}
+
+.main-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface-primary);
+}
+
+/* ---- Main header ---- */
+.main-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-lg);
+  height: 52px;
+  background: var(--surface-primary);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/*
+ * Custom-decorations mode: the native titlebar is hidden and the app draws
+ * its own chrome inside `.main-header`. On macOS, the traffic lights float
+ * at top-left of the sidebar; our NavSidebar reserves space at the top.
+ */
+html.custom-decorations .main-header {
+  -webkit-app-region: drag;
+}
+html.custom-decorations .main-header button,
+html.custom-decorations .main-header [role="button"] {
+  -webkit-app-region: no-drag;
+}
+
+.main-header-start {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.app-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-primary);
+  margin: 0;
+  padding-right: 0.15em;
+  letter-spacing: 0.01em;
+  opacity: 0.9;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Header action buttons ---- */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.btn-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  position: relative;
+}
+
+.btn-header:hover {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: var(--surface-hover);
+}
+
+.btn-header.active {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-color: transparent;
+}
+
+.btn-header.has-activity::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+/* Borderless back button in the main header (sub-agent drill-in) */
+.header-back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.header-back-btn:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}

@@ -16,7 +16,7 @@ export function ProgressBar({
   const progressLabel = label ?? (indeterminate ? "Working…" : "Progress");
   return (
     <div className="w-full">
-      <div className="mb-1 flex items-center justify-between text-xs text-stone-400">
+      <div className="mb-1 flex items-center justify-between text-xs text-text-muted">
         <span id={labelId} aria-live="polite">{progressLabel}</span>
         {!indeterminate && max !== undefined && value !== undefined && (
           <span aria-hidden="true" className="tabular-nums">
@@ -30,13 +30,13 @@ export function ProgressBar({
         aria-valuemin={0}
         aria-valuemax={max && max > 0 ? max : 100}
         aria-valuenow={indeterminate ? undefined : value ?? 0}
-        className="h-2 w-full overflow-hidden rounded-full bg-ink-750"
+        className="h-2 w-full overflow-hidden rounded-full bg-surface-active"
       >
         {indeterminate ? (
-          <div className="h-full w-1/3 animate-[vc-slide_1.2s_ease-in-out_infinite] rounded-full bg-accent-400/80" />
+          <div className="h-full w-1/3 animate-[vc-slide_1.2s_ease-in-out_infinite] rounded-full bg-accent" />
         ) : (
           <div
-            className="h-full rounded-full bg-accent-500 transition-all duration-200"
+            className="h-full rounded-full bg-accent transition-all duration-200"
             style={{ width: `${pct}%` }}
           />
         )}

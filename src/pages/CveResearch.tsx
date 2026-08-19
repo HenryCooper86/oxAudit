@@ -12,6 +12,7 @@ import { api } from "../lib/api";
 import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { CveDetail, CveItem, CveSearchResult } from "../lib/types";
+import { Button, Select } from "../components/ui";
 
 const PER_PAGE = 20;
 const ECOSYSTEMS = [
@@ -170,7 +171,7 @@ export function CveResearchPage(): JSX.Element {
       title="CVE Research"
       description="Search NVD CVEs, inspect source records, and query OSV package advisories."
       context={
-        <span className="rounded-full border border-ink-600 bg-ink-850 px-2 py-0.5 text-[11px] text-stone-400">
+        <span className="rounded-full border border-border bg-surface-secondary px-2 py-0.5 text-[11px] text-text-muted">
           No project required
         </span>
       }
@@ -181,7 +182,7 @@ export function CveResearchPage(): JSX.Element {
             type="button"
             onClick={() => void search({ query, recent, startIndex: 0 })}
             disabled={loading}
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-3.5 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-sm bg-accent px-3.5 py-2 text-[12px] font-semibold text-accent-contrast hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Search size={13} aria-hidden="true" />
             {loading ? "Searching…" : "Search NVD"}
@@ -203,7 +204,7 @@ export function CveResearchPage(): JSX.Element {
       >
         <label
           htmlFor="cve-query"
-          className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400"
+          className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted"
         >
           CVE ID or keyword
         </label>
@@ -218,14 +219,14 @@ export function CveResearchPage(): JSX.Element {
               }
             }}
             placeholder="apache log4j rce, nginx, CVE-2024-…"
-            className="min-w-[min(100%,18rem)] flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[13px] text-stone-200 placeholder:text-stone-400"
+            className="min-w-[min(100%,18rem)] flex-1 rounded-sm border border-border bg-surface-secondary px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted"
           />
-          <label className="flex cursor-pointer items-center gap-2 text-[12px] text-stone-400">
+          <label className="flex cursor-pointer items-center gap-2 text-[12px] text-text-muted">
             <input
               type="checkbox"
               checked={recent}
               onChange={(event) => setRecent(event.target.checked)}
-              className="accent-accent-500"
+              className="accent-accent"
             />
             Modified last 7 days
           </label>
@@ -246,7 +247,7 @@ export function CveResearchPage(): JSX.Element {
                     completedSearch ?? { query, recent, startIndex: 0 },
                 )
               }
-              className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+              className="rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active"
             >
               Retry search
             </button>
@@ -269,7 +270,7 @@ export function CveResearchPage(): JSX.Element {
       {result && completedSearch && result.items.length > 0 && (
         <section
           aria-label="CVE search results"
-          className="overflow-hidden rounded-lg border border-ink-700 bg-ink-850"
+          className="overflow-hidden rounded-sm border border-border bg-surface-secondary"
         >
           <ResultsToolbar
             countLabel={`${total.toLocaleString()} results${completedSearch.query ? ` for “${completedSearch.query}”` : completedSearch.recent ? " (recent)" : ""} · ${start + 1}–${Math.min(start + PER_PAGE, total)}`}
@@ -319,7 +320,7 @@ export function CveResearchPage(): JSX.Element {
                         <button
                           type="button"
                           onClick={() => void openDetail(selectedItem.id)}
-                          className="rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700"
+                          className="rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active"
                         >
                           Retry details
                         </button>
@@ -394,26 +395,26 @@ function PackageLookup({
 }): JSX.Element {
   return (
     <details>
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-stone-300">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-text-secondary">
         <PackageSearch size={13} aria-hidden="true" />
-        Package lookup <span className="text-stone-400">(OSV)</span>
+        Package lookup <span className="text-text-muted">(OSV)</span>
       </summary>
       <div className="mt-3 flex flex-wrap items-end gap-2">
-        <label className="text-[11px] text-stone-400">
+        <label className="text-[11px] text-text-muted">
           Ecosystem
-          <select
+          <Select
             value={ecosystem}
             onChange={(event) => onEcosystem(event.target.value)}
-            className="mt-1 block rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-[12px] text-stone-200"
+            variant="compact" className="mt-1 block text-text-primary"
           >
             {ECOSYSTEMS.map((value) => (
               <option key={value} value={value}>
                 {value}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
-        <label className="min-w-[min(100%,16rem)] flex-1 text-[11px] text-stone-400">
+        <label className="min-w-[min(100%,16rem)] flex-1 text-[11px] text-text-muted">
           Package name
           <input
             value={packageName}
@@ -422,21 +423,21 @@ function PackageLookup({
               if (event.key === "Enter") void onLookup();
             }}
             placeholder="lodash"
-            className="mt-1 block w-full rounded-md border border-ink-600 bg-ink-900 px-3 py-1.5 text-[13px] text-stone-200 placeholder:text-stone-400"
+            className="mt-1 block w-full rounded-sm border border-border bg-surface-secondary px-3 py-1.5 text-[13px] text-text-primary placeholder:text-text-muted"
           />
         </label>
         <button
           type="button"
           onClick={() => void onLookup()}
           disabled={loading || !packageName.trim()}
-          className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-3 py-1.5 text-[12px] font-medium text-stone-200 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-tertiary px-3 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Search size={12} aria-hidden="true" />
           {loading ? "Looking up…" : "Look up"}
         </button>
       </div>
       {error && (
-        <p role="alert" className="mt-2 text-[12px] text-red-300">
+        <p role="alert" className="mt-2 text-[12px] text-error">
           OSV package lookup unavailable: {error}
         </p>
       )}
@@ -470,12 +471,12 @@ function PackageResults({
     published?: string;
   }>;
   return (
-    <div className="mt-3 border-t border-ink-800 pt-3">
-      <p className="text-[12px] text-stone-300">
+    <div className="mt-3 border-t border-border pt-3">
+      <p className="text-[12px] text-text-secondary">
         OSV advisories for {packageName} ({ecosystem}) — {advisories.length}
       </p>
       {advisories.length === 0 ? (
-        <p className="mt-1 text-[12px] text-stone-400">
+        <p className="mt-1 text-[12px] text-text-muted">
           No known advisories for this package.
         </p>
       ) : (
@@ -483,7 +484,7 @@ function PackageResults({
           {advisories.slice(0, 15).map((advisory, index) => (
             <li
               key={`${advisory.id ?? "advisory"}-${index}`}
-              className="flex items-start gap-1.5 text-[12px] text-stone-400"
+              className="flex items-start gap-1.5 text-[12px] text-text-muted"
             >
               <button
                 type="button"
@@ -492,7 +493,7 @@ function PackageResults({
                   advisory.id &&
                   void onOpenUrl(`https://osv.dev/vulnerability/${advisory.id}`)
                 }
-                className="shrink-0 font-mono text-sky-300 hover:underline disabled:cursor-not-allowed disabled:text-stone-500"
+                className="shrink-0 font-mono text-info hover:underline disabled:cursor-not-allowed disabled:text-text-muted"
               >
                 {advisory.id ?? "OSV advisory"}
               </button>
@@ -531,26 +532,26 @@ function CveList({
               disabled={disabled}
               aria-current={selected ? "true" : undefined}
               onClick={() => void onSelect(item.id)}
-              className={`block w-full border-l-2 border-b border-ink-800 px-3 py-3 text-left transition-colors disabled:cursor-wait disabled:opacity-65 ${selected ? "border-l-accent-500 bg-accent-500/5" : "border-l-transparent hover:bg-ink-800"}`}
+              className={`block w-full border-l-2 border-b border-border px-3 py-3 text-left transition-colors disabled:cursor-wait disabled:opacity-65 ${selected ? "border-l-accent bg-accent-subtle" : "border-l-transparent hover:bg-surface-hover"}`}
             >
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="font-mono text-[13px] font-semibold text-sky-300">
+                <span className="font-mono text-[13px] font-semibold text-info">
                   {item.id}
                 </span>
                 <SeverityBadge severity={item.severity} />
                 {item.cvssScore !== null && (
-                  <span className="rounded bg-ink-900 px-1.5 py-0.5 font-mono text-[11px] text-stone-400">
+                  <span className="rounded-sm bg-surface-secondary px-1.5 py-0.5 font-mono text-[11px] text-text-muted">
                     CVSS {item.cvssScore.toFixed(1)}
                   </span>
                 )}
-                <span className="ml-auto text-[11px] text-stone-400">
+                <span className="ml-auto text-[11px] text-text-muted">
                   {fmtDate(item.published)}
                 </span>
               </div>
-              <p className="mt-1.5 line-clamp-2 text-[13px] leading-relaxed text-stone-300">
+              <p className="mt-1.5 line-clamp-2 text-[13px] leading-relaxed text-text-secondary">
                 {item.description}
               </p>
-              <p className="mt-1 truncate font-mono text-[11px] text-stone-400">
+              <p className="mt-1 truncate font-mono text-[11px] text-text-muted">
                 {item.affectedProducts.join(" · ")}
               </p>
             </button>
@@ -576,24 +577,26 @@ function Pagination({
 }): JSX.Element {
   return (
     <div className="flex items-center gap-1">
-      <button
+      <Button
         type="button"
         onClick={onPrevious}
         disabled={!hasPrev || loading}
-        className="inline-flex items-center gap-1 rounded-md border border-ink-600 bg-ink-750 px-2 py-1.5 text-[11px] text-stone-300 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
+        variant="outline"
+        size="sm"
       >
         <ChevronLeft size={12} aria-hidden="true" />
         Prev
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
         onClick={onNext}
         disabled={!hasNext || loading}
-        className="inline-flex items-center gap-1 rounded-md border border-ink-600 bg-ink-750 px-2 py-1.5 text-[11px] text-stone-300 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
+        variant="outline"
+        size="sm"
       >
         Next
         <ChevronRight size={12} aria-hidden="true" />
-      </button>
+      </Button>
     </div>
   );
 }

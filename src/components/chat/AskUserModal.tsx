@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { HelpCircle } from "lucide-react";
 import { api } from "../../lib/api";
 import type { AskQuestion } from "../../lib/types";
+import { Button } from "../ui";
 
 /**
  * Modal for the AI's `ask_user` tool: renders 1-4 structured questions with
@@ -126,21 +127,21 @@ export function AskUserModal({
         aria-modal="true"
         aria-labelledby="ask-user-dialog-title"
         aria-describedby="ask-user-dialog-description"
-        className="w-full max-w-lg rounded-lg border border-accent-500/40 bg-ink-850 p-5 shadow-2xl"
+        className="w-full max-w-lg rounded-md border border-accent-glow bg-surface-secondary p-5 shadow-lg"
       >
         <div className="flex items-center gap-2">
-          <HelpCircle size={17} aria-hidden="true" className="text-accent-400" />
-          <h3 id="ask-user-dialog-title" className="text-[14px] font-semibold text-stone-100">
+          <HelpCircle size={17} aria-hidden="true" className="text-accent" />
+          <h3 id="ask-user-dialog-title" className="text-[14px] font-semibold text-text-primary">
             The AI has questions
           </h3>
         </div>
-        <p id="ask-user-dialog-description" className="mt-1 text-[12px] leading-relaxed text-stone-400">
+        <p id="ask-user-dialog-description" className="mt-1 text-[12px] leading-relaxed text-text-muted">
           Answer every question to continue, or skip this request.
         </p>
         <div className="mt-3 space-y-4">
           {questions.map((question, index) => (
             <fieldset key={index}>
-              <legend className="text-[13px] font-medium leading-relaxed text-stone-200">
+              <legend className="text-[13px] font-medium leading-relaxed text-text-primary">
                 {question.prompt}
               </legend>
               {question.options?.length ? (
@@ -176,11 +177,7 @@ export function AskUserModal({
                             return next;
                           });
                         }}
-                        className={`rounded-md border px-3 py-1.5 text-[12px] transition-colors ${
-                          isSelected
-                            ? "border-accent-500/60 bg-accent-500/15 text-accent-300"
-                            : "border-ink-600 bg-ink-900 text-stone-300 hover:text-stone-100"
-                        }`}
+                        className={`rounded-sm border px-3 py-1.5 text-[12px] transition-colors ${ isSelected ? "border-accent-glow bg-accent-subtle text-accent" : "border-border bg-surface-secondary text-text-secondary hover:text-text-primary" }`}
                       >
                         {option}
                       </button>
@@ -200,34 +197,35 @@ export function AskUserModal({
                     if (event.key === "Enter" && done) void submit();
                   }}
                   placeholder="Type your answer…"
-                  className="selectable mt-1.5 w-full rounded-md border border-ink-600 bg-ink-950 px-3 py-2 text-[13px] text-stone-200 placeholder:text-stone-500 focus:border-accent-500/70"
+                  className="selectable mt-1.5 w-full rounded-sm border border-border bg-surface-primary px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted focus:border-accent"
                 />
               )}
             </fieldset>
           ))}
         </div>
         {submitError && (
-          <p role="alert" className="mt-3 text-[12px] leading-relaxed text-red-300">
+          <p role="alert" className="mt-3 text-[12px] leading-relaxed text-error">
             {submitError}
           </p>
         )}
-        <div className="mt-2 text-right text-[11px] tabular-nums text-stone-400">
+        <div className="mt-2 text-right text-[11px] tabular-nums text-text-muted">
           {remaining}s remaining
         </div>
         <div className="mt-3 flex justify-end gap-2">
-          <button
+          <Button
             ref={skipButtonRef}
             type="button"
             onClick={skip}
-            className="rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-[12px] text-stone-300 hover:text-stone-100"
+            variant="ghost"
+            size="md"
           >
             Skip
-          </button>
+          </Button>
           <button
             type="button"
             onClick={() => void submit()}
             disabled={!done}
-            className="rounded-md bg-accent-500 px-4 py-2 text-[12px] font-semibold text-ink-950 hover:bg-accent-400 disabled:opacity-40"
+            className="rounded-sm bg-accent px-4 py-2 text-[12px] font-semibold text-accent-contrast hover:bg-accent-hover disabled:opacity-40"
           >
             Answer
           </button>

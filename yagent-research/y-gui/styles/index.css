@@ -1,0 +1,224 @@
+/* ============================================
+   y-agent GUI -- Global Design System
+   ============================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Instrument+Serif:ital@0;1&display=swap');
+
+/* ---- CSS Variables: Dark Theme (default) ---- */
+:root,
+[data-theme="dark"] {
+  /* Surface hierarchy -- near-black, layered */
+  --surface-primary:   #0f0f0f;
+  --surface-secondary: #141414;
+  --surface-tertiary:  #1c1c1c;
+  --surface-hover:     rgba(255, 255, 255, 0.01);
+  --surface-code:      #1a1a1a;
+
+  /* Text hierarchy */
+  --text-primary:   #e8e6e1;
+  --text-secondary: #8a8680;
+  --text-muted:     #555250;
+
+  /* Accent -- warm gold, used sparingly */
+  --accent:        #c8b560;
+  --accent-hover:  #d4c26e;
+  --accent-subtle: rgba(200, 181, 96, 0.10);
+  --accent-glow:   rgba(200, 181, 96, 0.15);
+
+  /* ToolCall tag (shared across themes) */
+  --toolcall-tag-background-hover: rgba(255, 255, 255, 0.06);
+
+  /* Semantic */
+  --success:       #6fcf97;
+  --success-subtle: rgba(111, 207, 151, 0.08);
+  --success-border: rgba(111, 207, 151, 0.20);
+  --error:         #e57373;
+  --error-subtle:  rgba(229, 115, 115, 0.08);
+  --error-border:  rgba(229, 115, 115, 0.20);
+  --warning:       #f0c050;
+  --warning-subtle: rgba(240, 192, 80, 0.10);
+  --warning-border: rgba(240, 192, 80, 0.25);
+  --warning-contrast: #1a1917;
+
+  /* Borders -- very subtle */
+  --border: rgba(255, 255, 255, 0.06);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.65);
+
+  /* Spacing */
+  --space-xs:  4px;
+  --space-sm:  8px;
+  --space-md:  16px;
+  --space-lg:  24px;
+  --space-xl:  40px;
+
+  /* Border radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  /* Focus & active states */
+  --border-focus: rgba(255, 255, 255, 0.15);
+  --surface-active: rgba(255, 255, 255, 0.06);
+
+  /* Semantic: info (selections, mentions) */
+  --info: #60a5fa;
+  --info-subtle: rgba(96, 165, 250, 0.12);
+  --info-border: rgba(96, 165, 250, 0.20);
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.10);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+
+  /* Search highlights */
+  --search-match-bg: rgba(200, 181, 96, 0.25);
+  --search-match-active-bg: rgba(200, 181, 96, 0.55);
+  --search-match-border: rgba(200, 181, 96, 0.40);
+
+  /* Text on accent-colored backgrounds */
+  --accent-contrast: #0f0f0f;
+
+  /* Font stacks */
+  --font-display: 'SF Pro Display', 'SF Pro Icons', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* ---- CSS Variables: Light Theme ---- */
+[data-theme="light"] {
+  --surface-primary:   #ffffff;
+  --surface-secondary: #f5f4f1;
+  --surface-tertiary:  #edecea;
+  --surface-hover:     rgba(0, 0, 0, 0.01);
+  --surface-code:      #f1efed;
+
+  --text-primary:   #1a1917;
+  --text-secondary: #6b6560;
+  --text-muted:     #9c9894;
+
+  --accent:        #9a7c2a;
+  --accent-hover:  #7e6420;
+  --accent-subtle: rgba(154, 124, 42, 0.08);
+  --accent-glow:   rgba(154, 124, 42, 0.12);
+
+  --success:       #3a9d6b;
+  --success-subtle: rgba(58, 157, 107, 0.08);
+  --success-border: rgba(58, 157, 107, 0.20);
+  --error:         #c0392b;
+  --error-subtle:  rgba(192, 57, 43, 0.07);
+  --error-border:  rgba(192, 57, 43, 0.20);
+  --warning:       #c0880a;
+  --warning-subtle: rgba(192, 136, 10, 0.10);
+  --warning-border: rgba(192, 136, 10, 0.25);
+  --warning-contrast: #1a1917;
+
+  --border: rgba(0, 0, 0, 0.07);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.07);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.09);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.12);
+
+  --border-focus: rgba(0, 0, 0, 0.18);
+  --surface-active: rgba(0, 0, 0, 0.06);
+
+  --info: #2563eb;
+  --info-subtle: rgba(37, 99, 235, 0.08);
+  --info-border: rgba(37, 99, 235, 0.20);
+
+  --scrollbar-thumb: rgba(0, 0, 0, 0.12);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.20);
+
+  /* Search highlights */
+  --search-match-bg: rgba(154, 124, 42, 0.18);
+  --search-match-active-bg: rgba(154, 124, 42, 0.40);
+  --search-match-border: rgba(154, 124, 42, 0.45);
+
+  --accent-contrast: #ffffff;
+  --toolcall-tag-background-hover: #f2f0f0;
+}
+
+/* ---- Reset & Base ---- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 14px;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-weight: 400;
+  background: var(--surface-primary);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  letter-spacing: 0;
+}
+
+/* The native macOS window provides the vibrancy material. Opaque content
+   surfaces such as `.main-panel` paint over it, leaving only the sidebar
+   transparent. */
+html[data-host="tauri"][data-platform="macos"] body {
+  background: transparent;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+/* ---- Scrollbar -- thin and discreet ---- */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ---- Number inputs -- hide native stepper arrows for a consistent look ---- */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* ---- Selection ---- */
+::selection {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+/* ---- Prism token spans -- must stay inline ----
+   UnoCSS scans all source text for utility candidates, so stray words can
+   generate global utilities whose names collide with Prism token classes
+   (e.g. `.block{display:block}`, which Switch.tsx legitimately uses).
+   A block-level token span would break highlighted code lines apart. */
+code[class*="language-"] .token {
+  display: inline;
+}

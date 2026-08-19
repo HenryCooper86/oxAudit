@@ -1,0 +1,182 @@
+/* =======================================================================
+   NavSidebar: generic macOS Finder/Notes-style sidebar shell.
+   Used by the main app sidebar and settings sidebar.
+   ======================================================================= */
+
+.nav-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: var(--sidebar-width, 240px);
+  min-width: var(--sidebar-width, 240px);
+  height: 100%;
+  background: var(--surface-secondary);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  -webkit-user-select: none;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.nav-sidebar--narrow {
+  width: 200px;
+  min-width: 200px;
+}
+
+/*
+ * Bare mode: children are direct flex items (no inner scroll wrapper / padding).
+ * Panels that already manage their own header + scroll region use this.
+ */
+.nav-sidebar--bare {
+  padding: 0;
+}
+
+/* Tauri macOS vibrancy: let the native blur material show through the sidebar. */
+html[data-host="tauri"][data-platform="macos"] .nav-sidebar {
+  background: transparent;
+}
+html[data-host="tauri"][data-platform="macos"] .nav-sidebar-footer {
+  background: transparent;
+}
+
+/* Dark macOS vibrancy needs a slightly brighter muted tone for legibility. */
+html[data-host="tauri"][data-platform="macos"][data-theme="dark"] .nav-sidebar {
+  --text-muted: #7d7973;
+}
+
+/* Traffic-light safe area on macOS custom decorations. */
+.nav-sidebar-drag-region {
+  display: none;
+  flex-shrink: 0;
+}
+html.custom-decorations[data-host="tauri"][data-platform="macos"] .nav-sidebar-drag-region {
+  display: block;
+  height: 28px;
+  -webkit-app-region: drag;
+}
+
+.nav-sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 6px 8px 0 8px;
+}
+
+.nav-sidebar-footer {
+  flex-shrink: 0;
+  padding: 6px 8px 8px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-secondary);
+}
+
+/* -- Items -- */
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  margin-bottom: 2px;
+}
+
+.nav-item:hover {
+  background: var(--accent-subtle);
+}
+
+.nav-item.active {
+  background: var(--surface-active);
+  border-color: var(--border);
+}
+
+.nav-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.nav-item.active .nav-item-icon {
+  color: var(--accent);
+}
+
+.nav-item-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-item-accessory {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* Primary-styled item (e.g., New Chat). */
+.nav-item--primary {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.nav-item--primary:hover {
+  background: var(--accent-subtle);
+}
+
+.nav-item--primary .nav-item-icon {
+  color: var(--accent);
+}
+
+/* -- Divider + section header -- */
+
+.nav-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 4px;
+  opacity: 0.5;
+}
+
+.nav-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 4px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.nav-section-header-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-section-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.nav-spacer {
+  flex: 1;
+  min-height: 8px;
+}
