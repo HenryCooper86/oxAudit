@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen } from "lucide-react";
+import { Button } from "./ui";
 
 export function FolderPicker({
   value,
@@ -34,17 +35,18 @@ export function FolderPicker({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         disabled={disabled}
-        className="selectable min-w-0 flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 font-mono text-xs text-stone-200 placeholder:text-stone-600 disabled:cursor-not-allowed disabled:opacity-50"
+        className="selectable min-w-0 flex-1 rounded-sm border border-border bg-surface-secondary px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
       />
-      <button
+      <Button
         type="button"
         onClick={pick}
         disabled={disabled}
-        className="inline-flex shrink-0 items-center gap-2 rounded-md border border-ink-600 bg-ink-750 px-3 py-2 text-xs font-medium text-stone-200 transition-colors hover:border-ink-500 hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-50"
+        variant="outline"
+        size="md"
       >
         <FolderOpen size={14} aria-hidden="true" />
         {buttonLabel}
-      </button>
+      </Button>
     </div>
   );
 }

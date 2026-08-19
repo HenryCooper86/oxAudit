@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState, type JSX } from "react";
+import { useAppTheme } from "../../lib/useTheme";
 import { Sidebar } from "../Sidebar";
 import { StatusBar } from "./StatusBar";
 import { WorkbenchHeader } from "./WorkbenchHeader";
 
 export function AppShell({ children }: { children: React.ReactNode }): JSX.Element {
   const [navigationOpen, setNavigationOpen] = useState(false);
+
+  useAppTheme();
 
   const closeNavigation = useCallback(() => {
     setNavigationOpen(false);
@@ -60,7 +63,7 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
   }, [closeNavigation, navigationOpen]);
 
   return (
-    <div className="grid h-full grid-cols-[208px_minmax(0,1fr)] overflow-hidden bg-ink-950 max-[900px]:grid-cols-1">
+    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden bg-surface-primary max-[900px]:grid-cols-1">
       <Sidebar open={navigationOpen} onClose={closeNavigation} />
       <section
         inert={navigationOpen}
