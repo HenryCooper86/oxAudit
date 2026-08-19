@@ -16,32 +16,51 @@ What follows is everything else worth taking, ranked.
 
 ---
 
-## Tier 1 — take these next
+## Tier 1 — status
 
-### 1. Steer / follow-up queue · value: high · effort: S–M
+**Items 1, 2 and 4 are implemented** (2026-08-19). What shipped, and the one
+design decision in each that is not obvious from the diff:
+
+- **Steer** — the loop drains queued messages only at iteration boundaries, and
+  `awaiting_tool_results()` asserts that placement, because injecting a `user`
+  turn between an assistant `tool_calls` message and its `tool` results is
+  rejected by the provider. The queue *closes atomically while empty* just
+  before a run finishes, so a message is either taken by the run or refused and
+  sent as a new turn — never silently dropped, and never both. A steer also tops
+  the budgets back up to half and clears the loop guard, since the guard exists
+  to catch the model circling, not a human redirecting it.
+- **Rewind** — `planRewind()` decides the truncation as pure data. It refuses
+  assistant turns: rewinding onto the model's own output would leave the
+  preceding question answered by nothing. The transcript is truncated before the
+  in-memory view, so a failed write never claims to have discarded turns that are
+  still on disk.
+- **Todo panel** — the `todo` tool now emits the whole list on every mutation, so
+  the UI never reconstructs state from a sequence of operations, and
+  `todo_list` restores it when switching back to a session between turns.
+
+Full tier below; items 3 and 5 remain open.
+
+### ~~1. Steer / follow-up queue~~ — DONE · value: high · effort: S–M
 **y-agent:** `chat-panel/steerCoalescing.ts`, `chat-box/SteerChip.tsx`, `FollowUpQueue.tsx`.
 
-Today, sending a message while a turn is running is impossible — the composer is
-disabled for the whole agent loop. y-agent lets you type mid-run; the message is
-coalesced into a steer chip and injected at the next loop iteration boundary.
+Was the biggest quality-of-life gap: the composer was disabled for the whole
+agent loop, so watching the model grep the wrong directory for 30s with no way to
+redirect it was the common case.
 
-For a research agent this is the single biggest quality-of-life gap: watching the
-model grep the wrong directory for 30s with no way to redirect it is the common case.
+*Shipped as:* `SteerQueue` (`agent/tool.rs`), `drain_steers`/`close_steers` and
+`awaiting_tool_results` (`agent/loop_engine.rs`), the `steer_chat` command, an
+`AiStreamEvent::Steer` variant, and queued chips plus a Steer button in the
+composer.
 
-*Needs:* a pending-steer slot on the loop state, a check at the top of each
-iteration in `loop_engine.rs`, and a chip above the composer. No new backend
-concepts — the loop already has iteration boundaries and an `AtomicBool` cancel.
-
-### 2. Rewind to a turn · value: high · effort: S
+### ~~2. Rewind to a turn~~ — DONE · value: high · effort: S
 **y-agent:** `chat-panel/RewindPanel.tsx`, `hooks/useRewind.ts`, `y-storage/checkpoint.rs`.
 
-`sessions.truncate(id, keep)` already exists and is already used by Clear. Rewind
-is that primitive plus a UI: hover a user message → "rewind here" → truncate to
-that index and re-prime the composer with the original text.
+Serves the "I asked the wrong question, back up" loop that dominates vuln triage.
+We deliberately did **not** take y-agent's file-journal rewind — our tools are
+read-only, so there is nothing to un-write.
 
-Cheap, and it directly serves the "I asked the wrong question, back up" loop that
-dominates vuln triage. We do **not** need y-agent's file-journal rewind — our tools
-are read-only, so there is nothing to un-write.
+*Shipped as:* `src/lib/rewind.ts` (`planRewind`) over the existing
+`session_truncate` command, plus a hover control on every user turn.
 
 ### 3. Chat search · value: medium-high · effort: S
 **y-agent:** `ChatSearchToolbar.tsx`, `chat-box/searchHighlightUtils.ts`, `HighlightedText.tsx`.
@@ -53,12 +72,15 @@ when the agent is dumping grep output; scrolling is currently the only option.
 from `index.css` because nothing consumed them. Re-add them (values are in
 y-agent's `styles/index.css`) when this lands.
 
-### 4. Todo panel · value: medium · effort: S
+### ~~4. Todo panel~~ — DONE · value: medium · effort: S
 **y-agent:** `chat-panel/AgentTodoPanel.tsx`, `agentTodoState.ts`, `agentTodoResult.ts`.
 
-The `todo` tool is already implemented and callable — its output just renders as a
-generic tool card. y-agent pins it as a live checklist panel. Nearly free given the
-tool exists, and it makes multi-step research legible.
+The `todo` tool was already callable but its output rendered as a generic tool
+card, so multi-step research was hard to follow.
+
+*Shipped as:* an `AiStreamEvent::Todos` variant emitted by the tool, the
+`todo_list` command for restoring a plan between turns, and
+`components/chat/AgentTodoPanel.tsx` pinned above the composer.
 
 ### 5. Per-tool rate limiter · value: medium · effort: S
 **y-agent:** `y-tools/rate_limiter.rs` (~40-line token bucket).
@@ -139,9 +161,10 @@ Unchanged from the original study, and re-confirmed on this pass:
 
 ## Suggested order
 
-`1 → 2 → 4` is one cohesive slice (steer, rewind, todo panel) that lands entirely
-in the chat surface and needs no new backend concepts — roughly a week, and it is
-where the day-to-day friction is. `3` and `5` are small enough to ride along.
+The Tier 1 chat slice (steer, rewind, todo panel) is done. **Chat search (3)** and
+the **per-tool rate limiter (5)** are the small remaining items and can land
+together — search also restores the two `--search-match-*` tokens noted above.
 
-`6` (compaction) is the next structural piece and should start with the
-`context_window` field that P1 left unfinished.
+**Context compaction (6)** is the next structural piece, and should start with the
+per-model `context_window` field that P1 left unfinished; without it there is
+nothing to run a preflight estimate against.

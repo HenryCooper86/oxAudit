@@ -30,6 +30,9 @@ pub struct AppState {
     /// run_id -> cancellation state for in-flight chat turns
     pub active_chats:
         Mutex<std::collections::HashMap<String, Arc<crate::agent::tool::RunCancellation>>>,
+    /// run_id -> messages the user submitted while that turn was still running
+    pub pending_steers:
+        Mutex<std::collections::HashMap<String, Arc<crate::agent::tool::SteerQueue>>>,
     /// the project folder agent tools operate on
     pub active_project: Mutex<Option<PathBuf>>,
     /// pending HITL permission approvals: request_id -> answer channel
@@ -57,6 +60,7 @@ impl AppState {
             osv: OsvClient::new(http.clone()),
             cancel_scan: AtomicBool::new(false),
             active_chats: Mutex::new(std::collections::HashMap::new()),
+            pending_steers: Mutex::new(std::collections::HashMap::new()),
             active_project: Mutex::new(None),
             pending_permissions: Mutex::new(std::collections::HashMap::new()),
             pending_interactions: Mutex::new(std::collections::HashMap::new()),
@@ -601,6 +605,9 @@ pub async fn research_cve(
 // AI streaming chat
 // ---------------------------------------------------------------------------
 
+/// Upper bound on one steer message, mirroring the composer's own limit.
+const MAX_STEER_CHARS: usize = 8000;
+
 fn resolve_stream_run_id(requested: Option<String>) -> Result<String, String> {
     match requested {
         Some(run_id) if run_id.trim().is_empty() => Err("run id must not be empty".into()),
@@ -642,6 +649,7 @@ pub async fn stream_chat(
     let run_id = resolve_stream_run_id(run_id)?;
     let run_id_response = run_id.clone();
     let cancel = Arc::new(crate::agent::tool::RunCancellation::new());
+    let steer = Arc::new(crate::agent::tool::SteerQueue::new());
     let project_root = capture_active_project(&state);
     {
         let mut active_chats = state.active_chats.lock().unwrap();
@@ -649,6 +657,11 @@ pub async fn stream_chat(
             return Err("a chat stream with that run id is already active".into());
         }
         active_chats.insert(run_id.clone(), cancel.clone());
+        state
+            .pending_steers
+            .lock()
+            .unwrap()
+            .insert(run_id.clone(), steer.clone());
     }
 
     let client = crate::ai::AiClient::new(state.http.clone());
@@ -680,6 +693,7 @@ pub async fn stream_chat(
             project_root,
             app2.clone(),
             Some(cancel.clone()),
+            Some(steer.clone()),
             emitter,
         )
         .await;
@@ -723,6 +737,9 @@ pub async fn stream_chat(
         if let Some(app_state) = app2.try_state::<AppState>() {
             if let Ok(mut chats) = app_state.active_chats.lock() {
                 chats.remove(&run_id);
+            }
+            if let Ok(mut steers) = app_state.pending_steers.lock() {
+                steers.remove(&run_id);
             }
         }
     });
@@ -806,6 +823,55 @@ pub fn cancel_chat(state: State<'_, AppState>, run_id: String) -> Result<(), Str
         cancellation.cancel();
     }
     Ok(())
+}
+
+/// The agent's todo list for one conversation.
+///
+/// The live list arrives on the event stream while a turn runs; this is how the
+/// UI recovers it when switching back to a session between turns.
+#[tauri::command]
+pub fn todo_list(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Vec<crate::agent::tools::TodoItem>, String> {
+    Ok(state
+        .todos
+        .lock()
+        .unwrap()
+        .get(&conversation_id)
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Queue a message for a turn that is already running.
+///
+/// Returns `false` when the run is no longer active, which is the signal for the
+/// caller to send the text as an ordinary new turn instead. This races by
+/// nature: the turn can finish between the user pressing Enter and this landing.
+#[tauri::command]
+pub fn steer_chat(
+    state: State<'_, AppState>,
+    run_id: String,
+    message: String,
+) -> Result<bool, String> {
+    let message = message.trim().to_string();
+    if message.is_empty() {
+        return Err("steer message must not be empty".into());
+    }
+    if message.len() > MAX_STEER_CHARS {
+        return Err(format!(
+            "steer message is too long (limit {MAX_STEER_CHARS} characters)"
+        ));
+    }
+
+    // The queue itself is the authority on whether the run can still take a
+    // message: it is removed when the run tears down, and closed atomically
+    // while empty just before the run finishes. No separate liveness check can
+    // be as precise, because the run could finish between the two lookups.
+    match state.pending_steers.lock().unwrap().get(&run_id) {
+        Some(queue) => Ok(queue.push(message)),
+        None => Ok(false),
+    }
 }
 
 /// Resolve a pending HITL permission request.
