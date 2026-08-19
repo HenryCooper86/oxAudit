@@ -52,6 +52,16 @@ impl LoopGuard {
         }
     }
 
+    /// Forget the call history.
+    ///
+    /// Called when the user steers mid-run: the guard exists to detect the
+    /// *model* going in circles, and once a human has redirected it the prior
+    /// history is no longer evidence of a stuck loop.
+    pub fn reset(&mut self) {
+        self.counts.clear();
+        self.last_four.clear();
+    }
+
     /// Record a tool call; returns `true` when the loop should stop.
     pub fn record(&mut self, name: &str, args: &Value) -> bool {
         let key = (name.to_string(), args.to_string());

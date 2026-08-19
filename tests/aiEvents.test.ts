@@ -249,3 +249,99 @@ test("disposal settles cleanly even when native cancellation rejects", async () 
   assert.equal(harness.commandCount("cancel_chat"), 1);
   assert.equal(harness.unregistered.length, 4);
 });
+
+test("a steer event is routed only to the run that owns it", async () => {
+  const mine: string[] = [];
+  const handle = streamChat({ messages: [], conversationId: "session-steer" }, {
+    onSteer: (text) => mine.push(text),
+  });
+  await waitFor(() => harness.commandCount("stream_chat") === 1);
+  harness.streamStart.resolve({ runId: handle.runId });
+  await waitFor(() => harness.commandCount("plugin:event|listen") === 4);
+
+  harness.emit("ai://event", {
+    runId: "some-other-run",
+    type: "steer",
+    text: "meant for a different turn",
+  });
+  harness.emit("ai://event", {
+    runId: handle.runId,
+    type: "steer",
+    text: "check the auth module instead",
+  });
+
+  await waitFor(() => mine.length === 1);
+  assert.deepEqual(mine, ["check the auth module instead"]);
+
+  harness.emit("ai://done", {
+    runId: handle.runId,
+    content: "done",
+    model: null,
+    usage: null,
+  });
+  await handle.finished;
+});
+
+test("steer events stop being delivered once the run has settled", async () => {
+  const seen: string[] = [];
+  const handle = streamChat({ messages: [], conversationId: "session-late" }, {
+    onSteer: (text) => seen.push(text),
+  });
+  await waitFor(() => harness.commandCount("stream_chat") === 1);
+  harness.streamStart.resolve({ runId: handle.runId });
+  await waitFor(() => harness.commandCount("plugin:event|listen") === 4);
+
+  harness.emit("ai://done", {
+    runId: handle.runId,
+    content: "answered",
+    model: null,
+    usage: null,
+  });
+  await handle.finished;
+
+  harness.emit("ai://event", {
+    runId: handle.runId,
+    type: "steer",
+    text: "too late",
+  });
+
+  assert.deepEqual(seen, [], "a settled run must not surface further steers");
+});
+
+test("a todos event carries the whole list so the panel never rebuilds state from operations", async () => {
+  const snapshots: unknown[] = [];
+  const handle = streamChat({ messages: [], conversationId: "session-todo" }, {
+    onTodos: (items) => snapshots.push(items),
+  });
+  await waitFor(() => harness.commandCount("stream_chat") === 1);
+  harness.streamStart.resolve({ runId: handle.runId });
+  await waitFor(() => harness.commandCount("plugin:event|listen") === 4);
+
+  harness.emit("ai://event", {
+    runId: handle.runId,
+    type: "todos",
+    items: [{ id: 1, text: "enumerate inputs", status: "pending" }],
+  });
+  harness.emit("ai://event", {
+    runId: handle.runId,
+    type: "todos",
+    items: [
+      { id: 1, text: "enumerate inputs", status: "done" },
+      { id: 2, text: "trace to sinks", status: "pending" },
+    ],
+  });
+
+  await waitFor(() => snapshots.length === 2);
+  assert.deepEqual(snapshots[1], [
+    { id: 1, text: "enumerate inputs", status: "done" },
+    { id: 2, text: "trace to sinks", status: "pending" },
+  ]);
+
+  harness.emit("ai://done", {
+    runId: handle.runId,
+    content: "",
+    model: null,
+    usage: null,
+  });
+  await handle.finished;
+});

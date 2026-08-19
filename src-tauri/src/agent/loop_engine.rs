@@ -9,7 +9,8 @@ use serde_json::{json, Value};
 
 use super::guardrails::{classify, LoopGuard, Permission};
 use super::tool::{
-    wait_for_pending_response, PendingWaitError, RunCancellation, ToolContext, ToolRegistry,
+    wait_for_pending_response, PendingWaitError, RunCancellation, SteerQueue, ToolContext,
+    ToolRegistry,
 };
 use crate::ai::errors::LlmError;
 use crate::ai::{AiClient, AiStreamEvent};
@@ -26,6 +27,82 @@ fn truncate(s: &str, n: usize) -> String {
     crate::scanners::secrets::truncate(s, n)
 }
 
+/// True while the most recent assistant message has requested tool calls that
+/// are not all answered yet.
+///
+/// This is the window in which a `user` message must not be inserted: providers
+/// require every `tool_calls` entry to be followed by its matching `tool`
+/// results before any other role appears.
+fn awaiting_tool_results(messages: &[Value]) -> bool {
+    let Some(index) = messages
+        .iter()
+        .rposition(|m| m.get("role").and_then(Value::as_str) == Some("assistant"))
+    else {
+        return false;
+    };
+
+    let requested = messages[index]
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if requested == 0 {
+        return false;
+    }
+
+    let answered = messages[index + 1..]
+        .iter()
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("tool"))
+        .count();
+    answered < requested
+}
+
+/// Append steered messages as `user` turns and tell the UI about each one.
+///
+/// Only ever called at an iteration boundary, where every `tool` result for the
+/// preceding assistant turn has already been appended. The debug assertion keeps
+/// that guarantee honest if a call site ever moves.
+fn fold_steers(
+    pending: Vec<String>,
+    messages: &mut Vec<Value>,
+    emit: &Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
+) -> usize {
+    debug_assert!(
+        !awaiting_tool_results(messages),
+        "a steer must never be folded in between requested tool calls and their results",
+    );
+    for text in &pending {
+        messages.push(json!({ "role": "user", "content": text }));
+        emit(AiStreamEvent::Steer { text: text.clone() });
+    }
+    pending.len()
+}
+
+/// Fold whatever is queued right now, leaving the queue open for more.
+fn drain_steers(
+    steer: Option<&Arc<SteerQueue>>,
+    messages: &mut Vec<Value>,
+    emit: &Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
+) -> usize {
+    match steer {
+        Some(queue) => fold_steers(queue.drain(), messages, emit),
+        None => 0,
+    }
+}
+
+/// Fold anything left and stop accepting more. Used on the wrap-up paths, where
+/// one final model call still happens and can carry a late steer.
+fn close_steers(
+    steer: Option<&Arc<SteerQueue>>,
+    messages: &mut Vec<Value>,
+    emit: &Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
+) -> usize {
+    match steer {
+        Some(queue) => fold_steers(queue.close(), messages, emit),
+        None => 0,
+    }
+}
+
 /// Run one user turn: streams text events, executes any tool calls the model
 /// requests (with guardrails), and continues until the model answers or the
 /// budgets are exhausted. Returns the final answer text + last usage.
@@ -38,6 +115,7 @@ pub async fn run_turn(
     project_root: Option<PathBuf>,
     app: tauri::AppHandle,
     cancel: Option<Arc<RunCancellation>>,
+    steer: Option<Arc<SteerQueue>>,
     emit: Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
 ) -> Result<(String, Option<Usage>), LlmError> {
     let hint = "You are running inside VulnCompanion, a security research desktop app. \
@@ -59,7 +137,19 @@ you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Repl
     let mut final_usage: Option<Usage> = None;
 
     loop {
+        // A steer is fresh human input, so it re-opens the budgets rather than
+        // inheriting a run that has already spent them, and clears the loop
+        // guard. Budgets stay bounded per steer; they are topped up to half the
+        // limit, not reset to full.
+        if drain_steers(steer.as_ref(), &mut messages, &emit) > 0 {
+            iterations_left = iterations_left.max(MAX_ITERATIONS / 2);
+            tool_calls_left = tool_calls_left.max(MAX_TOOL_CALLS / 2);
+            guard.reset();
+            guard_trips = 0;
+        }
+
         if iterations_left == 0 {
+            close_steers(steer.as_ref(), &mut messages, &emit);
             messages.push(json!({
                 "role": "system",
                 "content": "Iteration budget exhausted. Stop and finish with what you have.",
@@ -101,7 +191,16 @@ you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Repl
         }
 
         if outcome.tool_calls.is_empty() {
-            return Ok((outcome.content, final_usage));
+            // The model produced an answer. Closing only succeeds while the
+            // queue is empty, so this cannot drop a steer that raced the
+            // decision: if one is pending we keep the run alive and let the
+            // model respond to it instead of ending the turn here.
+            let finished = steer.as_ref().is_none_or(|queue| queue.close_if_empty());
+            if finished {
+                return Ok((outcome.content, final_usage));
+            }
+            messages.push(json!({ "role": "assistant", "content": outcome.content }));
+            continue;
         }
 
         // assistant message carrying the requested tool calls
@@ -260,6 +359,7 @@ Let me summarize what I have and ask you how to proceed.",
 
         if force_stop {
             // one more model call so the model can answer from what it has
+            close_steers(steer.as_ref(), &mut messages, &emit);
             let outcome = client
                 .stream_chat(
                     settings,
@@ -274,5 +374,160 @@ Let me summarize what I have and ask you how to proceed.",
             }
             return Ok((outcome.content, final_usage));
         }
+    }
+}
+
+
+#[cfg(test)]
+mod steer_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    fn assistant_requesting(names: &[&str]) -> Value {
+        json!({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": names.iter().enumerate().map(|(i, n)| json!({
+                "id": format!("call-{i}"),
+                "type": "function",
+                "function": { "name": n, "arguments": "{}" },
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    fn tool_result(id: &str) -> Value {
+        json!({ "role": "tool", "tool_call_id": id, "content": "{}" })
+    }
+
+    /// Collects emitted events so tests can assert on what the UI would see.
+    fn recorder() -> (
+        Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
+        Arc<StdMutex<Vec<String>>>,
+    ) {
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let sink = seen.clone();
+        let emit: Arc<dyn Fn(AiStreamEvent) + Send + Sync> = Arc::new(move |ev| {
+            if let AiStreamEvent::Steer { text } = ev {
+                sink.lock().unwrap().push(text);
+            }
+        });
+        (emit, seen)
+    }
+
+    #[test]
+    fn pending_tool_calls_are_detected_until_every_result_lands() {
+        let mut messages = vec![json!({ "role": "user", "content": "hi" })];
+        assert!(!awaiting_tool_results(&messages));
+
+        messages.push(assistant_requesting(&["grep_project", "read_file"]));
+        assert!(awaiting_tool_results(&messages));
+
+        messages.push(tool_result("call-0"));
+        assert!(
+            awaiting_tool_results(&messages),
+            "one of two results is not enough to reopen the window"
+        );
+
+        messages.push(tool_result("call-1"));
+        assert!(!awaiting_tool_results(&messages));
+    }
+
+    #[test]
+    fn an_assistant_message_without_tool_calls_never_blocks_a_steer() {
+        let messages = vec![
+            json!({ "role": "user", "content": "hi" }),
+            json!({ "role": "assistant", "content": "hello" }),
+        ];
+        assert!(!awaiting_tool_results(&messages));
+    }
+
+    #[test]
+    fn queued_steers_are_folded_in_order_and_surfaced_to_the_ui() {
+        let queue = Arc::new(SteerQueue::new());
+        queue.push("check the auth module instead".into());
+        queue.push("and skip the tests directory".into());
+
+        let (emit, seen) = recorder();
+        let mut messages = vec![json!({ "role": "user", "content": "audit this repo" })];
+        let folded = drain_steers(Some(&queue), &mut messages, &emit);
+
+        assert_eq!(folded, 2);
+        assert_eq!(
+            messages[1..]
+                .iter()
+                .map(|m| (
+                    m["role"].as_str().unwrap(),
+                    m["content"].as_str().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("user", "check the auth module instead"),
+                ("user", "and skip the tests directory"),
+            ],
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                "check the auth module instead".to_string(),
+                "and skip the tests directory".to_string()
+            ],
+        );
+    }
+
+    #[test]
+    fn draining_twice_does_not_replay_messages_already_folded_in() {
+        let queue = Arc::new(SteerQueue::new());
+        queue.push("first".into());
+
+        let (emit, _) = recorder();
+        let mut messages = Vec::new();
+        assert_eq!(drain_steers(Some(&queue), &mut messages, &emit), 1);
+        assert_eq!(drain_steers(Some(&queue), &mut messages, &emit), 0);
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn a_run_without_a_steer_queue_is_unaffected() {
+        let (emit, _) = recorder();
+        let mut messages = vec![json!({ "role": "user", "content": "hi" })];
+        assert_eq!(drain_steers(None, &mut messages, &emit), 0);
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn a_queue_stops_accepting_once_closed_so_the_caller_can_fall_back() {
+        let queue = SteerQueue::new();
+        assert!(queue.push("first".into()));
+
+        assert!(
+            !queue.close_if_empty(),
+            "a queue holding a message must refuse to close"
+        );
+        assert!(
+            queue.push("second".into()),
+            "a refused close must leave the queue open"
+        );
+
+        assert_eq!(queue.drain(), vec!["first".to_string(), "second".into()]);
+        assert!(queue.close_if_empty(), "an empty queue closes");
+        assert!(
+            !queue.push("too late".into()),
+            "a closed queue rejects further messages"
+        );
+        assert!(queue.drain().is_empty());
+    }
+
+    #[test]
+    fn closing_hands_back_anything_still_queued_instead_of_dropping_it() {
+        let queue = Arc::new(SteerQueue::new());
+        queue.push("late steer".into());
+
+        let (emit, seen) = recorder();
+        let mut messages = vec![json!({ "role": "user", "content": "audit" })];
+        assert_eq!(close_steers(Some(&queue), &mut messages, &emit), 1);
+
+        assert_eq!(messages[1]["content"], "late steer");
+        assert_eq!(*seen.lock().unwrap(), vec!["late steer".to_string()]);
+        assert!(!queue.push("after close".into()));
     }
 }
