@@ -48,6 +48,8 @@ pub fn run() {
             commands::chat,
             commands::stream_chat,
             commands::cancel_chat,
+            commands::steer_chat,
+            commands::todo_list,
             commands::respond_permission,
             commands::respond_interaction,
             commands::set_active_project,

@@ -189,8 +189,17 @@ export type AiStreamEvent = { runId: string } & (
       resultPreview: string;
     }
   | { type: "ask_user"; requestId: string; questions: AskQuestion[] }
+  | { type: "steer"; text: string }
+  | { type: "todos"; items: TodoItem[] }
   | { type: "permission_request"; requestId: string; tool: string; arguments: string }
 );
+
+/** One entry in the agent's per-conversation todo list. */
+export interface TodoItem {
+  id: number;
+  text: string;
+  status: "pending" | "done";
+}
 
 export interface AskQuestion {
   prompt: string;

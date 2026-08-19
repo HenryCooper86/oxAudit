@@ -7,6 +7,7 @@ import { useAppStore } from "../lib/stores";
 import type { CveDetail } from "../lib/types";
 import { SeverityBadge } from "./SeverityBadge";
 import { InlineState } from "./workbench/InlineState";
+import { Button } from "./ui";
 
 export function CveDossier({
   detail,
@@ -106,36 +107,37 @@ export function CveDossier({
     <div className="max-h-[39rem] overflow-y-auto p-4">
       <section
         aria-labelledby="cve-overview-heading"
-        className="rounded-lg border border-ink-700 bg-ink-900/45 p-4"
+        className="rounded-sm border border-border bg-surface-secondary p-4"
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
             <h2
               id="cve-overview-heading"
-              className="font-mono text-[15px] font-semibold text-stone-100"
+              className="font-mono text-[15px] font-semibold text-text-primary"
             >
               {item.id}
             </h2>
             <SeverityBadge severity={item.severity} />
             {item.cvssScore !== null && (
-              <span className="rounded border border-ink-600 px-1.5 py-0.5 font-mono text-[11px] text-stone-300">
+              <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
                 CVSS {item.cvssScore.toFixed(1)}
               </span>
             )}
           </div>
-          <button
+          <Button
             type="button"
             onClick={discussCve}
-            className="inline-flex items-center gap-1.5 rounded-md border border-accent-600/60 bg-accent-500/10 px-2.5 py-1.5 text-[11px] font-medium text-accent-300 hover:bg-accent-500/20"
+            variant="accent"
+            size="sm"
           >
             <Bot size={12} aria-hidden="true" />
             Discuss in Assistant
-          </button>
+          </Button>
         </div>
-        <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
+        <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
           Overview
         </p>
-        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-stone-400">
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-text-muted">
           <span className="inline-flex items-center gap-1">
             <Calendar size={11} aria-hidden="true" /> Published{" "}
             {fmtDateTime(item.published)}
@@ -145,7 +147,7 @@ export function CveDossier({
             {fmtDateTime(item.modified)}
           </span>
         </div>
-        <p className="selectable mt-3 text-[13px] leading-relaxed text-stone-200">
+        <p className="selectable mt-3 text-[13px] leading-relaxed text-text-primary">
           {item.description}
         </p>
         {item.cwes.length > 0 && (
@@ -161,12 +163,12 @@ export function CveDossier({
 
       <section
         aria-labelledby="nvd-record-heading"
-        className="mt-3 rounded-lg border border-ink-700 bg-ink-900/45 p-4"
+        className="mt-3 rounded-sm border border-border bg-surface-secondary p-4"
       >
         <div className="flex items-center justify-between gap-3">
           <h3
             id="nvd-record-heading"
-            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-stone-300"
+            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
           >
             NVD record
           </h3>
@@ -175,12 +177,12 @@ export function CveDossier({
             onClick={() =>
               void onOpenUrl(`https://nvd.nist.gov/vuln/detail/${item.id}`)
             }
-            className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[11px] text-sky-300 hover:border-sky-500/50"
+            className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-active px-2.5 py-1.5 text-[11px] text-info hover:border-info"
           >
             <ExternalLink size={11} aria-hidden="true" /> Open NVD
           </button>
         </div>
-        <p className="mt-2 text-[13px] leading-relaxed text-stone-300">
+        <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
           Verified CVE fields above are normalized from NVD. The unmodified NVD
           response remains available for inspection.
         </p>
@@ -189,33 +191,33 @@ export function CveDossier({
 
       <section
         aria-labelledby="osv-record-heading"
-        className="mt-3 rounded-lg border border-ink-700 bg-ink-900/45 p-4"
+        className="mt-3 rounded-sm border border-border bg-surface-secondary p-4"
       >
         <div className="flex items-center justify-between gap-3">
           <h3
             id="osv-record-heading"
-            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-stone-300"
+            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
           >
             OSV record
           </h3>
           <button
             type="button"
             onClick={() => void onOpenUrl(`https://osv.dev/vulnerability/${item.id}`)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[11px] text-sky-300 hover:border-sky-500/50"
+            className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-active px-2.5 py-1.5 text-[11px] text-info hover:border-info"
           >
             <ExternalLink size={11} aria-hidden="true" /> Open OSV
           </button>
         </div>
         {detail.osv ? (
           <>
-            <p className="mt-2 text-[13px] leading-relaxed text-stone-300">
+            <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
               Raw OSV data is source material and is not merged into the
               verified CVE fields.
             </p>
             <RawRecord label="Show raw OSV record" value={detail.osv} />
           </>
         ) : (
-          <p className="mt-2 text-[12px] text-stone-400">
+          <p className="mt-2 text-[12px] text-text-muted">
             No OSV enrichment is available for this dossier. The source may not
             have a matching record, or OSV could not be reached.
           </p>
@@ -224,11 +226,11 @@ export function CveDossier({
 
       <section
         aria-labelledby="references-heading"
-        className="mt-3 rounded-lg border border-ink-700 bg-ink-900/45 p-4"
+        className="mt-3 rounded-sm border border-border bg-surface-secondary p-4"
       >
         <h3
           id="references-heading"
-          className="text-[12px] font-semibold uppercase tracking-[0.12em] text-stone-300"
+          className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
         >
           References
         </h3>
@@ -239,7 +241,7 @@ export function CveDossier({
                 key={reference}
                 type="button"
                 onClick={() => void onOpenUrl(reference)}
-                className="inline-flex max-w-full items-center gap-1 rounded border border-ink-600 bg-ink-850 px-2 py-1 text-[11px] text-sky-300 hover:border-sky-500/50"
+                className="inline-flex max-w-full items-center gap-1 rounded-sm border border-border bg-surface-secondary px-2 py-1 text-[11px] text-info hover:border-info"
               >
                 <ExternalLink size={10} aria-hidden="true" />
                 <span className="truncate">
@@ -249,7 +251,7 @@ export function CveDossier({
             ))}
           </div>
         ) : (
-          <p className="mt-2 text-[12px] text-stone-400">
+          <p className="mt-2 text-[12px] text-text-muted">
             No external references were returned for this record.
           </p>
         )}
@@ -257,20 +259,21 @@ export function CveDossier({
 
       <section
         aria-labelledby="ai-briefing-heading"
-        className="mt-3 rounded-lg border border-ink-700 bg-ink-900/45 p-4"
+        className="mt-3 rounded-sm border border-border bg-surface-secondary p-4"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3
             id="ai-briefing-heading"
-            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-stone-300"
+            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
           >
             AI briefing
           </h3>
-          <button
+          <Button
             type="button"
             onClick={generateBriefing}
             disabled={!aiReady || aiLoading}
-            className="inline-flex items-center gap-1.5 rounded-md border border-accent-600/50 bg-accent-500/10 px-2.5 py-1.5 text-[11px] font-medium text-accent-300 hover:bg-accent-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+            variant="accent"
+            size="sm"
           >
             {aiLoading ? (
               <Loader2 size={12} className="animate-spin" aria-hidden="true" />
@@ -282,25 +285,25 @@ export function CveDossier({
               : briefing
                 ? "Regenerate briefing"
                 : "Generate briefing"}
-          </button>
+          </Button>
         </div>
         {!aiReady && (
-          <p className="mt-2 text-[12px] text-stone-400">
+          <p className="mt-2 text-[12px] text-text-muted">
             {unavailableMessage}
           </p>
         )}
         {aiLoading && (
-          <p aria-live="polite" className="mt-2 text-[12px] text-stone-400">
+          <p aria-live="polite" className="mt-2 text-[12px] text-text-muted">
             Generating an AI briefing…
           </p>
         )}
         {briefingError && (
-          <p role="alert" className="mt-2 text-[12px] text-red-300">
+          <p role="alert" className="mt-2 text-[12px] text-error">
             {briefingError}
           </p>
         )}
         {briefing && (
-          <div className="md-body selectable mt-3 text-[13px] leading-relaxed text-stone-200">
+          <div className="md-body selectable mt-3 text-[13px] leading-relaxed text-text-primary">
             <Markdown>{briefing}</Markdown>
           </div>
         )}
@@ -318,14 +321,14 @@ function MetadataChips({
 }): JSX.Element {
   return (
     <div className="mt-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
         {label}
       </p>
       <div className="mt-1.5 flex flex-wrap gap-1.5">
         {values.map((value) => (
           <span
             key={value}
-            className="rounded border border-ink-600 bg-ink-850 px-1.5 py-0.5 font-mono text-[11px] text-stone-300"
+            className="rounded-sm border border-border bg-surface-secondary px-1.5 py-0.5 font-mono text-[11px] text-text-secondary"
           >
             {value}
           </span>
@@ -344,10 +347,10 @@ function RawRecord({
 }): JSX.Element {
   return (
     <details className="mt-3">
-      <summary className="cursor-pointer text-[12px] text-sky-300 hover:text-sky-200">
+      <summary className="cursor-pointer text-[12px] text-info hover:underline">
         {label}
       </summary>
-      <pre className="selectable mt-2 max-h-72 overflow-auto rounded border border-ink-700 bg-ink-950 p-3 font-mono text-[13px] leading-relaxed text-stone-300">
+      <pre className="selectable mt-2 max-h-72 overflow-auto rounded-sm border border-border bg-surface-primary p-3 font-mono text-[13px] leading-relaxed text-text-secondary">
         {JSON.stringify(value, null, 2) ?? "No raw data was returned."}
       </pre>
     </details>

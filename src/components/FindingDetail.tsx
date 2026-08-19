@@ -3,6 +3,7 @@ import type { JSX } from "react";
 import { useAppStore } from "../lib/stores";
 import type { Finding } from "../lib/types";
 import { SeverityBadge } from "./SeverityBadge";
+import { Button } from "./ui";
 
 export function FindingDetail({
   finding,
@@ -45,33 +46,34 @@ export function FindingDetail({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <SeverityBadge severity={finding.severity} />
-            <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400">
+            <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-text-muted">
               {finding.category === "secret" ? "Secret" : "Vulnerability"}
             </span>
             {finding.cwe && (
-              <span className="rounded border border-ink-600 bg-ink-800 px-1.5 py-0.5 font-mono text-[11px] text-stone-400">
+              <span className="rounded-sm border border-border bg-surface-tertiary px-1.5 py-0.5 font-mono text-[11px] text-text-muted">
                 {finding.cwe}
               </span>
             )}
           </div>
-          <h2 className="mt-2 text-[16px] font-semibold leading-snug text-stone-100">{finding.ruleName}</h2>
-          <p className="selectable mt-1 break-all font-mono text-[11px] text-stone-400">
+          <h2 className="mt-2 text-[16px] font-semibold leading-snug text-text-primary">{finding.ruleName}</h2>
+          <p className="selectable mt-1 break-all font-mono text-[11px] text-text-muted">
             {finding.filePath}:{finding.line}:{finding.column}
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <button
+          <Button
             type="button"
             onClick={discussFinding}
-            className="inline-flex items-center gap-1.5 rounded-md border border-accent-600/60 bg-accent-500/10 px-2.5 py-1.5 text-[12px] font-medium text-accent-300 hover:bg-accent-500/20"
+            variant="accent"
+            size="md"
           >
             <Bot size={13} aria-hidden="true" />
             Discuss in Assistant
-          </button>
+          </Button>
           <button
             type="button"
             onClick={() => onCopy(finding)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-750 px-2.5 py-1.5 text-[12px] font-medium text-stone-200 hover:border-ink-500 hover:bg-ink-700"
+            className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:border-border-strong hover:bg-surface-active"
           >
             <Clipboard size={13} aria-hidden="true" />
             Copy finding
@@ -79,7 +81,7 @@ export function FindingDetail({
           <button
             type="button"
             onClick={() => onOpenFile(finding)}
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent-500 px-2.5 py-1.5 text-[12px] font-semibold text-ink-950 hover:bg-accent-400"
+            className="inline-flex items-center gap-1.5 rounded-sm bg-accent px-2.5 py-1.5 text-[12px] font-semibold text-accent-contrast hover:bg-accent-hover"
           >
             <ExternalLink size={13} aria-hidden="true" />
             Open file
@@ -87,36 +89,36 @@ export function FindingDetail({
         </div>
       </div>
 
-      <section aria-labelledby="finding-description" className="mt-5 border-t border-ink-800 pt-4">
-        <h3 id="finding-description" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
+      <section aria-labelledby="finding-description" className="mt-5 border-t border-border pt-4">
+        <h3 id="finding-description" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
           Description
         </h3>
-        <p className="selectable mt-1.5 text-[13px] leading-relaxed text-stone-300">{finding.description}</p>
+        <p className="selectable mt-1.5 text-[13px] leading-relaxed text-text-secondary">{finding.description}</p>
       </section>
 
       <section aria-labelledby="finding-evidence" className="mt-5">
-        <h3 id="finding-evidence" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400">
+        <h3 id="finding-evidence" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
           Evidence
         </h3>
-        <div className="selectable mt-2 overflow-x-auto rounded-md border border-ink-700 bg-ink-950 p-3">
-          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400">Match</p>
-          <pre className="whitespace-pre-wrap break-all font-mono text-[13px] leading-relaxed text-orange-300">
+        <div className="selectable mt-2 overflow-x-auto rounded-sm border border-border bg-surface-primary p-3">
+          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-text-muted">Match</p>
+          <pre className="whitespace-pre-wrap break-all font-mono text-[13px] leading-relaxed text-warning">
             {finding.matchText}
           </pre>
         </div>
         {finding.context && (
-          <div className="selectable mt-2 overflow-x-auto rounded-md border border-ink-800 bg-ink-950 p-3">
-            <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400">Context</p>
-            <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-stone-300">{finding.context}</pre>
+          <div className="selectable mt-2 overflow-x-auto rounded-sm border border-border bg-surface-primary p-3">
+            <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-text-muted">Context</p>
+            <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-text-secondary">{finding.context}</pre>
           </div>
         )}
       </section>
 
-      <section aria-labelledby="finding-recommendation" className="mt-5 rounded-md border border-emerald-900/60 bg-emerald-950/20 p-3">
-        <h3 id="finding-recommendation" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-400">
+      <section aria-labelledby="finding-recommendation" className="mt-5 rounded-sm border border-success-border bg-success-subtle p-3">
+        <h3 id="finding-recommendation" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">
           Recommendation
         </h3>
-        <p className="selectable mt-1.5 text-[13px] leading-relaxed text-stone-300">{finding.recommendation}</p>
+        <p className="selectable mt-1.5 text-[13px] leading-relaxed text-text-secondary">{finding.recommendation}</p>
       </section>
     </article>
   );

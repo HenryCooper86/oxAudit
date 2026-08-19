@@ -9,8 +9,8 @@ export function ResultsToolbar(props: {
   const { countLabel, filters, search, actions } = props;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-ink-700 bg-ink-850 px-3 py-2.5">
-      <span className="mr-1 text-[12px] font-medium tabular-nums text-stone-300">{countLabel}</span>
+    <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-secondary px-3 py-2.5">
+      <span className="mr-1 text-[12px] font-medium tabular-nums text-text-secondary">{countLabel}</span>
       {filters && <div className="flex flex-wrap items-center gap-2">{filters}</div>}
       {(search || actions) && (
         <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">

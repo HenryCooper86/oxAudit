@@ -5,10 +5,10 @@ import {
   FileSearch,
   LayoutDashboard,
   Settings,
-  ShieldHalf,
   X,
 } from "lucide-react";
 import type { JSX } from "react";
+import { SectionLabel } from "./ui";
 import { useAppStore } from "../lib/stores";
 import type { Page } from "../lib/workbench";
 
@@ -39,6 +39,11 @@ const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
   },
 ];
 
+/**
+ * Primary navigation, following y-agent's NavSidebar: a Finder/Notes-style
+ * rail on `--surface-secondary` with 10px uppercase section headers, 13px
+ * items on the 4px control radius, and a pinned footer for Settings.
+ */
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }): JSX.Element {
   const page = useAppStore((state) => state.page);
   const setPage = useAppStore((state) => state.setPage);
@@ -48,22 +53,25 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     onClose();
   };
 
-  const navigationButton = ({ page: itemPage, label, icon: Icon }: NavigationItem) => (
-    <button
-      key={itemPage}
-      type="button"
-      aria-current={page === itemPage ? "page" : undefined}
-      onClick={() => selectPage(itemPage)}
-      className={`flex w-full items-center gap-2.5 rounded px-3 py-2 text-left text-[13px] font-medium transition-colors ${
-        page === itemPage
-          ? "bg-ink-750 text-accent-300"
-          : "text-stone-400 hover:bg-ink-850 hover:text-stone-100"
-      }`}
-    >
-      <Icon aria-hidden="true" size={15} />
-      <span>{label}</span>
-    </button>
-  );
+  const navigationButton = ({ page: itemPage, label, icon: Icon }: NavigationItem) => {
+    const active = page === itemPage;
+    return (
+      <button
+        key={itemPage}
+        type="button"
+        aria-current={active ? "page" : undefined}
+        onClick={() => selectPage(itemPage)}
+        className={`mb-0.5 flex w-full items-center gap-2 rounded-sm border px-2.5 py-[7px] text-left text-[13px] leading-tight font-medium transition-colors duration-150 ${ active ? "border-border bg-surface-active text-text-primary" : "border-transparent text-text-primary hover:bg-accent-subtle" }`}
+      >
+        <span
+          className={`inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center ${ active ? "text-accent" : "text-text-muted" }`}
+        >
+          <Icon aria-hidden="true" size={15} />
+        </span>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+      </button>
+    );
+  };
 
   return (
     <>
@@ -78,44 +86,31 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       )}
       <aside
         aria-label="Primary navigation"
-        className={`z-40 flex h-full w-52 flex-col border-r border-ink-800 bg-ink-900 transition-transform max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 ${
-          open
-            ? "max-[900px]:translate-x-0 max-[900px]:visible"
-            : "max-[900px]:-translate-x-full max-[900px]:invisible"
-        }`}
+        className={`z-40 flex h-full w-60 flex-col border-r border-border bg-surface-secondary transition-transform max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 ${ open ? "max-[900px]:visible max-[900px]:translate-x-0" : "max-[900px]:invisible max-[900px]:-translate-x-full" }`}
       >
-        <div className="flex h-[60px] shrink-0 items-center gap-2.5 border-b border-ink-800 px-4">
-          <div className="flex h-8 w-8 items-center justify-center rounded bg-accent-500 text-ink-950">
-            <ShieldHalf aria-hidden="true" size={17} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight text-stone-100">oxAudit</div>
-            <div className="text-[11px] uppercase tracking-[0.16em] text-stone-400">
-              security workbench
-            </div>
-          </div>
+        <div className="flex items-center justify-end px-2 pt-1.5 min-[900px]:hidden">
           <button
             type="button"
             aria-label="Close navigation"
             onClick={onClose}
-            className="rounded p-1.5 text-stone-400 hover:bg-ink-800 hover:text-stone-100 min-[900px]:hidden"
+            className="rounded-sm p-1.5 text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
           >
             <X aria-hidden="true" size={16} />
           </button>
         </div>
 
-        <nav className="flex-1 space-y-5 overflow-y-auto px-2.5 py-4">
+        <nav className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pt-1.5">
           {NAVIGATION_GROUPS.map((group) => (
             <div key={group.label}>
-              <div className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400">
-                {group.label}
+              <div className="px-2.5 pt-2.5 pb-1">
+                <SectionLabel>{group.label}</SectionLabel>
               </div>
-              <div className="space-y-0.5">{group.items.map(navigationButton)}</div>
+              {group.items.map(navigationButton)}
             </div>
           ))}
         </nav>
 
-        <div className="border-t border-ink-800 p-2.5">
+        <div className="shrink-0 border-t border-border px-2 py-1.5">
           {navigationButton({ page: "settings", label: "Settings", icon: Settings })}
         </div>
       </aside>

@@ -108,6 +108,39 @@ export function publishSavedSettingsSnapshot(
   return readiness;
 }
 
+interface PersistedPreferenceDependencies {
+  saveRequests?: SerializedSettingsWrites;
+  saveSettings?: (settings: AppSettings) => Promise<void>;
+}
+
+/**
+ * Persists a settings change that cannot affect AI readiness — currently the
+ * theme. It joins the same write queue as a full save so the two can never
+ * interleave, and reads the latest snapshot *inside* the critical section so a
+ * save queued ahead of it is never clobbered. Unlike a full save it does not
+ * re-run the connection test: flipping the theme should not touch the network.
+ */
+export async function savePersistedThemePreference(
+  readSettings: () => AppSettings | null,
+  theme: string,
+  publishSettings: (settings: AppSettings) => void,
+  dependencies: PersistedPreferenceDependencies = {},
+): Promise<AppSettings | null> {
+  const saveRequests =
+    dependencies.saveRequests ?? persistedSettingsSaveRequests;
+  const saveSettings = dependencies.saveSettings ?? api.saveSettings;
+
+  return saveRequests.run(async () => {
+    const current = readSettings();
+    if (!current || current.theme === theme) return null;
+
+    const next = { ...current, theme };
+    await saveSettings(next);
+    publishSettings(next);
+    return next;
+  });
+}
+
 export interface SavedSettingsPublication {
   token: RequestToken;
   readiness: Promise<void>;
