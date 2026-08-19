@@ -677,7 +677,12 @@ pub fn builtins() -> Vec<Tool> {
                     }
                     "list" | _ => {}
                 }
-                Ok(json!({ "todos": list.clone() }))
+                let snapshot = json!(list.clone());
+                // Drop the state lock before emitting: the UI callback runs
+                // inline and must not be able to re-enter this mutex.
+                drop(todos);
+                (ctx.emit)(crate::ai::AiStreamEvent::Todos { items: snapshot.clone() });
+                Ok(json!({ "todos": snapshot }))
             }
         ),
     ]

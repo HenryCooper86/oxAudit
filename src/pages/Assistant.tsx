@@ -3,7 +3,9 @@ import {
   Ban,
   Bot,
   ClipboardPaste,
+  CornerDownLeft,
   FolderOpen,
+  History,
   Loader2,
   Send,
   Settings2,
@@ -13,12 +15,14 @@ import {
   X,
 } from "lucide-react";
 import Markdown from "react-markdown";
+import { AgentTodoPanel } from "../components/chat/AgentTodoPanel";
 import { ApprovalModal } from "../components/chat/ApprovalModal";
 import { AskUserModal } from "../components/chat/AskUserModal";
 import { SessionSidebar } from "../components/chat/SessionSidebar";
 import { ThinkingCard } from "../components/chat/ThinkingCard";
 import { ToolCallCard } from "../components/chat/ToolCallCard";
 import { streamChat, type StreamHandle } from "../lib/aiEvents";
+import { planRewind } from "../lib/rewind";
 import { api } from "../lib/api";
 import {
   loadLatestSessionMessages,
@@ -36,6 +40,7 @@ import type {
   StoredMessage,
   ToolRecord,
   Usage,
+  TodoItem,
   UsageSummary,
 } from "../lib/types";
 import { Button } from "../components/ui";
@@ -51,6 +56,8 @@ interface UiMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** Submitted mid-run. Live-session styling only; a reload shows a plain turn. */
+  steer?: boolean;
   tools?: ToolRecord[];
 }
 
@@ -113,6 +120,12 @@ export function AssistantPage() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  /** Steers accepted by the run but not yet folded into the conversation. */
+  const [pendingSteers, setPendingSteers] = useState<{ id: string; text: string }[]>([]);
+  /** A message the run declined (it was already finishing); sent as a new turn. */
+  const [followUp, setFollowUp] = useState<string | null>(null);
+  /** The agent's working plan, maintained by the `todo` tool. */
+  const [todos, setTodos] = useState<TodoItem[]>([]);
   const [sessionActivating, setSessionActivating] = useState(false);
   const [unavailableProject, setUnavailableProject] = useState<{
     sessionId: string;
@@ -267,6 +280,15 @@ export function AssistantPage() {
     setModel(null);
     setConvUsage(null);
     setUnavailableProject(null);
+    setPendingSteers([]);
+    // The plan lives in native state keyed by conversation, so switching back
+    // to a session restores whatever the agent had planned there.
+    api
+      .todoList(info.id)
+      .then((items) => {
+        if (requestIsCurrent(token)) setTodos(items);
+      })
+      .catch(() => undefined);
 
     if (!(await applyRuntimeProject(info.projectPath, token))) return;
     refreshUsage(info.id, token);
@@ -500,6 +522,7 @@ export function AssistantPage() {
     ]);
     setInput("");
     setBusy(true);
+    setPendingSteers([]);
     settledRef.current = false;
     turnToolsRef.current.clear();
     setToolRecords([]);
@@ -546,6 +569,36 @@ export function AssistantPage() {
             resultPreview: toolResult.resultPreview,
           });
         },
+        onSteer: (text) => {
+          // The run has taken ownership of this message, so it stops being a
+          // pending chip and becomes a real user turn in the transcript. It is
+          // persisted too, otherwise a reload would show the model answering
+          // something the history never recorded being asked.
+          setPendingSteers((current) => {
+            const index = current.findIndex((steer) => steer.text === text);
+            return index === -1
+              ? current
+              : [...current.slice(0, index), ...current.slice(index + 1)];
+          });
+          const stored: StoredMessage = {
+            id: crypto.randomUUID(),
+            role: "user",
+            content: text,
+            at: new Date().toISOString(),
+          };
+          setMessages((current) => [
+            ...current,
+            { id: stored.id, role: "user", content: text, steer: true },
+          ]);
+          const sessionId = activeSessionIdRef.current;
+          if (sessionId) {
+            api
+              .sessionAppend(sessionId, stored)
+              .then(updateSessionInfo)
+              .catch(() => undefined);
+          }
+        },
+        onTodos: (items) => setTodos(items),
         onPermissionRequest: (prompt) => setPermission(prompt),
         onAskUser: (prompt) => setAskUser(prompt),
         onDone: (payload) =>
@@ -583,6 +636,89 @@ export function AssistantPage() {
     await handle.finished;
     if (streamHandleRef.current === handle) streamHandleRef.current = null;
   };
+
+  /**
+   * Drop this user turn and everything after it, handing the text back to the
+   * composer so it can be re-asked differently.
+   *
+   * The transcript is truncated first: if that write fails the in-memory view is
+   * left alone, so the UI never claims to have discarded turns that are still on
+   * disk and would reappear on reload.
+   */
+  const rewindTo = async (messageId: string) => {
+    if (busy || !activeSessionId) return;
+    const plan = planRewind(messages, messageId);
+    if (!plan) return;
+
+    try {
+      await api.sessionTruncate(activeSessionId, plan.keepCount);
+    } catch (error) {
+      push("error", `Could not rewind: ${String(error)}`);
+      return;
+    }
+
+    setMessages((current) => current.slice(0, plan.keepCount));
+    setInput(plan.restoredInput);
+    setToolRecords([]);
+    turnToolsRef.current.clear();
+    setStreaming({ text: "", reasoning: "", thinking: false });
+    setPendingSteers([]);
+    const info = sessions.find((session) => session.id === activeSessionId);
+    if (info) updateSessionInfo({ ...info, messageCount: plan.keepCount });
+    document.getElementById("assistant-composer")?.focus();
+  };
+
+  /**
+   * Send a message into a turn that is already running.
+   *
+   * The run owns the decision: its queue closes atomically while empty just
+   * before it finishes, so a `false` here means the message was not taken and
+   * must be sent as an ordinary new turn instead — it is never both.
+   */
+  const steer = async (content: string) => {
+    const handle = streamHandleRef.current;
+    if (!handle) {
+      setFollowUp(content);
+      return;
+    }
+    setInput("");
+    try {
+      if (await api.steerChat(handle.runId, content)) {
+        setPendingSteers((current) => [
+          ...current,
+          { id: crypto.randomUUID(), text: content },
+        ]);
+      } else {
+        setFollowUp(content);
+      }
+    } catch (error) {
+      setInput(content);
+      push("error", `That message could not be sent: ${String(error)}`);
+    }
+  };
+
+  const submit = async () => {
+    const content = input.trim();
+    if (!content) return;
+    if (busy) {
+      await steer(content);
+      return;
+    }
+    await send(content);
+  };
+
+  // A declined steer becomes the next turn. This runs as an effect rather than
+  // inline so `send` reads the settled message list, including the answer the
+  // run had already produced.
+  useEffect(() => {
+    if (!followUp || busy || sessionActivating || !activeSessionId || !aiReady) {
+      return;
+    }
+    setFollowUp(null);
+    void send(followUp);
+    // `send` is recreated every render and intentionally not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followUp, busy, sessionActivating, activeSessionId, aiReady]);
 
   const cancel = async () => {
     const handle = streamHandleRef.current;
@@ -633,6 +769,7 @@ export function AssistantPage() {
 
   const clearConversation = async () => {
     setMessages([]);
+    setTodos([]);
     setConvUsage(null);
     setModel(null);
     setToolRecords([]);
@@ -884,8 +1021,19 @@ export function AssistantPage() {
               {messages.map((message) => (
                 <div
                   key={message.id}
-                  className={`flex gap-2.5 ${ message.role === "user" ? "justify-end" : "" }`}
+                  className={`group flex gap-2.5 ${ message.role === "user" ? "justify-end" : "" }`}
                 >
+                  {message.role === "user" && !busy && (
+                    <button
+                      type="button"
+                      onClick={() => void rewindTo(message.id)}
+                      title="Discard this and everything after it, and put the text back in the composer"
+                      aria-label="Rewind the conversation to this message"
+                      className="mt-1 h-7 w-7 shrink-0 items-center justify-center self-start rounded-sm border border-transparent text-text-muted opacity-0 transition-opacity hover:border-border hover:bg-surface-hover hover:text-text-primary focus-visible:opacity-100 group-hover:opacity-100 flex"
+                    >
+                      <History size={13} aria-hidden="true" />
+                    </button>
+                  )}
                   {message.role !== "user" && (
                     <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-accent-glow bg-accent-subtle">
                       <Bot
@@ -908,6 +1056,12 @@ export function AssistantPage() {
                     >
                       {message.role === "user" ? (
                         <div className="whitespace-pre-wrap break-words">
+                          {message.steer && (
+                            <span className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-accent opacity-80">
+                              <CornerDownLeft size={10} aria-hidden="true" />
+                              steered mid-run
+                            </span>
+                          )}
                           {message.content}
                         </div>
                       ) : (
@@ -982,9 +1136,31 @@ export function AssistantPage() {
             className="mx-auto w-full max-w-4xl"
             onSubmit={(event) => {
               event.preventDefault();
-              void send();
+              void submit();
             }}
           >
+            {todos.length > 0 && (
+              <div className="mb-2">
+                <AgentTodoPanel items={todos} />
+              </div>
+            )}
+            {pendingSteers.length > 0 && (
+              <ul
+                aria-label="Queued messages"
+                className="mb-2 flex flex-wrap items-center gap-1.5"
+              >
+                {pendingSteers.map((queued) => (
+                  <li
+                    key={queued.id}
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-accent-glow bg-accent-subtle px-2.5 py-1 text-[11px] text-accent"
+                  >
+                    <CornerDownLeft size={11} aria-hidden="true" className="shrink-0" />
+                    <span className="truncate">{queued.text}</span>
+                    <span className="shrink-0 opacity-70">queued</span>
+                  </li>
+                ))}
+              </ul>
+            )}
             <label htmlFor="assistant-composer" className="sr-only">
               Message the AI Assistant
             </label>
@@ -996,24 +1172,36 @@ export function AssistantPage() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
-                    void send();
+                    void submit();
                   }
                 }}
                 rows={2}
                 aria-describedby="assistant-composer-help"
                 disabled={!aiReady || sessionActivating}
-                placeholder={composerPlaceholder}
+                placeholder={busy ? "Steer the run — your message is folded in at the next step…" : composerPlaceholder}
                 className="selectable min-h-11 flex-1 resize-none rounded-sm border border-border bg-surface-primary px-3.5 py-2.5 text-[13px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
               />
               {busy ? (
-                <button
-                  type="button"
-                  onClick={() => void cancel()}
-                  className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-sm border border-error-border bg-transparent px-3 text-[12px] font-medium text-error hover:bg-error-subtle"
-                >
-                  <Ban size={14} aria-hidden="true" />
-                  Cancel
-                </button>
+                <>
+                  <Button
+                    type="submit"
+                    disabled={!input.trim()}
+                    variant="accent"
+                    size="md"
+                    className="h-11 px-3.5"
+                  >
+                    <CornerDownLeft size={14} aria-hidden="true" />
+                    Steer
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => void cancel()}
+                    className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-sm border border-error-border bg-transparent px-3 text-[12px] font-medium text-error hover:bg-error-subtle"
+                  >
+                    <Ban size={14} aria-hidden="true" />
+                    Cancel
+                  </button>
+                </>
               ) : (
                 <Button
                   type="submit"
@@ -1037,7 +1225,9 @@ export function AssistantPage() {
               className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted"
             >
               <span>
-                Enter to send · Shift+Enter for a new line · tools require approval
+                {busy
+                  ? "Enter to steer the running turn · Shift+Enter for a new line"
+                  : "Enter to send · Shift+Enter for a new line · tools require approval"}
               </span>
               {convUsage && (
                 <span className="font-mono tabular-nums">

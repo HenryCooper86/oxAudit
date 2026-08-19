@@ -45,6 +45,12 @@ pub enum AiStreamEvent {
         request_id: String,
         questions: Value,
     },
+    /// A message the user submitted mid-run was folded into the conversation
+    /// at an iteration boundary.
+    Steer { text: String },
+    /// The agent's todo list changed. Carries the whole list, so the UI never
+    /// has to reconstruct state from a sequence of operations.
+    Todos { items: Value },
     /// A tool call requires human approval (permission pipeline).
     PermissionRequest {
         request_id: String,
