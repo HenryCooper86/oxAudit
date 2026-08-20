@@ -1,6 +1,7 @@
 mod ai;
 mod agent;
 pub mod binscan;
+pub mod triage;
 mod commands;
 mod cve;
 mod deps;
