@@ -66,11 +66,20 @@ export function BinaryScanPage(): JSX.Element {
           message: `Could not check which scanners are installed: ${String(cause)}`,
         };
         setToolStatus({
+          // The native scanner is built in and cannot be absent, so a scan can
+          // still run even when probing the external tools failed.
+          native: {
+            available: true,
+            program: "oxAudit (built-in)",
+            version: null,
+            source: null,
+            message: "Built in — no installation required.",
+          },
           cveBinTool: unavailable,
           grype: unavailable,
           docker: unavailable,
           runtime: "auto",
-          canScan: false,
+          canScan: true,
         });
       }
     } finally {
@@ -206,6 +215,11 @@ export function BinaryScanPage(): JSX.Element {
         (toolStatus?.runtime === "auto" && (toolStatus?.docker.available ?? false));
 
   const activeScanners = [
+    {
+      name: "oxAudit",
+      version: toolStatus?.native.version ?? null,
+      detail: toolStatus?.native.message ?? "Built-in scanner",
+    },
     cveBinToolReady && {
       name: "cve-bin-tool",
       version: toolStatus?.cveBinTool.version ?? null,
@@ -230,65 +244,53 @@ export function BinaryScanPage(): JSX.Element {
     );
   }
 
-  if (!toolStatus?.canScan) {
-    return (
-      <ToolPage
-        title="Binary Scan"
-        description="Detect vulnerable components inside compiled binaries, firmware images, and archives."
-      >
-        <InlineState
-          tone="unavailable"
-          title="No binary scanner is available"
-          description={
-            toolStatus?.cveBinTool.message ??
-            "oxAudit runs scanners you install, rather than bundling them."
-          }
-          action={
-            <Button type="button" onClick={() => void checkTool()} variant="outline" size="md">
-              <RefreshCw size={13} aria-hidden="true" />
-              Check again
-            </Button>
-          }
-        />
-        <section className="rounded-sm border border-border bg-surface-secondary p-4">
-          <h2 className="text-[13px] font-semibold text-text-primary">Installing a scanner</h2>
-          <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
-            Either works on its own, and they see different things — grype reads package
-            metadata and reports fix versions; cve-bin-tool&rsquo;s ~450 checkers find
-            components statically linked into stripped binaries. Running both covers more
-            than either.
-          </p>
-          <dl className="mt-3 space-y-3">
-            <div>
-              <dt className="text-[12px] font-medium text-text-primary">
-                grype — Apache-2.0, one static binary
-              </dt>
-              <dd>
-                <pre className="selectable mt-1 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
-                  brew install grype
-                </pre>
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[12px] font-medium text-text-primary">
-                cve-bin-tool — GPL-3.0, needs Python
-              </dt>
-              <dd>
-                <pre className="selectable mt-1 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
-                  pipx install cve-bin-tool
-                </pre>
-                <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
-                  Its CVE bootstrap is broken upstream; the Docker runtime carries the fix.
-                  Choose it in Settings, and build the image with{" "}
-                  <code className="font-mono">docker build -t oxaudit/cve-bin-tool:3.4 docker/cve-bin-tool</code>.
-                </p>
-              </dd>
-            </div>
-          </dl>
-        </section>
-      </ToolPage>
-    );
-  }
+  // The native scanner is built in, so a scan can always run. External tools
+  // add coverage rather than being a prerequisite; their install notes live in
+  // an optional section at the bottom of the page rather than a blocking gate.
+  const moreScanners = (
+    <section className="rounded-sm border border-border bg-surface-secondary p-4">
+      <h2 className="text-[13px] font-semibold text-text-primary">
+        Optional: add external scanners
+      </h2>
+      <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
+        oxAudit&rsquo;s built-in scanner needs nothing installed and runs on every scan.
+        These two see different things and can run alongside it — grype reads package
+        metadata and reports fix versions; cve-bin-tool&rsquo;s ~450 checkers find
+        components statically linked into stripped binaries.
+      </p>
+      <dl className="mt-3 space-y-3">
+        <div>
+          <dt className="text-[12px] font-medium text-text-primary">
+            grype{toolStatus?.grype.available ? " — installed" : " — Apache-2.0, one static binary"}
+          </dt>
+          {!toolStatus?.grype.available && (
+            <dd>
+              <pre className="selectable mt-1 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
+                brew install grype
+              </pre>
+            </dd>
+          )}
+        </div>
+        <div>
+          <dt className="text-[12px] font-medium text-text-primary">
+            cve-bin-tool{toolStatus?.cveBinTool.available ? " — installed" : " — GPL-3.0, needs Python"}
+          </dt>
+          {!toolStatus?.cveBinTool.available && (
+            <dd>
+              <pre className="selectable mt-1 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
+                pipx install cve-bin-tool
+              </pre>
+              <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+                Its CVE bootstrap is broken upstream; the Docker runtime carries the fix.
+                Choose it in Settings, and build the image with{" "}
+                <code className="font-mono">docker build -t oxaudit/cve-bin-tool:3.4 docker/cve-bin-tool</code>.
+              </p>
+            </dd>
+          )}
+        </div>
+      </dl>
+    </section>
+  );
 
   return (
     <ToolPage
@@ -533,6 +535,8 @@ export function BinaryScanPage(): JSX.Element {
           )}
         </section>
       )}
+
+      {moreScanners}
     </ToolPage>
   );
 }

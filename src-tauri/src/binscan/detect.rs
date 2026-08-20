@@ -70,6 +70,19 @@ pub struct BinaryToolStatus {
 }
 
 impl BinaryToolStatus {
+    /// The always-present built-in scanner. `program` is oxAudit itself, so the
+    /// UI can show the same shape as an external tool without pretending one
+    /// was located on disk.
+    pub fn builtin(version: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            available: true,
+            program: Some("oxAudit (built-in)".to_string()),
+            version: Some(version.into()),
+            source: None,
+            message: Some(message.into()),
+        }
+    }
+
     fn missing(message: impl Into<String>) -> Self {
         Self {
             available: false,
