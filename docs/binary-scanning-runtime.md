@@ -282,12 +282,53 @@ Docker (§2) drops from "frequently the runtime that works" to "one option for
 running cve-bin-tool", because the capability it was carrying now exists
 natively.
 
+### CVE enrichment — done, and it needed two sources
+
+The native scanner now attaches CVEs, using each source where it is
+authoritative. This is not redundancy; a given detection can only be answered by
+one of them:
+
+| Detection | Carries | Asked of | Why the other cannot answer |
+|---|---|---|---|
+| Signature | CPE vendor + upstream version | **NVD** | OSV has no ecosystem for a bare upstream library |
+| ELF package note | distro package + packaged version | **OSV** | NVD needs a CPE vendor, which the note does not carry |
+
+Both directions were measured against the live APIs rather than assumed:
+
+- `virtualMatchString=cpe:2.3:a:openssl:openssl:3.0.2` → **56 CVEs**. The same
+  query with `*` in the vendor position → **0**. NVD does not treat it as a
+  wildcard, so there is genuinely no CPE query for a component whose vendor we
+  do not know, and a package note never supplies one.
+- `{"ecosystem":"Debian","name":"curl","version":"7.88.1-10+deb12u5"}` → **68**
+  entries. The release is deliberately left off the ecosystem: OSV answers
+  across all of them, and the note says which distribution built the binary,
+  never which release it runs on.
+
+This is why `Detection` carries both version forms. Normalizing to one would
+make the other silently return nothing: OSV compares against `1.5.7+dfsg-1`, and
+NVD is keyed on `1.5.7`.
+
+End to end on three Debian binaries: `libzstd 1.5.7` → CVE-2022-4899, rated
+high, **fixed in 1.5.4+dfsg2-1**. Neither cve-bin-tool nor grype found that
+component at all, and cve-bin-tool never reports a fix version.
+
+Two defects found by running it rather than by reading it:
+
+- **OSV's `/v1/querybatch` returns ids and modification times only.** One
+  request for everything looked like the obvious win, and it produced four real
+  Debian findings each rated "unknown" with no remediation — a summary reading
+  "0 critical, 0 high" that invites the reader to relax. `/v1/query` per
+  component returns full records; OSV is not rate-limited the way NVD is.
+- **Debian's OSV records carry no `aliases` array.** The CVE number appears only
+  inside the id, so `DEBIAN-CVE-2022-4899` was being reported verbatim — an
+  identifier that cannot be looked up anywhere.
+
+The remaining sharp edge is NVD's rate limit: five requests per thirty seconds
+without an API key, one request per component. A scan is capped at 100 NVD
+lookups and *says so* when it caps, rather than returning a short list.
+
 ### Still open
 
-- **CVE enrichment for native detections.** The scanner reports components with
-  no CVEs attached. oxAudit already has rate-limited, cached NVD and OSV clients;
-  wiring detections into them is the next step and is the difference between an
-  inventory and a scanner.
 - **Signature coverage.** 22 against cve-bin-tool's 365. `tools/derive-signatures.py`
   makes extending this mechanical.
 - **Merge keys ignore version normalization.** `grype.rs` stores

@@ -581,6 +581,7 @@ fn scan_context(state: &AppState, app: &AppHandle, use_grype: bool) -> Result<cr
         scratch_dir,
         use_cve_bin_tool: true,
         use_grype,
+        use_native: true,
     })
 }
 
@@ -671,6 +672,7 @@ pub async fn scan_binaries(
         cancel,
         BINARY_SCAN_TIMEOUT,
         on_progress,
+        app.try_state::<CveState>().as_deref(),
     )
     .await?;
 
@@ -682,6 +684,13 @@ pub async fn scan_binaries(
             "binscan://scanner-failed",
             json!({ "scanner": failure.scanner, "message": failure.message }),
         );
+    }
+
+    // Notes are not failures, but they change how the result should be read —
+    // a capped or rate-limited lookup means "fewer CVEs than exist", which is
+    // indistinguishable from "clean" unless we say so.
+    for note in &outcome.notes {
+        let _ = app.emit("binscan://note", Value::from(note.clone()));
     }
 
     Ok(outcome.result)
@@ -699,6 +708,9 @@ pub async fn refresh_binary_database(
 ) -> Result<(), String> {
     let mut context = scan_context(&state, &app, false)?;
     context.use_grype = false;
+    // This refreshes cve-bin-tool's database. The native scanner has no
+    // database, so running it here would only scan an empty probe directory.
+    context.use_native = false;
     let cancel = state.cancel_binary_scan.clone();
     cancel.store(false, Ordering::Relaxed);
 
@@ -726,6 +738,7 @@ pub async fn refresh_binary_database(
         cancel,
         BINARY_SCAN_TIMEOUT,
         on_progress,
+        None,
     )
     .await
     .map(|_| ())

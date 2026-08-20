@@ -59,6 +59,11 @@ pub struct BinaryScanSummary {
     pub high: usize,
     pub medium: usize,
     pub low: usize,
+    /// Findings the source rated at nothing. Counted separately rather than
+    /// left out, so the buckets always sum to `vulnerabilities` — a report
+    /// where they do not reads as though findings went missing. Debian's OSV
+    /// records routinely carry no CVSS, so this is common, not exotic.
+    pub unknown: usize,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -162,7 +167,7 @@ fn split_paths(raw: Option<&String>) -> Vec<String> {
 }
 
 /// Map onto the severity scale the rest of the app renders.
-fn normalize_severity(raw: &str) -> String {
+pub(crate) fn normalize_severity(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "critical" => "critical",
         "high" => "high",
@@ -235,7 +240,7 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
                 "high" => summary.high += 1,
                 "medium" => summary.medium += 1,
                 "low" => summary.low += 1,
-                _ => {}
+                _ => summary.unknown += 1,
             }
             summary.vulnerabilities += 1;
 
@@ -383,7 +388,7 @@ pub fn merge_results(results: Vec<BinaryScanResult>) -> BinaryScanResult {
 
 /// Counts recomputed from the merged set, never summed across scanners — a CVE
 /// both found must not be counted twice.
-fn summarize(components: &[BinaryComponent]) -> BinaryScanSummary {
+pub(crate) fn summarize(components: &[BinaryComponent]) -> BinaryScanSummary {
     let mut summary = BinaryScanSummary {
         components: components.len(),
         ..Default::default()
@@ -396,7 +401,7 @@ fn summarize(components: &[BinaryComponent]) -> BinaryScanSummary {
                 "high" => summary.high += 1,
                 "medium" => summary.medium += 1,
                 "low" => summary.low += 1,
-                _ => {}
+                _ => summary.unknown += 1,
             }
         }
     }

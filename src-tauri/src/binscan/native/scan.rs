@@ -55,7 +55,18 @@ impl From<Evidence> for DetectionSource {
 pub struct Detection {
     pub vendor: String,
     pub product: String,
+    /// Upstream version, with any distribution packaging stripped.
     pub version: Option<String>,
+    /// The version exactly as declared, packaging intact — `1.5.7+dfsg-1`.
+    ///
+    /// Kept alongside the upstream form because the two advisory sources want
+    /// different ones: NVD's CPE data is keyed on upstream, and OSV's
+    /// distribution ecosystems compare against the packaged version, so
+    /// normalizing to one would make the other silently return nothing.
+    pub raw_version: Option<String>,
+    /// OSV ecosystem this came from, when the package note named a
+    /// distribution we can query.
+    pub ecosystem: Option<String>,
     pub path: String,
     pub source: DetectionSource,
     /// The file was larger than the read cap and only a prefix was examined.
@@ -90,10 +101,13 @@ pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
     ) {
         if let Some(note) = package_note::read(bytes) {
             let version = upstream_version(&note.version);
+            let raw = note.version.trim().to_string();
             detections.push(Detection {
                 vendor: String::new(),
                 product: note.name,
                 version: (!version.is_empty()).then_some(version),
+                raw_version: (!raw.is_empty()).then_some(raw),
+                ecosystem: super::enrich::osv_ecosystem(&note.kind, &note.os),
                 path: display.clone(),
                 source: DetectionSource::PackageNote,
                 truncated: extracted.truncated,
@@ -111,7 +125,9 @@ pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
         detections.push(Detection {
             vendor: hit.vendor,
             product: hit.product,
+            raw_version: hit.version.clone(),
             version: hit.version,
+            ecosystem: None,
             path: display.clone(),
             source: hit.evidence.into(),
             truncated: extracted.truncated,
@@ -189,12 +205,21 @@ pub fn fold(detections: Vec<Detection>) -> Vec<BinaryComponent> {
     components
 }
 
+/// A completed native scan, plus what would need asking to enrich it.
+#[derive(Debug)]
+pub struct NativeScan {
+    pub result: BinaryScanResult,
+    /// One entry per component that can be looked up, carrying both version
+    /// forms and the ecosystem — see [`super::enrich`].
+    pub queries: Vec<super::enrich::ComponentQuery>,
+}
+
 /// Scan a file or directory.
 pub fn scan(
     root: &Path,
     cancel: Arc<AtomicBool>,
     on_progress: Arc<dyn Fn(String) + Send + Sync>,
-) -> Result<BinaryScanResult, String> {
+) -> Result<NativeScan, String> {
     let started = std::time::Instant::now();
     let files = candidates(root);
     on_progress(format!("{} files to examine", files.len()));
@@ -214,19 +239,23 @@ pub fn scan(
         return Err("scan cancelled".to_string());
     }
 
+    let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
     on_progress(format!("{} components detected", components.len()));
 
-    Ok(BinaryScanResult {
-        target: root.to_string_lossy().into_owned(),
-        summary: BinaryScanSummary {
-            components: components.len(),
-            ..BinaryScanSummary::default()
+    Ok(NativeScan {
+        queries,
+        result: BinaryScanResult {
+            target: root.to_string_lossy().into_owned(),
+            summary: BinaryScanSummary {
+                components: components.len(),
+                ..BinaryScanSummary::default()
+            },
+            components,
+            database_last_updated: None,
+            duration_ms: started.elapsed().as_millis() as u64,
+            scanners: vec![NATIVE.to_string()],
         },
-        components,
-        database_last_updated: None,
-        duration_ms: started.elapsed().as_millis() as u64,
-        scanners: vec![NATIVE.to_string()],
     })
 }
 
@@ -239,6 +268,8 @@ mod tests {
             vendor: String::new(),
             product: product.to_string(),
             version: version.map(str::to_string),
+            raw_version: version.map(str::to_string),
+            ecosystem: None,
             path: path.to_string(),
             source,
             truncated: false,
@@ -313,7 +344,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Arc::new(|_| {}),
         )
-        .expect("scan");
+        .expect("scan")
+        .result;
         assert!(
             result.components.is_empty(),
             "text matched as a component: {:?}",
@@ -336,7 +368,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Arc::new(|_| {}),
         )
-        .expect("scan");
+        .expect("scan")
+        .result;
         assert_eq!(result.components.len(), 1);
         assert_eq!(result.components[0].product, "busybox");
         assert_eq!(result.components[0].version, "1.38.0");
