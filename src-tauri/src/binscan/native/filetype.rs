@@ -22,6 +22,11 @@ pub enum Classification {
     /// Text. Skipped: a version string in a README is not evidence that this
     /// build of the library is present.
     Text,
+    /// A gettext `.mo` translation catalog. Skipped: it embeds a library's
+    /// error strings (both original and translated) but is not the library —
+    /// scanning it attributes the component to every locale file, and worse,
+    /// reports a library as present on the strength of a stray translation.
+    Localization,
     Empty,
 }
 
@@ -54,6 +59,10 @@ pub fn classify(prefix: &[u8]) -> Classification {
     }
     if let Some(format) = executable_format(prefix) {
         return Classification::Executable(format);
+    }
+    // gettext MO magic, either endianness (0x950412de).
+    if prefix.starts_with(&[0xde, 0x12, 0x04, 0x95]) || prefix.starts_with(&[0x95, 0x04, 0x12, 0xde]) {
+        return Classification::Localization;
     }
     if looks_binary(prefix) {
         Classification::OpaqueBinary
@@ -190,6 +199,18 @@ mod tests {
         let readme = b"OpenSSL 1.0.2k is required to build this project.\nSee INSTALL.\n";
         assert_eq!(classify(readme), Classification::Text);
         assert!(!classify(readme).is_scannable());
+    }
+
+    #[test]
+    fn a_gettext_translation_catalog_is_not_scanned() {
+        // A .mo file embeds a library's error strings, so scanning it would
+        // report the library as present in every locale directory. Both
+        // endiannesses of the magic must be caught.
+        let le = [0xde, 0x12, 0x04, 0x95, 0x00, 0x00, 0x00, 0x00];
+        let be = [0x95, 0x04, 0x12, 0xde, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(classify(&le), Classification::Localization);
+        assert_eq!(classify(&be), Classification::Localization);
+        assert!(!classify(&le).is_scannable());
     }
 
     #[test]
