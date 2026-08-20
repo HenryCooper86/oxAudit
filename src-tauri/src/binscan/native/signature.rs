@@ -932,7 +932,7 @@ zero CVEs rather than an error"
 
     /// Components identified by a data string alone, with no version anywhere
     /// in the binary. `(product, identifying string)`.
-    const IDENTITY_ONLY: [(&str, &str); 6] = [
+    const IDENTITY_ONLY: [(&str, &str); 10] = [
         ("freetype", "autofitter"),
         ("readline", "unrecognized history modifier"),
         ("jansson", "%s near end of file"),
@@ -943,6 +943,13 @@ zero CVEs rather than an error"
         // sits between `-N %s` and `append` on one build and between `help` and
         // `unexpected '!' flag` on another.
         ("iptables", "Failed to initialize xtables"),
+        // OpenWrt's own userspace. None embeds a version — OpenWrt versions
+        // these as dated git snapshots — so identity is all there is, and all
+        // that is wanted.
+        ("ubus", "ubus.object.add"),
+        ("libuci", "commit    [<config>]"),
+        ("netifd", "external device handler"),
+        ("odhcp6c", "Usage: odhcp6c [options] <interface>"),
     ];
 
     #[test]

@@ -109,7 +109,7 @@ merge into one row today.
 
 ## 5. What this cannot do
 
-- **Coverage is 40 signatures, not 365.** They are the components that dominate
+- **Coverage is 57 signatures, not 365.** They are the components that dominate
   firmware findings (see §7), and the package note covers much of the rest on
   any distribution-built target. A vendor-built stripped binary of something
   uncovered will be missed. Extending coverage is mechanical: run the harness
@@ -491,6 +491,41 @@ Negative control: across 26,077 files of a Debian image with neither installed,
 neither signature fires.
 
 Against opkg's own package list — 105 packages, 73 excluding kernel modules —
-the scanner now finds 10 components, matching every version opkg records for
-them. The remaining gaps are OpenWrt-specific packages (ubus, uci, netifd,
-odhcp6c) rather than detections that failed.
+the scanner now finds 14 components, matching every version opkg records for
+them.
+
+### OpenWrt's own userspace
+
+ubus, uci, netifd and odhcp6c were the last visible gaps, and are now covered.
+They are in essentially every OpenWrt-derived image, which is a large slice of
+consumer routers and vendor firmware built on it.
+
+None embeds a version, and that is not a build oversight: OpenWrt versions these
+as dated git snapshots (`2021-06-30-4fc532c8`), so there is no release number to
+read. Identity only, therefore — anchored on data strings, never symbols:
+
+| Component | Anchor |
+|---|---|
+| ubus | `ubus.object.add` (event names ubusd emits) |
+| uci | `commit    [<config>]` (aligned command list) |
+| netifd | `external device handler` |
+| odhcp6c | `Usage: odhcp6c [options] <interface>` |
+
+Two things checked rather than assumed:
+
+- **CPE reality.** I had claimed last section these had no CPE. Half wrong: the
+  dictionary registers **`openwrt:libuci`** (one entry, no CVEs at this
+  version), while `ubus`, `netifd` and `odhcp6c` genuinely have none. So uci's
+  product is `libuci` to match. More usefully, **OpenWrt itself is in NVD** — as
+  `cpe:2.3:o:openwrt:openwrt`, 10 CVEs at 21.02.7 — but under the `o` (operating
+  system) namespace, which `enrich::cpe_match_string` does not build. Firmware
+  distribution CVEs are a category the component-level scanner does not reach.
+
+- **ubus provenance.** ubus resolves to 6 files, not 3: alongside `ubus`,
+  `ubusd` and `libubus.so`, its event strings appear in `procd`, `netifd` and
+  `odhcpd` — binaries that genuinely link libubus and use ubus IPC. This is
+  accurate provenance (one `ubus` component, found in six files that use it),
+  the same shape as readline inside bash, not a false positive.
+
+Negative control: on 26,077 files of a Debian image with none of the four
+installed, none fires.
