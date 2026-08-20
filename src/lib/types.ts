@@ -186,6 +186,12 @@ export interface BinaryVulnerability {
   source: string;
   remarks: string | null;
   epssProbability: number | null;
+  /** EPSS percentile against all scored CVEs, 0-1. */
+  epssPercentile: number | null;
+  /** In CISA's Known Exploited Vulnerabilities catalog. */
+  knownExploited: boolean;
+  /** Named in a ransomware campaign, per KEV. */
+  ransomware: boolean;
   /** First version carrying the fix. grype reports this; cve-bin-tool does not. */
   fixedIn: string | null;
 }

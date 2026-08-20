@@ -181,6 +181,9 @@ pub fn parse_nvd(json: &Value) -> Vec<BinaryVulnerability> {
             source: SOURCE_NVD.to_string(),
             remarks: None,
             epss_probability: None,
+            epss_percentile: None,
+            known_exploited: false,
+            ransomware: false,
             fixed_in: None,
         });
     }
@@ -242,6 +245,9 @@ pub fn from_osv(vulnerability: &crate::models::Vulnerability) -> BinaryVulnerabi
         source: SOURCE_OSV.to_string(),
         remarks: None,
         epss_probability: None,
+        epss_percentile: None,
+        known_exploited: false,
+        ransomware: false,
         fixed_in: vulnerability.fixed_versions.first().cloned(),
     }
 }
@@ -511,6 +517,43 @@ pub async fn enrich(
         }
     }
 
+    // Exploitation signal: rank the CVEs just found by whether they are known
+    // to be exploited (CISA KEV) and their EPSS score. This finds no new CVEs;
+    // it answers "which of these do I fix first?", which is the question a scan
+    // with dozens of findings actually raises.
+    let cve_ids: Vec<String> = found
+        .values()
+        .flatten()
+        .map(|v| v.cve_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !cve_ids.is_empty() && !cancel.load(Ordering::Relaxed) {
+        on_progress(format!(
+            "checking {} CVE(s) against CISA KEV and EPSS",
+            cve_ids.len()
+        ));
+        let (kev, epss, mut signal_notes) =
+            super::super::exploit::fetch(&state.http, &cve_ids).await;
+        notes.append(&mut signal_notes);
+        let mut exploited = 0usize;
+        for vulnerability in found.values_mut().flatten() {
+            let signal = super::super::exploit::combine(&kev, &epss, &vulnerability.cve_id);
+            vulnerability.known_exploited = signal.known_exploited;
+            vulnerability.ransomware = signal.ransomware;
+            vulnerability.epss_probability = signal.epss.or(vulnerability.epss_probability);
+            vulnerability.epss_percentile = signal.epss_percentile.or(vulnerability.epss_percentile);
+            if signal.known_exploited {
+                exploited += 1;
+            }
+        }
+        if exploited > 0 {
+            notes.push(format!(
+                "{exploited} of the CVEs found are in CISA's Known Exploited Vulnerabilities catalog."
+            ));
+        }
+    }
+
     Enrichment { found, notes }
 }
 
@@ -766,6 +809,9 @@ mod tests {
             source: source.into(),
             remarks: None,
             epss_probability: None,
+            epss_percentile: None,
+            known_exploited: false,
+            ransomware: false,
             fixed_in: None,
         }
     }
