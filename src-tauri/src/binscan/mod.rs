@@ -12,5 +12,8 @@
 //! parses ten lockfile formats natively and queries OSV directly.
 
 pub mod detect;
+pub mod grype;
 pub mod report;
 pub mod run;
+pub mod runtime;
+pub mod scan;

@@ -19,8 +19,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use super::detect::Invocation;
-use super::report::{parse_json2, BinaryScanResult};
+use super::runtime::PreparedCommand;
 
 /// Severity floor accepted by `--severity`.
 const SEVERITIES: [&str; 4] = ["low", "medium", "high", "critical"];
@@ -40,15 +39,6 @@ pub struct BinaryScanRequest {
     /// How aggressively to refresh the CVE database.
     #[serde(default)]
     pub update: Option<String>,
-}
-
-/// Removes the report file when the scan leaves scope, on every path.
-struct ScratchFile(PathBuf);
-
-impl Drop for ScratchFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
 }
 
 /// Build the argument list.
@@ -156,43 +146,38 @@ pub fn resolve_target(raw: &str) -> Result<PathBuf, String> {
     std::fs::canonicalize(path).map_err(|e| format!("cannot resolve {trimmed}: {e}"))
 }
 
-/// Run one scan to completion.
+/// Outcome of one scanner process.
+pub struct CommandOutcome {
+    pub status: String,
+    /// Last stderr lines, the only explanation when no report is produced.
+    pub stderr_tail: String,
+    /// Captured stdout, for scanners that report there rather than to a file.
+    pub stdout: String,
+    pub duration_ms: u64,
+}
+
+/// Spawn a prepared scanner command and wait for it, streaming its stderr.
 ///
-/// `on_progress` receives cve-bin-tool's own stderr lines. That output is the
-/// only signal during a first run, where it spends minutes downloading the CVE
-/// database before scanning anything.
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    invocation: &Invocation,
-    request: &BinaryScanRequest,
-    nvd_api_key: Option<&str>,
-    scratch_dir: &Path,
+/// `on_progress` receives the tool's own output as it runs. On a first
+/// cve-bin-tool run that is the only sign of life while the CVE database
+/// downloads, which takes hours without an NVD API key.
+pub async fn execute(
+    prepared: &PreparedCommand,
     cancel: Arc<AtomicBool>,
     timeout: Duration,
     on_progress: Arc<dyn Fn(String) + Send + Sync>,
-) -> Result<BinaryScanResult, String> {
-    let target = resolve_target(&request.path)?;
-
-    std::fs::create_dir_all(scratch_dir)
-        .map_err(|e| format!("cannot prepare a scratch directory: {e}"))?;
-    let report_path = scratch_dir.join(format!("cve-bin-tool-{}.json", uuid::Uuid::new_v4()));
-    let _scratch = ScratchFile(report_path.clone());
-
-    let args = build_args(&target, &report_path, request, nvd_api_key);
+) -> Result<CommandOutcome, String> {
     let started = Instant::now();
 
-    let mut child = Command::new(&invocation.program)
-        .args(&invocation.leading_args)
-        .args(&args)
+    let mut child = Command::new(&prepared.program)
+        .args(&prepared.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("could not start {}: {e}", invocation.program))?;
+        .map_err(|e| format!("could not start {}: {e}", prepared.program))?;
 
-    // Keep the last stderr lines: if no report is written they are the only
-    // explanation of why.
     let tail = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     if let Some(stderr) = child.stderr.take() {
         let tail = tail.clone();
@@ -216,6 +201,21 @@ pub async fn run(
         });
     }
 
+    // grype writes its report to stdout, so it must be drained too — a full
+    // pipe would otherwise block the child forever.
+    let stdout_buffer = Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(stdout) = child.stdout.take() {
+        let buffer = stdout_buffer.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let mut buffer = buffer.lock().unwrap();
+                buffer.push_str(&line);
+                buffer.push('\n');
+            }
+        });
+    }
+
     let status = loop {
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill().await;
@@ -224,30 +224,46 @@ pub async fn run(
         if started.elapsed() > timeout {
             let _ = child.kill().await;
             return Err(format!(
-                "cve-bin-tool did not finish within {} seconds",
+                "{} did not finish within {} seconds",
+                prepared.program,
                 timeout.as_secs()
             ));
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => tokio::time::sleep(Duration::from_millis(200)).await,
-            Err(e) => return Err(format!("cve-bin-tool could not be monitored: {e}")),
+            Err(e) => return Err(format!("{} could not be monitored: {e}", prepared.program)),
         }
     };
 
-    let duration_ms = started.elapsed().as_millis() as u64;
+    // Give the readers a moment to drain whatever is still buffered.
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // The exit code carries a finding count, so it cannot distinguish success
-    // from failure. The report is what decides.
-    let raw = match std::fs::read_to_string(&report_path) {
-        Ok(raw) if !raw.trim().is_empty() => raw,
-        _ => {
-            let detail = tail.lock().unwrap().join("\n");
-            return Err(explain_failure(&detail, &status.to_string()));
-        }
-    };
+    let stderr_tail = tail.lock().unwrap().join("\n");
+    let stdout = stdout_buffer.lock().unwrap().clone();
 
-    parse_json2(&raw, &target.to_string_lossy(), duration_ms)
+    Ok(CommandOutcome {
+        status: status.to_string(),
+        stderr_tail,
+        stdout,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// Removes the report file when the scan leaves scope, on every path.
+pub struct ScratchReport(pub PathBuf);
+
+impl Drop for ScratchReport {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Allocate a report path inside `scratch_dir`.
+pub fn report_path(scratch_dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(scratch_dir)
+        .map_err(|e| format!("cannot prepare a scratch directory: {e}"))?;
+    Ok(scratch_dir.join(format!("cve-bin-tool-{}.json", uuid::Uuid::new_v4())))
 }
 
 #[cfg(test)]

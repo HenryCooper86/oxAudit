@@ -266,6 +266,13 @@ pub struct AppSettings {
     /// existed still load.
     #[serde(default)]
     pub binary_scanner_path: Option<String>,
+    /// How cve-bin-tool runs: "auto" | "native" | "docker". Docker is often the
+    /// runtime that works, since our image carries the upstream NVD fix.
+    #[serde(default)]
+    pub binary_scanner_runtime: Option<String>,
+    /// Explicit grype path. Empty means "find it on PATH".
+    #[serde(default)]
+    pub grype_path: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -276,6 +283,8 @@ impl Default for AppSettings {
             nvd_api_key: None,
             theme: "dark".into(),
             binary_scanner_path: None,
+            binary_scanner_runtime: None,
+            grype_path: None,
         }
     }
 }
