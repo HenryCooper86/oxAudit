@@ -44,6 +44,11 @@ export interface Finding {
   context: string;
   language: string;
   cwe: string | null;
+  /** This finding's CWE is represented in CISA KEV — the weakness class is
+   *  being actively exploited in the wild. A class-level signal, not a CVE. */
+  cweExploited: boolean;
+  /** How many exploited CVEs share this finding's CWE. */
+  cweExploitedCount: number;
   recommendation: string;
   entropy: number | null;
   verified: boolean | null;

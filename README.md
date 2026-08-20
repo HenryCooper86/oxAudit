@@ -13,7 +13,7 @@ with the help of an AI assistant.
 
 | Capability | What it does |
 |---|---|
-| **Source code scanning** | 50+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance |
+| **Source code scanning** | 50+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
 | **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
 | **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by CISA KEV and EPSS — same exploitation signal as the binary scanner |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
