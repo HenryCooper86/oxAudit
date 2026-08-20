@@ -58,9 +58,11 @@ async fn main() {
         // Sort exploited-first so the actionable ones surface.
         let mut vulns = c.vulnerabilities.clone();
         vulns.sort_by(|a, b| {
-            b.known_exploited
-                .cmp(&a.known_exploited)
-                .then(b.epss_probability.partial_cmp(&a.epss_probability).unwrap_or(std::cmp::Ordering::Equal))
+            b.known_exploited.cmp(&a.known_exploited).then(
+                b.epss_probability
+                    .partial_cmp(&a.epss_probability)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
         });
         for v in vulns.iter().take(4) {
             let flag = if v.ransomware {
@@ -70,7 +72,10 @@ async fn main() {
             } else {
                 ""
             };
-            let epss = v.epss_probability.map(|p| format!(" epss={p:.3}")).unwrap_or_default();
+            let epss = v
+                .epss_probability
+                .map(|p| format!(" epss={p:.3}"))
+                .unwrap_or_default();
             println!(
                 "        {} {} {}{}{}",
                 v.cve_id, v.severity, v.source, epss, flag
