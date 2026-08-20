@@ -669,3 +669,82 @@ contains = ['MHD-worker', 'MHD_start_daemon', 'MHD_get_version']
 version_patterns = ['\n([0-9]+\.[0-9]+\.[0-9]+)\n@LIBMICROHTTPD']
 version_implies_identity = false
 aliases = ["libmicrohttpd12", "libmicrohttpd12t64", "libmicrohttpd"]
+
+# --- present, but with no version to read ------------------------------------
+#
+# These five embed no version a scanner can recover — see
+# docs/binary-signatures.md §8 for what was searched and ruled out in each.
+#
+# They are still worth identifying. "freetype is in this image" is a lead for a
+# firmware audit, and it can be a finding in its own right: measured on a Debian
+# tree, readline's anchors match /usr/bin/bash, because Debian's bash links
+# readline *statically*. A package manager will never tell you that.
+#
+# Where the target happens to carry an ELF package note, `aliases` merges the
+# note's version onto the same row. Notes are added per-package rather than
+# universally, though — none of these five carried one in the image examined —
+# so this is a bonus, not the plan.
+#
+# Every anchor here is a *data* string — an error message or a module name —
+# never a symbol name. A symbol appears in the dynamic symbol table of anything
+# that links the library, which is a different claim from containing it.
+
+# FreeType's module registry names. Its only other strings are FT_* symbols,
+# which every program that links it also carries.
+[[signature]]
+vendor = "freetype"
+product = "freetype"
+filename_patterns = ['^libfreetype\.so', '^libfreetype\.[0-9.]*dylib']
+contains = ['autofitter', 'pshinter', 'psnames']
+version_patterns = []
+aliases = ["libfreetype6", "freetype", "freetype2"]
+
+# readline's own diagnostics. `rl_readline_version` is a bare global in .data
+# among other globals, so there is nothing stable to pattern-match.
+[[signature]]
+vendor = "gnu"
+product = "readline"
+filename_patterns = ['^libreadline\.so', '^libreadline\.[0-9.]*dylib']
+contains = [
+  'unrecognized history modifier',
+  'readline_callback_read_char\(\) called with no handler!',
+  'bad value %d for what_to_do in rl_complete',
+]
+version_patterns = []
+aliases = ["libreadline8", "libreadline8t64", "readline"]
+
+# jansson's parser errors. Everything else it exports is a json_* symbol.
+[[signature]]
+vendor = "jansson_project"
+product = "jansson"
+filename_patterns = ['^libjansson\.so', '^libjansson\.[0-9.]*dylib']
+contains = ['%s near end of file', 'invalid Unicode escape', 'unable to decode byte 0x%x']
+version_patterns = []
+aliases = ["libjansson4", "jansson"]
+
+# libwebsockets has NO CPE in NVD — checked against the CPE dictionary under
+# `libwebsockets`, `websockets` and `warmcat`; the only match is the unrelated
+# Python `websockets_project:websockets`. So an NVD lookup correctly returns
+# nothing however precise the version is. On a distribution build the package
+# note still routes it to OSV, which does carry it.
+#
+# Its version string is `4.3.5-unknown`, where the suffix is a per-build id.
+[[signature]]
+vendor = "libwebsockets"
+product = "libwebsockets"
+filename_patterns = ['^libwebsockets\.so']
+contains = ['Out of mem in lws_daemonize', 'lws_protocol_init failed', 'Basic realm="lwsws"']
+version_patterns = []
+aliases = ["libwebsockets19", "libwebsockets19t64", "libwebsockets"]
+
+# chronyd prints its version through `chronyd (chrony) version %s (%s)`, so the
+# literal is never in the binary. The bare `4.6.1` that is there sits beside the
+# `--version` option string, which is a linker layout artifact rather than a
+# property of the build.
+[[signature]]
+vendor = "tuxfamily"
+product = "chrony"
+filename_patterns = ['^chronyd$', '^chronyc$']
+contains = ['chronyd exiting', 'Invalid refclock option', 'chronyd \(chrony\) version']
+version_patterns = []
+aliases = ["chrony", "chronyd"]

@@ -355,10 +355,11 @@ itself. Written as 20, the second capture reads `b8 0a 00 00` = 2744, which the
 version invented out of an instruction byte, which is the behaviour to want.
 There is a test for it.
 
-### Five with nothing to read
+### Five with nothing to read — carried as present-but-unversioned
 
-Not skipped for effort — these genuinely do not embed a version a scanner can
-recover:
+These genuinely do not embed a version a scanner can recover. They are still
+identified, because "freetype is in this image" is a lead, and because absence
+of a row is indistinguishable from absence of the library:
 
 | Library | Why |
 |---|---|
@@ -368,6 +369,35 @@ recover:
 | **libwebsockets** | Stores `4.3.5-unknown`, where the suffix is a build id that differs per build. Its neighbours are a format string and `cpdcheck`. |
 | **chrony** | A bare `4.6.1` whose only neighbour is the `--version` option string — a linker layout artifact, not a property of the build. |
 
-For these, a weak pattern would be worse than none: a version that matches no
-CVE is indistinguishable from a clean result. The same judgement as libupnp in
-§7 and pcre2 in §6.
+For these, a weak *version* pattern would be worse than none — a version that
+matches no CVE is indistinguishable from a clean result. The same judgement as
+libupnp in §7 and pcre2 in §6. Identifying them costs nothing by comparison.
+
+Every anchor is a **data** string — an error message or a module name — never a
+symbol name, since a symbol appears in the dynamic symbol table of anything that
+*links* the library. FreeType and jansson export nothing but `FT_*` and `json_*`
+symbols, so their anchors are FreeType's module-registry names (`autofitter`,
+`pshinter`, `psnames`) and jansson's parser errors.
+
+Two things measured on a 26,077-file Debian tree:
+
+- **readline's anchors match `/usr/bin/bash`.** Not a false positive — Debian's
+  bash links readline *statically*, so bash genuinely contains it. A package
+  manager will never tell you that, and it is exactly the kind of thing binary
+  scanning exists to surface. Five files match in total: bash, `libreadline.so`,
+  `libhistory.so` and the two `.a` archives.
+- **FreeType's anchors also appear in five `.h` headers**, and none became a
+  detection, because the file-type gate skips text. The rule that documentation
+  cannot masquerade as a component (§1) is what makes module names usable as
+  anchors at all.
+
+**libwebsockets has no CPE in NVD.** Checked against the CPE dictionary under
+`libwebsockets`, `websockets` and `warmcat`; the only match is the unrelated
+Python `websockets_project:websockets`. So an NVD lookup returns nothing however
+precise a version would have been. A distribution build still routes to OSV
+through the package note.
+
+A note on that route: `aliases` folds a package note's version onto the same
+row, so an identity-only component *can* end up versioned. Notes are added
+per-package rather than universally, though — none of these five carried one in
+the image examined — so it is a bonus rather than the plan.
