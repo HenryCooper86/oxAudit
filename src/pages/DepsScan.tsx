@@ -471,7 +471,29 @@ function VulnerabilityTable({
               >
                 <td className="min-w-0 px-3 py-2.5">
                   <span className="block truncate font-mono text-[14px] font-medium text-text-primary">{vulnerability.packageName}</span>
-                  <span className="mt-0.5 block truncate text-[11px] text-text-muted">{vulnerability.id}</span>
+                  <span className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-text-muted">
+                    {vulnerability.id}
+                    {vulnerability.knownExploited && (
+                      <span
+                        title={
+                          vulnerability.ransomware
+                            ? "In CISA KEV — used in ransomware campaigns"
+                            : "In CISA's Known Exploited Vulnerabilities catalog"
+                        }
+                        className="inline-flex shrink-0 items-center rounded-full bg-sev-critical px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-white"
+                      >
+                        {vulnerability.ransomware ? "KEV · ransomware" : "KEV"}
+                      </span>
+                    )}
+                    {vulnerability.epss !== null && (
+                      <span
+                        title={`EPSS: ${(vulnerability.epss * 100).toFixed(1)}% chance of exploitation in 30 days`}
+                        className="shrink-0 font-mono text-[10px] tabular-nums text-text-muted"
+                      >
+                        EPSS {(vulnerability.epss * 100).toFixed(0)}%
+                      </span>
+                    )}
+                  </span>
                 </td>
                 <td className="truncate px-3 py-2.5 font-mono text-text-secondary" title={vulnerability.installedVersion}>
                   {vulnerability.installedVersion}
@@ -514,6 +536,26 @@ function AdvisoryDetail({
         <DetailSection label="Details">
           <p className="whitespace-pre-wrap leading-relaxed text-text-secondary">{vulnerability.details || vulnerability.summary || "No additional details provided."}</p>
         </DetailSection>
+        {(vulnerability.knownExploited || vulnerability.epss !== null) && (
+          <DetailSection label="Exploitation">
+            <div className="flex flex-wrap items-center gap-2">
+              {vulnerability.knownExploited && (
+                <span className="inline-flex items-center rounded-full bg-sev-critical px-2 py-0.5 font-mono text-[11px] font-semibold text-white">
+                  {vulnerability.ransomware ? "CISA KEV · ransomware campaign" : "CISA KEV — exploited in the wild"}
+                </span>
+              )}
+              {vulnerability.epss !== null && (
+                <span className="text-text-secondary">
+                  EPSS <span className="font-mono text-text-primary">{(vulnerability.epss * 100).toFixed(1)}%</span>
+                  {vulnerability.epssPercentile !== null && (
+                    <span className="text-text-muted"> ({(vulnerability.epssPercentile * 100).toFixed(0)}th percentile)</span>
+                  )}
+                  <span className="text-text-muted"> chance of exploitation in 30 days</span>
+                </span>
+              )}
+            </div>
+          </DetailSection>
+        )}
         <div className="grid gap-4 min-[540px]:grid-cols-2">
           <DetailSection label="Installed version">
             <p className="font-mono text-text-primary">{vulnerability.installedVersion}</p>
