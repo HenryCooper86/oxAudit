@@ -429,6 +429,7 @@ difference between 0 findings and 28. Extraction has to happen first —
 
 | Component | Version | CVEs | Worst |
 |---|---|---|---|
+| wolfSSL | 5.5.3 | **63** | 3 critical |
 | u-boot | 2021.01 | **19** | 2 critical |
 | busybox | 1.33.2 | **6** | CVE-2022-48174 critical |
 | lua | 5.1.5 | 2 | medium |
@@ -436,8 +437,15 @@ difference between 0 findings and 28. Extraction has to happen first —
 | dnsmasq | *unversioned* | — | |
 | dropbear | *unversioned* | — | |
 | hostapd | *unversioned* | — | |
+| iptables | *unversioned* | — | |
 
-**28 CVEs, 3 critical, 17 high**, in 31 ms over 920 files.
+**91 CVEs, 6 critical, 32 high**, in 34 ms over 920 files.
+
+> The first version of this run reported 28 CVEs, because wolfSSL had no
+> signature. It is the TLS library the image actually uses, and it turned out to
+> be the most vulnerable component in it by a wide margin — one missing
+> signature was two thirds of the findings. Worth remembering when reading a
+> clean result: coverage is the limit, not the target.
 
 ### Hardened firmware strips version strings on purpose
 
@@ -466,10 +474,23 @@ library, and `patfind`-style architecture tagging (see `vulhunt-study.md` §4).
   right — but most bootloader CVEs will not apply to a userspace environment
   reader. This is precisely the case `triage/` exists for: a candidate that
   needs Gate 1 asked of it.
-- **wolfSSL 5.5.3 is present and was missed.** `libwolfssl.so.5.5.3.99a5b54a`
-  carries a clean `wolfSSL 5.5.3` string; there is simply no signature for it.
-  Same for `iptables` 1.8.7. Both are straightforward additions.
+### The two gaps this run surfaced, since closed
+
+- **wolfSSL** states itself plainly — `wolfSSL 5.5.3` on this MIPS build,
+  `wolfSSL 5.7.2` on Debian trixie's x86-64 — so it gets identity *and* a
+  version from one string. Both are asserted in `FIRMWARE_GROUND_TRUTH`.
+- **iptables** does not. Its banner is built from `%s v%s (legacy): ` at
+  runtime, and the bare version that is present has no stable neighbour: it sits
+  between `-N %s` and `append` on the MIPS 1.8.7 build and between `help` and
+  `unexpected '!' flag` on x86-64 1.8.11. Identity only, anchored on
+  `Failed to initialize xtables` and `cannot have ! before` — both checked
+  across both builds. `Perhaps iptables or your kernel needs to be upgraded.` is
+  in the MIPS build but neither 1.8.11 binary, so it is not used.
+
+Negative control: across 26,077 files of a Debian image with neither installed,
+neither signature fires.
 
 Against opkg's own package list — 105 packages, 73 excluding kernel modules —
-the scanner found 7 of the 8 components it has signatures for. The gaps are
-libraries not yet covered, not detections that failed.
+the scanner now finds 10 components, matching every version opkg records for
+them. The remaining gaps are OpenWrt-specific packages (ubus, uci, netifd,
+odhcp6c) rather than detections that failed.
