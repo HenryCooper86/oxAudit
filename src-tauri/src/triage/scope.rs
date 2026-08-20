@@ -30,7 +30,7 @@ impl FindingScope {
     pub fn is_reportable(self) -> bool {
         matches!(
             self,
-            FindingScope::Production | FindingScope::Infrastructure
+            FindingScope::Production | FindingScope::Infrastructure | FindingScope::Unknown
         )
     }
 }
@@ -135,7 +135,13 @@ pub fn classify(path: &str) -> ScopeDecision {
             reason: "test-name".into(),
         };
     }
-    if has(&GENERATED) || file_name.ends_with(".min.js") || file_name.ends_with(".pb.go") {
+    if file_name.ends_with(".min.js") || file_name.ends_with(".pb.go") {
+        return ScopeDecision {
+            scope: Scope::Generated,
+            reason: "generated-file-name".into(),
+        };
+    }
+    if has(&GENERATED) {
         return ScopeDecision {
             scope: Scope::Generated,
             reason: "generated-directory".into(),
@@ -206,6 +212,27 @@ mod tests {
     }
 
     #[test]
+    fn generated_file_name_rules_record_the_file_name_rationale() {
+        for path in ["dist/bundle.min.js", "api/service.pb.go"] {
+            assert_eq!(
+                classify(path),
+                ScopeDecision {
+                    scope: FindingScope::Generated,
+                    reason: "generated-file-name".into(),
+                },
+                "{path}"
+            );
+        }
+        assert_eq!(
+            classify("build/bundle.js"),
+            ScopeDecision {
+                scope: FindingScope::Generated,
+                reason: "generated-directory".into(),
+            }
+        );
+    }
+
+    #[test]
     fn documentation_is_not_reported() {
         assert_eq!(
             classify("docs/getting-started.md").scope,
@@ -215,16 +242,16 @@ mod tests {
     }
 
     #[test]
-    fn only_production_and_infrastructure_are_reportable_by_default() {
+    fn production_infrastructure_and_unknown_are_reportable_by_default() {
         assert!(Scope::Production.is_reportable());
         assert!(Scope::Infrastructure.is_reportable());
+        assert!(Scope::Unknown.is_reportable());
         for scope in [
             Scope::Test,
             Scope::Vendored,
             Scope::Generated,
             Scope::Documentation,
             Scope::Fixture,
-            Scope::Unknown,
         ] {
             assert!(
                 !scope.is_reportable(),

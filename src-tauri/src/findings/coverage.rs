@@ -79,6 +79,7 @@ mod tests {
         let coverage = CoverageManifest::from_entries([
             ("src\\a.rs", ["vulnerability"]),
             ("config.env", ["secret"]),
+            ("src/../escaped.rs", ["secret"]),
         ]);
 
         assert_eq!(coverage.fingerprint_version, FINGERPRINT_VERSION);
@@ -86,6 +87,8 @@ mod tests {
         assert!(coverage.is_covered(r"src\a.rs", "vulnerability"));
         assert!(!coverage.is_covered("src/a.rs", "secret"));
         assert!(!coverage.is_covered("src/../a.rs", "vulnerability"));
+        assert!(!coverage.paths.contains_key("src/../escaped.rs"));
+        assert!(!coverage.paths.contains_key("escaped.rs"));
     }
 
     #[test]
