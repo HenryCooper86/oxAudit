@@ -1,0 +1,271 @@
+{
+  "$schema": "",
+  "metadata": {
+    "tool": {
+      "name": "cve-bin-tool",
+      "version": "3.4"
+    },
+    "generation_date": "2026-08-20 12:02:27",
+    "parameter": {
+      "options": {
+        "help": null,
+        "exclude": [],
+        "version": null,
+        "disable-version-check": false,
+        "disable-validation-check": false,
+        "offline": false,
+        "detailed": false
+      },
+      "cve_data_download": {
+        "nvd": "json-mirror",
+        "update": "now",
+        "nvd-api-key": "",
+        "disable-data-source": [
+          "NVD",
+          "PURL2CPE"
+        ],
+        "use-mirror": ""
+      },
+      "input": {
+        "directory": "corpus",
+        "input-file": "",
+        "config": "",
+        "package-list": "",
+        "sbom": "",
+        "sbom-file": "",
+        "vex-file": ""
+      },
+      "output": {
+        "quiet": false,
+        "log-level": "info",
+        "output-file": "nonvd.json",
+        "html-theme": "",
+        "format": "json2",
+        "generate-config": "",
+        "cvss": 0,
+        "severity": "low",
+        "metrics": false,
+        "epss-percentile": null,
+        "epss-probability": null,
+        "no-0-cve-report": false,
+        "available-fix": "",
+        "backport-fix": "",
+        "affected-versions": 0,
+        "sbom-output": "",
+        "sbom-type": "spdx",
+        "sbom-format": "tag"
+      },
+      "vex_output": {
+        "vex-output": "",
+        "vex-type": "",
+        "product": "",
+        "release": "",
+        "vendor": "",
+        "revision-reason": "",
+        "filter-triage": false
+      },
+      "merge_report": {
+        "append": false,
+        "tag": "",
+        "merge": null,
+        "filter": []
+      },
+      "checkers": {
+        "skips": "",
+        "runs": ""
+      },
+      "database_management": {
+        "import-json": "",
+        "ignore-sig": false,
+        "log-signature-error": false,
+        "verify": "",
+        "export-json": "",
+        "pgp-sign": "",
+        "passphrase": "",
+        "export": "",
+        "import": ""
+      },
+      "exploits": {
+        "exploits": false
+      },
+      "deprecated": {
+        "triage-input-file": "",
+        "extract": true,
+        "report": false
+      }
+    }
+  },
+  "database_info": {
+    "last_updated": "2026-08-20 12:02:20",
+    "total_entries": {
+      "GAD": 39454,
+      "REDHAT": 24336
+    }
+  },
+  "vulnerabilities": {
+    "summary": {
+      "CRITICAL": 0,
+      "HIGH": 4,
+      "MEDIUM": 6,
+      "LOW": 0,
+      "UNKNOWN": 0
+    },
+    "report": [
+      {
+        "datasource": "REDHAT",
+        "entries": [
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2024-11053",
+            "severity": "MEDIUM",
+            "score": "5.9",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2024-7264",
+            "severity": "MEDIUM",
+            "score": "5.3",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:H",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2025-14819",
+            "severity": "MEDIUM",
+            "score": "6.8",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2026-12064",
+            "severity": "HIGH",
+            "score": "7.5",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2026-1965",
+            "severity": "MEDIUM",
+            "score": "6.8",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2026-3783",
+            "severity": "MEDIUM",
+            "score": "5.7",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:R/S:U/C:H/I:N/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2026-3784",
+            "severity": "MEDIUM",
+            "score": "6.5",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2026-8286",
+            "severity": "HIGH",
+            "score": "8.1",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2026-8927",
+            "severity": "HIGH",
+            "score": "7.5",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          },
+          {
+            "vendor": "haxx",
+            "product": "curl",
+            "version": "8.7.1",
+            "location": "/usr/bin/curl",
+            "cve_number": "CVE-2026-9547",
+            "severity": "HIGH",
+            "score": "7.4",
+            "source": "REDHAT",
+            "cvss_version": "3",
+            "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N",
+            "paths": "/scan/corpus/curl",
+            "remarks": "NewFound",
+            "comments": ""
+          }
+        ]
+      }
+    ]
+  }
+}

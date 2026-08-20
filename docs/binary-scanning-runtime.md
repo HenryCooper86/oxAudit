@@ -219,3 +219,80 @@ So the trade is real and neither tool dominates:
 They are complementary rather than competing: grype for package- and
 container-shaped targets, cve-bin-tool for firmware and stripped binaries.
 Running both and merging by (component, version) would cover more than either.
+
+---
+
+## 6. Measured — and the conclusion that follows
+
+> Added 2026-08-20. §5 left the cve-bin-tool findings column empty because its
+> bootstrap was still running. It has since completed, and the comparison can be
+> finished with numbers instead of expectations.
+
+### cve-bin-tool does run — the NVD source is the part that is broken
+
+Passing `-d NVD,PURL2CPE` skips the rate-limited source entirely and populates
+from Red Hat, GitLab and OSV instead. It **completed in about eight minutes**
+with no API key, ingesting 24,336 Red Hat and 39,454 GitLab entries, and wrote a
+genuine `json2` report. So the 5½-hour figure in §0 is a property of the NVD
+path, not of the tool.
+
+The catch: without NVD the database has far less CPE coverage. On the §5 corpus
+it found CVEs for `curl` only — ten of them — where the full database would also
+cover OpenSSL. It is a usable fallback, not a replacement.
+
+That report is now checked in as `src-tauri/tests/fixtures/cve_bin_tool_3.4_json2.json`
+and two tests parse it. Until now every parser test used a fixture we wrote
+ourselves, which could only confirm our own assumptions about the schema.
+
+### The detection comparison, on a firmware-shaped target
+
+A Debian rootfs (21,279 files) with `var/lib/dpkg`, `usr/share/doc` and the
+Python `dist-info` directories removed — the shape real firmware has.
+
+| | components | time | notes |
+|---|---|---|---|
+| grype, metadata intact | 184 | 2.7 s | 2,003 CVE matches — its natural target |
+| **grype, stripped** | **11** | 2.7 s | collapses; finds only what ELF notes and a few classifiers give it |
+| **cve-bin-tool, stripped** | **54** | **300 s** | 365 checkers, detection only (its database cannot map most of them) |
+| **oxAudit native, stripped** | **30** | **0.5 s** | 22 signatures + the ELF package note |
+
+Read carefully, because the headline numbers mislead:
+
+- grype losing 184 → 11 is the whole argument for having a binary scanner at
+  all. Package metadata is not present in firmware.
+- cve-bin-tool's 54 is genuinely more than our 30, and that gap is *coverage* —
+  365 curated signatures against 22. It is the one thing it still does better.
+- Our 0.5 s against its 300 s is **600×**, and is not a micro-optimisation: it
+  is one `RegexSet` pass per file instead of 365 sequential checker evaluations.
+- We find things both miss. `libzstd 1.5.7` comes from the ELF package note,
+  which neither tool reads; zstd has no version string, so no signature can
+  find it.
+
+### Recommendation, revised
+
+**Ship the native scanner as the default and keep cve-bin-tool as optional.**
+
+The native scanner has no database to bootstrap, so every failure mode in §0–§1
+simply does not apply to it. It runs in half a second, is cross-platform without
+Docker, and carries no GPL relationship. cve-bin-tool remains worth offering to
+a user who has it, because 365 signatures beat 22 — but it can no longer be the
+thing standing between the user and a working scan.
+
+Docker (§2) drops from "frequently the runtime that works" to "one option for
+running cve-bin-tool", because the capability it was carrying now exists
+natively.
+
+### Still open
+
+- **CVE enrichment for native detections.** The scanner reports components with
+  no CVEs attached. oxAudit already has rate-limited, cached NVD and OSV clients;
+  wiring detections into them is the next step and is the difference between an
+  inventory and a scanner.
+- **Signature coverage.** 22 against cve-bin-tool's 365. `tools/derive-signatures.py`
+  makes extending this mechanical.
+- **Merge keys ignore version normalization.** `grype.rs` stores
+  `artifact.version` verbatim, so grype's `mariadb 1:11.8.6-0+deb13u1` will never
+  merge with a native or cve-bin-tool `11.8.6`. `package_note::upstream_version`
+  is the function that fixes it; it is not yet applied on the grype path.
+- **No LICENCE file.** oxAudit has none, so it is all-rights-reserved by
+  default and its relationship to GPL tooling is undefined.
