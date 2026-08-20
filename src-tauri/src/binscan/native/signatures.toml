@@ -1,0 +1,237 @@
+# Component signatures for the native binary scanner.
+#
+# PROVENANCE. Every pattern here was read off a binary whose version was known
+# independently — from `dpkg` metadata, from the package filename, or from the
+# upstream release it was built from. `tools/derive-signatures.py` is the
+# harness that surfaces the candidate strings; the patterns were then written
+# and checked by hand against those binaries.
+#
+# They are deliberately NOT transcribed from cve-bin-tool's checkers. That
+# project is GPL-3.0-or-later, and copying its signature files would make this
+# one a derivative work. The method — anchor on a characteristic string,
+# capture a version from a nearby one — is not anyone's property; the specific
+# expressions are, so ours are our own.
+#
+# AUTHORING RULES, learned from getting these wrong:
+#
+#  1. Never capture from an ELF symbol-version tag. `OPENSSL_3.5.0`,
+#     `GLIBC_2.26`, `ZLIB_1.2.12`, `XZ_5.4`, `LIBXML2_2.9.11` are the ABI
+#     versions a library *can serve*, not the version it *is*. libcrypto.so.3
+#     alone carries nine of them. Anchoring on mixed case (`OpenSSL ` and not
+#     `OPENSSL_`) is usually enough to keep them out.
+#  2. Anchor on prose, not on digits. A bare `1.5.7` in a binary is not
+#     evidence of anything.
+#  3. If a library has no version string at all — zstd, sqlite3, pcre2, lzma —
+#     do not invent a weak pattern for it. The ELF package note picks those up
+#     exactly, and a guess here would be worse than the silence.
+
+# --- TLS and crypto ---------------------------------------------------------
+
+# libcrypto.so.3: 'OpenSSL 3.5.6 7 Apr 2026'.
+#
+# The release date is required, not decorative. OPENSSL_VERSION_TEXT always
+# carries one, and demanding it is what separates the real banner from prose
+# that merely mentions a version. Without it, Python's _hashlib contributes a
+# phantom "openssl 3.0.0" from the sentence "For OpenSSL 3.0.0 and newer it
+# returns the state of the digest" — a documented minimum, not a linked
+# library. That was a measured false positive on a Debian tree, not a
+# hypothetical one.
+#
+# libssl carries no version of its own, only symbol tags, so OpenSSL is
+# identified from libcrypto.
+[[signature]]
+vendor = "openssl"
+product = "openssl"
+filename_patterns = ['^libcrypto\.so', '^libcrypto\.[0-9]+\.dylib', '^libcrypto-[0-9]']
+contains = ['part of OpenSSL', 'OPENSSLDIR:']
+version_patterns = ['OpenSSL ([0-9]+\.[0-9]+\.[0-9]+[a-z]*) [0-9]{1,2} [A-Z][a-z]{2} [0-9]{4}']
+ignore = ['^0\.']
+
+# libgcrypt.so.20.5.0: 'This is Libgcrypt 1.11.0 - The GNU Crypto Library'
+[[signature]]
+vendor = "gnupg"
+product = "libgcrypt"
+filename_patterns = ['^libgcrypt\.so']
+contains = ['This is Libgcrypt']
+version_patterns = ['This is Libgcrypt ([0-9]+\.[0-9]+\.[0-9]+)']
+
+# libgnutls.so.30.40.3: 'Enabled GnuTLS 3.8.9 logging...'
+[[signature]]
+vendor = "gnu"
+product = "gnutls"
+filename_patterns = ['^libgnutls\.so']
+contains = ['Enabled GnuTLS', 'GNUTLS_DEBUG_LEVEL']
+version_patterns = ['Enabled GnuTLS ([0-9]+\.[0-9]+\.[0-9]+)']
+
+# libkrb5.so.3.3: 'KRB5_BRAND: krb5-1.21.3-final 1.21.3 20240626'
+[[signature]]
+vendor = "mit"
+product = "kerberos_5"
+filename_patterns = ['^libkrb5\.so']
+contains = ['KRB5_BRAND:']
+version_patterns = ['KRB5_BRAND: krb5-([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+
+# libssh2.so.1.0.1: 'SSH-2.0-libssh2_1.11.1'
+[[signature]]
+vendor = "libssh2"
+product = "libssh2"
+filename_patterns = ['^libssh2\.so']
+contains = ['SSH-2.0-libssh2_']
+version_patterns = ['SSH-2\.0-libssh2_([0-9]+\.[0-9]+\.[0-9]+)']
+
+# --- compression ------------------------------------------------------------
+
+# libz.so.1.3.1: ' inflate 1.3.1 Copyright 1995-2024 Mark Adler '
+# The Copyright suffix is what separates this from the ZLIB_1.2.x symbol tags.
+[[signature]]
+vendor = "zlib"
+product = "zlib"
+filename_patterns = ['^libz\.so', '^libz\.[0-9.]*dylib']
+contains = ['inflate [0-9.]+ Copyright', 'deflate [0-9.]+ Copyright']
+version_patterns = [
+  'inflate ([0-9]+\.[0-9]+(?:\.[0-9]+)?[a-z]?) Copyright',
+  'deflate ([0-9]+\.[0-9]+(?:\.[0-9]+)?[a-z]?) Copyright',
+]
+
+# bzip2recover: 'bzip2recover 1.0.8: extracts blocks from damaged .bz2 files.'
+# libbz2 itself: '1.0.8, 13-Jul-2019' — dated, which is a usable anchor.
+[[signature]]
+vendor = "bzip"
+product = "bzip2"
+filename_patterns = ['^libbz2\.so', '^bzip2$']
+contains = ['bzip2recover', 'bzip2/libbzip2']
+version_patterns = [
+  'bzip2recover ([0-9]+\.[0-9]+\.[0-9]+):',
+  'bzip2/libbzip2 version ([0-9]+\.[0-9]+\.[0-9]+)',
+]
+
+# xz CLI: 'xz (XZ Utils) 5.8.1'. liblzma has only XZ_5.x symbol tags, so the
+# shared library is left to the ELF package note.
+[[signature]]
+vendor = "tukaani"
+product = "xz"
+filename_patterns = []
+contains = ['\(XZ Utils\) [0-9]']
+version_patterns = ['\(XZ Utils\) ([0-9]+\.[0-9]+\.[0-9]+)']
+
+# --- transfer and parsing ---------------------------------------------------
+
+# curl: 'curl 8.14.1 (aarch64-unknown-linux-gnu) %s'
+[[signature]]
+vendor = "haxx"
+product = "curl"
+filename_patterns = ['^curl$', '^curl\.exe$']
+contains = ['curl [0-9]+\.[0-9]+\.[0-9]+ \(']
+version_patterns = ['\ncurl ([0-9]+\.[0-9]+\.[0-9]+) \(']
+
+# libcurl.so.4.8.0: 'libcurl/8.14.1' — the User-Agent template.
+[[signature]]
+vendor = "haxx"
+product = "libcurl"
+filename_patterns = ['^libcurl\.so', '^libcurl\.[0-9.]*dylib']
+contains = ['libcurl/[0-9]']
+version_patterns = ['libcurl/([0-9]+\.[0-9]+\.[0-9]+)']
+
+# libexpat.so.1.12.2: 'expat_2.8.2'
+[[signature]]
+vendor = "libexpat"
+product = "expat"
+filename_patterns = ['^libexpat\.so', '^libexpat\.[0-9.]*dylib']
+contains = ['expat_[0-9]+\.[0-9]+\.[0-9]+']
+version_patterns = ['expat_([0-9]+\.[0-9]+\.[0-9]+)']
+
+# libpng16.so.16.48.0: 'libpng version 1.6.48'
+[[signature]]
+vendor = "libpng"
+product = "libpng"
+filename_patterns = ['^libpng[0-9]*\.so', '^libpng[0-9]*\.[0-9.]*dylib']
+contains = ['libpng version']
+version_patterns = ['libpng version ([0-9]+\.[0-9]+\.[0-9]+)']
+
+# libxml2 carries only LIBXML2_2.x symbol tags in the build examined, so the
+# only safe anchor is the parser's own banner when it is present.
+[[signature]]
+vendor = "xmlsoft"
+product = "libxml2"
+filename_patterns = ['^libxml2\.so', '^libxml2\.[0-9.]*dylib']
+contains = ['libxml2 version', 'xmlsoft.org']
+version_patterns = ['libxml2 version ([0-9]+\.[0-9]+\.[0-9]+)']
+
+# --- system -----------------------------------------------------------------
+
+# busybox 1.38.0: 'BusyBox v1.38.0 (2026-05-13 02:21:49 UTC)'
+[[signature]]
+vendor = "busybox"
+product = "busybox"
+filename_patterns = ['^busybox$']
+contains = ['BusyBox is a multi-call binary', 'BusyBox v[0-9]']
+version_patterns = ['BusyBox v([0-9]+\.[0-9]+\.[0-9]+)']
+
+# libc.so.6: 'GNU C Library (Debian GLIBC 2.41-…) stable release version 2.41.'
+# Anchored past the distribution's own bracketed string, which carries a
+# different (packaged) version.
+[[signature]]
+vendor = "gnu"
+product = "glibc"
+filename_patterns = ['^libc\.so\.6$', '^ld-linux']
+contains = ['GNU C Library']
+version_patterns = ['stable release version ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+
+# bash 5.2.37: '@(#)Bash version 5.2.37(1) release GNU'
+[[signature]]
+vendor = "gnu"
+product = "bash"
+filename_patterns = ['^bash$']
+contains = ['Bash version [0-9]']
+version_patterns = ['Bash version ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+
+# util-linux 2.41: 'util-linux 2.41'
+[[signature]]
+vendor = "kernel"
+product = "util-linux"
+filename_patterns = []
+contains = ['util-linux [0-9]+\.[0-9]+']
+version_patterns = ['util-linux ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+
+# binutils 2.44: '(GNU Binutils for Debian) 2.44'
+[[signature]]
+vendor = "gnu"
+product = "binutils"
+filename_patterns = []
+contains = ['GNU Binutils']
+version_patterns = ['GNU Binutils[^)\n]{0,40}\) ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+
+# perl 5.40.1: 'Builtin version bundle "%s" is not supported by Perl 5.40.1'
+[[signature]]
+vendor = "perl"
+product = "perl"
+filename_patterns = ['^perl$', '^libperl\.so']
+contains = ['not supported by Perl [0-9]', 'PERL_HASH_SEED']
+version_patterns = ['supported by Perl ([0-9]+\.[0-9]+\.[0-9]+)']
+
+# git 2.47.3: 'git/2.47.3' — the User-Agent template.
+[[signature]]
+vendor = "git"
+product = "git"
+filename_patterns = ['^git$']
+contains = ['git/[0-9]+\.[0-9]+']
+version_patterns = ['git/([0-9]+\.[0-9]+\.[0-9]+)']
+
+# GnuPG 2.4.7: 'Dirmngr 2.4.7 at your service', 'Keyboxd 2.4.7 at your service'
+[[signature]]
+vendor = "gnupg"
+product = "gnupg"
+filename_patterns = ['^gpg$', '^gpg-agent$', '^dirmngr$']
+contains = ['at your service', 'GNU Privacy Guard']
+version_patterns = [
+  '(?:Dirmngr|Keyboxd|GPG Agent) ([0-9]+\.[0-9]+\.[0-9]+) at your service',
+  "GNU Privacy Guard's [^\\n]{0,30} ([0-9]+\\.[0-9]+\\.[0-9]+) ready",
+]
+
+# ICU 76.1: '%s v2.1  ICU 76.1'
+[[signature]]
+vendor = "unicode"
+product = "international_components_for_unicode"
+filename_patterns = ['^libicuuc\.so', '^libicui18n\.so']
+contains = ['ICU [0-9]+\.[0-9]']
+version_patterns = ['ICU ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']

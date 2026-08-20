@@ -719,4 +719,54 @@ mod tests {
         assert_eq!(merged.components.len(), 1);
         assert_eq!(merged.components[0].vulnerabilities.len(), 2);
     }
+
+    /// The genuine output of cve-bin-tool 3.4, captured from a real scan rather
+    /// than hand-written. Every other test in this module uses a fixture we
+    /// authored, which can only ever confirm our own assumptions about the
+    /// schema; this one is the check that those assumptions match the tool.
+    const REAL_REPORT: &str = include_str!("../../tests/fixtures/cve_bin_tool_3.4_json2.json");
+
+    #[test]
+    fn a_real_cve_bin_tool_report_parses_and_inverts() {
+        let parsed = parse_json2(REAL_REPORT, "/scan/corpus", 1234).expect("real report parses");
+
+        assert_eq!(parsed.components.len(), 1, "ten rows describe one component");
+        let curl = &parsed.components[0];
+        assert_eq!(curl.vendor, "haxx");
+        assert_eq!(curl.product, "curl");
+        assert_eq!(curl.version, "8.7.1");
+        assert_eq!(
+            curl.vulnerabilities.len(),
+            10,
+            "each row is one CVE against the same component"
+        );
+
+        // The counts the tool itself printed, so a change in our tallying shows
+        // up as a disagreement with the source rather than passing quietly.
+        assert_eq!(parsed.summary.high, 4);
+        assert_eq!(parsed.summary.medium, 6);
+        assert_eq!(parsed.summary.critical, 0);
+        assert_eq!(parsed.summary.low, 0);
+        assert_eq!(parsed.summary.components, 1);
+        assert_eq!(parsed.summary.vulnerabilities, 10);
+    }
+
+    #[test]
+    fn a_real_report_carries_the_details_the_ui_renders() {
+        let parsed = parse_json2(REAL_REPORT, "/scan/corpus", 0).expect("real report parses");
+        let curl = &parsed.components[0];
+
+        assert_eq!(curl.paths, vec!["/scan/corpus/curl"], "paths arrive comma-joined");
+        assert_eq!(curl.detected_by, vec![CVE_BIN_TOOL]);
+
+        let first = &curl.vulnerabilities[0];
+        assert!(first.cve_id.starts_with("CVE-"));
+        assert!(
+            first.severity.chars().all(|c| c.is_lowercase()),
+            "severities arrive uppercase and must be normalized: {}",
+            first.severity
+        );
+        assert!(first.score.is_some(), "score arrives as a string, not a number");
+        assert_eq!(first.source, "REDHAT");
+    }
 }
