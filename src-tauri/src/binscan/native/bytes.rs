@@ -331,6 +331,14 @@ pub enum VersionFormula {
     /// 1 beta, 2 stable. The stability digit is dropped rather than rendered.
     #[serde(rename = "decimal-10000000-stability")]
     Decimal10000000Stability,
+    /// `(major << 24) | (minor << 16) | (patch << 8)` — Mbed TLS's
+    /// MBEDTLS_VERSION_NUMBER, which keeps a spare low byte.
+    #[serde(rename = "packed8-hi")]
+    Packed8Hi,
+    /// `(major << 8) | minor` — for libraries that expose the two through
+    /// separate accessors and have no combined constant at all.
+    #[serde(rename = "major-minor")]
+    MajorMinor,
 }
 
 impl VersionFormula {
@@ -361,6 +369,17 @@ impl VersionFormula {
                 let stability = value % 10;
                 (major > 0 && major < 100 && stability <= 2)
                     .then(|| format!("{major}.{minor}.{patch}"))
+            }
+            VersionFormula::Packed8Hi => {
+                let major = (value >> 24) & 0xff;
+                let minor = (value >> 16) & 0xff;
+                let patch = (value >> 8) & 0xff;
+                (major > 0 && major < 100).then(|| format!("{major}.{minor}.{patch}"))
+            }
+            VersionFormula::MajorMinor => {
+                let major = (value >> 8) & 0xff;
+                let minor = value & 0xff;
+                (major > 0 && major < 100).then(|| format!("{major}.{minor}"))
             }
             VersionFormula::Packed8 => {
                 let major = (value >> 16) & 0xff;
@@ -610,6 +629,25 @@ mod tests {
             VersionFormula::Decimal1000000.render(3_053_003).as_deref(),
             Some("3.53.3")
         );
+    }
+
+    #[test]
+    fn the_mbedtls_constant_renders_without_its_spare_byte() {
+        // MBEDTLS_VERSION_NUMBER is 0xMMmmpp00; the trailing byte is reserved,
+        // not part of the version.
+        assert_eq!(
+            VersionFormula::Packed8Hi.render(0x0306_0500).as_deref(),
+            Some("3.6.5")
+        );
+        assert_eq!(VersionFormula::Packed8Hi.render(0), None);
+    }
+
+    #[test]
+    fn a_major_minor_pair_renders_as_two_components() {
+        // nettle has no combined constant — major and minor come from two
+        // separate one-instruction accessors.
+        assert_eq!(VersionFormula::MajorMinor.render(0x030a).as_deref(), Some("3.10"));
+        assert_eq!(VersionFormula::MajorMinor.render(0x0008), None, "no major");
     }
 
     #[test]

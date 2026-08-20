@@ -150,15 +150,22 @@ binary. The technique comes from VulHunt — see `vulhunt-study.md`.
 `0x50..=0x5f`. Masking at nibble granularity is what lets a pattern pin an
 opcode while leaving a register or operand free.
 
-Four libraries use this today, each verified against real binaries of a known
-version on both x86-64 and AArch64:
+Eight libraries use this today, each verified against a real binary of a known
+version:
 
-| Library | Constant | Idiom |
+| Library | Constant | Accessor |
 |---|---|---|
 | zstd | `ZSTD_VERSION_NUMBER` 10507 | `mov eax, imm32; ret` / `movz w0,#imm; ret` |
 | sqlite | `SQLITE_VERSION_NUMBER` 3046001 | `mov eax, imm32; ret` / `movz`+`movk`+`ret` |
 | xz (liblzma) | `LZMA_VERSION_NUMBER` 50080012 | `mov eax, imm32; ret` / `movz`+`movk`+`ret` |
-| — | — | — |
+| Mbed TLS | `MBEDTLS_VERSION_NUMBER` 0x03060500 | `mbedtls_version_get_number()` |
+| nghttp2 | `NGHTTP2_VERSION_NUM` 0x14000 | `cmp edi, …` in `nghttp2_version(least)` |
+| c-ares | `ARES_VERSION` 0x12205 | `mov [rdi], …` in `ares_version(int*)` |
+| mosquitto | `LIBMOSQUITTO_VERSION_NUMBER` 2000021 | `mosquitto_lib_version()` |
+| nettle | *(no combined constant)* | `nettle_version_major()` + `_minor()` |
+
+zstd, sqlite and xz carry patterns for both x86-64 and AArch64; the rest are
+x86-64 only so far, because that is what was verified.
 
 A constant too large for one AArch64 instruction is loaded as
 `movz w0, #lo16` then `movk w0, #hi16, lsl #16`, which is why
@@ -305,3 +312,62 @@ the corpus. The daemon's own `STATUS=%s … starting up.` banner matches one.
   jansson, mbedtls, chrony, mosquitto** — no version string at all in the builds
   examined. These need byte patterns against their numeric version constants,
   which is the obvious next batch.
+
+
+## 8. Versions that exist only as constants — and the five that do not
+
+A second pass over the libraries firmware carries that print no version at all.
+Each accessor below was located in a Debian trixie binary whose version dpkg
+recorded, and its exact bytes are asserted in `CONSTANT_GROUND_TRUTH`.
+
+Two mechanisms came out of it:
+
+- **`packed8-hi`** for Mbed TLS, whose `MBEDTLS_VERSION_NUMBER` is `0xMMmmpp00`
+  with a reserved low byte. Pinning that byte as `00` in the pattern is also
+  what makes an otherwise generic "return a constant" shape specific.
+- **`capture_offset_2`** for nettle, which has *no* combined constant:
+  `nettle_version_major()` and `nettle_version_minor()` are two
+  one-instruction functions the compiler emits adjacently, separated by its
+  usual `nopw` padding. Both are read and packed as `(major << 8) | minor`.
+
+**libmicrohttpd** needed neither. It stores a bare `1.0.1`, but the linker
+places the `@LIBMICROHTTPD` symbol-version tag immediately after it — so the
+adjacency is the anchor, the same trick pcre2's release date provides.
+
+### The identity rule paid for itself, measurably
+
+Mbed TLS's pattern is the generic `endbr64; mov eax, imm32; ret` shape with a
+range. Across 26,077 real x86-64 files that shape produces a constant inside
+Mbed TLS's range **four times** — and none of them became a detection, because
+none of those files contain `mbedtls_ssl_`, `mbedtls_x509_` or `MBEDTLS_ERR_`.
+That is four phantom findings suppressed by the rule that a byte pattern may
+supply a version but never an identity.
+
+On the same 26,077 files the six new signatures produced exactly two components,
+nettle 3.10 and nghttp2 1.64.0 — both genuinely installed, both matching dpkg.
+No false positives.
+
+### An authoring mistake the guard caught
+
+nettle's minor sits at offset **21**, not 20; offset 20 is the `mov` opcode
+itself. Written as 20, the second capture reads `b8 0a 00 00` = 2744, which the
+"each half must fit a byte" check rejects. The result was silence rather than a
+version invented out of an instruction byte, which is the behaviour to want.
+There is a test for it.
+
+### Five with nothing to read
+
+Not skipped for effort — these genuinely do not embed a version a scanner can
+recover:
+
+| Library | Why |
+|---|---|
+| **freetype** | Neither `2/13/3` as adjacent constants nor a triple-store in `FT_Library_Version`. The values are folded away entirely; searched as u8, u16 and u32 triples and as immediate stores. |
+| **readline** | `rl_readline_version` (0x0802) is a bare global in `.data`, surrounded by other globals. Any pattern for it would encode one build's data layout. |
+| **jansson** | Only `jansson_version_str` returning a bare `2.14`. Its neighbours are `%.*g` and `do_dump` — no stable anchor. |
+| **libwebsockets** | Stores `4.3.5-unknown`, where the suffix is a build id that differs per build. Its neighbours are a format string and `cpdcheck`. |
+| **chrony** | A bare `4.6.1` whose only neighbour is the `--version` option string — a linker layout artifact, not a property of the build. |
+
+For these, a weak pattern would be worse than none: a version that matches no
+CVE is indistinguishable from a clean result. The same judgement as libupnp in
+§7 and pcre2 in §6.
