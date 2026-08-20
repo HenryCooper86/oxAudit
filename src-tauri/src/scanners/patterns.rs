@@ -123,7 +123,7 @@ pub fn scan_content(content: &str, language: &str) -> Vec<PatternHit> {
             hits.push(PatternHit {
                 rule_index: i,
                 offset: m.start(),
-                match_text: crate::scanners::secrets::truncate(m.as_str(), 240),
+                match_text: m.as_str().to_string(),
             });
         }
     }
