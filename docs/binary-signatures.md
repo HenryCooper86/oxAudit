@@ -572,3 +572,48 @@ only where the bus daemon actually is.
 The lesson repeating across all three: an anchor must belong to the library, not
 to its protocol, its translations, or its ancestry. Each was caught by measuring
 what a signature matches across a real tree, not by reading it.
+
+## 11. Exploitation signal: KEV and EPSS
+
+> Added 2026-08-20. `binscan/exploit.rs`.
+
+Detecting a component and matching CVEs answers "is this vulnerable?". On the
+OpenWrt router that produced **92 CVEs**, the question that matters is "which do
+I fix first?" — and two free, key-less sources answer it. Neither finds new
+CVEs; both rank the ones already found.
+
+- **CISA KEV** — the Known Exploited Vulnerabilities catalog (1,671 entries, one
+  JSON file). Presence means the CVE has been *observed exploited in the wild*,
+  the strongest prioritization signal there is, plus a per-entry ransomware flag.
+- **EPSS** (FIRST.org) — the probability a CVE will be exploited in the next 30
+  days, `[0, 1]`, with a percentile.
+
+Both are parsed purely and tested against captured real responses
+(`tests/fixtures/cisa_kev.json`, `epss.json`), then fetched once per scan and
+attached to every finding. They are best-effort: a failure of either is a note,
+not a scan failure — the findings stand on their own.
+
+Why these two and not the forty other sources catalogued at
+[haxdoggy/vulnerability-databases](https://github.com/haxdoggy/vulnerability-databases):
+
+- The regional CERTs (BSI, CERT-FR, JVN, CNNVD, …) and vendor pages (Apple,
+  Cisco, Oracle) are **HTML with no API** — not machine-integrable.
+- The aggregators (VulnDB, Snyk, Vulners) are **commercial or gated**.
+- Debian, Ubuntu, Red Hat and GitHub's advisory database are **already covered**:
+  OSV aggregates them and the enrichment path already queries it.
+
+KEV and EPSS are the ones that are free, key-less, machine-readable, and *not*
+redundant — because they answer a question NVD and OSV do not: not whether a CVE
+exists, but whether anyone is using it.
+
+On the router, none of the 92 CVEs is currently in KEV — an honest result, since
+KEV tracks internet-facing enterprise exploitation, not embedded busybox and
+u-boot CVEs. EPSS scored every one, so the findings sort by exploitation
+probability even where nothing is a confirmed KEV hit.
+
+### Not yet wired
+
+The dependency scanner and CVE research view produce CVEs too; this batch wires
+KEV/EPSS into the binary-scan enrichment path only, where a single scan raising
+dozens of findings makes prioritization most valuable. Extending it to the other
+paths is a mechanical follow-up.

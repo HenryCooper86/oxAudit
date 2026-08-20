@@ -30,6 +30,16 @@ pub struct BinaryVulnerability {
     /// cve-bin-tool triage state: NewFound, Mitigated, Confirmed, …
     pub remarks: Option<String>,
     pub epss_probability: Option<f64>,
+    /// EPSS percentile against all scored CVEs, `[0, 1]`.
+    #[serde(default)]
+    pub epss_percentile: Option<f64>,
+    /// In CISA's Known Exploited Vulnerabilities catalog — observed exploited
+    /// in the wild, the strongest prioritization signal there is.
+    #[serde(default)]
+    pub known_exploited: bool,
+    /// Named in a ransomware campaign, per KEV. Only set when known_exploited.
+    #[serde(default)]
+    pub ransomware: bool,
     /// First version carrying the fix, when the scanner reports one. grype
     /// supplies this; cve-bin-tool does not.
     pub fixed_in: Option<String>,
@@ -254,6 +264,9 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
                     .unwrap_or_else(|| source_report.datasource.clone()),
                 remarks: optional_text(entry.remarks.as_ref()),
                 epss_probability: optional_number(entry.epss_probability.as_ref()),
+                epss_percentile: None,
+                known_exploited: false,
+                ransomware: false,
                 fixed_in: None,
             });
         }
@@ -617,7 +630,10 @@ mod tests {
                     source: scanner.into(),
                     remarks: None,
                     epss_probability: None,
-                    fixed_in: None,
+                    epss_percentile: None,
+                known_exploited: false,
+                ransomware: false,
+                fixed_in: None,
                 })
                 .collect(),
         }

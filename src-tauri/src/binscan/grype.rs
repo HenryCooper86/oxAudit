@@ -227,6 +227,9 @@ pub fn parse_report(raw: &str, target: &str, duration_ms: u64) -> Result<BinaryS
                 .unwrap_or_else(|| GRYPE.to_string()),
             remarks: entry.vulnerability.fix.as_ref().and_then(|f| f.state.clone()),
             epss_probability: entry.vulnerability.epss.first().and_then(|e| e.epss),
+            epss_percentile: None,
+            known_exploited: false,
+            ransomware: false,
             fixed_in,
         });
     }
