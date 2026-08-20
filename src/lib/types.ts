@@ -223,11 +223,13 @@ export interface BinaryScanResult {
 }
 
 export interface BinaryScannersStatus {
+  /** oxAudit's built-in scanner — always available, needs nothing installed. */
+  native: BinaryToolStatus;
   cveBinTool: BinaryToolStatus;
   grype: BinaryToolStatus;
   docker: BinaryToolStatus;
   runtime: BinaryScannerRuntime;
-  /** Whether any scanner can run with the current selection. */
+  /** Whether any scanner can run. Always true — the native scanner is built in. */
   canScan: boolean;
 }
 
