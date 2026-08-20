@@ -10,7 +10,17 @@ fn canonical_context(value: &str) -> String {
     value
         .replace("\r\n", "\n")
         .lines()
-        .map(str::trim)
+        .map(|line| {
+            line.split_once(" │ ")
+                .filter(|(gutter, _)| {
+                    !gutter.trim().is_empty()
+                        && gutter
+                            .chars()
+                            .all(|character| character == ' ' || character.is_ascii_digit())
+                })
+                .map_or(line, |(_, source)| source)
+                .trim()
+        })
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -155,5 +165,41 @@ mod tests {
         assert!(findings
             .iter()
             .all(|finding| finding.fingerprint_version == FINGERPRINT_VERSION));
+    }
+
+    fn scanned_eval_finding(source: &str) -> Finding {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let source_path = directory.path().join("auth.js");
+        std::fs::write(&source_path, source).expect("javascript fixture");
+        crate::scanners::scan_file_with_relative_path(&source_path, "src/auth.js", 64, false, true)
+            .findings
+            .into_iter()
+            .find(|finding| finding.rule_id == "js-eval")
+            .expect("js-eval finding")
+    }
+
+    #[test]
+    fn scanner_context_fingerprint_survives_line_insertion_and_indentation() {
+        let first = scanned_eval_finding(
+            "header();\nbeforeOne();\nbeforeTwo();\neval(input);\nafterOne();\nafterTwo();\n",
+        );
+        let shifted = scanned_eval_finding(
+            "inserted();\ninsertedAgain();\n  header();\n  beforeOne();\n  beforeTwo();\n  eval(input);\n  afterOne();\n  afterTwo();\n",
+        );
+
+        assert_ne!(first.context, shifted.context);
+        assert_eq!(fingerprint_base(&first), fingerprint_base(&shifted));
+    }
+
+    #[test]
+    fn scanner_context_fingerprint_preserves_internal_source_whitespace() {
+        let first = scanned_eval_finding(
+            "beforeOne();\nbeforeTwo();\neval(\"alpha beta\");\nafterOne();\nafterTwo();\n",
+        );
+        let changed = scanned_eval_finding(
+            "beforeOne();\nbeforeTwo();\neval(\"alpha  beta\");\nafterOne();\nafterTwo();\n",
+        );
+
+        assert_ne!(fingerprint_base(&first), fingerprint_base(&changed));
     }
 }

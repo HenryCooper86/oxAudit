@@ -71,4 +71,28 @@ mod tests {
         assert!(!serialized.contains(PRIVATE_KEY_CANARY));
         assert!(serialized.contains("[REDACTED]"));
     }
+
+    #[test]
+    fn overlapping_secret_values_are_redacted_longest_first() {
+        const PREFIX: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-";
+        const SUFFIX: &str = "OverlapSuffixCanary9Z8Y7X6";
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let source_path = directory.path().join("credentials.json");
+        std::fs::write(&source_path, format!("{{\"token\":\"{PREFIX}{SUFFIX}\"}}"))
+            .expect("overlapping secret fixture");
+
+        let findings = crate::scanners::scan_file(directory.path(), &source_path, 64, true, false);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.rule_id == "generic-api-key"));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.rule_id == "json-credential"));
+
+        for finding in findings {
+            let serialized = serde_json::to_string(&finding).expect("serializable finding");
+            assert!(!serialized.contains(SUFFIX));
+            assert!(serialized.contains("[REDACTED]"));
+        }
+    }
 }

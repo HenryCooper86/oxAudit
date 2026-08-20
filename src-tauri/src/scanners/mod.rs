@@ -1,6 +1,7 @@
 pub mod patterns;
 pub mod secrets;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::findings::redaction;
@@ -23,15 +24,26 @@ impl ScanFileOutcome {
     }
 }
 
-fn redact_detected_secrets(text: &str, hits: &[secrets::SecretHit]) -> String {
-    hits.iter().fold(text.to_owned(), |safe, hit| {
-        let mut safe = redaction::redact_exact(&safe, &hit.secret_value);
+fn secret_redaction_values(hits: &[secrets::SecretHit]) -> Vec<String> {
+    let mut unique = BTreeSet::new();
+    for hit in hits {
+        if !hit.secret_value.is_empty() {
+            unique.insert(hit.secret_value.clone());
+        }
         if hit.secret_value.contains(['\r', '\n']) {
             for line in hit.secret_value.lines().filter(|line| !line.is_empty()) {
-                safe = redaction::redact_exact(&safe, line);
+                unique.insert(line.to_owned());
             }
         }
-        safe
+    }
+    let mut values = unique.into_iter().collect::<Vec<_>>();
+    values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    values
+}
+
+fn redact_detected_secrets(text: &str, values: &[String]) -> String {
+    values.iter().fold(text.to_owned(), |safe, value| {
+        redaction::redact_exact(&safe, value)
     })
 }
 
@@ -74,17 +86,20 @@ pub fn scan_file_with_relative_path(
     let rel = relative_path.to_string();
     let mut findings = Vec::new();
     let mut covered_families = Vec::new();
+    let secret_hits = secrets::scan_content(&content);
+    let secret_values = secret_redaction_values(&secret_hits);
 
     if scan_secrets {
         covered_families.push("secret".to_string());
-        let hits = secrets::scan_content(&content);
-        for hit in &hits {
+        for hit in &secret_hits {
             let rule = &secrets::SECRET_RULES[hit.rule_index];
             let (line, col) = fs_utils::line_col(&starts, hit.offset);
             let context = fs_utils::context_lines(&content, &starts, line - 1, 2);
-            let match_text =
-                secrets::truncate(&redact_detected_secrets(&hit.match_text, &hits), 240);
-            let context = redact_detected_secrets(&context, &hits);
+            let match_text = secrets::truncate(
+                &redact_detected_secrets(&hit.match_text, &secret_values),
+                240,
+            );
+            let context = redact_detected_secrets(&context, &secret_values);
             findings.push(Finding {
                 id: uuid::Uuid::new_v4().to_string(),
                 category: "secret".into(),
@@ -125,6 +140,7 @@ pub fn scan_file_with_relative_path(
             for hit in hits {
                 let rule = &patterns::SOURCE_RULES[hit.rule_index];
                 let (line, col) = fs_utils::line_col(&starts, hit.offset);
+                let context = fs_utils::context_lines(&content, &starts, line - 1, 2);
                 findings.push(Finding {
                     id: uuid::Uuid::new_v4().to_string(),
                     category: "vulnerability".into(),
@@ -136,8 +152,11 @@ pub fn scan_file_with_relative_path(
                     file_path: rel.clone(),
                     line,
                     column: col,
-                    match_text: hit.match_text.clone(),
-                    context: fs_utils::context_lines(&content, &starts, line - 1, 2),
+                    match_text: secrets::truncate(
+                        &redact_detected_secrets(&hit.match_text, &secret_values),
+                        240,
+                    ),
+                    context: redact_detected_secrets(&context, &secret_values),
                     language: lang.into(),
                     cwe_exploited: false,
                     cwe_exploited_count: 0,
@@ -226,5 +245,28 @@ mod tests {
             assert!(outcome.findings.is_empty());
             assert!(outcome.covered_families.is_empty());
         }
+    }
+
+    #[test]
+    fn vulnerability_only_findings_redact_detected_credentials() {
+        const PASSWORD_CANARY: &str = "VulnOnlyCanary-7D4zP9q2";
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let source_path = directory.path().join("app.js");
+        std::fs::write(
+            &source_path,
+            format!("const password = \"{PASSWORD_CANARY}\";\n"),
+        )
+        .expect("hardcoded password fixture");
+
+        let outcome = scan_file_with_relative_path(&source_path, "app.js", 64, false, true);
+
+        assert_eq!(outcome.covered_families, ["vulnerability"]);
+        assert!(outcome
+            .findings
+            .iter()
+            .all(|finding| finding.category == "vulnerability"));
+        let serialized = serde_json::to_string(&outcome.findings).expect("serializable findings");
+        assert!(!serialized.contains(PASSWORD_CANARY));
+        assert!(serialized.contains("[REDACTED]"));
     }
 }

@@ -855,6 +855,26 @@ mod tests {
         assert!(value.to_string().contains("[REDACTED]"));
     }
 
+    #[test]
+    fn assistant_vulnerability_scan_never_contains_a_hardcoded_credential() {
+        const PASSWORD_CANARY: &str = "VulnOnlyCanary-7D4zP9q2";
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        fs::write(
+            directory.path().join("app.js"),
+            format!("const password = \"{PASSWORD_CANARY}\";\n"),
+        )
+        .expect("hardcoded password fixture");
+        let mut settings = ScanSettings::default();
+        settings.ignored_dirs.clear();
+
+        let payload = scan_agent_source_files(directory.path(), directory.path(), &settings);
+        let serialized = payload.to_string();
+
+        assert_eq!(payload["vulnerabilities_found"], 1);
+        assert!(!serialized.contains(PASSWORD_CANARY));
+        assert!(serialized.contains("[REDACTED]"));
+    }
+
     fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
         let canonical_root = root.canonicalize().unwrap();
         let mut settings = ScanSettings::default();
