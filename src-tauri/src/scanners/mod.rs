@@ -79,6 +79,15 @@ pub fn scan_file_with_relative_path(
                 recommendation: rule.recommendation.into(),
                 entropy: Some(hit.entropy),
                 verified: None,
+                observation_run_id: String::new(),
+                resolved_by_run_id: None,
+                fingerprint_version: 0,
+                fingerprint: String::new(),
+                scope: None,
+                scope_reason: None,
+                review: None,
+                review_history: Vec::new(),
+                diff_status: None,
             });
         }
     }
@@ -115,6 +124,15 @@ pub fn scan_file_with_relative_path(
                     recommendation: rule.recommendation.into(),
                     entropy: None,
                     verified: None,
+                    observation_run_id: String::new(),
+                    resolved_by_run_id: None,
+                    fingerprint_version: 0,
+                    fingerprint: String::new(),
+                    scope: None,
+                    scope_reason: None,
+                    review: None,
+                    review_history: Vec::new(),
+                    diff_status: None,
                 });
             }
         }
