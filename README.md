@@ -102,6 +102,24 @@ suppresses the fallbacks so you always scan with the copy you meant.
 The first run downloads a CVE database and can take several minutes — the page shows
 cve-bin-tool's own progress while it works, and the scan is cancellable.
 
+> **Known upstream breakage (checked 2026-08-20).** cve-bin-tool 3.4 currently cannot
+> populate its CVE database: its NVD bootstrap gets a `403` from
+> `nvd.nist.gov/rest/public/dashboard/statistics`, the legacy JSON feeds it falls back
+> to were retired, and its `gs://cve-bin-tool` mirror bucket no longer exists. This is
+> not an oxAudit fault and containerising it does not help — see
+> [`docs/binary-scanning-runtime.md`](docs/binary-scanning-runtime.md) for the full
+> investigation. oxAudit detects the resulting empty-database state and offers a forced
+> refresh rather than surfacing a Python traceback.
+
+An experimental container runtime lives in `docker/cve-bin-tool/Dockerfile`. It supplies
+the external programs cve-bin-tool needs but does not declare (`gsutil` for its mirror,
+plus `cabextract`, `rpm2cpio`, `p7zip`, `zstd`). Build it yourself — the file is a
+recipe, so oxAudit never distributes GPL software:
+
+```bash
+docker build -t oxaudit/cve-bin-tool:3.4 docker/cve-bin-tool
+```
+
 Lockfile scanning is deliberately **not** routed through it: **Dependencies** already
 parses ten lockfile formats natively and queries OSV directly.
 
