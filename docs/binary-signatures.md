@@ -625,5 +625,18 @@ to twelve CVEs, none in KEV (honest — neither is actively exploited), all
 EPSS-scored, with `CVE-2021-23337` (lodash command injection) highest at 0.21 —
 so it sorts to the top of the list.
 
-Still not wired: the CVE research view, which is a single-CVE lookup rather than
-a list to prioritize.
+### And the CVE research view
+
+The single-CVE dossier now shows the same signal: a `KEV · exploited` badge
+(`KEV · ransomware` when the campaign flag is set) and the EPSS score beside
+CVSS, and the exploitation status is fed into the "Discuss in Assistant" text so
+an AI briefing has it too. Because research is interactive — a user opens several
+CVEs in a session — the KEV catalog is cached on `CveState` for an hour rather
+than re-downloaded per lookup; EPSS is one query per CVE.
+
+Verified against live data: `CVE-2021-44228` (Log4Shell) comes back
+`known_exploited`, `ransomware`, EPSS 100%.
+
+All three CVE-producing paths — binary scan, dependency scan, CVE research — now
+carry the signal. The one thing that does not is the source-code scanner, whose
+findings are pattern matches without a CVE to look up.

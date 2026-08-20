@@ -94,6 +94,11 @@ export function CveDossier({
         `CVE: ${item.id}`,
         `Severity: ${item.severity ?? "Unknown"}`,
         `CVSS: ${item.cvssScore?.toFixed(1) ?? "Not provided"}`,
+        `Exploitation: ${
+          item.knownExploited
+            ? `In CISA KEV — exploited in the wild${item.ransomware ? " (ransomware campaigns)" : ""}`
+            : "Not in CISA KEV"
+        }${item.epss !== null ? `; EPSS ${(item.epss * 100).toFixed(1)}%` : ""}`,
         `Description:\n${item.description}`,
         `Affected products:\n${item.affectedProducts.length ? item.affectedProducts.join("\n") : "None provided"}`,
         `CWEs:\n${item.cwes.length ? item.cwes.join("\n") : "None provided"}`,
@@ -121,6 +126,26 @@ export function CveDossier({
             {item.cvssScore !== null && (
               <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
                 CVSS {item.cvssScore.toFixed(1)}
+              </span>
+            )}
+            {item.knownExploited && (
+              <span
+                title={
+                  item.ransomware
+                    ? "In CISA KEV — used in ransomware campaigns"
+                    : "In CISA's Known Exploited Vulnerabilities catalog — exploited in the wild"
+                }
+                className="inline-flex items-center rounded-full bg-sev-critical px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-white"
+              >
+                {item.ransomware ? "KEV · ransomware" : "KEV · exploited"}
+              </span>
+            )}
+            {item.epss !== null && (
+              <span
+                title={`EPSS: ${(item.epss * 100).toFixed(1)}% chance of exploitation in the next 30 days${item.epssPercentile !== null ? ` (${(item.epssPercentile * 100).toFixed(0)}th percentile)` : ""}`}
+                className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-[11px] text-text-secondary"
+              >
+                EPSS {(item.epss * 100).toFixed(1)}%
               </span>
             )}
           </div>
