@@ -126,6 +126,14 @@ export interface CveItem {
   affectedProducts: string[];
   references: string[];
   cwes: string[];
+  /** EPSS probability of exploitation in the next 30 days, 0-1. */
+  epss: number | null;
+  /** EPSS percentile against all scored CVEs, 0-1. */
+  epssPercentile: number | null;
+  /** In CISA's Known Exploited Vulnerabilities catalog. */
+  knownExploited: boolean;
+  /** Named in a ransomware campaign, per KEV. */
+  ransomware: boolean;
 }
 
 export interface CveSearchResult {

@@ -174,6 +174,18 @@ pub struct CveItem {
     pub affected_products: Vec<String>,
     pub references: Vec<String>,
     pub cwes: Vec<String>,
+    /// EPSS probability of exploitation in the next 30 days, `[0, 1]`.
+    #[serde(default)]
+    pub epss: Option<f64>,
+    /// EPSS percentile against all scored CVEs, `[0, 1]`.
+    #[serde(default)]
+    pub epss_percentile: Option<f64>,
+    /// In CISA's Known Exploited Vulnerabilities catalog.
+    #[serde(default)]
+    pub known_exploited: bool,
+    /// Named in a ransomware campaign, per KEV.
+    #[serde(default)]
+    pub ransomware: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
