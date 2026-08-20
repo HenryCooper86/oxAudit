@@ -715,7 +715,7 @@ mod tests {
     /// exactly that: `cpe:2.3:a:sqlite:sqlite:3.46.1` returns 7 CVEs and
     /// `cpe:2.3:a:sqlite:sqlite3:3.46.1` returns none. Renaming a product must
     /// fail this test and send whoever did it back to the API.
-    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 19] = [
+    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 27] = [
         ("openssl", "openssl"),
         ("sqlite", "sqlite"),
         ("tukaani", "xz"),
@@ -737,6 +737,14 @@ mod tests {
         ("avahi", "avahi"),
         ("libjpeg-turbo", "libjpeg-turbo"),
         ("denx", "u-boot"),
+        ("nghttp2", "nghttp2"),
+        ("c-ares", "c-ares"),
+        ("arm", "mbed_tls"),
+        ("eclipse", "mosquitto"),
+        ("nettle_project", "nettle"),
+        ("gnu", "libmicrohttpd"),
+        ("freetype", "freetype"),
+        ("jansson_project", "jansson"),
     ];
 
     #[test]
@@ -901,6 +909,56 @@ zero CVEs rather than an error"
                 hits[0].version.as_deref(),
                 Some(expected),
                 "{product}: wrong version decoded from its accessor"
+            );
+        }
+    }
+
+    /// Components identified by a data string alone, with no version anywhere
+    /// in the binary. `(product, identifying string)`.
+    const IDENTITY_ONLY: [(&str, &str); 5] = [
+        ("freetype", "autofitter"),
+        ("readline", "unrecognized history modifier"),
+        ("jansson", "%s near end of file"),
+        ("libwebsockets", "Out of mem in lws_daemonize"),
+        ("chrony", "chronyd exiting"),
+    ];
+
+    #[test]
+    fn a_component_with_no_version_anywhere_is_still_reported() {
+        // "freetype is in this image" is a lead even without a version, and
+        // reporting nothing would be indistinguishable from it being absent.
+        let set = &*SIGNATURES;
+        for (product, marker) in IDENTITY_ONLY {
+            let hits: Vec<_> = set
+                .detect("blob.so", &format!("\n{marker}\n"), &[])
+                .into_iter()
+                .filter(|d| d.product == product)
+                .collect();
+            assert_eq!(hits.len(), 1, "{product}: expected one detection, got {hits:?}");
+            assert_eq!(
+                hits[0].version, None,
+                "{product} has no version to read; claiming one would be invention"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_only_components_still_resolve_a_package_name_to_their_cpe() {
+        // They cannot read a version themselves, so the one route to a version
+        // is an ELF package note — which only helps if the distribution's
+        // package name resolves to the same component.
+        let set = &*SIGNATURES;
+        for (package, product) in [
+            ("libfreetype6", "freetype"),
+            ("libreadline8t64", "readline"),
+            ("libjansson4", "jansson"),
+            ("libwebsockets19t64", "libwebsockets"),
+            ("chrony", "chrony"),
+        ] {
+            assert_eq!(
+                set.resolve_alias(package).map(|(_, p)| p),
+                Some(product),
+                "{package} must fold onto {product} rather than becoming a second row"
             );
         }
     }
