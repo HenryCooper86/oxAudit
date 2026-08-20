@@ -630,6 +630,65 @@ pub async fn scan_binaries(
     .await
 }
 
+/// Force a full CVE database refresh.
+///
+/// cve-bin-tool's default `daily` policy treats a half-downloaded cache as
+/// current, so a failed first bootstrap leaves it permanently stuck. `--update
+/// now` is the only way out, and the user has no other way to reach it.
+#[tauri::command]
+pub async fn refresh_binary_database(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::binscan::report::BinaryScanResult, String> {
+    let configured = configured_scanner_path(&state);
+    let nvd_api_key = state.settings.lock().unwrap().nvd_api_key.clone();
+    let cancel = state.cancel_binary_scan.clone();
+    cancel.store(false, Ordering::Relaxed);
+
+    let invocation = {
+        let configured = configured.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::binscan::detect::resolve(configured.as_deref())
+        })
+        .await
+        .map_err(|e| format!("tool detection failed: {e}"))??
+    };
+
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("no cache directory available: {e}"))?
+        .join("binscan");
+    // cve-bin-tool always needs a target, so refresh against an empty directory:
+    // the point is the `--update now` side effect, not the (empty) findings.
+    let empty_target = cache_dir.join("refresh-probe");
+    std::fs::create_dir_all(&empty_target)
+        .map_err(|e| format!("cannot prepare a refresh directory: {e}"))?;
+
+    let progress_app = app.clone();
+    let on_progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
+        let _ = progress_app.emit("binscan://progress", Value::from(line));
+    });
+
+    let request = crate::binscan::run::BinaryScanRequest {
+        path: empty_target.to_string_lossy().into_owned(),
+        severity: None,
+        offline: false,
+        update: Some("now".into()),
+    };
+
+    crate::binscan::run::run(
+        &invocation,
+        &request,
+        nvd_api_key.as_deref(),
+        &cache_dir,
+        cancel,
+        BINARY_SCAN_TIMEOUT,
+        on_progress,
+    )
+    .await
+}
+
 /// Ask an in-flight binary scan to stop; the child process is killed.
 #[tauri::command]
 pub fn cancel_binary_scan(state: State<'_, AppState>) -> Result<(), String> {

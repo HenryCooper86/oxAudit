@@ -32,6 +32,9 @@ export const api = {
   scanBinaries: (request: BinaryScanRequest) =>
     invoke<BinaryScanResult>("scan_binaries", { request }),
   cancelBinaryScan: () => invoke<void>("cancel_binary_scan"),
+  /** Force `--update now`; the only escape from cve-bin-tool's stale-cache trap. */
+  refreshBinaryDatabase: () =>
+    invoke<BinaryScanResult>("refresh_binary_database"),
   openScanFinding: (root: string, relativePath: string) =>
     invoke<void>("open_scan_finding", { root, relativePath }),
   scanDependencies: (path: string) =>
