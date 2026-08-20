@@ -404,10 +404,36 @@ pub fn shannon_entropy(s: &str) -> f32 {
 
 /// Values that should never be flagged as credentials.
 const PLACEHOLDERS: &[&str] = &[
-    "changeme", "change_me", "change-me", "yourpassword", "your_password", "your-password",
-    "password", "passw0rd", "example", "placeholder", "dummy", "test", "sample", "xxxxx",
-    "xxxxxx", "*****", "******", "redacted", "todo", "fixme", "lorem", "secret123",
-    "default", "unknown", "none", "null", "true", "false", "12345678", "abcdefgh",
+    "changeme",
+    "change_me",
+    "change-me",
+    "yourpassword",
+    "your_password",
+    "your-password",
+    "password",
+    "passw0rd",
+    "example",
+    "placeholder",
+    "dummy",
+    "test",
+    "sample",
+    "xxxxx",
+    "xxxxxx",
+    "*****",
+    "******",
+    "redacted",
+    "todo",
+    "fixme",
+    "lorem",
+    "secret123",
+    "default",
+    "unknown",
+    "none",
+    "null",
+    "true",
+    "false",
+    "12345678",
+    "abcdefgh",
 ];
 
 /// Returns true if the value looks like a placeholder rather than a real secret.
@@ -433,7 +459,9 @@ pub fn is_placeholder(value: &str) -> bool {
         return true;
     }
     if len <= 24 {
-        return PLACEHOLDERS.iter().any(|p| p.len() >= 4 && lower.contains(p));
+        return PLACEHOLDERS
+            .iter()
+            .any(|p| p.len() >= 4 && lower.contains(p));
     }
     false
 }

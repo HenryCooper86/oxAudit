@@ -241,8 +241,9 @@ pattern supplies a version, never an identity",
 
             let mut version_patterns = Vec::with_capacity(spec.version_patterns.len());
             for pattern in &spec.version_patterns {
-                let regex = Regex::new(pattern)
-                    .map_err(|e| format!("{}: bad version pattern {pattern:?}: {e}", spec.product))?;
+                let regex = Regex::new(pattern).map_err(|e| {
+                    format!("{}: bad version pattern {pattern:?}: {e}", spec.product)
+                })?;
                 // A version pattern with no capture group would match and then
                 // yield nothing, which reads downstream as "detected, version
                 // unknown" — a silent failure that is hard to spot in data.
@@ -257,7 +258,10 @@ pattern supplies a version, never an identity",
             }
 
             let identity_patterns: Vec<&String> = if spec.version_implies_identity {
-                spec.contains.iter().chain(spec.version_patterns.iter()).collect()
+                spec.contains
+                    .iter()
+                    .chain(spec.version_patterns.iter())
+                    .collect()
             } else {
                 if spec.contains.is_empty() && spec.filename_patterns.is_empty() {
                     return Err(format!(
@@ -275,8 +279,9 @@ identify it by",
                 content_owner.push(index);
             }
             for pattern in &spec.filename_patterns {
-                Regex::new(pattern)
-                    .map_err(|e| format!("{}: bad filename pattern {pattern:?}: {e}", spec.product))?;
+                Regex::new(pattern).map_err(|e| {
+                    format!("{}: bad filename pattern {pattern:?}: {e}", spec.product)
+                })?;
                 filename_patterns.push(pattern.clone());
                 filename_owner.push(index);
             }
@@ -285,15 +290,19 @@ identify it by",
                 .ignore
                 .iter()
                 .map(|pattern| {
-                    Regex::new(pattern)
-                        .map_err(|e| format!("{}: bad ignore pattern {pattern:?}: {e}", spec.product))
+                    Regex::new(pattern).map_err(|e| {
+                        format!("{}: bad ignore pattern {pattern:?}: {e}", spec.product)
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
             let mut byte_patterns = Vec::with_capacity(spec.byte_patterns.len());
             for byte_spec in &spec.byte_patterns {
                 let pattern = BytePattern::parse(&byte_spec.pattern).map_err(|e| {
-                    format!("{}: bad byte pattern {:?}: {e}", spec.product, byte_spec.pattern)
+                    format!(
+                        "{}: bad byte pattern {:?}: {e}",
+                        spec.product, byte_spec.pattern
+                    )
                 })?;
                 if byte_spec.min >= byte_spec.max {
                     return Err(format!(
@@ -428,7 +437,9 @@ identify it by",
             }
             for pattern in &signature.version_patterns {
                 for capture in pattern.captures_iter(blob) {
-                    let Some(found) = capture.get(1) else { continue };
+                    let Some(found) = capture.get(1) else {
+                        continue;
+                    };
                     let version = found.as_str().trim().to_string();
                     if version.is_empty() {
                         continue;
@@ -480,7 +491,12 @@ pub static SIGNATURES: Lazy<SignatureSet> = Lazy::new(|| {
 mod tests {
     use super::*;
 
-    fn spec(product: &str, contains: &[&str], versions: &[&str], filenames: &[&str]) -> SignatureSpec {
+    fn spec(
+        product: &str,
+        contains: &[&str],
+        versions: &[&str],
+        filenames: &[&str],
+    ) -> SignatureSpec {
         SignatureSpec {
             vendor: product.to_string(),
             product: product.to_string(),
@@ -566,7 +582,11 @@ mod tests {
         )])
         .expect("compiles");
 
-        let hits = set.detect("libcrypto.so.3", "part of OpenSSL\nOpenSSL 3.0.2 15 Mar 2022\n", &[]);
+        let hits = set.detect(
+            "libcrypto.so.3",
+            "part of OpenSSL\nOpenSSL 3.0.2 15 Mar 2022\n",
+            &[],
+        );
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].product, "openssl");
         assert_eq!(hits[0].version.as_deref(), Some("3.0.2"));
@@ -692,10 +712,19 @@ mod tests {
         // Without this the same library is two rows, and the one found by ELF
         // package note can never be looked up.
         let set = &*SIGNATURES;
-        assert_eq!(set.resolve_alias("libzstd"), Some(("facebook", "zstandard")));
-        assert_eq!(set.resolve_alias("LIBZSTD"), Some(("facebook", "zstandard")));
+        assert_eq!(
+            set.resolve_alias("libzstd"),
+            Some(("facebook", "zstandard"))
+        );
+        assert_eq!(
+            set.resolve_alias("LIBZSTD"),
+            Some(("facebook", "zstandard"))
+        );
         // A product name resolves to itself, so callers need only one path.
-        assert_eq!(set.resolve_alias("zstandard"), Some(("facebook", "zstandard")));
+        assert_eq!(
+            set.resolve_alias("zstandard"),
+            Some(("facebook", "zstandard"))
+        );
     }
 
     #[test]
@@ -777,7 +806,12 @@ zero CVEs rather than an error"
     /// this is the record of that, so a later edit to a pattern cannot quietly
     /// stop reading a version that used to work.
     const FIRMWARE_GROUND_TRUTH: [(&str, &str, &str, &str); 22] = [
-        ("dropbear_ssh", "dropbear", "\nSSH-2.0-dropbear_2025.89\n", "2025.89"),
+        (
+            "dropbear_ssh",
+            "dropbear",
+            "\nSSH-2.0-dropbear_2025.89\n",
+            "2025.89",
+        ),
         ("dnsmasq", "dnsmasq", "\ndnsmasq-2.91\n", "2.91"),
         (
             "lighttpd",
@@ -785,12 +819,27 @@ zero CVEs rather than an error"
             "\nlighttpd/1.4.79 (ssl) - a light and fast webserver\n",
             "1.4.79",
         ),
-        ("wpa_supplicant", "wpa_supplicant", "\nwpa_supplicant v2.10\n", "2.10"),
+        (
+            "wpa_supplicant",
+            "wpa_supplicant",
+            "\nwpa_supplicant v2.10\n",
+            "2.10",
+        ),
         ("hostapd", "hostapd_cli", "\nhostapd_cli v2.10\n", "2.10"),
-        ("openssh", "sshd", "\nOpenSSH_10.0p2 Debian-7+deb13u4\n", "10.0p2"),
+        (
+            "openssh",
+            "sshd",
+            "\nOpenSSH_10.0p2 Debian-7+deb13u4\n",
+            "10.0p2",
+        ),
         ("net-snmp", "snmpd", "\nnet-snmp-5.9.4+dfsg=.\n", "5.9.4"),
         ("libssh", "libssh.so.4", "\nlibssh_0.11.5\n", "0.11.5"),
-        ("strongswan", "charon", "\nstrongSwan 6.0.1, %s %s, %s)\n", "6.0.1"),
+        (
+            "strongswan",
+            "charon",
+            "\nstrongSwan 6.0.1, %s %s, %s)\n",
+            "6.0.1",
+        ),
         (
             "libpcap",
             "libpcap.so.1",
@@ -842,15 +891,30 @@ zero CVEs rather than an error"
             "\nwolfSSL_Debugging_ON\nwolfSSL 5.7.2\n",
             "5.7.2",
         ),
-        ("libarchive", "libarchive.so.13", "\nlibarchive 3.7.4\n", "3.7.4"),
+        (
+            "libarchive",
+            "libarchive.so.13",
+            "\nlibarchive 3.7.4\n",
+            "3.7.4",
+        ),
         (
             "libcap",
             "libcap.so.2",
             "\n%s is the shared library version: libcap-2.75.\n",
             "2.75",
         ),
-        ("libevent", "libevent-2.1.so.7", "\n%s: %d events finalizing\n2.1.12-stable\n", "2.1.12"),
-        ("libpsl", "libpsl.so.5", "\n0.21.2 (+libidn2/2.3.7)\n", "0.21.2"),
+        (
+            "libevent",
+            "libevent-2.1.so.7",
+            "\n%s: %d events finalizing\n2.1.12-stable\n",
+            "2.1.12",
+        ),
+        (
+            "libpsl",
+            "libpsl.so.5",
+            "\n0.21.2 (+libidn2/2.3.7)\n",
+            "0.21.2",
+        ),
         ("ppp", "pppd", "\npppd version %s\npppd.so.2.5.2\n", "2.5.2"),
     ];
 
@@ -886,7 +950,10 @@ zero CVEs rather than an error"
             "nghttp2",
             "nghttp2_session_client_new",
             // endbr64; cmp edi, 0x14000; mov edx, 0
-            &[0xf3, 0x0f, 0x1e, 0xfa, 0x81, 0xff, 0x00, 0x40, 0x01, 0x00, 0xba, 0x00, 0x00, 0x00, 0x00],
+            &[
+                0xf3, 0x0f, 0x1e, 0xfa, 0x81, 0xff, 0x00, 0x40, 0x01, 0x00, 0xba, 0x00, 0x00, 0x00,
+                0x00,
+            ],
             "1.64.0",
         ),
         (
@@ -910,7 +977,9 @@ zero CVEs rather than an error"
             "mosquitto",
             "mosquitto_lib_version",
             // je +6; mov [rdx], 21; mov eax, 2000021; ret
-            &[0x74, 0x06, 0xc7, 0x02, 0x15, 0x00, 0x00, 0x00, 0xb8, 0x95, 0x84, 0x1e, 0x00, 0xc3],
+            &[
+                0x74, 0x06, 0xc7, 0x02, 0x15, 0x00, 0x00, 0x00, 0xb8, 0x95, 0x84, 0x1e, 0x00, 0xc3,
+            ],
             "2.0.21",
         ),
         (
@@ -973,7 +1042,10 @@ zero CVEs rather than an error"
         ("gmp", "GNU MP assertion failed"),
         ("openldap", "Can't contact LDAP server"),
         ("libtirpc", "rpc_broadcast_exp: uaddr %s"),
-        ("libnftnl", "libnftnl: attribute %d > %d (maximum) assertion fail"),
+        (
+            "libnftnl",
+            "libnftnl: attribute %d > %d (maximum) assertion fail",
+        ),
         ("json-c", "json-c aborts with error: %s"),
         ("libidn2", "input A-label is not valid"),
         ("e2fsprogs", "Journal superblock magic number invalid!"),
@@ -993,7 +1065,11 @@ zero CVEs rather than an error"
                 .into_iter()
                 .filter(|d| d.product == product)
                 .collect();
-            assert_eq!(hits.len(), 1, "{product}: expected one detection, got {hits:?}");
+            assert_eq!(
+                hits.len(),
+                1,
+                "{product}: expected one detection, got {hits:?}"
+            );
             assert_eq!(
                 hits[0].version, None,
                 "{product} has no version to read; claiming one would be invention"
@@ -1042,7 +1118,10 @@ zero CVEs rather than an error"
             .filter(|d| d.product == "nettle")
             .filter_map(|d| d.version)
             .collect();
-        assert!(versions.is_empty(), "decoded a version from junk: {versions:?}");
+        assert!(
+            versions.is_empty(),
+            "decoded a version from junk: {versions:?}"
+        );
     }
 
     #[test]
@@ -1067,7 +1146,8 @@ OpenSSH_7.0*,OpenSSH_7.1*\nOpenSSH_10.0p2 Debian-7+deb13u4\n";
         // "OpenVPN 2.6.0 or higher)" is a requirement the binary states, not a
         // version it is. Same shape as OpenSSL's "3.0.0 and newer" prose.
         let set = &*SIGNATURES;
-        let blob = "\nOpenVPN 2.6.0 or higher)\nOpenVPN 2.6.14 x86_64-pc-linux-gnu [SSL (OpenSSL)]\n";
+        let blob =
+            "\nOpenVPN 2.6.0 or higher)\nOpenVPN 2.6.14 x86_64-pc-linux-gnu [SSL (OpenSSL)]\n";
         let versions: Vec<_> = set
             .detect("openvpn", blob, &[])
             .into_iter()
@@ -1083,13 +1163,27 @@ OpenSSH_7.0*,OpenSSH_7.1*\nOpenSSH_10.0p2 Debian-7+deb13u4\n";
         assert!(set.len() >= 20, "only {} signatures bundled", set.len());
         let products: Vec<&str> = set.products().collect();
         for expected in [
-            "openssl", "zlib", "curl", "busybox", "glibc", "expat",
+            "openssl",
+            "zlib",
+            "curl",
+            "busybox",
+            "glibc",
+            "expat",
             // The firmware set: what an actual router image is made of.
-            "dropbear_ssh", "dnsmasq", "lighttpd", "wpa_supplicant", "hostapd",
-            "openssh", "u-boot", "libpcap", "lua", "openvpn",
+            "dropbear_ssh",
+            "dnsmasq",
+            "lighttpd",
+            "wpa_supplicant",
+            "hostapd",
+            "openssh",
+            "u-boot",
+            "libpcap",
+            "lua",
+            "openvpn",
             // The TLS library an embedded image actually ships, and the
             // firewall every one of them has.
-            "wolfssl", "iptables",
+            "wolfssl",
+            "iptables",
         ] {
             assert!(
                 products.contains(&expected),
@@ -1105,9 +1199,15 @@ OpenSSH_7.0*,OpenSSH_7.1*\nOpenSSH_10.0p2 Debian-7+deb13u4\n";
         // Python's _hashlib. Only the first describes what is linked here.
         let set = &*SIGNATURES;
 
-        let real = set.detect("libcrypto.so.3", "part of OpenSSL\nOpenSSL 3.5.6 7 Apr 2026\n", &[]);
+        let real = set.detect(
+            "libcrypto.so.3",
+            "part of OpenSSL\nOpenSSL 3.5.6 7 Apr 2026\n",
+            &[],
+        );
         assert_eq!(
-            real.iter().filter_map(|d| d.version.as_deref()).collect::<Vec<_>>(),
+            real.iter()
+                .filter_map(|d| d.version.as_deref())
+                .collect::<Vec<_>>(),
             vec!["3.5.6"]
         );
 
@@ -1129,7 +1229,8 @@ OpenSSH_7.0*,OpenSSH_7.1*\nOpenSSH_10.0p2 Debian-7+deb13u4\n";
         // serve, not the version it is; capturing them would report a dozen
         // phantom components for every real one.
         let set = &*SIGNATURES;
-        let blob = "OPENSSL_3.0.0\nOPENSSL_3.5.0\nZLIB_1.2.12\nGLIBC_2.26\nXZ_5.4\nLIBXML2_2.9.11\n";
+        let blob =
+            "OPENSSL_3.0.0\nOPENSSL_3.5.0\nZLIB_1.2.12\nGLIBC_2.26\nXZ_5.4\nLIBXML2_2.9.11\n";
         let hits = set.detect("libcrypto.so.3", blob, &[]);
         assert!(
             hits.iter().all(|h| h.version.is_none()),

@@ -186,7 +186,11 @@ pub fn render_program(invocation: &Invocation) -> String {
     if invocation.leading_args.is_empty() {
         invocation.program.clone()
     } else {
-        format!("{} {}", invocation.program, invocation.leading_args.join(" "))
+        format!(
+            "{} {}",
+            invocation.program,
+            invocation.leading_args.join(" ")
+        )
     }
 }
 
@@ -209,7 +213,11 @@ pub fn resolve(configured_path: Option<&str>) -> Result<Invocation, String> {
 }
 
 /// Probe a program that reports its version on stdout, using `parse` to read it.
-fn probe_program(program: &str, version_args: &[&str], parse: fn(&str) -> Option<String>) -> Option<String> {
+fn probe_program(
+    program: &str,
+    version_args: &[&str],
+    parse: fn(&str) -> Option<String>,
+) -> Option<String> {
     let output = Command::new(program).args(version_args).output().ok()?;
     if !output.status.success() {
         return None;
@@ -255,9 +263,7 @@ fn parse_docker_version(stdout: &str) -> Option<String> {
     stdout
         .split_whitespace()
         .map(|token| token.trim_end_matches(','))
-        .find(|token| {
-            token.contains('.') && token.starts_with(|c: char| c.is_ascii_digit())
-        })
+        .find(|token| token.contains('.') && token.starts_with(|c: char| c.is_ascii_digit()))
         .map(str::to_string)
 }
 
@@ -313,7 +319,10 @@ mod tests {
     #[test]
     fn a_name_prefixed_version_is_read() {
         assert_eq!(parse_version("cve-bin-tool 3.4").as_deref(), Some("3.4"));
-        assert_eq!(parse_version("cve-bin-tool v3.4.1").as_deref(), Some("3.4.1"));
+        assert_eq!(
+            parse_version("cve-bin-tool v3.4.1").as_deref(),
+            Some("3.4.1")
+        );
     }
 
     #[test]

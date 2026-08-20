@@ -133,20 +133,27 @@ pub fn parse_nvd(json: &Value) -> Vec<BinaryVulnerability> {
     };
 
     for entry in entries {
-        let Some(cve) = entry.get("cve") else { continue };
+        let Some(cve) = entry.get("cve") else {
+            continue;
+        };
         let Some(id) = cve.get("id").and_then(Value::as_str) else {
             continue;
         };
 
         let metrics = cve.get("metrics");
-        let preferred = ["cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"]
-            .into_iter()
-            .find_map(|key| {
-                metrics?
-                    .get(key)
-                    .and_then(Value::as_array)
-                    .and_then(|list| list.first())
-            });
+        let preferred = [
+            "cvssMetricV40",
+            "cvssMetricV31",
+            "cvssMetricV30",
+            "cvssMetricV2",
+        ]
+        .into_iter()
+        .find_map(|key| {
+            metrics?
+                .get(key)
+                .and_then(Value::as_array)
+                .and_then(|list| list.first())
+        });
 
         let data = preferred.and_then(|metric| metric.get("cvssData"));
         let score = data
@@ -463,8 +470,7 @@ pub async fn enrich(
     let askable: Vec<(&ComponentQuery, String)> = queries
         .iter()
         .filter_map(|query| {
-            cpe_match_string(&query.vendor, &query.product, &query.version)
-                .map(|cpe| (query, cpe))
+            cpe_match_string(&query.vendor, &query.product, &query.version).map(|cpe| (query, cpe))
         })
         .collect();
 
@@ -533,8 +539,7 @@ pub async fn enrich(
             "checking {} CVE(s) against CISA KEV and EPSS",
             cve_ids.len()
         ));
-        let (kev, epss, mut signal_notes) =
-            crate::exploit::fetch(&state.http, &cve_ids).await;
+        let (kev, epss, mut signal_notes) = crate::exploit::fetch(&state.http, &cve_ids).await;
         notes.append(&mut signal_notes);
         let mut exploited = 0usize;
         for vulnerability in found.values_mut().flatten() {
@@ -542,7 +547,8 @@ pub async fn enrich(
             vulnerability.known_exploited = signal.known_exploited;
             vulnerability.ransomware = signal.ransomware;
             vulnerability.epss_probability = signal.epss.or(vulnerability.epss_probability);
-            vulnerability.epss_percentile = signal.epss_percentile.or(vulnerability.epss_percentile);
+            vulnerability.epss_percentile =
+                signal.epss_percentile.or(vulnerability.epss_percentile);
             if signal.known_exploited {
                 exploited += 1;
             }
@@ -648,7 +654,11 @@ mod tests {
         assert!(parse_nvd(&serde_json::json!({})).is_empty());
     }
 
-    fn osv_vulnerability(id: &str, aliases: &[&str], fixed: &[&str]) -> crate::models::Vulnerability {
+    fn osv_vulnerability(
+        id: &str,
+        aliases: &[&str],
+        fixed: &[&str],
+    ) -> crate::models::Vulnerability {
         crate::models::Vulnerability {
             id: id.to_string(),
             aliases: aliases.iter().map(|a| a.to_string()).collect(),
@@ -711,7 +721,10 @@ mod tests {
         // Not CVE-shaped: left exactly as it is rather than mangled into
         // something that looks like a real identifier.
         assert_eq!(cve_id_from_osv("GHSA-abcd-1234"), "GHSA-abcd-1234");
-        assert_eq!(cve_id_from_osv("PYSEC-2021-CVE-bogus"), "PYSEC-2021-CVE-bogus");
+        assert_eq!(
+            cve_id_from_osv("PYSEC-2021-CVE-bogus"),
+            "PYSEC-2021-CVE-bogus"
+        );
         assert_eq!(cve_id_from_osv("RUSTSEC-2021-0001"), "RUSTSEC-2021-0001");
     }
 
@@ -740,7 +753,13 @@ mod tests {
         // The package note knows the ecosystem and the packaged version; the
         // signature knows the CPE vendor. Losing either halves the coverage.
         let queries = queries_from(&[
-            detection("", "curl", Some("8.14.1"), Some("8.14.1-2+deb13u4"), Some("Debian")),
+            detection(
+                "",
+                "curl",
+                Some("8.14.1"),
+                Some("8.14.1-2+deb13u4"),
+                Some("Debian"),
+            ),
             detection("haxx", "curl", Some("8.14.1"), Some("8.14.1"), None),
         ]);
 
@@ -748,7 +767,10 @@ mod tests {
         assert_eq!(queries[0].vendor, "haxx");
         assert_eq!(queries[0].ecosystem.as_deref(), Some("Debian"));
         assert_eq!(queries[0].raw_version, "8.14.1-2+deb13u4");
-        assert!(cpe_match_string(&queries[0].vendor, &queries[0].product, &queries[0].version).is_some());
+        assert!(
+            cpe_match_string(&queries[0].vendor, &queries[0].product, &queries[0].version)
+                .is_some()
+        );
     }
 
     #[test]
@@ -837,7 +859,10 @@ mod tests {
         apply(&mut result, found);
 
         assert_eq!(result.components[0].vulnerabilities.len(), 2);
-        assert_eq!(result.summary.vulnerabilities, 2, "the summary must not double-count either");
+        assert_eq!(
+            result.summary.vulnerabilities, 2,
+            "the summary must not double-count either"
+        );
     }
 
     #[test]
@@ -912,7 +937,10 @@ mod tests {
 
     #[test]
     fn a_component_with_no_results_keeps_an_empty_list_rather_than_being_dropped() {
-        let mut result = scan_result(vec![component("zstd", "1.5.7"), component("curl", "8.14.1")]);
+        let mut result = scan_result(vec![
+            component("zstd", "1.5.7"),
+            component("curl", "8.14.1"),
+        ]);
         let mut found = HashMap::new();
         found.insert(
             component_key("curl", "8.14.1"),
@@ -923,7 +951,10 @@ mod tests {
         assert_eq!(result.components.len(), 2);
         assert!(result.components[0].vulnerabilities.is_empty());
         assert_eq!(result.components[1].vulnerabilities.len(), 1);
-        assert_eq!(result.summary.components, 2, "a component with no CVEs is still a component");
+        assert_eq!(
+            result.summary.components, 2,
+            "a component with no CVEs is still a component"
+        );
     }
 
     #[test]

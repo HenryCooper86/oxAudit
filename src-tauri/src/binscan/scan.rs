@@ -12,7 +12,9 @@ use std::time::Duration;
 use super::detect;
 use super::grype;
 use super::report::{merge_results, BinaryScanResult};
-use super::run::{execute, explain_failure, report_path, resolve_target, BinaryScanRequest, ScratchReport};
+use super::run::{
+    execute, explain_failure, report_path, resolve_target, BinaryScanRequest, ScratchReport,
+};
 use super::runtime::{prepare_docker, prepare_native, to_host_path, Runtime, DEFAULT_IMAGE};
 
 /// Everything the orchestrator needs that lives in application state.
@@ -86,8 +88,15 @@ pub async fn run_scan(
 
     if context.use_cve_bin_tool {
         on_progress("starting cve-bin-tool".into());
-        match run_cve_bin_tool(context, request, &target, cancel.clone(), timeout, on_progress.clone())
-            .await
+        match run_cve_bin_tool(
+            context,
+            request,
+            &target,
+            cancel.clone(),
+            timeout,
+            on_progress.clone(),
+        )
+        .await
         {
             Ok(result) => results.push(result),
             Err(message) => {
@@ -106,7 +115,15 @@ pub async fn run_scan(
 
     if context.use_grype {
         on_progress("starting grype".into());
-        match run_grype(context, &target, cancel.clone(), timeout, on_progress.clone()).await {
+        match run_grype(
+            context,
+            &target,
+            cancel.clone(),
+            timeout,
+            on_progress.clone(),
+        )
+        .await
+        {
             Ok(result) => results.push(result),
             Err(message) => {
                 if message.contains("cancelled") {
@@ -239,11 +256,8 @@ async fn run_cve_bin_tool(
         _ => return Err(explain_failure(&outcome.stderr_tail, &outcome.status)),
     };
 
-    let mut result = super::report::parse_json2(
-        &raw,
-        &target.to_string_lossy(),
-        outcome.duration_ms,
-    )?;
+    let mut result =
+        super::report::parse_json2(&raw, &target.to_string_lossy(), outcome.duration_ms)?;
 
     // Paths a container reported name locations inside the mount, which the
     // user cannot open; map them back to the host.

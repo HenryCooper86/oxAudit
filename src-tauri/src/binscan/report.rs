@@ -195,19 +195,15 @@ pub(crate) fn normalize_severity(raw: &str) -> String {
 /// releases, and a scan that produced real findings should not be thrown away
 /// because one optional metric moved.
 pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinaryScanResult, String> {
-    let report: Json2Report =
-        serde_json::from_str(raw).map_err(|e| format!("cve-bin-tool report is not valid JSON: {e}"))?;
+    let report: Json2Report = serde_json::from_str(raw)
+        .map_err(|e| format!("cve-bin-tool report is not valid JSON: {e}"))?;
 
     // Keyed by (vendor, product, version) so the flat rows collapse back into
     // one entry per component, in a stable order.
     let mut grouped: BTreeMap<(String, String, String), BinaryComponent> = BTreeMap::new();
     let mut summary = BinaryScanSummary::default();
 
-    for source_report in report
-        .vulnerabilities
-        .map(|v| v.report)
-        .unwrap_or_default()
-    {
+    for source_report in report.vulnerabilities.map(|v| v.report).unwrap_or_default() {
         for entry in source_report.entries {
             let key = (
                 entry.vendor.clone(),
@@ -304,10 +300,7 @@ pub fn merge_results(results: Vec<BinaryScanResult>) -> BinaryScanResult {
         return merged.remove(0);
     }
 
-    let target = merged
-        .first()
-        .map(|r| r.target.clone())
-        .unwrap_or_default();
+    let target = merged.first().map(|r| r.target.clone()).unwrap_or_default();
     let duration_ms = merged.iter().map(|r| r.duration_ms).sum();
     let database_last_updated = merged
         .iter()
@@ -377,13 +370,11 @@ pub fn merge_results(results: Vec<BinaryScanResult>) -> BinaryScanResult {
 
     let mut components: Vec<BinaryComponent> = grouped.into_values().collect();
     for component in &mut components {
-        component
-            .vulnerabilities
-            .sort_by(|a, b| {
-                severity_rank(&b.severity)
-                    .cmp(&severity_rank(&a.severity))
-                    .then_with(|| a.cve_id.cmp(&b.cve_id))
-            });
+        component.vulnerabilities.sort_by(|a, b| {
+            severity_rank(&b.severity)
+                .cmp(&severity_rank(&a.severity))
+                .then_with(|| a.cve_id.cmp(&b.cve_id))
+        });
         component.detected_by.sort();
     }
     sort_components(&mut components);
@@ -587,7 +578,10 @@ mod tests {
 
         assert!(result.components.is_empty());
         assert_eq!(result.summary.vulnerabilities, 0);
-        assert_eq!(result.database_last_updated.as_deref(), Some("2026-08-19 22:14:03"));
+        assert_eq!(
+            result.database_last_updated.as_deref(),
+            Some("2026-08-19 22:14:03")
+        );
         assert_eq!(result.duration_ms, 42);
     }
 
@@ -612,9 +606,18 @@ mod tests {
         assert!(error.contains("not valid JSON"), "got: {error}");
     }
 
-    fn component(product: &str, version: &str, scanner: &str, cves: &[(&str, &str)]) -> BinaryComponent {
+    fn component(
+        product: &str,
+        version: &str,
+        scanner: &str,
+        cves: &[(&str, &str)],
+    ) -> BinaryComponent {
         BinaryComponent {
-            vendor: if scanner == GRYPE { String::new() } else { "acme".into() },
+            vendor: if scanner == GRYPE {
+                String::new()
+            } else {
+                "acme".into()
+            },
             product: product.into(),
             version: version.into(),
             paths: vec![format!("/fw/{product}.so")],
@@ -631,9 +634,9 @@ mod tests {
                     remarks: None,
                     epss_probability: None,
                     epss_percentile: None,
-                known_exploited: false,
-                ransomware: false,
-                fixed_in: None,
+                    known_exploited: false,
+                    ransomware: false,
+                    fixed_in: None,
                 })
                 .collect(),
         }
@@ -642,7 +645,10 @@ mod tests {
     fn result(scanner: &str, components: Vec<BinaryComponent>) -> BinaryScanResult {
         BinaryScanResult {
             target: "/fw".into(),
-            summary: BinaryScanSummary { components: components.len(), ..Default::default() },
+            summary: BinaryScanSummary {
+                components: components.len(),
+                ..Default::default()
+            },
             components,
             database_last_updated: None,
             duration_ms: 100,
@@ -653,12 +659,26 @@ mod tests {
     #[test]
     fn a_component_both_scanners_saw_is_listed_once_with_both_credited() {
         let merged = merge_results(vec![
-            result(CVE_BIN_TOOL, vec![component("curl", "8.7.1", CVE_BIN_TOOL, &[("CVE-1", "high")])]),
-            result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "high")])]),
+            result(
+                CVE_BIN_TOOL,
+                vec![component(
+                    "curl",
+                    "8.7.1",
+                    CVE_BIN_TOOL,
+                    &[("CVE-1", "high")],
+                )],
+            ),
+            result(
+                GRYPE,
+                vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "high")])],
+            ),
         ]);
 
         assert_eq!(merged.components.len(), 1);
-        assert_eq!(merged.components[0].detected_by, vec!["cve-bin-tool", "grype"]);
+        assert_eq!(
+            merged.components[0].detected_by,
+            vec!["cve-bin-tool", "grype"]
+        );
         assert_eq!(
             merged.summary.vulnerabilities, 1,
             "a CVE both scanners found must not be counted twice"
@@ -670,11 +690,26 @@ mod tests {
         // The whole point of running both: grype missed OpenSSL and zstd on the
         // real fixture, cve-bin-tool missed nothing it checks for.
         let merged = merge_results(vec![
-            result(CVE_BIN_TOOL, vec![component("openssl", "1.0.2g", CVE_BIN_TOOL, &[("CVE-A", "critical")])]),
-            result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-B", "high")])]),
+            result(
+                CVE_BIN_TOOL,
+                vec![component(
+                    "openssl",
+                    "1.0.2g",
+                    CVE_BIN_TOOL,
+                    &[("CVE-A", "critical")],
+                )],
+            ),
+            result(
+                GRYPE,
+                vec![component("curl", "8.7.1", GRYPE, &[("CVE-B", "high")])],
+            ),
         ]);
 
-        let products: Vec<&str> = merged.components.iter().map(|c| c.product.as_str()).collect();
+        let products: Vec<&str> = merged
+            .components
+            .iter()
+            .map(|c| c.product.as_str())
+            .collect();
         assert_eq!(products, vec!["openssl", "curl"], "most severe first");
         assert_eq!(merged.summary.components, 2);
         assert_eq!(merged.summary.critical, 1);
@@ -688,12 +723,24 @@ mod tests {
         from_grype.vulnerabilities[0].score = Some(7.5);
 
         let merged = merge_results(vec![
-            result(CVE_BIN_TOOL, vec![component("curl", "8.7.1", CVE_BIN_TOOL, &[("CVE-1", "high")])]),
+            result(
+                CVE_BIN_TOOL,
+                vec![component(
+                    "curl",
+                    "8.7.1",
+                    CVE_BIN_TOOL,
+                    &[("CVE-1", "high")],
+                )],
+            ),
             result(GRYPE, vec![from_grype]),
         ]);
 
         let cve = &merged.components[0].vulnerabilities[0];
-        assert_eq!(cve.fixed_in.as_deref(), Some("8.9.0"), "grype knows the fix version");
+        assert_eq!(
+            cve.fixed_in.as_deref(),
+            Some("8.9.0"),
+            "grype knows the fix version"
+        );
         assert_eq!(cve.score, Some(7.5));
     }
 
@@ -702,8 +749,19 @@ mod tests {
         // grype never reports a vendor; keying the merge on it would duplicate
         // every shared component.
         let merged = merge_results(vec![
-            result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "low")])]),
-            result(CVE_BIN_TOOL, vec![component("curl", "8.7.1", CVE_BIN_TOOL, &[("CVE-1", "low")])]),
+            result(
+                GRYPE,
+                vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "low")])],
+            ),
+            result(
+                CVE_BIN_TOOL,
+                vec![component(
+                    "curl",
+                    "8.7.1",
+                    CVE_BIN_TOOL,
+                    &[("CVE-1", "low")],
+                )],
+            ),
         ]);
 
         assert_eq!(merged.components.len(), 1);
@@ -713,8 +771,19 @@ mod tests {
     #[test]
     fn the_more_severe_rating_wins_when_scanners_disagree() {
         let merged = merge_results(vec![
-            result(CVE_BIN_TOOL, vec![component("curl", "8.7.1", CVE_BIN_TOOL, &[("CVE-1", "medium")])]),
-            result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "critical")])]),
+            result(
+                CVE_BIN_TOOL,
+                vec![component(
+                    "curl",
+                    "8.7.1",
+                    CVE_BIN_TOOL,
+                    &[("CVE-1", "medium")],
+                )],
+            ),
+            result(
+                GRYPE,
+                vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "critical")])],
+            ),
         ]);
 
         assert_eq!(merged.components[0].vulnerabilities[0].severity, "critical");
@@ -724,7 +793,10 @@ mod tests {
 
     #[test]
     fn merging_a_single_result_is_a_passthrough() {
-        let single = result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "low")])]);
+        let single = result(
+            GRYPE,
+            vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "low")])],
+        );
         let merged = merge_results(vec![single]);
         assert_eq!(merged.scanners, vec!["grype"]);
         assert_eq!(merged.components.len(), 1);
@@ -733,8 +805,19 @@ mod tests {
     #[test]
     fn product_matching_ignores_case_so_one_component_is_not_listed_twice() {
         let merged = merge_results(vec![
-            result(CVE_BIN_TOOL, vec![component("OpenSSL", "3.0.1", CVE_BIN_TOOL, &[("CVE-1", "high")])]),
-            result(GRYPE, vec![component("openssl", "3.0.1", GRYPE, &[("CVE-2", "low")])]),
+            result(
+                CVE_BIN_TOOL,
+                vec![component(
+                    "OpenSSL",
+                    "3.0.1",
+                    CVE_BIN_TOOL,
+                    &[("CVE-1", "high")],
+                )],
+            ),
+            result(
+                GRYPE,
+                vec![component("openssl", "3.0.1", GRYPE, &[("CVE-2", "low")])],
+            ),
         ]);
 
         assert_eq!(merged.components.len(), 1);
@@ -751,7 +834,11 @@ mod tests {
     fn a_real_cve_bin_tool_report_parses_and_inverts() {
         let parsed = parse_json2(REAL_REPORT, "/scan/corpus", 1234).expect("real report parses");
 
-        assert_eq!(parsed.components.len(), 1, "ten rows describe one component");
+        assert_eq!(
+            parsed.components.len(),
+            1,
+            "ten rows describe one component"
+        );
         let curl = &parsed.components[0];
         assert_eq!(curl.vendor, "haxx");
         assert_eq!(curl.product, "curl");
@@ -777,7 +864,11 @@ mod tests {
         let parsed = parse_json2(REAL_REPORT, "/scan/corpus", 0).expect("real report parses");
         let curl = &parsed.components[0];
 
-        assert_eq!(curl.paths, vec!["/scan/corpus/curl"], "paths arrive comma-joined");
+        assert_eq!(
+            curl.paths,
+            vec!["/scan/corpus/curl"],
+            "paths arrive comma-joined"
+        );
         assert_eq!(curl.detected_by, vec![CVE_BIN_TOOL]);
 
         let first = &curl.vulnerabilities[0];
@@ -787,7 +878,10 @@ mod tests {
             "severities arrive uppercase and must be normalized: {}",
             first.severity
         );
-        assert!(first.score.is_some(), "score arrives as a string, not a number");
+        assert!(
+            first.score.is_some(),
+            "score arrives as a string, not a number"
+        );
         assert_eq!(first.source, "REDHAT");
     }
 }

@@ -138,7 +138,10 @@ mod tests {
     #[test]
     fn ordinary_source_is_production() {
         assert_eq!(classify("src/auth/login.rs"), Scope::Production);
-        assert_eq!(classify("app/controllers/users_controller.rb"), Scope::Production);
+        assert_eq!(
+            classify("app/controllers/users_controller.rb"),
+            Scope::Production
+        );
     }
 
     #[test]
@@ -184,8 +187,16 @@ mod tests {
     fn only_production_and_infrastructure_are_reportable_by_default() {
         assert!(Scope::Production.is_reportable());
         assert!(Scope::Infrastructure.is_reportable());
-        for scope in [Scope::Test, Scope::Vendored, Scope::Generated, Scope::Documentation] {
-            assert!(!scope.is_reportable(), "{scope:?} should be filtered by default");
+        for scope in [
+            Scope::Test,
+            Scope::Vendored,
+            Scope::Generated,
+            Scope::Documentation,
+        ] {
+            assert!(
+                !scope.is_reportable(),
+                "{scope:?} should be filtered by default"
+            );
         }
     }
 

@@ -34,7 +34,10 @@ pub struct UsageStore {
 
 impl UsageStore {
     pub fn record(&mut self, conversation_id: &str, rec: UsageRecord) {
-        let list = self.conversations.entry(conversation_id.to_string()).or_default();
+        let list = self
+            .conversations
+            .entry(conversation_id.to_string())
+            .or_default();
         list.push(rec);
         if list.len() > 5000 {
             let _ = list.split_off(list.len() - 5000);

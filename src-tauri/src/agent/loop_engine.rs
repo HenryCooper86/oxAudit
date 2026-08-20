@@ -377,7 +377,6 @@ Let me summarize what I have and ask you how to proceed.",
     }
 }
 
-
 #[cfg(test)]
 mod steer_tests {
     use super::*;
@@ -455,10 +454,7 @@ mod steer_tests {
         assert_eq!(
             messages[1..]
                 .iter()
-                .map(|m| (
-                    m["role"].as_str().unwrap(),
-                    m["content"].as_str().unwrap()
-                ))
+                .map(|m| (m["role"].as_str().unwrap(), m["content"].as_str().unwrap()))
                 .collect::<Vec<_>>(),
             vec![
                 ("user", "check the auth module instead"),

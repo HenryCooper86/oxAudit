@@ -92,7 +92,11 @@ impl SessionStore {
     }
 
     // ---------------------------------------------------------------- create
-    pub fn create(&self, title: Option<String>, project_path: Option<String>) -> Result<SessionInfo, String> {
+    pub fn create(
+        &self,
+        title: Option<String>,
+        project_path: Option<String>,
+    ) -> Result<SessionInfo, String> {
         let auto_title = title.is_none();
         let info = SessionInfo {
             id: uuid::Uuid::new_v4().to_string(),
@@ -219,10 +223,7 @@ impl SessionStore {
 
 /// Heuristic session title from the first user message.
 fn make_title(content: &str) -> String {
-    let collapsed: String = content
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = collapsed.trim();
     if trimmed.chars().count() <= 60 {
         trimmed.to_string()
@@ -232,17 +233,15 @@ fn make_title(content: &str) -> String {
     }
 }
 
-pub fn transcript_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(SessionStore::new(app)?.dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn temp_store() -> (SessionStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let store = SessionStore { dir: dir.path().to_path_buf() };
+        let store = SessionStore {
+            dir: dir.path().to_path_buf(),
+        };
         (store, dir)
     }
 
@@ -262,8 +261,12 @@ mod tests {
         let (store, _d) = temp_store();
         let s = store.create(None, Some("/tmp/proj".into())).unwrap();
         assert_eq!(s.message_count, 0);
-        store.append(&s.id, &msg("1", "user", "Analyze CVE-2024-1234 please")).unwrap();
-        store.append(&s.id, &msg("2", "assistant", "Here is the analysis…")).unwrap();
+        store
+            .append(&s.id, &msg("1", "user", "Analyze CVE-2024-1234 please"))
+            .unwrap();
+        store
+            .append(&s.id, &msg("2", "assistant", "Here is the analysis…"))
+            .unwrap();
 
         let list = store.list().unwrap();
         assert_eq!(list.len(), 1);
@@ -282,7 +285,9 @@ mod tests {
     fn explicit_title_never_overwritten() {
         let (store, _d) = temp_store();
         let s = store.create(Some("My Research".into()), None).unwrap();
-        store.append(&s.id, &msg("1", "user", "first user message")).unwrap();
+        store
+            .append(&s.id, &msg("1", "user", "first user message"))
+            .unwrap();
         let list = store.list().unwrap();
         assert_eq!(list[0].title, "My Research");
         assert!(!list[0].auto_title);
@@ -312,7 +317,11 @@ mod tests {
         let s = store.create(None, None).unwrap();
         store.append(&s.id, &msg("1", "user", "ok")).unwrap();
         let path = store.transcript_path(&s.id);
-        fs::write(&path, format!("{}\nTHIS IS NOT JSON\n", fs::read_to_string(&path).unwrap())).unwrap();
+        fs::write(
+            &path,
+            format!("{}\nTHIS IS NOT JSON\n", fs::read_to_string(&path).unwrap()),
+        )
+        .unwrap();
         let msgs = store.get_messages(&s.id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "ok");
