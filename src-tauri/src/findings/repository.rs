@@ -1,4 +1,9 @@
-use std::{path::Path, sync::Mutex, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Mutex,
+    time::Duration,
+};
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -257,7 +262,6 @@ impl FindingsRepository {
         struct StoredRunIdentity {
             status: String,
             project_id: String,
-            baseline_run_id: Option<String>,
             scanner_version: String,
             fingerprint_version: u16,
             options_json: String,
@@ -270,7 +274,7 @@ impl FindingsRepository {
         let transaction = connection.transaction().map_err(persistence_error)?;
         let existing = transaction
             .query_row(
-                r#"SELECT status, project_id, baseline_run_id, scanner_version,
+                r#"SELECT status, project_id, scanner_version,
                           fingerprint_version, options_json, policy_status_json, policy_hash,
                           started_at
                    FROM scan_runs WHERE id = ?1"#,
@@ -279,13 +283,12 @@ impl FindingsRepository {
                     Ok(StoredRunIdentity {
                         status: row.get(0)?,
                         project_id: row.get(1)?,
-                        baseline_run_id: row.get(2)?,
-                        scanner_version: row.get(3)?,
-                        fingerprint_version: row.get(4)?,
-                        options_json: row.get(5)?,
-                        policy_status_json: row.get(6)?,
-                        policy_hash: row.get(7)?,
-                        started_at: row.get(8)?,
+                        scanner_version: row.get(2)?,
+                        fingerprint_version: row.get(3)?,
+                        options_json: row.get(4)?,
+                        policy_status_json: row.get(5)?,
+                        policy_hash: row.get(6)?,
+                        started_at: row.get(7)?,
                     })
                 },
             )
@@ -294,7 +297,6 @@ impl FindingsRepository {
         if let Some(existing) = existing {
             let identical = existing.status == "running"
                 && existing.project_id == detail.project_id
-                && existing.baseline_run_id == detail.baseline_run_id
                 && existing.scanner_version == scanner_version
                 && existing.fingerprint_version == super::domain::FINGERPRINT_VERSION
                 && existing.options_json == options_json
@@ -310,14 +312,15 @@ impl FindingsRepository {
 
         transaction
             .execute(
+                // `baseline_run_id` is advisory output. Completion derives and
+                // persists the authoritative boundary from repository state.
                 r#"INSERT INTO scan_runs(
                      id, project_id, baseline_run_id, status, scanner_version, fingerprint_version,
                      options_json, policy_status_json, policy_hash, started_at
-                   ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?9)"#,
+                   ) VALUES (?1, ?2, NULL, 'running', ?3, ?4, ?5, ?6, ?7, ?8)"#,
                 params![
                     detail.run_id,
                     detail.project_id,
-                    detail.baseline_run_id,
                     scanner_version,
                     super::domain::FINGERPRINT_VERSION,
                     options_json,
@@ -338,11 +341,17 @@ impl FindingsRepository {
         let mut connection = self.connection.lock().map_err(persistence_error)?;
         let transaction = connection.transaction().map_err(persistence_error)?;
 
-        let (project_id, status, fingerprint_version): (String, String, u16) = transaction
+        let (project_id, status, fingerprint_version, stored_started_at): (
+            String,
+            String,
+            u16,
+            String,
+        ) = transaction
             .query_row(
-                "SELECT project_id, status, fingerprint_version FROM scan_runs WHERE id = ?1",
+                r#"SELECT project_id, status, fingerprint_version, started_at
+                   FROM scan_runs WHERE id = ?1"#,
                 [&detail.run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(persistence_error)?
@@ -356,6 +365,7 @@ impl FindingsRepository {
         if status != "running"
             || detail.status != RunStatus::Completed
             || detail.project_id != project_id
+            || detail.started_at != stored_started_at
             || coverage.fingerprint_version != fingerprint_version
             || detail
                 .findings
@@ -364,17 +374,22 @@ impl FindingsRepository {
         {
             return Err(CommandError::persistence_unavailable());
         }
-        if let Some(baseline_run_id) = detail.baseline_run_id.as_deref() {
-            let selected = latest_compatible_baseline_id_from_connection(
-                &transaction,
-                &project_id,
-                fingerprint_version,
-                coverage,
-            )?;
-            if selected.as_deref() != Some(baseline_run_id) {
-                return Err(CommandError::persistence_unavailable());
-            }
+        let started_at = parse_utc_timestamp(&stored_started_at)?;
+        let completed_at = detail
+            .completed_at
+            .as_deref()
+            .ok_or_else(CommandError::persistence_unavailable)
+            .and_then(parse_utc_timestamp)?;
+        if completed_at < started_at {
+            return Err(CommandError::persistence_unavailable());
         }
+        let baseline_run_id = latest_compatible_baseline_id_from_connection(
+            &transaction,
+            &project_id,
+            fingerprint_version,
+            coverage,
+            started_at,
+        )?;
 
         let manifest = Manifest::new(
             detail
@@ -447,24 +462,15 @@ impl FindingsRepository {
                 r#"UPDATE scan_runs
                    SET baseline_run_id = ?2, coverage_json = ?3, summary_json = ?4
                    WHERE id = ?1"#,
-                params![
-                    detail.run_id,
-                    detail.baseline_run_id,
-                    coverage_json,
-                    summary_json
-                ],
+                params![detail.run_id, baseline_run_id, coverage_json, summary_json],
             )
             .map_err(persistence_error)?;
-        let completed_at = detail
-            .completed_at
-            .as_deref()
-            .ok_or_else(CommandError::persistence_unavailable)?;
         let changed = transaction
             .execute(
                 r#"UPDATE scan_runs
                    SET status = 'completed', completed_at = ?2, error_code = NULL
                    WHERE id = ?1 AND status = 'running'"#,
-                params![detail.run_id, completed_at],
+                params![detail.run_id, detail.completed_at],
             )
             .map_err(persistence_error)?;
         if changed != 1 {
@@ -487,7 +493,11 @@ impl FindingsRepository {
         now: DateTime<Utc>,
     ) -> Result<ScanRunDetail, CommandError> {
         self.complete_run_with_maintenance_hook(detail, coverage, || {
-            self.apply_retention(now, policy).map(|_| ())
+            if policy.max_completed_runs_per_project == 0 || policy.max_age_days == 0 {
+                return Err(CommandError::persistence_unavailable());
+            }
+            self.apply_retention_protecting(now, policy, Some(&detail.run_id))
+                .map(|_| ())
         })
     }
 
@@ -503,8 +513,15 @@ impl FindingsRepository {
         let mut stored = self.complete_run(detail, coverage)?;
         if maintenance().is_err() {
             stored.maintenance_warning = Some(RETENTION_MAINTENANCE_WARNING.into());
+            return Ok(stored);
         }
-        Ok(stored)
+        match self.load_run(&stored.run_id) {
+            Ok(reloaded) => Ok(reloaded),
+            Err(_) => {
+                stored.maintenance_warning = Some(RETENTION_MAINTENANCE_WARNING.into());
+                Ok(stored)
+            }
+        }
     }
 
     pub fn load_run(&self, run_id: &str) -> Result<ScanRunDetail, CommandError> {
@@ -570,13 +587,15 @@ impl FindingsRepository {
 
     /// Selects the newest completed run for a project whose fingerprint version
     /// and scanner-family coverage are compatible with the supplied current
-    /// coverage. This can run before current-run completion; comparison itself
-    /// remains restricted to two completed runs.
+    /// coverage and whose completion instant is strictly before the cutoff.
+    /// This is advisory for pre-completion display only: `complete_run` ignores
+    /// caller hints and derives the authoritative boundary in its transaction.
     pub fn latest_compatible_baseline(
         &self,
         project_id: &str,
         fingerprint_version: u16,
         current_coverage: &CoverageManifest,
+        strictly_before: DateTime<Utc>,
     ) -> Result<Option<ScanRunDetail>, CommandError> {
         if current_coverage.fingerprint_version != fingerprint_version {
             return Err(CommandError::persistence_unavailable());
@@ -587,6 +606,7 @@ impl FindingsRepository {
             project_id,
             fingerprint_version,
             current_coverage,
+            strictly_before,
         )?
         .as_deref()
         .map(|run_id| load_run_from_connection(&connection, run_id))
@@ -675,40 +695,116 @@ impl FindingsRepository {
         now: DateTime<Utc>,
         policy: RetentionPolicy,
     ) -> Result<usize, CommandError> {
+        self.apply_retention_protecting(now, policy, None)
+    }
+
+    fn apply_retention_protecting(
+        &self,
+        now: DateTime<Utc>,
+        policy: RetentionPolicy,
+        protected_run_id: Option<&str>,
+    ) -> Result<usize, CommandError> {
+        struct CompletedRun {
+            id: String,
+            project_id: String,
+            completed_at: DateTime<Utc>,
+        }
+
         let completed_before = now
             .checked_sub_signed(ChronoDuration::days(i64::from(policy.max_age_days)))
-            .ok_or_else(CommandError::persistence_unavailable)?
-            .to_rfc3339();
+            .ok_or_else(CommandError::persistence_unavailable)?;
         let mut connection = self.connection.lock().map_err(persistence_error)?;
         let transaction = connection.transaction().map_err(persistence_error)?;
-        let expired = transaction
-            .execute(
-                r#"DELETE FROM scan_runs
-                   WHERE status = 'completed'
-                     AND julianday(completed_at) < julianday(?1)"#,
-                [&completed_before],
-            )
-            .map_err(persistence_error)?;
-        let over_limit = transaction
-            .execute(
-                r#"DELETE FROM scan_runs
-                   WHERE id IN (
-                     SELECT id FROM (
-                       SELECT id,
-                              ROW_NUMBER() OVER (
-                                PARTITION BY project_id
-                                ORDER BY julianday(completed_at) DESC, id DESC
-                              ) AS ordinal
+        let completed_runs = {
+            let mut statement = transaction
+                .prepare(
+                    r#"SELECT id, project_id, completed_at
                        FROM scan_runs
-                       WHERE status = 'completed'
-                     ) ranked
-                     WHERE ordinal > ?1
-                   )"#,
-                [i64::from(policy.max_completed_runs_per_project)],
-            )
-            .map_err(persistence_error)?;
+                       WHERE status = 'completed'"#,
+                )
+                .map_err(persistence_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .map_err(persistence_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(persistence_error)?;
+            rows.into_iter()
+                .map(|(id, project_id, completed_at)| {
+                    let completed_at = completed_at
+                        .as_deref()
+                        .ok_or_else(CommandError::persistence_unavailable)
+                        .and_then(parse_utc_timestamp)?;
+                    Ok(CompletedRun {
+                        id,
+                        project_id,
+                        completed_at,
+                    })
+                })
+                .collect::<Result<Vec<_>, CommandError>>()?
+        };
+
+        let mut delete_ids = completed_runs
+            .iter()
+            .filter(|run| {
+                run.completed_at < completed_before && protected_run_id != Some(run.id.as_str())
+            })
+            .map(|run| run.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut by_project = BTreeMap::<String, Vec<&CompletedRun>>::new();
+        for run in &completed_runs {
+            if !delete_ids.contains(&run.id) {
+                by_project
+                    .entry(run.project_id.clone())
+                    .or_default()
+                    .push(run);
+            }
+        }
+        for runs in by_project.values_mut() {
+            runs.sort_by(|left, right| {
+                right
+                    .completed_at
+                    .cmp(&left.completed_at)
+                    .then_with(|| right.id.cmp(&left.id))
+            });
+            let protected_is_present = protected_run_id
+                .is_some_and(|protected| runs.iter().any(|run| run.id == protected));
+            let mut remaining_slots = policy.max_completed_runs_per_project as usize;
+            if protected_is_present {
+                remaining_slots = remaining_slots.saturating_sub(1);
+            }
+            for run in runs
+                .iter()
+                .filter(|run| protected_run_id != Some(run.id.as_str()))
+            {
+                if remaining_slots > 0 {
+                    remaining_slots -= 1;
+                } else {
+                    delete_ids.insert(run.id.clone());
+                }
+            }
+        }
+
+        let mut deleted = 0;
+        for run_id in delete_ids {
+            let changed = transaction
+                .execute(
+                    "DELETE FROM scan_runs WHERE id = ?1 AND status = 'completed'",
+                    [run_id],
+                )
+                .map_err(persistence_error)?;
+            if changed != 1 {
+                return Err(CommandError::persistence_unavailable());
+            }
+            deleted += changed;
+        }
         transaction.commit().map_err(persistence_error)?;
-        Ok(expired + over_limit)
+        Ok(deleted)
     }
 }
 
@@ -1072,6 +1168,7 @@ struct StoredComparisonRun {
     status: RunStatus,
     fingerprint_version: u16,
     coverage: Option<CoverageManifest>,
+    started_at: String,
     completed_at: Option<String>,
 }
 
@@ -1081,7 +1178,8 @@ fn load_comparison_run(
 ) -> Result<StoredComparisonRun, CommandError> {
     let stored = connection
         .query_row(
-            r#"SELECT project_id, status, fingerprint_version, coverage_json, completed_at
+            r#"SELECT project_id, status, fingerprint_version, coverage_json, started_at,
+                      completed_at
                FROM scan_runs WHERE id = ?1"#,
             [run_id],
             |row| {
@@ -1090,7 +1188,8 @@ fn load_comparison_run(
                     row.get::<_, String>(1)?,
                     row.get::<_, u16>(2)?,
                     row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             },
         )
@@ -1102,7 +1201,8 @@ fn load_comparison_run(
         status: parse_run_status(&stored.1)?,
         fingerprint_version: stored.2,
         coverage: stored.3.as_deref().map(from_json).transpose()?,
-        completed_at: stored.4,
+        started_at: stored.4,
+        completed_at: stored.5,
     })
 }
 
@@ -1127,22 +1227,13 @@ fn compare_runs_from_connection(
     let baseline = load_comparison_run(connection, baseline_run_id)?;
     require_completed_comparison_run(&current)?;
     require_completed_comparison_run(&baseline)?;
-    let current_completed_at = current
-        .completed_at
-        .as_deref()
-        .ok_or_else(CommandError::persistence_unavailable)?;
+    let current_started_at = parse_utc_timestamp(&current.started_at)?;
     let baseline_completed_at = baseline
         .completed_at
         .as_deref()
-        .ok_or_else(CommandError::persistence_unavailable)?;
-    let current_completed_at = DateTime::parse_from_rfc3339(current_completed_at)
-        .map_err(persistence_error)?
-        .with_timezone(&Utc);
-    let baseline_completed_at = DateTime::parse_from_rfc3339(baseline_completed_at)
-        .map_err(persistence_error)?
-        .with_timezone(&Utc);
-    let baseline_is_prior =
-        (baseline_completed_at, baseline_run_id) < (current_completed_at, current_run_id);
+        .ok_or_else(CommandError::persistence_unavailable)
+        .and_then(parse_utc_timestamp)?;
+    let baseline_is_prior = baseline_completed_at < current_started_at;
     let current_coverage = current
         .coverage
         .as_ref()
@@ -1218,20 +1309,29 @@ fn latest_compatible_baseline_id_from_connection(
     project_id: &str,
     fingerprint_version: u16,
     current_coverage: &CoverageManifest,
+    strictly_before: DateTime<Utc>,
 ) -> Result<Option<String>, CommandError> {
-    let candidate_ids = {
+    struct Candidate {
+        run_id: String,
+        completed_at: DateTime<Utc>,
+    }
+
+    let candidates = {
         let mut statement = connection
             .prepare(
-                r#"SELECT id FROM scan_runs
+                r#"SELECT id, completed_at, coverage_json FROM scan_runs
                    WHERE project_id = ?1
                      AND status = 'completed'
-                     AND fingerprint_version = ?2
-                   ORDER BY julianday(completed_at) DESC, id DESC"#,
+                     AND fingerprint_version = ?2"#,
             )
             .map_err(persistence_error)?;
         let rows = statement
             .query_map(params![project_id, fingerprint_version], |row| {
-                row.get::<_, String>(0)
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })
             .map_err(persistence_error)?
             .collect::<Result<Vec<_>, _>>()
@@ -1239,16 +1339,36 @@ fn latest_compatible_baseline_id_from_connection(
         rows
     };
 
-    for candidate_id in candidate_ids {
-        let candidate = load_comparison_run(connection, &candidate_id)?;
-        let Some(candidate_coverage) = candidate.coverage.as_ref() else {
-            continue;
-        };
-        if current_coverage.is_compatible_with(candidate_coverage) {
-            return Ok(Some(candidate_id));
+    let mut compatible = Vec::new();
+    for (run_id, completed_at, coverage_json) in candidates {
+        let completed_at = completed_at
+            .as_deref()
+            .ok_or_else(CommandError::persistence_unavailable)
+            .and_then(parse_utc_timestamp)?;
+        let coverage: CoverageManifest = coverage_json
+            .as_deref()
+            .ok_or_else(CommandError::persistence_unavailable)
+            .and_then(from_json)?;
+        if coverage.fingerprint_version != fingerprint_version {
+            return Err(CommandError::persistence_unavailable());
+        }
+        if completed_at < strictly_before && current_coverage.is_compatible_with(&coverage) {
+            compatible.push(Candidate {
+                run_id,
+                completed_at,
+            });
         }
     }
-    Ok(None)
+    compatible.sort_by(|left, right| {
+        right
+            .completed_at
+            .cmp(&left.completed_at)
+            .then_with(|| right.run_id.cmp(&left.run_id))
+    });
+    Ok(compatible
+        .into_iter()
+        .next()
+        .map(|candidate| candidate.run_id))
 }
 
 fn latest_completed_run_from_connection(
@@ -1446,6 +1566,12 @@ fn load_run_with_comparison_from_connection(
     if run.status == RunStatus::Completed {
         if let Some(baseline_run_id) = run.baseline_run_id.as_deref() {
             run.findings = compare_runs_from_connection(connection, run_id, baseline_run_id)?;
+        } else {
+            for finding in &mut run.findings {
+                finding.observation_run_id = run_id.into();
+                finding.resolved_by_run_id = None;
+                finding.diff_status = Some(DiffStatus::New);
+            }
         }
     }
     Ok(Some(run))
@@ -1641,6 +1767,12 @@ fn to_json(value: &impl Serialize) -> Result<String, CommandError> {
 
 fn from_json<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T, CommandError> {
     serde_json::from_str(value).map_err(persistence_error)
+}
+
+fn parse_utc_timestamp(value: &str) -> Result<DateTime<Utc>, CommandError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .map_err(persistence_error)
 }
 
 fn parse_last_options(value: &str) -> Result<Option<ScanOptions>, CommandError> {
@@ -1895,6 +2027,22 @@ mod tests {
         project_path: &str,
         run_id: &str,
     ) {
+        prepare_project_run_at(
+            repository,
+            project_id,
+            project_path,
+            run_id,
+            "2026-08-20T10:00:00Z",
+        );
+    }
+
+    fn prepare_project_run_at(
+        repository: &FindingsRepository,
+        project_id: &str,
+        project_path: &str,
+        run_id: &str,
+        started_at: &str,
+    ) {
         let options = ScanOptions::default();
         repository
             .upsert_project(
@@ -1907,6 +2055,7 @@ mod tests {
             .expect("upsert project");
         let mut running = run_detail(run_id, RunStatus::Running, Vec::new());
         running.project_id = project_id.into();
+        running.started_at = started_at.into();
         repository
             .start_run(&running, "scanner-1.0", &options)
             .expect("start run");
@@ -1921,9 +2070,17 @@ mod tests {
         findings: Vec<Finding>,
         coverage: &CoverageManifest,
     ) {
-        prepare_project_run(repository, project_id, project_path, run_id);
+        let completed_instant = DateTime::parse_from_rfc3339(completed_at)
+            .expect("valid completed fixture time")
+            .with_timezone(&Utc);
+        let started_at = completed_instant
+            .checked_sub_signed(ChronoDuration::seconds(1))
+            .expect("valid started fixture time")
+            .to_rfc3339();
+        prepare_project_run_at(repository, project_id, project_path, run_id, &started_at);
         let mut completed = run_detail(run_id, RunStatus::Completed, findings);
         completed.project_id = project_id.into();
+        completed.started_at = started_at;
         completed.completed_at = Some(completed_at.into());
         repository
             .complete_run(&completed, coverage)
@@ -2171,12 +2328,14 @@ mod tests {
         assert_eq!(first.status, RunStatus::Completed);
         assert_eq!(retried.status, RunStatus::Completed);
         assert_eq!(retried.findings.len(), 1);
+        assert_eq!(first.findings[0].diff_status, Some(DiffStatus::New));
+        assert_eq!(retried.findings[0].diff_status, Some(DiffStatus::New));
         let loaded = repository.load_run("run-1").expect("load completed run");
         assert_eq!(loaded.findings.len(), 1);
         let loaded_finding = &loaded.findings[0];
         assert_eq!(loaded_finding.observation_run_id, "run-1");
         assert_eq!(loaded_finding.resolved_by_run_id, None);
-        assert_eq!(loaded_finding.diff_status, None);
+        assert_eq!(loaded_finding.diff_status, Some(DiffStatus::New));
         assert_eq!(
             loaded_finding.review.as_ref().map(|item| &item.id),
             Some(&"review-1".into())
@@ -2184,6 +2343,12 @@ mod tests {
         assert_eq!(loaded_finding.review_history, vec![stored_review]);
 
         let connection = repository.connection.lock().expect("lock connection");
+        let raw = load_run_from_connection(&connection, "run-1")
+            .expect("load raw run")
+            .expect("raw run exists");
+        assert_eq!(raw.findings[0].observation_run_id, "run-1");
+        assert_eq!(raw.findings[0].resolved_by_run_id, None);
+        assert_eq!(raw.findings[0].diff_status, None);
         let observation_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM findings WHERE run_id = 'run-1'",
@@ -2490,6 +2655,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn start_run_ignores_advisory_baseline_hints_without_stale_locking_retry() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        repository
+            .upsert_project(
+                "project-1",
+                "/project",
+                "Project",
+                "2026-08-20T09:59:00Z",
+                Some(&ScanOptions::default()),
+            )
+            .expect("upsert project");
+        let mut running = run_detail("advisory-start-run", RunStatus::Running, Vec::new());
+        running.baseline_run_id = Some("nonexistent-advisory-baseline".into());
+        repository
+            .start_run(&running, "scanner-1.0", &ScanOptions::default())
+            .expect("advisory hint must not control the stored boundary");
+
+        running.baseline_run_id = Some("different-retry-hint".into());
+        repository
+            .start_run(&running, "scanner-1.0", &ScanOptions::default())
+            .expect("changed advisory hint must not stale-lock retry");
+
+        let connection = repository.connection.lock().expect("lock connection");
+        let stored_baseline: Option<String> = connection
+            .query_row(
+                "SELECT baseline_run_id FROM scan_runs WHERE id = 'advisory-start-run'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("load stored boundary");
+        assert_eq!(stored_baseline, None);
+    }
+
     fn stored_run_identity(
         repository: &FindingsRepository,
         run_id: &str,
@@ -2772,8 +2971,11 @@ mod tests {
         assert_eq!(not_evaluated.diff_status, Some(DiffStatus::NotEvaluated));
         assert_eq!(not_evaluated.scope, Some(FindingScope::Documentation));
 
+        let connection = repository.connection.lock().expect("lock connection");
         for run_id in ["baseline-run", "current-run"] {
-            let stored = repository.load_run(run_id).expect("reload immutable run");
+            let stored = load_run_from_connection(&connection, run_id)
+                .expect("load immutable stored run")
+                .expect("stored run exists");
             assert!(stored.findings.iter().all(|finding| {
                 finding.diff_status.is_none() && finding.resolved_by_run_id.is_none()
             }));
@@ -2944,6 +3146,15 @@ mod tests {
             &repository,
             "project-1",
             "/project",
+            "after-cutoff-compatible",
+            "2026-08-20T12:00:00Z",
+            Vec::new(),
+            &vulnerability,
+        );
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
             "newer-incompatible",
             "2026-08-20T10:30:00Z",
             Vec::new(),
@@ -2994,7 +3205,14 @@ mod tests {
             &vulnerability,
         );
         let selected = repository
-            .latest_compatible_baseline("project-1", FINGERPRINT_VERSION, &vulnerability)
+            .latest_compatible_baseline(
+                "project-1",
+                FINGERPRINT_VERSION,
+                &vulnerability,
+                DateTime::parse_from_rfc3339("2026-08-20T11:00:00Z")
+                    .expect("parse cutoff")
+                    .with_timezone(&Utc),
+            )
             .expect("select compatible baseline")
             .expect("compatible baseline exists");
 
@@ -3011,13 +3229,20 @@ mod tests {
             "project-1",
             "/project",
             "persisted-baseline",
-            "2026-08-20T10:00:00Z",
+            "2026-08-20T09:00:00Z",
             Vec::new(),
             &coverage,
         );
         prepare_run(&repository, "current-with-baseline");
         let baseline = repository
-            .latest_compatible_baseline("project-1", FINGERPRINT_VERSION, &coverage)
+            .latest_compatible_baseline(
+                "project-1",
+                FINGERPRINT_VERSION,
+                &coverage,
+                DateTime::parse_from_rfc3339("2026-08-20T10:00:00Z")
+                    .expect("parse cutoff")
+                    .with_timezone(&Utc),
+            )
             .expect("select baseline")
             .expect("baseline exists");
         let mut completed = run_detail("current-with-baseline", RunStatus::Completed, Vec::new());
@@ -3043,6 +3268,273 @@ mod tests {
     }
 
     #[test]
+    fn completion_derives_an_eligible_baseline_when_caller_hint_is_none() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "derived-baseline",
+            "2026-08-20T09:00:00Z",
+            Vec::new(),
+            &coverage,
+        );
+        prepare_project_run_at(
+            &repository,
+            "project-1",
+            "/project",
+            "derived-current",
+            "2026-08-20T10:00:00Z",
+        );
+        let mut completed = run_detail("derived-current", RunStatus::Completed, Vec::new());
+        completed.started_at = "2026-08-20T10:00:00Z".into();
+        completed.completed_at = Some("2026-08-20T10:05:00Z".into());
+        completed.baseline_run_id = None;
+
+        let stored = repository
+            .complete_run(&completed, &coverage)
+            .expect("repository derives baseline");
+
+        assert_eq!(stored.baseline_run_id.as_deref(), Some("derived-baseline"));
+    }
+
+    #[test]
+    fn completion_ignores_a_stale_non_newest_baseline_hint() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+        for (run_id, completed_at) in [
+            ("stale-baseline", "2026-08-20T08:00:00Z"),
+            ("newest-baseline", "2026-08-20T09:00:00Z"),
+        ] {
+            complete_project_run(
+                &repository,
+                "project-1",
+                "/project",
+                run_id,
+                completed_at,
+                Vec::new(),
+                &coverage,
+            );
+        }
+        prepare_project_run_at(
+            &repository,
+            "project-1",
+            "/project",
+            "stale-hint-current",
+            "2026-08-20T10:00:00Z",
+        );
+        let mut completed = run_detail("stale-hint-current", RunStatus::Completed, Vec::new());
+        completed.started_at = "2026-08-20T10:00:00Z".into();
+        completed.completed_at = Some("2026-08-20T10:05:00Z".into());
+        completed.baseline_run_id = Some("stale-baseline".into());
+
+        let stored = repository
+            .complete_run(&completed, &coverage)
+            .expect("caller hint is advisory");
+
+        assert_eq!(stored.baseline_run_id.as_deref(), Some("newest-baseline"));
+    }
+
+    #[test]
+    fn completion_excludes_runs_finishing_after_scan_start_and_retry_keeps_boundary() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "pre-start-baseline",
+            "2026-08-20T09:00:00Z",
+            Vec::new(),
+            &coverage,
+        );
+        prepare_project_run_at(
+            &repository,
+            "project-1",
+            "/project",
+            "race-current",
+            "2026-08-20T10:00:00Z",
+        );
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "equal-start-completion",
+            "2026-08-20T10:00:00Z",
+            Vec::new(),
+            &coverage,
+        );
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "post-start-completion",
+            "2026-08-20T10:30:00Z",
+            Vec::new(),
+            &coverage,
+        );
+        let mut completed = run_detail("race-current", RunStatus::Completed, Vec::new());
+        completed.started_at = "2026-08-20T10:00:00Z".into();
+        completed.completed_at = Some("2026-08-20T11:00:00Z".into());
+        completed.baseline_run_id = Some("post-start-completion".into());
+
+        let first = repository
+            .complete_run(&completed, &coverage)
+            .expect("complete with authoritative cutoff");
+        completed.baseline_run_id = None;
+        let retried = repository
+            .complete_run(&completed, &coverage)
+            .expect("retry returns durable boundary");
+
+        assert_eq!(first.baseline_run_id.as_deref(), Some("pre-start-baseline"));
+        assert_eq!(retried.baseline_run_id, first.baseline_run_id);
+    }
+
+    #[test]
+    fn completion_rejects_invalid_or_reversed_current_timestamps_before_writes() {
+        for (run_id, started_at, completed_at) in [
+            (
+                "invalid-current-start",
+                "not-rfc3339",
+                Some("2026-08-20T11:00:00Z"),
+            ),
+            (
+                "invalid-current-complete",
+                "2026-08-20T10:00:00Z",
+                Some("not-rfc3339"),
+            ),
+            (
+                "reversed-current-time",
+                "2026-08-20T10:00:00Z",
+                Some("2026-08-20T09:59:59Z"),
+            ),
+            ("missing-current-complete", "2026-08-20T10:00:00Z", None),
+        ] {
+            let repository = FindingsRepository::open_in_memory().expect("open repository");
+            let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+            prepare_project_run_at(&repository, "project-1", "/project", run_id, started_at);
+            let mut completed = run_detail(
+                run_id,
+                RunStatus::Completed,
+                vec![finding_at(
+                    &format!("{run_id}-observation"),
+                    &format!("{run_id}-fingerprint"),
+                    "vulnerability",
+                    "src/a.rs",
+                    FindingScope::Production,
+                )],
+            );
+            completed.started_at = started_at.into();
+            completed.completed_at = completed_at.map(Into::into);
+
+            let error = repository
+                .complete_run(&completed, &coverage)
+                .expect_err("invalid current timestamps must fail");
+
+            assert_eq!(
+                error.code,
+                crate::findings::error::ErrorCode::PersistenceUnavailable
+            );
+            assert_running_without_findings(&repository, run_id);
+        }
+    }
+
+    #[test]
+    fn completion_rejects_invalid_or_missing_candidate_timestamp_before_writes() {
+        for (current_run, corrupt_timestamp) in [
+            ("invalid-candidate-current", Some("not-rfc3339")),
+            ("missing-candidate-current", None),
+        ] {
+            let repository = FindingsRepository::open_in_memory().expect("open repository");
+            let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+            complete_project_run(
+                &repository,
+                "project-1",
+                "/project",
+                "corrupt-candidate",
+                "2026-08-20T09:00:00Z",
+                Vec::new(),
+                &coverage,
+            );
+            repository
+                .connection
+                .lock()
+                .expect("lock connection")
+                .execute(
+                    "UPDATE scan_runs SET completed_at = ?2 WHERE id = ?1",
+                    params!["corrupt-candidate", corrupt_timestamp],
+                )
+                .expect("corrupt candidate timestamp");
+            prepare_project_run_at(
+                &repository,
+                "project-1",
+                "/project",
+                current_run,
+                "2026-08-20T10:00:00Z",
+            );
+            let mut completed = run_detail(
+                current_run,
+                RunStatus::Completed,
+                vec![finding_at(
+                    &format!("{current_run}-observation"),
+                    &format!("{current_run}-fingerprint"),
+                    "vulnerability",
+                    "src/a.rs",
+                    FindingScope::Production,
+                )],
+            );
+            completed.started_at = "2026-08-20T10:00:00Z".into();
+            completed.completed_at = Some("2026-08-20T11:00:00Z".into());
+
+            let error = repository
+                .complete_run(&completed, &coverage)
+                .expect_err("corrupt candidate timestamp must fail safe");
+
+            assert_eq!(
+                error.code,
+                crate::findings::error::ErrorCode::PersistenceUnavailable
+            );
+            assert_running_without_findings(&repository, current_run);
+        }
+    }
+
+    #[test]
+    fn latest_compatible_baseline_orders_and_cuts_off_exact_nanoseconds() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+        for (run_id, completed_at) in [
+            ("z-older-nanosecond", "2026-08-20T09:00:00.000000001Z"),
+            ("a-newer-nanosecond", "2026-08-20T09:00:00.000000002Z"),
+            ("after-nanosecond-cutoff", "2026-08-20T09:00:00.000000004Z"),
+        ] {
+            complete_project_run(
+                &repository,
+                "project-1",
+                "/project",
+                run_id,
+                completed_at,
+                Vec::new(),
+                &coverage,
+            );
+        }
+
+        let selected = repository
+            .latest_compatible_baseline(
+                "project-1",
+                FINGERPRINT_VERSION,
+                &coverage,
+                DateTime::parse_from_rfc3339("2026-08-20T09:00:00.000000003Z")
+                    .expect("parse nanosecond cutoff")
+                    .with_timezone(&Utc),
+            )
+            .expect("select exact baseline")
+            .expect("baseline exists");
+
+        assert_eq!(selected.run_id, "a-newer-nanosecond");
+    }
+
+    #[test]
     fn completed_run_and_restart_load_reconstruct_the_persisted_comparison_boundary() {
         let temporary = tempfile::tempdir().expect("temporary repository root");
         let database = temporary.path().join("private/findings.sqlite3");
@@ -3057,7 +3549,7 @@ mod tests {
             "project-1",
             "/project",
             "restart-baseline",
-            "2026-08-20T10:00:00Z",
+            "2026-08-20T09:00:00Z",
             vec![
                 finding_at(
                     "restart-baseline-a",
@@ -3090,7 +3582,14 @@ mod tests {
         ]);
         prepare_run(&repository, "restart-current");
         let baseline = repository
-            .latest_compatible_baseline("project-1", FINGERPRINT_VERSION, &current_coverage)
+            .latest_compatible_baseline(
+                "project-1",
+                FINGERPRINT_VERSION,
+                &current_coverage,
+                DateTime::parse_from_rfc3339("2026-08-20T10:00:00Z")
+                    .expect("parse cutoff")
+                    .with_timezone(&Utc),
+            )
             .expect("select baseline")
             .expect("baseline exists");
         let mut completed = run_detail(
@@ -3379,6 +3878,152 @@ mod tests {
     }
 
     #[test]
+    fn retention_age_cutoff_preserves_exact_nanoseconds() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "nano-expired",
+            "2026-08-20T10:00:00.000000001Z",
+            Vec::new(),
+            &coverage,
+        );
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "nano-at-cutoff",
+            "2026-08-20T10:00:00.000000002Z",
+            Vec::new(),
+            &coverage,
+        );
+
+        let deleted = repository
+            .apply_retention(
+                DateTime::parse_from_rfc3339("2026-08-20T10:00:00.000000002Z")
+                    .expect("parse retention time")
+                    .with_timezone(&Utc),
+                RetentionPolicy {
+                    max_completed_runs_per_project: 20,
+                    max_age_days: 0,
+                },
+            )
+            .expect("apply nanosecond age retention");
+
+        assert_eq!(deleted, 1);
+        assert!(repository.load_run("nano-expired").is_err());
+        assert_eq!(
+            repository
+                .load_run("nano-at-cutoff")
+                .expect("exact nanosecond cutoff is retained")
+                .status,
+            RunStatus::Completed
+        );
+    }
+
+    #[test]
+    fn retention_count_order_uses_exact_nanoseconds_before_run_id() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "z-older-count",
+            "2026-08-20T10:00:00.000000001Z",
+            Vec::new(),
+            &coverage,
+        );
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "a-newer-count",
+            "2026-08-20T10:00:00.000000002Z",
+            Vec::new(),
+            &coverage,
+        );
+
+        let deleted = repository
+            .apply_retention(
+                DateTime::parse_from_rfc3339("2026-08-21T10:00:00Z")
+                    .expect("parse retention time")
+                    .with_timezone(&Utc),
+                RetentionPolicy {
+                    max_completed_runs_per_project: 1,
+                    max_age_days: 90,
+                },
+            )
+            .expect("apply nanosecond count retention");
+
+        assert_eq!(deleted, 1);
+        assert!(repository.load_run("z-older-count").is_err());
+        assert_eq!(
+            repository
+                .load_run("a-newer-count")
+                .expect("newer nanosecond is retained")
+                .status,
+            RunStatus::Completed
+        );
+    }
+
+    #[test]
+    fn retention_invalid_completed_timestamp_rolls_back_without_deletion() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+        for (run_id, completed_at) in [
+            ("valid-retention-run", "2026-08-20T10:00:00Z"),
+            ("corrupt-retention-run", "2026-08-20T10:00:01Z"),
+        ] {
+            complete_project_run(
+                &repository,
+                "project-1",
+                "/project",
+                run_id,
+                completed_at,
+                Vec::new(),
+                &coverage,
+            );
+        }
+        {
+            let connection = repository.connection.lock().expect("lock connection");
+            connection
+                .execute(
+                    "UPDATE scan_runs SET completed_at = 'not-rfc3339' WHERE id = 'corrupt-retention-run'",
+                    [],
+                )
+                .expect("corrupt stored timestamp");
+        }
+
+        let error = repository
+            .apply_retention(
+                DateTime::parse_from_rfc3339("2026-08-21T10:00:00Z")
+                    .expect("parse retention time")
+                    .with_timezone(&Utc),
+                RetentionPolicy {
+                    max_completed_runs_per_project: 0,
+                    max_age_days: 90,
+                },
+            )
+            .expect_err("invalid completed timestamp must abort retention");
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        let connection = repository.connection.lock().expect("lock connection");
+        let retained: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM scan_runs WHERE status = 'completed'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count retained completed runs");
+        assert_eq!(retained, 2);
+    }
+
+    #[test]
     fn maintenance_failure_after_completion_returns_safe_warning_and_keeps_saved_run() {
         let repository = FindingsRepository::open_in_memory().expect("open repository");
         prepare_run(&repository, "maintenance-failure-run");
@@ -3429,6 +4074,155 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_zero_count_is_a_safe_failure_and_keeps_the_completed_run() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "maintenance-zero-count");
+        let completed = run_detail(
+            "maintenance-zero-count",
+            RunStatus::Completed,
+            vec![finding("zero-count-observation", "zero-count-fingerprint")],
+        );
+        let coverage = CoverageManifest::from_entries([("src/config.rs", ["secret"])]);
+
+        let returned = repository
+            .complete_run_with_maintenance(
+                &completed,
+                &coverage,
+                RetentionPolicy {
+                    max_completed_runs_per_project: 0,
+                    max_age_days: 90,
+                },
+                DateTime::parse_from_rfc3339("2026-08-20T10:00:08Z")
+                    .expect("parse maintenance time")
+                    .with_timezone(&Utc),
+            )
+            .expect("zero count maintenance is isolated from completion");
+
+        assert_eq!(returned.persistence, RunPersistence::Saved);
+        assert_eq!(
+            returned.maintenance_warning.as_deref(),
+            Some(RETENTION_MAINTENANCE_WARNING)
+        );
+        let loaded = repository
+            .load_run("maintenance-zero-count")
+            .expect("completed run remains loadable");
+        assert_eq!(loaded.persistence, RunPersistence::Saved);
+        assert_eq!(loaded.findings.len(), 1);
+    }
+
+    #[test]
+    fn maintenance_zero_age_is_a_safe_failure_and_keeps_the_completed_run() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "maintenance-zero-age");
+        let completed = run_detail(
+            "maintenance-zero-age",
+            RunStatus::Completed,
+            vec![finding("zero-age-observation", "zero-age-fingerprint")],
+        );
+        let coverage = CoverageManifest::from_entries([("src/config.rs", ["secret"])]);
+
+        let returned = repository
+            .complete_run_with_maintenance(
+                &completed,
+                &coverage,
+                RetentionPolicy {
+                    max_completed_runs_per_project: 20,
+                    max_age_days: 0,
+                },
+                DateTime::parse_from_rfc3339("2026-08-20T10:00:07Z")
+                    .expect("parse maintenance time")
+                    .with_timezone(&Utc),
+            )
+            .expect("zero age maintenance is isolated from completion");
+
+        assert_eq!(returned.persistence, RunPersistence::Saved);
+        assert_eq!(
+            returned.maintenance_warning.as_deref(),
+            Some(RETENTION_MAINTENANCE_WARNING)
+        );
+        let loaded = repository
+            .load_run("maintenance-zero-age")
+            .expect("completed run remains loadable");
+        assert_eq!(loaded.persistence, RunPersistence::Saved);
+        assert_eq!(loaded.findings.len(), 1);
+    }
+
+    #[test]
+    fn successful_maintenance_returns_the_post_retention_projection_and_protects_current() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/a.rs", ["vulnerability"])]);
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "maintenance-baseline",
+            "2026-08-20T09:00:00Z",
+            vec![finding_at(
+                "maintenance-baseline-observation",
+                "maintenance-baseline-fingerprint",
+                "vulnerability",
+                "src/a.rs",
+                FindingScope::Production,
+            )],
+            &coverage,
+        );
+        prepare_project_run_at(
+            &repository,
+            "project-1",
+            "/project",
+            "maintenance-current",
+            "2026-08-20T10:00:00Z",
+        );
+        let mut completed = run_detail(
+            "maintenance-current",
+            RunStatus::Completed,
+            vec![finding_at(
+                "maintenance-current-observation",
+                "maintenance-current-fingerprint",
+                "vulnerability",
+                "src/a.rs",
+                FindingScope::Production,
+            )],
+        );
+        completed.completed_at = Some("2026-08-20T10:00:07Z".into());
+
+        let returned = repository
+            .complete_run_with_maintenance(
+                &completed,
+                &coverage,
+                RetentionPolicy {
+                    max_completed_runs_per_project: 1,
+                    max_age_days: 1,
+                },
+                DateTime::parse_from_rfc3339("2026-08-22T10:00:07Z")
+                    .expect("parse maintenance time")
+                    .with_timezone(&Utc),
+            )
+            .expect("complete and retain current run");
+        let reloaded = repository
+            .load_run("maintenance-current")
+            .expect("reload current after maintenance");
+
+        assert_eq!(returned.baseline_run_id, None);
+        assert_eq!(returned.findings.len(), 1);
+        assert_eq!(returned.findings[0].diff_status, Some(DiffStatus::New));
+        assert_eq!(
+            serde_json::to_value(&returned).expect("serialize immediate result"),
+            serde_json::to_value(&reloaded).expect("serialize restart result")
+        );
+        assert!(repository.load_run("maintenance-baseline").is_err());
+        let connection = repository.connection.lock().expect("lock connection");
+        let stored_boundary: Option<String> = connection
+            .query_row(
+                "SELECT baseline_run_id FROM scan_runs WHERE id = 'maintenance-current'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("load cleared baseline boundary");
+        assert_eq!(stored_boundary, None);
+    }
+
+    #[test]
     fn retention_deletes_only_completed_run_evidence() {
         let repository = FindingsRepository::open_in_memory().expect("open repository");
         for (run_id, observation_id, fingerprint, completed_at) in [
@@ -3451,19 +4245,15 @@ mod tests {
                 "2026-08-19T00:00:00Z",
             ),
         ] {
-            prepare_run(&repository, run_id);
-            let mut completed = run_detail(
+            complete_project_run(
+                &repository,
+                "project-1",
+                "/project",
                 run_id,
-                RunStatus::Completed,
+                completed_at,
                 vec![finding(observation_id, fingerprint)],
+                &CoverageManifest::from_entries([("src/config.rs", ["secret"])]),
             );
-            completed.completed_at = Some(completed_at.into());
-            repository
-                .complete_run(
-                    &completed,
-                    &CoverageManifest::from_entries([("src/config.rs", ["secret"])]),
-                )
-                .expect("complete retained run");
         }
         prepare_run(&repository, "running-run");
         {
