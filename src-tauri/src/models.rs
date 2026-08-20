@@ -261,6 +261,11 @@ pub struct AppSettings {
     pub scan: ScanSettings,
     pub nvd_api_key: Option<String>,
     pub theme: String,
+    /// Explicit path to a cve-bin-tool executable. Empty means "find it on
+    /// PATH". Defaulted so settings files written before binary scanning
+    /// existed still load.
+    #[serde(default)]
+    pub binary_scanner_path: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -270,6 +275,7 @@ impl Default for AppSettings {
             scan: ScanSettings::default(),
             nvd_api_key: None,
             theme: "dark".into(),
+            binary_scanner_path: None,
         }
     }
 }

@@ -2,6 +2,7 @@ export type Page =
   | "dashboard"
   | "source-scan"
   | "deps-scan"
+  | "binary-scan"
   | "cve-research"
   | "assistant"
   | "settings";
@@ -30,6 +31,7 @@ export const PAGE_META: Record<Page, PageMeta> = {
   dashboard: { title: "Dashboard", group: "Overview" },
   "source-scan": { title: "Source Scan", group: "Scanning" },
   "deps-scan": { title: "Dependencies", group: "Scanning" },
+  "binary-scan": { title: "Binary Scan", group: "Scanning" },
   "cve-research": { title: "CVE Research", group: "Research" },
   assistant: { title: "AI Assistant", group: "Research" },
   settings: { title: "Settings", group: "System" },
