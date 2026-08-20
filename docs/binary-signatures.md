@@ -401,3 +401,75 @@ A note on that route: `aliases` folds a package note's version onto the same
 row, so an identity-only component *can* end up versioned. Notes are added
 per-package rather than universally, though — none of these five carried one in
 the image examined — so it is a bonus rather than the plan.
+
+
+## 9. A real firmware image
+
+> Run 2026-08-20 against OpenWrt 21.02.7 for the **TP-Link Archer C7 v2**
+> (`ath79/generic`, big-endian MIPS), downloaded from downloads.openwrt.org and
+> verified against the published `sha256sums`. 5.7 MB image, 920-file root
+> filesystem, built 2023-04-17.
+
+The first end-to-end run on something that is actually firmware rather than a
+distribution rootfs. Four things it established.
+
+### The raw image yields nothing, and that is correct
+
+Pointed at the 5.7 MB `.bin`, the scanner reports **zero components** — because
+only **1.1%** of the image is printable. The payload is an xz-compressed
+squashfs at `0x1f8718`; the readable remainder is the OpenWrt metadata JSON and
+a build id. There is genuinely nothing to read.
+
+**oxAudit does not extract filesystems or archives.** This is the one thing
+cve-bin-tool does that we do not, and on a vendor firmware blob it is the
+difference between 0 findings and 28. Extraction has to happen first —
+`unsquashfs`, `binwalk` or equivalent. Worth making explicit in the UI.
+
+### Extracted, it finds real vulnerabilities
+
+| Component | Version | CVEs | Worst |
+|---|---|---|---|
+| u-boot | 2021.01 | **19** | 2 critical |
+| busybox | 1.33.2 | **6** | CVE-2022-48174 critical |
+| lua | 5.1.5 | 2 | medium |
+| wpa_supplicant | 2.10 | 1 | CVE-2023-52160 (PEAP bypass) |
+| dnsmasq | *unversioned* | — | |
+| dropbear | *unversioned* | — | |
+| hostapd | *unversioned* | — | |
+
+**28 CVEs, 3 critical, 17 high**, in 31 ms over 920 files.
+
+### Hardened firmware strips version strings on purpose
+
+dnsmasq, dropbear and hostapd were identified but carry no version, and that is
+not a signature failure. OpenWrt's dropbear emits `SSH-2.0-dropbear` with **no
+version suffix** — deliberately, so the daemon does not advertise it. dnsmasq
+and hostapd build their version banners from macros at runtime rather than
+embedding a literal.
+
+So on hardened firmware, string signatures give identity and often not a
+version. That is exactly the case byte patterns answer — except:
+
+### Byte patterns are x86-64 and AArch64 only, and this is MIPS
+
+Verified rather than assumed: the busybox binary contains **zero** occurrences
+of either the x86-64 `endbr64` or the AArch64 `ret` encoding. All eight
+detections came from strings and filenames; no byte pattern could fire. Reaching
+MIPS, ARM32 and the other embedded targets means a pattern per architecture per
+library, and `patfind`-style architecture tagging (see `vulhunt-study.md` §4).
+
+### Two honest caveats on the findings
+
+- **u-boot's 19 CVEs are for the bootloader; the file detected is
+  `/usr/sbin/fw_printenv`.** That tool is genuinely built from u-boot 2021.01
+  source and genuinely carries its version, so the *component* detection is
+  right — but most bootloader CVEs will not apply to a userspace environment
+  reader. This is precisely the case `triage/` exists for: a candidate that
+  needs Gate 1 asked of it.
+- **wolfSSL 5.5.3 is present and was missed.** `libwolfssl.so.5.5.3.99a5b54a`
+  carries a clean `wolfSSL 5.5.3` string; there is simply no signature for it.
+  Same for `iptables` 1.8.7. Both are straightforward additions.
+
+Against opkg's own package list — 105 packages, 73 excluding kernel modules —
+the scanner found 7 of the 8 components it has signatures for. The gaps are
+libraries not yet covered, not detections that failed.
