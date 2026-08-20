@@ -62,6 +62,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   nvdApiKey: null,
   theme: "dark",
   binaryScannerPath: null,
+  binaryScannerRuntime: "auto",
+  grypePath: null,
 };
 
 function cloneSettings(settings: AppSettings): AppSettings {
@@ -616,7 +618,16 @@ export function SettingsPage() {
             Binary Scanning
           </h2>
           <p className={sectionDescriptionCls}>
-            Binary and firmware scanning runs{" "}
+            Two scanners, either optional. They see different things:{" "}
+            <a
+              href="https://github.com/anchore/grype"
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent underline underline-offset-2"
+            >
+              grype
+            </a>{" "}
+            reads package metadata and reports fix versions;{" "}
             <a
               href="https://github.com/ossf/cve-bin-tool"
               target="_blank"
@@ -625,14 +636,52 @@ export function SettingsPage() {
             >
               cve-bin-tool
             </a>
-            , a separate GPL-3.0 program from the OpenSSF. oxAudit invokes a copy you install
-            rather than bundling it, so it stays under its own licence.
+            &rsquo;s checkers find components statically linked into stripped binaries.
+            oxAudit invokes copies you install rather than bundling them.
           </p>
-          <div className="mt-3">
+
+          <div className="mt-4">
+            <span className="mb-1 block text-[12px] font-medium text-text-secondary">
+              cve-bin-tool runtime
+            </span>
+            <div role="radiogroup" aria-label="cve-bin-tool runtime" className="flex flex-wrap gap-2">
+              {BINARY_RUNTIMES.map((option) => {
+                const selected = (form.binaryScannerRuntime ?? "auto") === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => update("binaryScannerRuntime", option.value)}
+                    className={`inline-flex flex-col items-start gap-0.5 rounded-sm border px-3 py-2 text-left transition-colors ${
+                      selected
+                        ? "border-accent-glow bg-accent-subtle"
+                        : "border-border bg-surface-primary hover:bg-surface-hover"
+                    }`}
+                  >
+                    <span
+                      className={`text-[12px] font-medium ${selected ? "text-accent" : "text-text-primary"}`}
+                    >
+                      {option.label}
+                    </span>
+                    <span className="text-[11px] text-text-muted">{option.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
+              cve-bin-tool 3.4 cannot bootstrap its CVE database unpatched. The container
+              image carries the fix, so Docker is often the runtime that works. Build it with{" "}
+              <code className="font-mono">docker build -t oxaudit/cve-bin-tool:3.4 docker/cve-bin-tool</code>.
+            </p>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <Field
               label="cve-bin-tool path"
               htmlFor="binary-scanner-path"
-              hint="Leave empty to find it on PATH, or fall back to `python3 -m cve_bin_tool`."
+              hint="Leave empty to find it on PATH, then `python3 -m cve_bin_tool`."
             >
               <Input
                 id="binary-scanner-path"
@@ -645,11 +694,27 @@ export function SettingsPage() {
                 className="font-mono text-[12px]"
               />
             </Field>
+            <Field
+              label="grype path"
+              htmlFor="grype-path"
+              hint="Leave empty to find it on PATH."
+            >
+              <Input
+                id="grype-path"
+                aria-describedby="grype-path-hint"
+                value={form.grypePath ?? ""}
+                onChange={(event) => update("grypePath", event.target.value.trim() || null)}
+                placeholder="/opt/homebrew/bin/grype"
+                className="font-mono text-[12px]"
+              />
+            </Field>
           </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
-            Enabling this adds network calls to cve-bin-tool&rsquo;s own mirror (cveb.in) and
-            the advisory feeds it aggregates, beyond the NVD, OSV and AI endpoints oxAudit
-            contacts on its own.
+
+          <p className="mt-3 text-[11px] leading-relaxed text-text-muted">
+            Binary scanning adds network calls beyond the NVD, OSV and AI endpoints oxAudit
+            contacts on its own: cve-bin-tool reaches its own mirror and advisory feeds,
+            and grype fetches its database from Anchore. Set an NVD API key above before
+            the first cve-bin-tool run — unauthenticated, its initial download takes hours.
           </p>
         </section>
 
@@ -688,6 +753,12 @@ function UsageMetric({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+const BINARY_RUNTIMES = [
+  { value: "auto", label: "Auto", hint: "Native if installed, else Docker" },
+  { value: "native", label: "Native", hint: "Your own installation" },
+  { value: "docker", label: "Docker", hint: "Our image, carries the CVE-database fix" },
+] as const;
 
 const THEME_ICON: Record<ThemePreference, typeof Moon> = {
   dark: Moon,

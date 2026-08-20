@@ -11,6 +11,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Scanner identifiers, used for provenance on every component.
+pub const CVE_BIN_TOOL: &str = "cve-bin-tool";
+pub const GRYPE: &str = "grype";
+
 /// One CVE affecting a detected component.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +30,9 @@ pub struct BinaryVulnerability {
     /// cve-bin-tool triage state: NewFound, Mitigated, Confirmed, …
     pub remarks: Option<String>,
     pub epss_probability: Option<f64>,
+    /// First version carrying the fix, when the scanner reports one. grype
+    /// supplies this; cve-bin-tool does not.
+    pub fixed_in: Option<String>,
 }
 
 /// A component cve-bin-tool detected inside the scanned binaries.
@@ -38,6 +45,9 @@ pub struct BinaryComponent {
     /// Files the component was detected in, relative to the scan target.
     pub paths: Vec<String>,
     pub vulnerabilities: Vec<BinaryVulnerability>,
+    /// Which scanners saw this component. The two disagree often enough that
+    /// hiding the provenance would make results hard to trust.
+    pub detected_by: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
@@ -57,9 +67,12 @@ pub struct BinaryScanResult {
     pub target: String,
     pub components: Vec<BinaryComponent>,
     pub summary: BinaryScanSummary,
-    /// When cve-bin-tool last refreshed its local CVE database.
+    /// When the scanner last refreshed its local CVE database.
     pub database_last_updated: Option<String>,
     pub duration_ms: u64,
+    /// Scanners that contributed, in the order they ran.
+    #[serde(default)]
+    pub scanners: Vec<String>,
 }
 
 // --- the wire shape, exactly as cve-bin-tool writes it ---------------------
@@ -194,6 +207,7 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
                 version: entry.version.clone(),
                 paths: Vec::new(),
                 vulnerabilities: Vec::new(),
+                detected_by: vec![CVE_BIN_TOOL.to_string()],
             });
 
             for path in paths {
@@ -235,6 +249,7 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
                     .unwrap_or_else(|| source_report.datasource.clone()),
                 remarks: optional_text(entry.remarks.as_ref()),
                 epss_probability: optional_number(entry.epss_probability.as_ref()),
+                fixed_in: None,
             });
         }
     }
@@ -243,6 +258,152 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
     summary.components = components.len();
 
     // Most severe component first, so the interesting rows are at the top.
+    sort_components(&mut components);
+
+    Ok(BinaryScanResult {
+        target: target.to_string(),
+        components,
+        summary,
+        database_last_updated: report.database_info.and_then(|info| info.last_updated),
+        duration_ms,
+        scanners: vec![CVE_BIN_TOOL.to_string()],
+    })
+}
+
+/// Merge results from several scanners into one view.
+///
+/// Components are keyed on (product, version) rather than including the vendor:
+/// grype does not report a vendor at all, so keying on it would list every
+/// shared component twice. Where both scanners saw a component, the richer
+/// vendor string wins and `detected_by` records both.
+///
+/// CVEs are unioned by id. When both scanners report the same CVE, fields the
+/// other left empty are filled in — grype knows the fixed version, cve-bin-tool
+/// does not — so merging strictly adds information.
+pub fn merge_results(results: Vec<BinaryScanResult>) -> BinaryScanResult {
+    let mut merged: Vec<BinaryScanResult> = results.into_iter().collect();
+    if merged.len() == 1 {
+        return merged.remove(0);
+    }
+
+    let target = merged
+        .first()
+        .map(|r| r.target.clone())
+        .unwrap_or_default();
+    let duration_ms = merged.iter().map(|r| r.duration_ms).sum();
+    let database_last_updated = merged
+        .iter()
+        .filter_map(|r| r.database_last_updated.clone())
+        .max();
+    let scanners: Vec<String> = merged.iter().flat_map(|r| r.scanners.clone()).collect();
+
+    let mut grouped: BTreeMap<(String, String), BinaryComponent> = BTreeMap::new();
+    for result in merged {
+        for component in result.components {
+            let key = (
+                component.product.to_ascii_lowercase(),
+                component.version.clone(),
+            );
+            match grouped.get_mut(&key) {
+                None => {
+                    grouped.insert(key, component);
+                }
+                Some(existing) => {
+                    // Prefer a non-empty vendor: grype leaves it blank.
+                    if existing.vendor.trim().is_empty() && !component.vendor.trim().is_empty() {
+                        existing.vendor = component.vendor.clone();
+                    }
+                    for path in component.paths {
+                        if !existing.paths.contains(&path) {
+                            existing.paths.push(path);
+                        }
+                    }
+                    for scanner in component.detected_by {
+                        if !existing.detected_by.contains(&scanner) {
+                            existing.detected_by.push(scanner);
+                        }
+                    }
+                    for vulnerability in component.vulnerabilities {
+                        match existing
+                            .vulnerabilities
+                            .iter_mut()
+                            .find(|existing| existing.cve_id == vulnerability.cve_id)
+                        {
+                            None => existing.vulnerabilities.push(vulnerability),
+                            Some(current) => {
+                                // Keep whichever scanner knew more.
+                                if current.score.is_none() {
+                                    current.score = vulnerability.score;
+                                }
+                                if current.fixed_in.is_none() {
+                                    current.fixed_in = vulnerability.fixed_in.clone();
+                                }
+                                if current.cvss_vector.is_none() {
+                                    current.cvss_vector = vulnerability.cvss_vector.clone();
+                                }
+                                if current.epss_probability.is_none() {
+                                    current.epss_probability = vulnerability.epss_probability;
+                                }
+                                if severity_rank(&vulnerability.severity)
+                                    > severity_rank(&current.severity)
+                                {
+                                    current.severity = vulnerability.severity.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut components: Vec<BinaryComponent> = grouped.into_values().collect();
+    for component in &mut components {
+        component
+            .vulnerabilities
+            .sort_by(|a, b| {
+                severity_rank(&b.severity)
+                    .cmp(&severity_rank(&a.severity))
+                    .then_with(|| a.cve_id.cmp(&b.cve_id))
+            });
+        component.detected_by.sort();
+    }
+    sort_components(&mut components);
+
+    let summary = summarize(&components);
+    BinaryScanResult {
+        target,
+        components,
+        summary,
+        database_last_updated,
+        duration_ms,
+        scanners,
+    }
+}
+
+/// Counts recomputed from the merged set, never summed across scanners — a CVE
+/// both found must not be counted twice.
+fn summarize(components: &[BinaryComponent]) -> BinaryScanSummary {
+    let mut summary = BinaryScanSummary {
+        components: components.len(),
+        ..Default::default()
+    };
+    for component in components {
+        for vulnerability in &component.vulnerabilities {
+            summary.vulnerabilities += 1;
+            match vulnerability.severity.as_str() {
+                "critical" => summary.critical += 1,
+                "high" => summary.high += 1,
+                "medium" => summary.medium += 1,
+                "low" => summary.low += 1,
+                _ => {}
+            }
+        }
+    }
+    summary
+}
+
+fn sort_components(components: &mut [BinaryComponent]) {
     components.sort_by(|a, b| {
         let rank = |component: &BinaryComponent| {
             component
@@ -258,14 +419,6 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
             .then_with(|| a.product.cmp(&b.product))
             .then_with(|| a.version.cmp(&b.version))
     });
-
-    Ok(BinaryScanResult {
-        target: target.to_string(),
-        components,
-        summary,
-        database_last_updated: report.database_info.and_then(|info| info.last_updated),
-        duration_ms,
-    })
 }
 
 fn severity_rank(severity: &str) -> u8 {
@@ -439,5 +592,131 @@ mod tests {
     fn malformed_json_is_reported_rather_than_silently_empty() {
         let error = parse_json2("not json at all", "/x", 0).unwrap_err();
         assert!(error.contains("not valid JSON"), "got: {error}");
+    }
+
+    fn component(product: &str, version: &str, scanner: &str, cves: &[(&str, &str)]) -> BinaryComponent {
+        BinaryComponent {
+            vendor: if scanner == GRYPE { String::new() } else { "acme".into() },
+            product: product.into(),
+            version: version.into(),
+            paths: vec![format!("/fw/{product}.so")],
+            detected_by: vec![scanner.to_string()],
+            vulnerabilities: cves
+                .iter()
+                .map(|(id, severity)| BinaryVulnerability {
+                    cve_id: (*id).into(),
+                    severity: (*severity).into(),
+                    score: None,
+                    cvss_version: None,
+                    cvss_vector: None,
+                    source: scanner.into(),
+                    remarks: None,
+                    epss_probability: None,
+                    fixed_in: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn result(scanner: &str, components: Vec<BinaryComponent>) -> BinaryScanResult {
+        BinaryScanResult {
+            target: "/fw".into(),
+            summary: BinaryScanSummary { components: components.len(), ..Default::default() },
+            components,
+            database_last_updated: None,
+            duration_ms: 100,
+            scanners: vec![scanner.to_string()],
+        }
+    }
+
+    #[test]
+    fn a_component_both_scanners_saw_is_listed_once_with_both_credited() {
+        let merged = merge_results(vec![
+            result(CVE_BIN_TOOL, vec![component("curl", "8.7.1", CVE_BIN_TOOL, &[("CVE-1", "high")])]),
+            result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "high")])]),
+        ]);
+
+        assert_eq!(merged.components.len(), 1);
+        assert_eq!(merged.components[0].detected_by, vec!["cve-bin-tool", "grype"]);
+        assert_eq!(
+            merged.summary.vulnerabilities, 1,
+            "a CVE both scanners found must not be counted twice"
+        );
+    }
+
+    #[test]
+    fn components_only_one_scanner_saw_are_kept() {
+        // The whole point of running both: grype missed OpenSSL and zstd on the
+        // real fixture, cve-bin-tool missed nothing it checks for.
+        let merged = merge_results(vec![
+            result(CVE_BIN_TOOL, vec![component("openssl", "1.0.2g", CVE_BIN_TOOL, &[("CVE-A", "critical")])]),
+            result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-B", "high")])]),
+        ]);
+
+        let products: Vec<&str> = merged.components.iter().map(|c| c.product.as_str()).collect();
+        assert_eq!(products, vec!["openssl", "curl"], "most severe first");
+        assert_eq!(merged.summary.components, 2);
+        assert_eq!(merged.summary.critical, 1);
+        assert_eq!(merged.summary.high, 1);
+    }
+
+    #[test]
+    fn merging_fills_in_fields_the_other_scanner_left_empty() {
+        let mut from_grype = component("curl", "8.7.1", GRYPE, &[("CVE-1", "high")]);
+        from_grype.vulnerabilities[0].fixed_in = Some("8.9.0".into());
+        from_grype.vulnerabilities[0].score = Some(7.5);
+
+        let merged = merge_results(vec![
+            result(CVE_BIN_TOOL, vec![component("curl", "8.7.1", CVE_BIN_TOOL, &[("CVE-1", "high")])]),
+            result(GRYPE, vec![from_grype]),
+        ]);
+
+        let cve = &merged.components[0].vulnerabilities[0];
+        assert_eq!(cve.fixed_in.as_deref(), Some("8.9.0"), "grype knows the fix version");
+        assert_eq!(cve.score, Some(7.5));
+    }
+
+    #[test]
+    fn the_vendor_comes_from_whichever_scanner_reports_one() {
+        // grype never reports a vendor; keying the merge on it would duplicate
+        // every shared component.
+        let merged = merge_results(vec![
+            result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "low")])]),
+            result(CVE_BIN_TOOL, vec![component("curl", "8.7.1", CVE_BIN_TOOL, &[("CVE-1", "low")])]),
+        ]);
+
+        assert_eq!(merged.components.len(), 1);
+        assert_eq!(merged.components[0].vendor, "acme");
+    }
+
+    #[test]
+    fn the_more_severe_rating_wins_when_scanners_disagree() {
+        let merged = merge_results(vec![
+            result(CVE_BIN_TOOL, vec![component("curl", "8.7.1", CVE_BIN_TOOL, &[("CVE-1", "medium")])]),
+            result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "critical")])]),
+        ]);
+
+        assert_eq!(merged.components[0].vulnerabilities[0].severity, "critical");
+        assert_eq!(merged.summary.critical, 1);
+        assert_eq!(merged.summary.medium, 0);
+    }
+
+    #[test]
+    fn merging_a_single_result_is_a_passthrough() {
+        let single = result(GRYPE, vec![component("curl", "8.7.1", GRYPE, &[("CVE-1", "low")])]);
+        let merged = merge_results(vec![single]);
+        assert_eq!(merged.scanners, vec!["grype"]);
+        assert_eq!(merged.components.len(), 1);
+    }
+
+    #[test]
+    fn product_matching_ignores_case_so_one_component_is_not_listed_twice() {
+        let merged = merge_results(vec![
+            result(CVE_BIN_TOOL, vec![component("OpenSSL", "3.0.1", CVE_BIN_TOOL, &[("CVE-1", "high")])]),
+            result(GRYPE, vec![component("openssl", "3.0.1", GRYPE, &[("CVE-2", "low")])]),
+        ]);
+
+        assert_eq!(merged.components.len(), 1);
+        assert_eq!(merged.components[0].vulnerabilities.len(), 2);
     }
 }
