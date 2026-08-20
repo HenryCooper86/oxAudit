@@ -2,7 +2,7 @@
 
 Date: 2026-08-20
 
-Status: Draft for final review
+Status: Approved
 
 Extends: `2026-08-17-oxaudit-professional-workbench-design.md`
 
