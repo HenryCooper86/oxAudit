@@ -156,6 +156,62 @@ export interface AppSettings {
   scan: ScanSettings;
   nvdApiKey: string | null;
   theme: string;
+  /** Explicit cve-bin-tool path; null/empty means "find it on PATH". */
+  binaryScannerPath: string | null;
+}
+
+/** Where a detected cve-bin-tool came from. */
+export type BinaryToolSource = "configured" | "path" | "pythonModule";
+
+export interface BinaryToolStatus {
+  available: boolean;
+  program: string | null;
+  version: string | null;
+  source: BinaryToolSource | null;
+  message: string | null;
+}
+
+export interface BinaryVulnerability {
+  cveId: string;
+  severity: string;
+  score: number | null;
+  cvssVersion: string | null;
+  cvssVector: string | null;
+  source: string;
+  remarks: string | null;
+  epssProbability: number | null;
+}
+
+export interface BinaryComponent {
+  vendor: string;
+  product: string;
+  version: string;
+  paths: string[];
+  vulnerabilities: BinaryVulnerability[];
+}
+
+export interface BinaryScanSummary {
+  components: number;
+  vulnerabilities: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface BinaryScanResult {
+  target: string;
+  components: BinaryComponent[];
+  summary: BinaryScanSummary;
+  databaseLastUpdated: string | null;
+  durationMs: number;
+}
+
+export interface BinaryScanRequest {
+  path: string;
+  severity?: string | null;
+  offline?: boolean;
+  update?: string | null;
 }
 
 export interface ChatMessage {

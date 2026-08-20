@@ -27,6 +27,8 @@ pub struct AppState {
     pub ai: AiClient,
     pub osv: OsvClient,
     pub cancel_scan: AtomicBool,
+    /// Cancellation for an in-flight cve-bin-tool run.
+    pub cancel_binary_scan: Arc<AtomicBool>,
     /// run_id -> cancellation state for in-flight chat turns
     pub active_chats:
         Mutex<std::collections::HashMap<String, Arc<crate::agent::tool::RunCancellation>>>,
@@ -59,6 +61,7 @@ impl AppState {
             ai: AiClient::new(http.clone()),
             osv: OsvClient::new(http.clone()),
             cancel_scan: AtomicBool::new(false),
+            cancel_binary_scan: Arc::new(AtomicBool::new(false)),
             active_chats: Mutex::new(std::collections::HashMap::new()),
             pending_steers: Mutex::new(std::collections::HashMap::new()),
             active_project: Mutex::new(None),
@@ -544,6 +547,94 @@ pub async fn osv_package_vulns(
     name: String,
 ) -> Result<Vec<Value>, String> {
     crate::cve::osv_package_vulns(&state, &ecosystem, &name).await
+}
+
+// ---------------------------------------------------------------------------
+// Binary / firmware scanning (cve-bin-tool)
+// ---------------------------------------------------------------------------
+
+/// Wall-clock ceiling for one scan. Generous because a first run downloads the
+/// CVE database before it scans anything, which can take several minutes.
+const BINARY_SCAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+
+fn configured_scanner_path(state: &AppState) -> Option<String> {
+    state
+        .settings
+        .lock()
+        .unwrap()
+        .binary_scanner_path
+        .clone()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+}
+
+/// Whether a usable cve-bin-tool is installed, and which one we would run.
+#[tauri::command]
+pub async fn binary_tool_status(
+    state: State<'_, AppState>,
+) -> Result<crate::binscan::detect::BinaryToolStatus, String> {
+    let configured = configured_scanner_path(&state);
+    // Probing spawns a process, so keep it off the UI thread.
+    tokio::task::spawn_blocking(move || crate::binscan::detect::detect(configured.as_deref()))
+        .await
+        .map_err(|e| format!("tool detection failed: {e}"))
+}
+
+/// Scan a file or folder for vulnerable bundled components.
+///
+/// Emits `binscan://progress` with cve-bin-tool's own output as it runs; on a
+/// first run that is the only sign of life while the CVE database downloads.
+#[tauri::command]
+pub async fn scan_binaries(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: crate::binscan::run::BinaryScanRequest,
+) -> Result<crate::binscan::report::BinaryScanResult, String> {
+    let configured = configured_scanner_path(&state);
+    let nvd_api_key = state.settings.lock().unwrap().nvd_api_key.clone();
+    let cancel = state.cancel_binary_scan.clone();
+    cancel.store(false, Ordering::Relaxed);
+
+    let invocation = {
+        let configured = configured.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::binscan::detect::resolve(configured.as_deref())
+        })
+        .await
+        .map_err(|e| format!("tool detection failed: {e}"))??
+    };
+
+    let scratch_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("no cache directory available: {e}"))?
+        .join("binscan");
+
+    let progress_app = app.clone();
+    let on_progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
+        let _ = progress_app.emit("binscan://progress", Value::from(line));
+    });
+
+    app.emit("binscan://progress", Value::from("starting cve-bin-tool"))
+        .map_err(|e| e.to_string())?;
+
+    crate::binscan::run::run(
+        &invocation,
+        &request,
+        nvd_api_key.as_deref(),
+        &scratch_dir,
+        cancel,
+        BINARY_SCAN_TIMEOUT,
+        on_progress,
+    )
+    .await
+}
+
+/// Ask an in-flight binary scan to stop; the child process is killed.
+#[tauri::command]
+pub fn cancel_binary_scan(state: State<'_, AppState>) -> Result<(), String> {
+    state.cancel_binary_scan.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

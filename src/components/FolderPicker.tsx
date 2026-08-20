@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpen } from "lucide-react";
+import { FileUp, FolderOpen } from "lucide-react";
 import { Button } from "./ui";
 
 export function FolderPicker({
@@ -9,6 +9,7 @@ export function FolderPicker({
   disabled = false,
   buttonLabel = "Browse…",
   inputLabel = "Project folder",
+  allowFiles = false,
 }: {
   value: string;
   onChange: (path: string) => void;
@@ -16,6 +17,8 @@ export function FolderPicker({
   disabled?: boolean;
   buttonLabel?: string;
   inputLabel?: string;
+  /** Also offer a file picker — binary scans target single images, not just trees. */
+  allowFiles?: boolean;
 }) {
   const pick = async () => {
     const dir = await open({
@@ -27,6 +30,17 @@ export function FolderPicker({
       onChange(dir);
     }
   };
+  const pickFile = async () => {
+    const file = await open({
+      directory: false,
+      multiple: false,
+      title: "Select a file",
+    });
+    if (typeof file === "string" && file) {
+      onChange(file);
+    }
+  };
+
   return (
     <div className="flex items-center gap-2">
       <input
@@ -47,6 +61,18 @@ export function FolderPicker({
         <FolderOpen size={14} aria-hidden="true" />
         {buttonLabel}
       </Button>
+      {allowFiles && (
+        <Button
+          type="button"
+          onClick={pickFile}
+          disabled={disabled}
+          variant="outline"
+          size="md"
+        >
+          <FileUp size={14} aria-hidden="true" />
+          File…
+        </Button>
+      )}
     </div>
   );
 }
