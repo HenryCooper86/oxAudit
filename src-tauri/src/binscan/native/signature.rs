@@ -715,7 +715,7 @@ mod tests {
     /// exactly that: `cpe:2.3:a:sqlite:sqlite:3.46.1` returns 7 CVEs and
     /// `cpe:2.3:a:sqlite:sqlite3:3.46.1` returns none. Renaming a product must
     /// fail this test and send whoever did it back to the API.
-    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 27] = [
+    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 29] = [
         ("openssl", "openssl"),
         ("sqlite", "sqlite"),
         ("tukaani", "xz"),
@@ -745,6 +745,8 @@ mod tests {
         ("gnu", "libmicrohttpd"),
         ("freetype", "freetype"),
         ("jansson_project", "jansson"),
+        ("wolfssl", "wolfssl"),
+        ("netfilter", "iptables"),
     ];
 
     #[test]
@@ -766,7 +768,7 @@ zero CVEs rather than an error"
     /// Every entry was checked end to end against the binary it came from —
     /// this is the record of that, so a later edit to a pattern cannot quietly
     /// stop reading a version that used to work.
-    const FIRMWARE_GROUND_TRUTH: [(&str, &str, &str, &str); 15] = [
+    const FIRMWARE_GROUND_TRUTH: [(&str, &str, &str, &str); 17] = [
         ("dropbear_ssh", "dropbear", "\nSSH-2.0-dropbear_2025.89\n", "2025.89"),
         ("dnsmasq", "dnsmasq", "\ndnsmasq-2.91\n", "2.91"),
         (
@@ -816,6 +818,21 @@ zero CVEs rather than an error"
             "u-boot.bin",
             "\nU-Boot 2025.01-3 (Apr 08 2025 - 23:07:41 +0000)\n",
             "2025.01",
+        ),
+        // Both architectures, because wolfSSL is the one component whose
+        // absence cost the most: adding it took a real router image from 28
+        // CVEs to 91.
+        (
+            "wolfssl",
+            "libwolfssl.so.5.5.3.99a5b54a",
+            "\nwolfSSL PEM routines\nwolfSSL 5.5.3\n",
+            "5.5.3",
+        ),
+        (
+            "wolfssl",
+            "libwolfssl.so.42.2.0",
+            "\nwolfSSL_Debugging_ON\nwolfSSL 5.7.2\n",
+            "5.7.2",
         ),
     ];
 
@@ -915,12 +932,17 @@ zero CVEs rather than an error"
 
     /// Components identified by a data string alone, with no version anywhere
     /// in the binary. `(product, identifying string)`.
-    const IDENTITY_ONLY: [(&str, &str); 5] = [
+    const IDENTITY_ONLY: [(&str, &str); 6] = [
         ("freetype", "autofitter"),
         ("readline", "unrecognized history modifier"),
         ("jansson", "%s near end of file"),
         ("libwebsockets", "Out of mem in lws_daemonize"),
         ("chrony", "chronyd exiting"),
+        // iptables builds its banner from `%s v%s (legacy): ` at runtime. The
+        // bare version that is present has no stable neighbour — measured, it
+        // sits between `-N %s` and `append` on one build and between `help` and
+        // `unexpected '!' flag` on another.
+        ("iptables", "Failed to initialize xtables"),
     ];
 
     #[test]
@@ -949,6 +971,8 @@ zero CVEs rather than an error"
         // package name resolves to the same component.
         let set = &*SIGNATURES;
         for (package, product) in [
+            ("libwolfssl42t64", "wolfssl"),
+            ("ip6tables", "iptables"),
             ("libfreetype6", "freetype"),
             ("libreadline8t64", "readline"),
             ("libjansson4", "jansson"),
@@ -1026,6 +1050,9 @@ OpenSSH_7.0*,OpenSSH_7.1*\nOpenSSH_10.0p2 Debian-7+deb13u4\n";
             // The firmware set: what an actual router image is made of.
             "dropbear_ssh", "dnsmasq", "lighttpd", "wpa_supplicant", "hostapd",
             "openssh", "u-boot", "libpcap", "lua", "openvpn",
+            // The TLS library an embedded image actually ships, and the
+            // firewall every one of them has.
+            "wolfssl", "iptables",
         ] {
             assert!(
                 products.contains(&expected),
