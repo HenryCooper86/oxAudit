@@ -1,6 +1,8 @@
 use std::{collections::HashSet, io::Write, path::Path, sync::Mutex};
 #[cfg(windows)]
 use std::{fs, path::PathBuf};
+#[cfg(unix)]
+use std::{fs::File, path::PathBuf};
 #[cfg(not(any(unix, windows)))]
 use std::{
     fs::{self, File, OpenOptions},
@@ -121,30 +123,26 @@ enum IoStage {
     BeforeTempCreate,
     AfterTempSync,
     BeforeReplace,
+    AfterPolicyPreflight,
     AfterReplace,
+    BeforeRollbackExchange,
 }
 
 #[derive(Debug)]
 struct InvalidPolicy;
 
-static DRIVE_PREFIX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)(^|[[:space:]=:('])(?:[a-z]:[/\\])").unwrap());
-static UNSAFE_PATH_PREFIX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(^|[[:space:]=:('])(?:file://|//|/[A-Za-z0-9._-]|[a-z]:[^[:space:]]*)")
-        .unwrap()
-});
 static CREDENTIAL_ASSIGNMENT: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)\b(?:password|passwd|pwd|secret|api(?:[ _-]?key)|access(?:[ _-]?key)|auth(?:[ _-]?token)|client(?:[ _-]?secret)|private(?:[ _-]?key)|token|credential)\b[[:space:]]*[:=][[:space:]]*["']?[A-Za-z0-9_+./=-]{4,}"#,
+        r#"(?i)\b(?:password|passwd|pwd|secret|api(?:[ _-]?key)|access(?:[ _-]?key)|auth(?:[ _-]?token)|client(?:[ _-]?secret)|private(?:[ _-]?key)|token|credential)\b[[:space:]]*[:=][[:space:]]*["']?[^[:space:]"']+"#,
     )
     .unwrap()
 });
 static AUTHORIZATION_VALUE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\bauthorization\s*:\s*(?:basic|bearer)\s+[^[:space:]]+").unwrap()
+    Regex::new(r"(?i)\b(?:authorization\s*:\s*)?(?:basic|bearer)\s+[^[:space:]]+").unwrap()
 });
 static KNOWN_CREDENTIAL_PREFIX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?x)(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{20,})",
+        r"(?x)\b(?:AKIA[0-9A-Z]+|gh[pousr]_[A-Za-z0-9]+|sk-[A-Za-z0-9_-]+|xox[baprs]-[A-Za-z0-9-]+|AIza[0-9A-Za-z_-]+)",
     )
     .unwrap()
 });
@@ -166,15 +164,23 @@ fn load_policy_with_test_hook(
 #[cfg(unix)]
 fn load_policy_with_hook(
     project_root: &Path,
-    mut hook: impl FnMut(IoStage),
+    hook: impl FnMut(IoStage),
 ) -> Result<LoadedPolicy, CommandError> {
     let (_, policy_dir, _) = match unix_fs::open_project_policy_dir(project_root, false) {
         Ok(handles) => handles,
         Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(missing_policy()),
         Err(_) => return Ok(invalid_loaded_policy()),
     };
+    load_policy_from_unix_dir(&policy_dir, hook)
+}
+
+#[cfg(unix)]
+fn load_policy_from_unix_dir(
+    policy_dir: &File,
+    mut hook: impl FnMut(IoStage),
+) -> Result<LoadedPolicy, CommandError> {
     hook(IoStage::BeforePolicyOpen);
-    let mut policy = match unix_fs::open_regular_at(&policy_dir, "policy.json", true) {
+    let mut policy = match unix_fs::open_regular_at(policy_dir, "policy.json", true) {
         Ok(file) => file,
         Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(missing_policy()),
         Err(_) => return Ok(invalid_loaded_policy()),
@@ -448,7 +454,8 @@ fn update_policy_decision_core(
         .map_err(|_| CommandError::policy_write_failed())?;
     validate_update_input(finding, request, &now).map_err(|_| CommandError::review_invalid())?;
 
-    let loaded = load_policy(project_root)?;
+    let mut capability = open_update_capability(project_root, failure)?;
+    let loaded = load_policy_for_update(&mut capability, &mut hook)?;
     let initial_bytes = loaded.authoritative_bytes.clone();
     let mut policy = match loaded.status() {
         PolicyStatus::Missing => PolicyFile {
@@ -489,14 +496,14 @@ fn update_policy_decision_core(
         serde_json::to_vec_pretty(&policy).map_err(|_| CommandError::policy_write_failed())?;
     bytes.push(b'\n');
     atomic_write_policy(
-        project_root,
+        &mut capability,
         &bytes,
         initial_bytes.as_deref(),
         failure,
         &mut hook,
     )?;
 
-    let reloaded = load_policy(project_root)?;
+    let reloaded = load_policy_for_update(&mut capability, &mut |_| {})?;
     if !matches!(reloaded.status(), PolicyStatus::Valid { .. }) {
         return Err(CommandError::policy_write_failed());
     }
@@ -966,22 +973,73 @@ fn safe_optional_text(value: &str) -> bool {
 }
 
 fn contains_absolute_or_traversal(value: &str) -> bool {
-    if DRIVE_PREFIX.is_match(value) || UNSAFE_PATH_PREFIX.is_match(value) {
-        return true;
-    }
-    value.split_whitespace().any(|token| {
-        let token = token.trim_matches(|character: char| {
-            matches!(
-                character,
-                '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '\'' | '"'
-            )
-        });
-        token.starts_with('/')
-            || token == ".."
-            || token.starts_with("../")
-            || token.ends_with("/..")
-            || token.contains("/../")
+    value.split_whitespace().any(|raw| {
+        let token = unwrap_token(raw);
+        if safe_http_url(token) {
+            return false;
+        }
+        if unsafe_path_token(token) {
+            return true;
+        }
+        token
+            .split_once('=')
+            .is_some_and(|(_, assigned)| unsafe_path_token(unwrap_token(assigned)))
+            || token.split_once(':').is_some_and(|(label, assigned)| {
+                !label.eq_ignore_ascii_case("http")
+                    && !label.eq_ignore_ascii_case("https")
+                    && unsafe_path_token(unwrap_token(assigned))
+            })
     })
+}
+
+fn unwrap_token(value: &str) -> &str {
+    value.trim_matches(|character: char| {
+        matches!(
+            character,
+            '`' | '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+        )
+    })
+}
+
+fn unsafe_path_token(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let lower = token.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return !safe_http_url(token);
+    }
+    lower.starts_with("file://")
+        || token.starts_with('/')
+        || has_drive_prefix(token)
+        || token == ".."
+        || token.starts_with("../")
+        || token.ends_with("/..")
+        || token.contains("/../")
+}
+
+fn safe_http_url(token: &str) -> bool {
+    let rest = token
+        .strip_prefix("https://")
+        .or_else(|| token.strip_prefix("http://"));
+    let Some(rest) = rest else {
+        return false;
+    };
+    if rest.is_empty()
+        || rest
+            .chars()
+            .any(|character| matches!(character, '@' | '?' | '#' | '\\'))
+    {
+        return false;
+    }
+    let (authority, path) = rest
+        .split_once('/')
+        .map_or((rest, None), |(host, path)| (host, Some(path)));
+    !authority.is_empty()
+        && authority.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | ':')
+        })
+        && path.is_none_or(|path| !path.split('/').any(|segment| matches!(segment, "." | "..")))
 }
 
 fn credential_shaped(value: &str) -> bool {
@@ -994,28 +1052,45 @@ fn credential_shaped(value: &str) -> bool {
     {
         return true;
     }
-    TOKEN_CANDIDATE
-        .find_iter(value)
-        .map(|candidate| candidate.as_str())
-        .any(high_entropy_standalone_token)
+    let mut previous = None;
+    for raw in value.split_whitespace() {
+        let token = unwrap_token(raw);
+        let rejected = !safe_http_url(token)
+            && TOKEN_CANDIDATE
+                .find_iter(token)
+                .any(|candidate| high_entropy_standalone_token(token, candidate, previous));
+        if rejected {
+            return true;
+        }
+        previous = Some(token);
+    }
+    false
 }
 
-fn high_entropy_standalone_token(candidate: &str) -> bool {
-    if candidate
+fn high_entropy_standalone_token(
+    container: &str,
+    candidate: regex::Match<'_>,
+    previous: Option<&str>,
+) -> bool {
+    let candidate_text = candidate.as_str();
+    if (candidate_text
         .chars()
         .all(|character| character.is_ascii_hexdigit())
-        || benign_identifier(candidate)
-        || portable_path_token(candidate)
+        && (contextual_hash(container, candidate.start())
+            || previous.is_some_and(contextual_hash_label)))
+        || benign_identifier(candidate_text)
+        || benign_kebab_identifier(candidate_text)
+        || portable_path_token(candidate_text)
     {
         return false;
     }
     let mut frequencies = [0usize; 128];
-    for byte in candidate.bytes() {
+    for byte in candidate_text.bytes() {
         if byte.is_ascii() {
             frequencies[usize::from(byte)] += 1;
         }
     }
-    let length = candidate.len() as f64;
+    let length = candidate_text.len() as f64;
     let entropy = frequencies
         .into_iter()
         .filter(|count| *count > 0)
@@ -1025,6 +1100,35 @@ fn high_entropy_standalone_token(candidate: &str) -> bool {
         })
         .sum::<f64>();
     entropy >= 3.5
+}
+
+fn contextual_hash(container: &str, candidate_start: usize) -> bool {
+    let label = container[..candidate_start]
+        .trim_end()
+        .split_whitespace()
+        .next_back()
+        .map(|value| value.trim_matches(|character: char| !character.is_ascii_alphanumeric()))
+        .unwrap_or("");
+    contextual_hash_label(label)
+}
+
+fn contextual_hash_label(label: &str) -> bool {
+    let label = label.trim_matches(|character: char| !character.is_ascii_alphanumeric());
+    matches!(
+        label.to_ascii_lowercase().as_str(),
+        "commit" | "hash" | "sha" | "sha1" | "sha256" | "digest" | "fingerprint"
+    )
+}
+
+fn benign_kebab_identifier(candidate: &str) -> bool {
+    let segments = candidate.split('-').collect::<Vec<_>>();
+    segments.len() >= 3
+        && segments.iter().all(|segment| {
+            segment.len() >= 2
+                && segment
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase())
+        })
 }
 
 fn benign_identifier(candidate: &str) -> bool {
@@ -1251,13 +1355,19 @@ fn derived_review_id(
 }
 
 #[cfg(unix)]
-fn atomic_write_policy(
+struct PolicyUpdateCapability {
+    requested_root: PathBuf,
+    root: File,
+    policy_dir: File,
+    root_identity: unix_fs::Identity,
+    directory_identity: unix_fs::Identity,
+}
+
+#[cfg(unix)]
+fn open_update_capability(
     project_root: &Path,
-    bytes: &[u8],
-    expected_bytes: Option<&[u8]>,
     failure: WriteFailure,
-    hook: &mut impl FnMut(IoStage),
-) -> Result<(), CommandError> {
+) -> Result<PolicyUpdateCapability, CommandError> {
     let (root, policy_dir, created) = unix_fs::open_project_policy_dir(project_root, true)
         .map_err(|_| CommandError::policy_write_failed())?;
     if created {
@@ -1267,19 +1377,213 @@ fn atomic_write_policy(
         root.sync_all()
             .map_err(|_| CommandError::policy_write_failed())?;
     }
+    let root_identity =
+        unix_fs::identity(&root).map_err(|_| CommandError::policy_write_failed())?;
     let directory_identity =
         unix_fs::identity(&policy_dir).map_err(|_| CommandError::policy_write_failed())?;
+    let capability = PolicyUpdateCapability {
+        requested_root: project_root.to_path_buf(),
+        root,
+        policy_dir,
+        root_identity,
+        directory_identity,
+    };
+    if !capability.requested_path_is_pinned() {
+        return Err(CommandError::policy_write_failed());
+    }
+    Ok(capability)
+}
+
+#[cfg(unix)]
+impl PolicyUpdateCapability {
+    fn requested_path_is_pinned(&self) -> bool {
+        unix_fs::path_has_identity(&self.requested_root, self.root_identity)
+            && unix_fs::same_named_identity(&self.root, ".oxaudit", self.directory_identity)
+    }
+}
+
+#[cfg(unix)]
+fn load_policy_for_update(
+    capability: &mut PolicyUpdateCapability,
+    hook: &mut impl FnMut(IoStage),
+) -> Result<LoadedPolicy, CommandError> {
+    if !capability.requested_path_is_pinned() {
+        return Err(CommandError::policy_write_failed());
+    }
+    load_policy_from_unix_dir(&capability.policy_dir, hook)
+}
+
+#[cfg(unix)]
+fn unix_named_snapshot(directory: &File, name: &str) -> Option<(unix_fs::Identity, Vec<u8>)> {
+    let mut file = unix_fs::open_regular_at(directory, name, true).ok()?;
+    let identity = unix_fs::identity(&file).ok()?;
+    let bytes = unix_fs::read_bounded(&mut file, MAX_POLICY_BYTES).ok()?;
+    if unix_fs::same_named_identity(directory, name, identity) {
+        Some((identity, bytes))
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UnixNamedState {
+    identity: unix_fs::Identity,
+    /// `None` deliberately represents a no-follow opaque object (for example,
+    /// a symlink or FIFO). Such an object can be restored by atomic exchange,
+    /// but is never opened or interpreted as policy bytes.
+    bytes: Option<Vec<u8>>,
+}
+
+#[cfg(unix)]
+fn unix_named_state(directory: &File, name: &str) -> std::io::Result<UnixNamedState> {
+    let identity = unix_fs::named_identity(directory, name)?;
+    match unix_fs::open_regular_at(directory, name, true) {
+        Ok(mut file) => {
+            let opened_identity = unix_fs::identity(&file)?;
+            if opened_identity != identity
+                || !unix_fs::same_named_identity(directory, name, identity)
+            {
+                return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            }
+            let bytes = match unix_fs::read_bounded(&mut file, MAX_POLICY_BYTES) {
+                Ok(bytes) => Some(bytes),
+                Err(_) if unix_fs::same_named_identity(directory, name, identity) => None,
+                Err(error) => return Err(error),
+            };
+            Ok(UnixNamedState { identity, bytes })
+        }
+        Err(_) if unix_fs::same_named_identity(directory, name, identity) => Ok(UnixNamedState {
+            identity,
+            bytes: None,
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnixExchangeOutcome {
+    Applied,
+    Undone,
+}
+
+/// Exchanges two names and validates the state produced by the exchange. If
+/// validation fails, it exchanges the names back only while both just-observed
+/// states are still exact, then verifies the undo. This makes every reversal
+/// use the same swap-then-validate transition instead of a check-then-swap gap.
+#[cfg(unix)]
+fn unix_exchange_or_undo(
+    directory: &File,
+    first: &str,
+    second: &str,
+    expected_first_after: &UnixNamedState,
+    expected_second_after: &UnixNamedState,
+    mut before_undo: impl FnMut(),
+) -> std::io::Result<UnixExchangeOutcome> {
+    unix_fs::exchange_at(directory, first, second)?;
+    let observed_first = unix_named_state(directory, first)?;
+    let observed_second = unix_named_state(directory, second)?;
+    if &observed_first == expected_first_after && &observed_second == expected_second_after {
+        return Ok(UnixExchangeOutcome::Applied);
+    }
+
+    before_undo();
+    if unix_named_state(directory, first)? != observed_first
+        || unix_named_state(directory, second)? != observed_second
+    {
+        return Err(std::io::Error::from_raw_os_error(libc::EIO));
+    }
+    unix_fs::exchange_at(directory, first, second)?;
+    if unix_named_state(directory, first)? == observed_second
+        && unix_named_state(directory, second)? == observed_first
+    {
+        directory.sync_all()?;
+        Ok(UnixExchangeOutcome::Undone)
+    } else {
+        Err(std::io::Error::from_raw_os_error(libc::EIO))
+    }
+}
+
+/// Restores an initially absent target by atomically retiring the published
+/// name to a unique quarantine. Only an exact candidate is deleted. Anything
+/// else is moved back no-clobber; if a newer target appeared, both are kept.
+#[cfg(unix)]
+fn unix_restore_absence(
+    directory: &File,
+    candidate_identity: unix_fs::Identity,
+    candidate_bytes: &[u8],
+) -> std::io::Result<bool> {
+    let quarantine = format!(".policy.json.{}.rollback-absent", Uuid::new_v4());
+    unix_fs::rename_noreplace_at(directory, "policy.json", &quarantine)?;
+    let moved = unix_named_state(directory, &quarantine)?;
+    let candidate = UnixNamedState {
+        identity: candidate_identity,
+        bytes: Some(candidate_bytes.to_vec()),
+    };
+    if moved == candidate && unix_named_state(directory, &quarantine)? == candidate {
+        unix_fs::unlink_at(directory, &quarantine)?;
+        directory.sync_all()?;
+        return Ok(true);
+    }
+
+    if unix_named_state(directory, &quarantine)? != moved {
+        return Err(std::io::Error::from_raw_os_error(libc::EIO));
+    }
+    unix_fs::rename_noreplace_at(directory, &quarantine, "policy.json")?;
+    if unix_named_state(directory, "policy.json")? != moved {
+        return Err(std::io::Error::from_raw_os_error(libc::EIO));
+    }
+    directory.sync_all()?;
+    Ok(false)
+}
+
+#[cfg(unix)]
+fn unix_named_bytes_equal(
+    directory: &File,
+    name: &str,
+    identity: unix_fs::Identity,
+    expected: &[u8],
+) -> bool {
+    unix_named_snapshot(directory, name)
+        .is_some_and(|(actual_identity, bytes)| actual_identity == identity && bytes == expected)
+}
+
+#[cfg(unix)]
+fn unix_named_valid_candidate(
+    directory: &File,
+    name: &str,
+    identity: unix_fs::Identity,
+    expected: &[u8],
+) -> bool {
+    let Some((actual_identity, bytes)) = unix_named_snapshot(directory, name) else {
+        return false;
+    };
+    actual_identity == identity
+        && bytes == expected
+        && parse_and_validate(&bytes, ValidationMode::Load).is_ok()
+}
+
+#[cfg(unix)]
+fn atomic_write_policy(
+    capability: &mut PolicyUpdateCapability,
+    bytes: &[u8],
+    expected_bytes: Option<&[u8]>,
+    failure: WriteFailure,
+    hook: &mut impl FnMut(IoStage),
+) -> Result<(), CommandError> {
     hook(IoStage::BeforeTempCreate);
-    if !unix_fs::same_named_identity(&root, ".oxaudit", directory_identity) {
+    if !capability.requested_path_is_pinned() {
         return Err(CommandError::policy_write_failed());
     }
 
     let temp_name = format!(".policy.json.{}.tmp", Uuid::new_v4());
-    let mut temp = unix_fs::create_new_at(&policy_dir, &temp_name)
+    let mut temp = unix_fs::create_new_at(&capability.policy_dir, &temp_name)
         .map_err(|_| CommandError::policy_write_failed())?;
     let temp_identity =
         unix_fs::identity(&temp).map_err(|_| CommandError::policy_write_failed())?;
-    let mut temp_cleanup = unix_fs::OwnedName::new(&policy_dir, temp_name.clone(), temp_identity);
+    let mut temp_cleanup =
+        unix_fs::OwnedName::new(&capability.policy_dir, temp_name.clone(), temp_identity);
     temp.write_all(bytes)
         .and_then(|_| temp.flush())
         .and_then(|_| temp.sync_all())
@@ -1288,8 +1592,8 @@ fn atomic_write_policy(
     if failure == WriteFailure::AfterTempSync {
         return Err(CommandError::policy_write_failed());
     }
-    if !unix_fs::same_named_identity(&root, ".oxaudit", directory_identity)
-        || !unix_fs::same_named_identity(&policy_dir, &temp_name, temp_identity)
+    if !capability.requested_path_is_pinned()
+        || !unix_fs::same_named_identity(&capability.policy_dir, &temp_name, temp_identity)
     {
         return Err(CommandError::policy_write_failed());
     }
@@ -1302,10 +1606,10 @@ fn atomic_write_policy(
     }
 
     hook(IoStage::BeforeReplace);
-    if !unix_fs::same_named_identity(&root, ".oxaudit", directory_identity) {
+    if !capability.requested_path_is_pinned() {
         return Err(CommandError::policy_write_failed());
     }
-    let current = match unix_fs::open_regular_at(&policy_dir, "policy.json", true) {
+    let current = match unix_fs::open_regular_at(&capability.policy_dir, "policy.json", true) {
         Ok(mut file) => Some((
             unix_fs::read_bounded(&mut file, MAX_POLICY_BYTES)
                 .map_err(|_| CommandError::policy_write_failed())?,
@@ -1322,102 +1626,395 @@ fn atomic_write_policy(
     if !current_matches {
         return Err(CommandError::policy_write_failed());
     }
+    hook(IoStage::AfterPolicyPreflight);
+    if !capability.requested_path_is_pinned()
+        || !unix_fs::same_named_identity(&capability.policy_dir, &temp_name, temp_identity)
+    {
+        return Err(CommandError::policy_write_failed());
+    }
 
-    let backup_name = format!(".policy.json.{}.recovery", Uuid::new_v4());
-    let mut backup = if let Some((_, current_identity)) = current {
-        unix_fs::link_at(&policy_dir, "policy.json", &backup_name)
+    let Some(expected) = expected_bytes else {
+        unix_fs::link_at(&capability.policy_dir, &temp_name, "policy.json")
             .map_err(|_| CommandError::policy_write_failed())?;
-        let backup_identity = unix_fs::named_identity(&policy_dir, &backup_name)
-            .map_err(|_| CommandError::policy_write_failed())?;
-        if backup_identity != current_identity
-            || !unix_fs::same_named_identity(&policy_dir, "policy.json", current_identity)
-        {
-            let _ = unix_fs::unlink_at(&policy_dir, &backup_name);
+        hook(IoStage::AfterReplace);
+
+        let candidate_is_untouched =
+            unix_named_bytes_equal(&capability.policy_dir, "policy.json", temp_identity, bytes)
+                && unix_named_bytes_equal(&capability.policy_dir, &temp_name, temp_identity, bytes);
+        if failure == WriteFailure::AfterReplaceBeforeDirectorySync || !candidate_is_untouched {
+            if candidate_is_untouched {
+                hook(IoStage::BeforeRollbackExchange);
+                let _ = unix_restore_absence(&capability.policy_dir, temp_identity, bytes);
+            } else {
+                temp_cleanup.disarm();
+            }
             return Err(CommandError::policy_write_failed());
         }
-        Some(unix_fs::OwnedName::new(
-            &policy_dir,
-            backup_name.clone(),
-            backup_identity,
-        ))
-    } else {
-        None
+        if capability.policy_dir.sync_all().is_err() {
+            hook(IoStage::BeforeRollbackExchange);
+            if unix_named_bytes_equal(&capability.policy_dir, "policy.json", temp_identity, bytes)
+                && unix_named_bytes_equal(&capability.policy_dir, &temp_name, temp_identity, bytes)
+            {
+                let _ = unix_restore_absence(&capability.policy_dir, temp_identity, bytes);
+            }
+            return Err(CommandError::policy_write_failed());
+        }
+        if !unix_named_valid_candidate(&capability.policy_dir, "policy.json", temp_identity, bytes)
+        {
+            return Err(CommandError::policy_write_failed());
+        }
+        let _ = temp_cleanup
+            .remove()
+            .and_then(|_| capability.policy_dir.sync_all());
+        return Ok(());
     };
 
-    if !unix_fs::same_named_identity(&policy_dir, &temp_name, temp_identity) {
+    let Some((_, current_identity)) = current else {
         return Err(CommandError::policy_write_failed());
-    }
-    unix_fs::rename_at(&policy_dir, &temp_name, "policy.json")
-        .map_err(|_| CommandError::policy_write_failed())?;
-    temp_cleanup.disarm();
-    let rollback = |backup: &mut Option<unix_fs::OwnedName<'_>>| -> std::io::Result<()> {
-        if let Some(backup) = backup.as_mut() {
-            backup.restore_over("policy.json")?;
-        } else if unix_fs::same_named_identity(&policy_dir, "policy.json", temp_identity) {
-            unix_fs::unlink_at(&policy_dir, "policy.json")?;
-        } else {
-            return Err(std::io::Error::from_raw_os_error(libc::EIO));
-        }
-        policy_dir.sync_all()
     };
-    if !unix_fs::same_named_identity(&root, ".oxaudit", directory_identity)
-        || !unix_fs::same_named_identity(&policy_dir, "policy.json", temp_identity)
-    {
-        let _ = rollback(&mut backup);
-        return Err(CommandError::policy_write_failed());
+    let old_state = UnixNamedState {
+        identity: current_identity,
+        bytes: Some(expected.to_vec()),
+    };
+    let candidate_state = UnixNamedState {
+        identity: temp_identity,
+        bytes: Some(bytes.to_vec()),
+    };
+    let publication = unix_exchange_or_undo(
+        &capability.policy_dir,
+        &temp_name,
+        "policy.json",
+        &old_state,
+        &candidate_state,
+        || hook(IoStage::BeforeRollbackExchange),
+    );
+    match publication {
+        Ok(UnixExchangeOutcome::Applied) => {}
+        Ok(UnixExchangeOutcome::Undone) => {
+            let _ = capability.policy_dir.sync_all();
+            return Err(CommandError::policy_write_failed());
+        }
+        Err(_) => {
+            // The exchange state is indeterminate. Cleanup must not remove a
+            // name that may now contain externally supplied bytes.
+            temp_cleanup.disarm();
+            return Err(CommandError::policy_write_failed());
+        }
     }
+    temp_cleanup.disarm();
+    let mut recovery =
+        unix_fs::OwnedName::new(&capability.policy_dir, temp_name.clone(), current_identity);
+
     hook(IoStage::AfterReplace);
 
-    if failure == WriteFailure::AfterReplaceBeforeDirectorySync
-        || !unix_fs::same_named_identity(&policy_dir, "policy.json", temp_identity)
-    {
-        let _ = rollback(&mut backup);
+    let must_rollback = failure == WriteFailure::AfterReplaceBeforeDirectorySync
+        || !unix_named_bytes_equal(&capability.policy_dir, "policy.json", temp_identity, bytes)
+        || !unix_named_bytes_equal(
+            &capability.policy_dir,
+            &temp_name,
+            current_identity,
+            expected,
+        );
+    if must_rollback {
+        hook(IoStage::BeforeRollbackExchange);
+        let rollback = unix_exchange_or_undo(
+            &capability.policy_dir,
+            &temp_name,
+            "policy.json",
+            &candidate_state,
+            &old_state,
+            || {},
+        );
+        if !matches!(rollback, Ok(UnixExchangeOutcome::Applied)) {
+            recovery.disarm();
+        } else {
+            recovery.disarm();
+            let mut candidate_cleanup =
+                unix_fs::OwnedName::new(&capability.policy_dir, temp_name.clone(), temp_identity);
+            if unix_named_bytes_equal(&capability.policy_dir, &temp_name, temp_identity, bytes) {
+                let _ = candidate_cleanup.remove();
+            } else {
+                candidate_cleanup.disarm();
+            }
+            let _ = capability.policy_dir.sync_all();
+        }
         return Err(CommandError::policy_write_failed());
     }
 
-    if policy_dir.sync_all().is_err() {
-        let _ = rollback(&mut backup);
+    if capability.policy_dir.sync_all().is_err() {
+        hook(IoStage::BeforeRollbackExchange);
+        let rollback = unix_exchange_or_undo(
+            &capability.policy_dir,
+            &temp_name,
+            "policy.json",
+            &candidate_state,
+            &old_state,
+            || {},
+        );
+        if !matches!(rollback, Ok(UnixExchangeOutcome::Applied)) {
+            recovery.disarm();
+        } else {
+            recovery.disarm();
+            let mut candidate_cleanup =
+                unix_fs::OwnedName::new(&capability.policy_dir, temp_name.clone(), temp_identity);
+            if unix_named_bytes_equal(&capability.policy_dir, &temp_name, temp_identity, bytes) {
+                let _ = candidate_cleanup.remove();
+            } else {
+                candidate_cleanup.disarm();
+            }
+            let _ = capability.policy_dir.sync_all();
+        }
         return Err(CommandError::policy_write_failed());
     }
-    if let Some(backup) = backup.as_mut() {
-        let _ = backup.remove().and_then(|_| policy_dir.sync_all());
+    if !unix_named_valid_candidate(&capability.policy_dir, "policy.json", temp_identity, bytes) {
+        recovery.disarm();
+        return Err(CommandError::policy_write_failed());
     }
+    let _ = recovery
+        .remove()
+        .and_then(|_| capability.policy_dir.sync_all());
     Ok(())
 }
 
 #[cfg(windows)]
-fn atomic_write_policy(
+struct PolicyUpdateCapability {
+    requested_root: PathBuf,
+    root: std::fs::File,
+    policy_dir_path: PathBuf,
+    policy_dir: std::fs::File,
+    root_identity: windows_fs::Identity,
+    directory_identity: windows_fs::Identity,
+}
+
+#[cfg(windows)]
+fn open_update_capability(
     project_root: &Path,
+    _failure: WriteFailure,
+) -> Result<PolicyUpdateCapability, CommandError> {
+    let root = windows_fs::open_pinned_directory(project_root)
+        .map_err(|_| CommandError::policy_write_failed())?;
+    let root_identity =
+        windows_fs::identity(&root).map_err(|_| CommandError::policy_write_failed())?;
+    let policy_dir_path = project_root.join(".oxaudit");
+    match windows_fs::open_directory(&policy_dir_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&policy_dir_path).map_err(|_| CommandError::policy_write_failed())?;
+        }
+        Err(_) => return Err(CommandError::policy_write_failed()),
+    }
+    let policy_dir = windows_fs::open_pinned_directory(&policy_dir_path)
+        .map_err(|_| CommandError::policy_write_failed())?;
+    let directory_identity =
+        windows_fs::identity(&policy_dir).map_err(|_| CommandError::policy_write_failed())?;
+    let capability = PolicyUpdateCapability {
+        requested_root: project_root.to_path_buf(),
+        root,
+        policy_dir_path,
+        policy_dir,
+        root_identity,
+        directory_identity,
+    };
+    if !capability.requested_path_is_pinned() {
+        return Err(CommandError::policy_write_failed());
+    }
+    Ok(capability)
+}
+
+#[cfg(windows)]
+impl PolicyUpdateCapability {
+    fn requested_path_is_pinned(&self) -> bool {
+        windows_fs::path_has_identity(&self.requested_root, self.root_identity, true)
+            && windows_fs::path_has_identity(&self.policy_dir_path, self.directory_identity, true)
+            && windows_fs::identity(&self.root).is_ok_and(|value| value == self.root_identity)
+            && windows_fs::identity(&self.policy_dir)
+                .is_ok_and(|value| value == self.directory_identity)
+    }
+}
+
+#[cfg(windows)]
+fn load_policy_for_update(
+    capability: &mut PolicyUpdateCapability,
+    hook: &mut impl FnMut(IoStage),
+) -> Result<LoadedPolicy, CommandError> {
+    if !capability.requested_path_is_pinned() {
+        return Err(CommandError::policy_write_failed());
+    }
+    hook(IoStage::BeforePolicyOpen);
+    let mut policy = match windows_fs::open_regular(&capability.policy_dir_path.join("policy.json"))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(missing_policy()),
+        Err(_) => return Ok(invalid_loaded_policy()),
+    };
+    hook(IoStage::AfterPolicyOpen);
+    let bytes = match windows_fs::read_bounded(&mut policy, MAX_POLICY_BYTES) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(invalid_loaded_policy()),
+    };
+    loaded_from_bytes(&bytes)
+}
+
+#[cfg(windows)]
+fn windows_named_snapshot(path: &Path) -> Option<(windows_fs::Identity, Vec<u8>)> {
+    let mut file = windows_fs::open_regular(path).ok()?;
+    let identity = windows_fs::identity(&file).ok()?;
+    let bytes = windows_fs::read_bounded(&mut file, MAX_POLICY_BYTES).ok()?;
+    if windows_fs::path_has_identity(path, identity, false) {
+        Some((identity, bytes))
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsNamedState {
+    identity: windows_fs::Identity,
+    bytes: Option<Vec<u8>>,
+}
+
+#[cfg(windows)]
+fn windows_named_state(path: &Path) -> std::io::Result<WindowsNamedState> {
+    let mut file = windows_fs::open_path_object(path)?;
+    let identity = windows_fs::identity(&file)?;
+    if !windows_fs::path_has_object_identity(path, identity) {
+        return Err(std::io::Error::from_raw_os_error(5));
+    }
+    let metadata = file.metadata()?;
+    let is_plain_file = metadata.is_file() && !windows_fs::is_reparse(&metadata);
+    let bytes = match is_plain_file {
+        true => match windows_fs::read_bounded(&mut file, MAX_POLICY_BYTES) {
+            Ok(bytes) => Some(bytes),
+            Err(_) if windows_fs::path_has_object_identity(path, identity) => None,
+            Err(error) => return Err(error),
+        },
+        false => None,
+    };
+    Ok(WindowsNamedState { identity, bytes })
+}
+
+#[cfg(windows)]
+enum WindowsRestoreOutcome {
+    Applied(WindowsOwnedPath),
+    Undone,
+}
+
+/// Atomically installs `recovery` while capturing the displaced target. The
+/// displaced file is the compare-and-swap witness. A mismatch is itself undone
+/// with ReplaceFileW so a late external target is restored atomically.
+#[cfg(windows)]
+fn windows_restore_or_undo(
+    target: &Path,
+    recovery: &mut WindowsOwnedPath,
+    expected_recovery: &WindowsNamedState,
+    expected_target: &WindowsNamedState,
+) -> std::io::Result<WindowsRestoreOutcome> {
+    if !recovery.armed || !windows_fs::path_has_object_identity(&recovery.path, recovery.identity) {
+        return Err(std::io::Error::from_raw_os_error(5));
+    }
+    let directory = target
+        .parent()
+        .ok_or_else(|| std::io::Error::from_raw_os_error(5))?;
+    let displaced_path = directory.join(format!(
+        ".policy.json.{}.rollback-displaced",
+        Uuid::new_v4()
+    ));
+    windows_fs::durable_replace(target, &recovery.path, true, Some(&displaced_path))?;
+    recovery.disarm();
+
+    let observed_target = windows_named_state(target)?;
+    let observed_displaced = windows_named_state(&displaced_path)?;
+    if &observed_target == expected_recovery && &observed_displaced == expected_target {
+        let target_file = windows_fs::open_regular_read_write(target)?;
+        target_file.sync_all()?;
+        if windows_named_state(target)? != observed_target
+            || windows_named_state(&displaced_path)? != observed_displaced
+        {
+            return Err(std::io::Error::from_raw_os_error(5));
+        }
+        return Ok(WindowsRestoreOutcome::Applied(WindowsOwnedPath::new(
+            displaced_path,
+            observed_displaced.identity,
+        )));
+    }
+
+    if windows_named_state(target)? != observed_target
+        || windows_named_state(&displaced_path)? != observed_displaced
+    {
+        return Err(std::io::Error::from_raw_os_error(5));
+    }
+    let undo_backup = directory.join(format!(".policy.json.{}.rollback-old", Uuid::new_v4()));
+    windows_fs::durable_replace(target, &displaced_path, true, Some(&undo_backup))?;
+    let restored_target = windows_named_state(target)?;
+    let preserved_old = windows_named_state(&undo_backup)?;
+    if restored_target == observed_displaced && preserved_old == observed_target {
+        windows_fs::open_regular_read_write(target)?.sync_all()?;
+        if let Some(old_bytes) = preserved_old.bytes.as_deref() {
+            let mut old_cleanup = WindowsOwnedPath::new(undo_backup, preserved_old.identity);
+            let _ = old_cleanup.remove_if_exact(old_bytes);
+        }
+        Ok(WindowsRestoreOutcome::Undone)
+    } else {
+        Err(std::io::Error::from_raw_os_error(5))
+    }
+}
+
+#[cfg(windows)]
+fn windows_restore_absence(
+    target: &Path,
+    candidate_identity: windows_fs::Identity,
+    candidate_bytes: &[u8],
+) -> std::io::Result<bool> {
+    let directory = target
+        .parent()
+        .ok_or_else(|| std::io::Error::from_raw_os_error(5))?;
+    let quarantine = directory.join(format!(".policy.json.{}.rollback-absent", Uuid::new_v4()));
+    windows_fs::move_noreplace(target, &quarantine)?;
+    let moved = windows_named_state(&quarantine)?;
+    let candidate = WindowsNamedState {
+        identity: candidate_identity,
+        bytes: Some(candidate_bytes.to_vec()),
+    };
+    if moved == candidate && windows_named_state(&quarantine)? == candidate {
+        fs::remove_file(&quarantine)?;
+        return Ok(true);
+    }
+
+    if windows_named_state(&quarantine)? != moved {
+        return Err(std::io::Error::from_raw_os_error(5));
+    }
+    windows_fs::move_noreplace(&quarantine, target)?;
+    if windows_named_state(target)? == moved {
+        windows_fs::open_regular_read_write(target)?.sync_all()?;
+        Ok(false)
+    } else {
+        Err(std::io::Error::from_raw_os_error(5))
+    }
+}
+
+#[cfg(windows)]
+fn windows_named_bytes_equal(path: &Path, identity: windows_fs::Identity, expected: &[u8]) -> bool {
+    windows_named_snapshot(path)
+        .is_some_and(|(actual_identity, bytes)| actual_identity == identity && bytes == expected)
+}
+
+#[cfg(windows)]
+fn atomic_write_policy(
+    capability: &mut PolicyUpdateCapability,
     bytes: &[u8],
     expected_bytes: Option<&[u8]>,
     failure: WriteFailure,
     hook: &mut impl FnMut(IoStage),
 ) -> Result<(), CommandError> {
-    let policy_dir = project_root.join(".oxaudit");
-    let created = if policy_dir.exists() {
-        false
-    } else {
-        fs::create_dir(&policy_dir).map_err(|_| CommandError::policy_write_failed())?;
-        true
-    };
-    let directory =
-        windows_fs::open_directory(&policy_dir).map_err(|_| CommandError::policy_write_failed())?;
-    let directory_identity =
-        windows_fs::identity(&directory).map_err(|_| CommandError::policy_write_failed())?;
-    if created {
-        if failure == WriteFailure::AfterDirectoryCreateBeforeRootSync {
-            return Err(CommandError::policy_write_failed());
-        }
-        windows_fs::open_directory(project_root)
-            .and_then(|root| root.sync_all())
-            .map_err(|_| CommandError::policy_write_failed())?;
-    }
     hook(IoStage::BeforeTempCreate);
-    if !windows_fs::path_has_identity(&policy_dir, directory_identity, true) {
+    if !capability.requested_path_is_pinned() {
         return Err(CommandError::policy_write_failed());
     }
 
-    let temp_path = policy_dir.join(format!(".policy.json.{}.tmp", Uuid::new_v4()));
+    let temp_path = capability
+        .policy_dir_path
+        .join(format!(".policy.json.{}.tmp", Uuid::new_v4()));
     let mut temp =
         windows_fs::create_new(&temp_path).map_err(|_| CommandError::policy_write_failed())?;
     let temp_identity =
@@ -1430,7 +2027,7 @@ fn atomic_write_policy(
     hook(IoStage::AfterTempSync);
     if failure == WriteFailure::AfterTempSync
         || !windows_fs::path_has_identity(&temp_path, temp_identity, false)
-        || !windows_fs::path_has_identity(&policy_dir, directory_identity, true)
+        || !capability.requested_path_is_pinned()
     {
         return Err(CommandError::policy_write_failed());
     }
@@ -1441,24 +2038,33 @@ fn atomic_write_policy(
     }
 
     hook(IoStage::BeforeReplace);
-    let policy_path = policy_dir.join("policy.json");
-    let current = match windows_fs::open_regular(&policy_path) {
-        Ok(mut file) => Some(
-            windows_fs::read_bounded(&mut file, MAX_POLICY_BYTES)
-                .map_err(|_| CommandError::policy_write_failed())?,
-        ),
+    let policy_path = capability.policy_dir_path.join("policy.json");
+    let current = match windows_named_state(&policy_path) {
+        Ok(state) => Some(state),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => return Err(CommandError::policy_write_failed()),
     };
-    if current.as_deref() != expected_bytes
-        || !windows_fs::path_has_identity(&policy_dir, directory_identity, true)
+    if current.as_ref().and_then(|state| state.bytes.as_deref()) != expected_bytes
+        || !capability.requested_path_is_pinned()
+        || !windows_fs::path_has_identity(&temp_path, temp_identity, false)
+    {
+        return Err(CommandError::policy_write_failed());
+    }
+    hook(IoStage::AfterPolicyPreflight);
+    if !capability.requested_path_is_pinned()
         || !windows_fs::path_has_identity(&temp_path, temp_identity, false)
     {
         return Err(CommandError::policy_write_failed());
     }
 
-    let backup_path = policy_dir.join(format!(".policy.json.{}.recovery", Uuid::new_v4()));
+    let backup_path = capability
+        .policy_dir_path
+        .join(format!(".policy.json.{}.recovery", Uuid::new_v4()));
     let had_policy = current.is_some();
+    let candidate_state = WindowsNamedState {
+        identity: temp_identity,
+        bytes: Some(bytes.to_vec()),
+    };
     windows_fs::durable_replace(
         &policy_path,
         &temp_path,
@@ -1467,56 +2073,113 @@ fn atomic_write_policy(
     )
     .map_err(|_| CommandError::policy_write_failed())?;
     cleanup.disarm();
-    let mut backup = if had_policy {
-        let backup_file = windows_fs::open_regular(&backup_path)
-            .map_err(|_| CommandError::policy_write_failed())?;
-        let backup_identity =
-            windows_fs::identity(&backup_file).map_err(|_| CommandError::policy_write_failed())?;
-        Some(WindowsOwnedPath::new(backup_path.clone(), backup_identity))
-    } else {
-        None
-    };
-    let rollback = |backup: &mut Option<WindowsOwnedPath>| -> std::io::Result<()> {
-        if let Some(backup) = backup.as_mut() {
-            backup.restore_over(&policy_path)?;
-        } else if windows_fs::path_has_identity(&policy_path, temp_identity, false) {
-            fs::remove_file(&policy_path)?;
-        } else {
-            return Err(std::io::Error::from_raw_os_error(5));
+    if !had_policy {
+        let installed = windows_fs::open_regular_read_write(&policy_path)
+            .and_then(|file| file.sync_all())
+            .is_ok()
+            && windows_named_bytes_equal(&policy_path, temp_identity, bytes);
+        hook(IoStage::AfterReplace);
+        let still_installed = windows_named_bytes_equal(&policy_path, temp_identity, bytes);
+        if failure == WriteFailure::AfterReplaceBeforeDirectorySync
+            || !installed
+            || !still_installed
+        {
+            if windows_named_bytes_equal(&policy_path, temp_identity, bytes) {
+                hook(IoStage::BeforeRollbackExchange);
+                if windows_named_bytes_equal(&policy_path, temp_identity, bytes) {
+                    let _ = windows_restore_absence(&policy_path, temp_identity, bytes);
+                }
+            }
+            return Err(CommandError::policy_write_failed());
         }
-        directory.sync_all()
-    };
-    if !windows_fs::path_has_identity(&policy_dir, directory_identity, true)
-        || !windows_fs::path_has_identity(&policy_path, temp_identity, false)
-    {
-        let _ = rollback(&mut backup);
+        return Ok(());
+    }
+
+    let backup_state =
+        windows_named_state(&backup_path).map_err(|_| CommandError::policy_write_failed())?;
+    let mut backup = WindowsOwnedPath::new(backup_path.clone(), backup_state.identity);
+    let expected_old = current
+        .as_ref()
+        .ok_or_else(CommandError::policy_write_failed)?;
+    if backup_state != *expected_old {
+        hook(IoStage::BeforeRollbackExchange);
+        match windows_restore_or_undo(&policy_path, &mut backup, &backup_state, &candidate_state) {
+            Ok(WindowsRestoreOutcome::Applied(mut displaced)) => {
+                let _ = displaced.remove_if_exact(bytes);
+            }
+            Ok(WindowsRestoreOutcome::Undone) | Err(_) => backup.disarm(),
+        }
         return Err(CommandError::policy_write_failed());
     }
+    let installed = windows_fs::open_regular_read_write(&policy_path)
+        .and_then(|file| file.sync_all())
+        .is_ok()
+        && windows_named_bytes_equal(&policy_path, temp_identity, bytes);
     hook(IoStage::AfterReplace);
     if failure == WriteFailure::AfterReplaceBeforeDirectorySync
-        || !windows_fs::path_has_identity(&policy_path, temp_identity, false)
+        || !installed
+        || !windows_named_bytes_equal(&policy_path, temp_identity, bytes)
+        || !windows_named_bytes_equal(
+            &backup_path,
+            backup_state.identity,
+            expected_bytes.unwrap_or_default(),
+        )
     {
-        let _ = rollback(&mut backup);
+        hook(IoStage::BeforeRollbackExchange);
+        match windows_restore_or_undo(&policy_path, &mut backup, expected_old, &candidate_state) {
+            Ok(WindowsRestoreOutcome::Applied(mut displaced)) => {
+                let _ = displaced.remove_if_exact(bytes);
+            }
+            Ok(WindowsRestoreOutcome::Undone) | Err(_) => backup.disarm(),
+        }
         return Err(CommandError::policy_write_failed());
     }
-    if directory.sync_all().is_err() {
-        let _ = rollback(&mut backup);
+    if parse_and_validate(bytes, ValidationMode::Load).is_err() {
+        hook(IoStage::BeforeRollbackExchange);
+        match windows_restore_or_undo(&policy_path, &mut backup, expected_old, &candidate_state) {
+            Ok(WindowsRestoreOutcome::Applied(mut displaced)) => {
+                let _ = displaced.remove_if_exact(bytes);
+            }
+            Ok(WindowsRestoreOutcome::Undone) | Err(_) => backup.disarm(),
+        }
         return Err(CommandError::policy_write_failed());
     }
-    if let Some(backup) = backup.as_mut() {
-        let _ = backup.remove().and_then(|_| directory.sync_all());
-    }
+    let _ = backup.remove_if_exact(expected_bytes.unwrap_or_default());
     Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn atomic_write_policy(
+struct PolicyUpdateCapability {
+    project_root: PathBuf,
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_update_capability(
     project_root: &Path,
+    _failure: WriteFailure,
+) -> Result<PolicyUpdateCapability, CommandError> {
+    Ok(PolicyUpdateCapability {
+        project_root: project_root.to_path_buf(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn load_policy_for_update(
+    capability: &mut PolicyUpdateCapability,
+    hook: &mut impl FnMut(IoStage),
+) -> Result<LoadedPolicy, CommandError> {
+    load_policy_with_hook(&capability.project_root, hook)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn atomic_write_policy(
+    capability: &mut PolicyUpdateCapability,
     bytes: &[u8],
     expected_bytes: Option<&[u8]>,
     failure: WriteFailure,
     hook: &mut impl FnMut(IoStage),
 ) -> Result<(), CommandError> {
+    let project_root = &capability.project_root;
     let policy_dir = project_root.join(".oxaudit");
     ensure_real_policy_directory(&policy_dir)?;
     let policy_path = policy_dir.join("policy.json");
@@ -1644,7 +2307,6 @@ fn timestamp(now: &DateTime<Utc>) -> String {
 #[cfg(windows)]
 mod windows_fs {
     use std::{
-        ffi::OsStr,
         fs::{File, OpenOptions},
         io::{self, Read, Seek, SeekFrom},
         os::windows::{
@@ -1658,7 +2320,6 @@ mod windows_fs {
         GetFileInformationByHandle, MoveFileExW, ReplaceFileW, BY_HANDLE_FILE_INFORMATION,
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_WRITE_THROUGH,
-        REPLACEFILE_WRITE_THROUGH,
     };
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1674,6 +2335,12 @@ mod windows_fs {
     fn shared_options() -> OpenOptions {
         let mut options = OpenOptions::new();
         options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        options
+    }
+
+    fn pinned_options() -> OpenOptions {
+        let mut options = OpenOptions::new();
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
         options
     }
 
@@ -1698,10 +2365,49 @@ mod windows_fs {
         }
     }
 
+    pub(super) fn open_pinned_directory(path: &Path) -> io::Result<File> {
+        let mut options = pinned_options();
+        options
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = reject_reparse(options.open(path)?)?;
+        if file.metadata()?.is_dir() {
+            Ok(file)
+        } else {
+            Err(io::Error::from_raw_os_error(267))
+        }
+    }
+
     pub(super) fn open_regular(path: &Path) -> io::Result<File> {
         let mut options = shared_options();
         options
             .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = reject_reparse(options.open(path)?)?;
+        if file.metadata()?.is_file() {
+            Ok(file)
+        } else {
+            Err(io::Error::from_raw_os_error(87))
+        }
+    }
+
+    pub(super) fn open_path_object(path: &Path) -> io::Result<File> {
+        let mut options = shared_options();
+        options
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        options.open(path)
+    }
+
+    pub(super) fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+
+    pub(super) fn open_regular_read_write(path: &Path) -> io::Result<File> {
+        let mut options = shared_options();
+        options
+            .read(true)
+            .write(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         let file = reject_reparse(options.open(path)?)?;
         if file.metadata()?.is_file() {
@@ -1761,9 +2467,15 @@ mod windows_fs {
             .is_ok_and(|actual| actual == expected)
     }
 
-    /// Uses the Win32 durable replacement primitives. Existing targets use
-    /// ReplaceFileW, optionally creating an attempt-owned recovery backup;
-    /// initially missing targets use MoveFileExW with write-through.
+    pub(super) fn path_has_object_identity(path: &Path, expected: Identity) -> bool {
+        open_path_object(path)
+            .and_then(|file| identity(&file))
+            .is_ok_and(|actual| actual == expected)
+    }
+
+    /// Existing targets use ReplaceFileW with its supported zero flags and an
+    /// optional attempt-owned backup; the caller flushes the installed file.
+    /// Initially missing targets use MoveFileExW with write-through.
     pub(super) fn durable_replace(
         target: &Path,
         replacement: &Path,
@@ -1781,7 +2493,7 @@ mod windows_fs {
                     backup
                         .as_ref()
                         .map_or(std::ptr::null(), |path| path.as_ptr()),
-                    REPLACEFILE_WRITE_THROUGH,
+                    0,
                     std::ptr::null(),
                     std::ptr::null(),
                 )
@@ -1802,9 +2514,8 @@ mod windows_fs {
         }
     }
 
-    #[allow(dead_code)]
-    fn _wide_os_str(value: &OsStr) -> Vec<u16> {
-        value.encode_wide().chain(Some(0)).collect()
+    pub(super) fn move_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+        durable_replace(to, from, false, None)
     }
 }
 
@@ -1830,18 +2541,19 @@ impl WindowsOwnedPath {
     }
 
     fn remove(&mut self) -> std::io::Result<()> {
-        if self.armed && windows_fs::path_has_identity(&self.path, self.identity, false) {
+        if self.armed && windows_fs::path_has_object_identity(&self.path, self.identity) {
             fs::remove_file(&self.path)?;
         }
         self.armed = false;
         Ok(())
     }
 
-    fn restore_over(&mut self, target: &Path) -> std::io::Result<()> {
-        if !self.armed || !windows_fs::path_has_identity(&self.path, self.identity, false) {
+    fn remove_if_exact(&mut self, expected: &[u8]) -> std::io::Result<()> {
+        if !self.armed || !windows_named_bytes_equal(&self.path, self.identity, expected) {
+            self.disarm();
             return Err(std::io::Error::from_raw_os_error(5));
         }
-        windows_fs::durable_replace(target, &self.path, true, None)?;
+        fs::remove_file(&self.path)?;
         self.disarm();
         Ok(())
     }
@@ -1929,6 +2641,13 @@ mod unix_fs {
             return Err(io::Error::last_os_error());
         }
         Ok((root, unsafe { File::from_raw_fd(fd) }, created))
+    }
+
+    pub(super) fn path_has_identity(path: &Path, expected: Identity) -> bool {
+        path.canonicalize()
+            .and_then(|canonical| open_directory(&canonical))
+            .and_then(|directory| identity(&directory))
+            .is_ok_and(|actual| actual == expected)
     }
 
     pub(super) fn open_regular_at(
@@ -2044,18 +2763,74 @@ mod unix_fs {
         }
     }
 
-    pub(super) fn rename_at(directory: &File, from: &str, to: &str) -> io::Result<()> {
+    pub(super) fn exchange_at(directory: &File, first: &str, second: &str) -> io::Result<()> {
+        let first = c_name(first)?;
+        let second = c_name(second)?;
+        #[cfg(target_vendor = "apple")]
+        let result = unsafe {
+            libc::renameatx_np(
+                directory.as_raw_fd(),
+                first.as_ptr(),
+                directory.as_raw_fd(),
+                second.as_ptr(),
+                libc::RENAME_SWAP,
+            )
+        };
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::renameat2(
+                directory.as_raw_fd(),
+                first.as_ptr(),
+                directory.as_raw_fd(),
+                second.as_ptr(),
+                libc::RENAME_EXCHANGE,
+            )
+        };
+        #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+        let result = {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "atomic exchange is unavailable",
+            ));
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    pub(super) fn rename_noreplace_at(directory: &File, from: &str, to: &str) -> io::Result<()> {
         let from = c_name(from)?;
         let to = c_name(to)?;
-        if unsafe {
-            libc::renameat(
+        #[cfg(target_vendor = "apple")]
+        let result = unsafe {
+            libc::renameatx_np(
                 directory.as_raw_fd(),
                 from.as_ptr(),
                 directory.as_raw_fd(),
                 to.as_ptr(),
+                libc::RENAME_EXCL,
             )
-        } == 0
-        {
+        };
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::renameat2(
+                directory.as_raw_fd(),
+                from.as_ptr(),
+                directory.as_raw_fd(),
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+        let result = {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "atomic no-clobber rename is unavailable",
+            ));
+        };
+        if result == 0 {
             Ok(())
         } else {
             Err(io::Error::last_os_error())
@@ -2101,15 +2876,6 @@ mod unix_fs {
                 unlink_at(self.directory, &self.name)?;
             }
             self.armed = false;
-            Ok(())
-        }
-
-        pub(super) fn restore_over(&mut self, target: &str) -> io::Result<()> {
-            if !self.armed || !same_named_identity(self.directory, &self.name, self.identity) {
-                return Err(io::Error::from_raw_os_error(libc::EIO));
-            }
-            rename_at(self.directory, &self.name, target)?;
-            self.disarm();
             Ok(())
         }
     }
@@ -2547,6 +3313,58 @@ mod tests {
             "VGhpcy1pcy1ub3QtYS1yZWFsLXNlY3JldA==",
         ] {
             assert!(!safe_required_text(value));
+        }
+    }
+
+    #[test]
+    fn short_credentials_and_auth_schemes_are_rejected() {
+        for value in [
+            "pwd=x",
+            "password = x",
+            "api key: z",
+            "Bearer abc",
+            "Basic abc",
+            "sk-live",
+            "ghp_x",
+        ] {
+            assert!(!safe_required_text(value), "accepted fixture {value:?}");
+        }
+    }
+
+    #[test]
+    fn standalone_high_entropy_hex_is_rejected_but_contextual_hashes_are_allowed() {
+        assert!(!safe_required_text(
+            "a9f73c6d14e82b05f7c9134da6e28b40c17f5892"
+        ));
+        for value in [
+            "commit a9f73c6d14e82b05f7c9134da6e28b40c17f5892",
+            "sha256: a9f73c6d14e82b05f7c9134da6e28b40c17f5892",
+        ] {
+            assert!(safe_required_text(value), "rejected fixture {value:?}");
+        }
+    }
+
+    #[test]
+    fn wrapped_absolute_and_traversal_paths_are_rejected() {
+        for value in [
+            "`/Users/alice/private.rs`",
+            "source=`../private.rs`",
+            "path=\"file:///Users/alice/private.rs\"",
+            "location='//server/share'",
+            "checked [/etc/passwd]",
+            "checked (src/../../private.rs)",
+        ] {
+            assert!(!safe_required_text(value), "accepted fixture {value:?}");
+        }
+    }
+
+    #[test]
+    fn safe_urls_and_conventional_kebab_identifiers_are_allowed() {
+        for value in [
+            "See https://docs.example.com/security/production-feature-manifest",
+            "production-feature-manifest",
+        ] {
+            assert!(safe_required_text(value), "rejected fixture {value:?}");
         }
     }
 
@@ -3118,6 +3936,49 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn rollback_never_removes_an_in_place_modified_recovery_entry() {
+        let root = tempfile::tempdir().unwrap();
+        write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+        let external = br#"{ "version": 1, "entries": [] }
+"#;
+        let mut modified_recovery = None;
+
+        let error = update_policy_decision_with_test_hook(
+            root.path(),
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::AfterReplaceBeforeDirectorySync,
+            |stage| {
+                if stage == IoStage::AfterReplace {
+                    let recovery = fs::read_dir(root.path().join(".oxaudit"))
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .find(|path| {
+                            path.file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .starts_with(".policy.json.")
+                                && path.extension().is_some_and(|extension| extension == "tmp")
+                        })
+                        .unwrap();
+                    fs::write(&recovery, external).unwrap();
+                    modified_recovery = Some(recovery);
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(fs::read(modified_recovery.unwrap()).unwrap(), external);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn concurrently_created_policy_wins_when_the_initial_policy_was_missing() {
         let root = tempfile::tempdir().unwrap();
         let policy_path = root.path().join(".oxaudit/policy.json");
@@ -3142,6 +4003,346 @@ mod tests {
             crate::findings::error::ErrorCode::PolicyWriteFailed
         );
         assert_eq!(fs::read(policy_path).unwrap(), external);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_root_swap_after_read_aborts_before_mutating_the_pinned_project() {
+        let parent = tempfile::tempdir().unwrap();
+        let project = parent.path().join("project");
+        let held = parent.path().join("project-held");
+        fs::create_dir(&project).unwrap();
+        write_policy(&project, br#"{"version":1,"entries":[]}"#);
+        let original = fs::read(project.join(".oxaudit/policy.json")).unwrap();
+
+        let error = update_policy_decision_with_test_hook(
+            &project,
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::Never,
+            |stage| {
+                if stage == IoStage::BeforeTempCreate {
+                    fs::rename(&project, &held).unwrap();
+                    fs::create_dir(&project).unwrap();
+                    fs::create_dir(project.join(".oxaudit")).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(
+            fs::read(held.join(".oxaudit/policy.json")).unwrap(),
+            original
+        );
+        assert!(!project.join(".oxaudit/policy.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn in_place_edit_after_preflight_wins_the_atomic_compare_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let external = br#"{ "version": 1, "entries": [] }
+"#;
+
+        let error = update_policy_decision_with_test_hook(
+            root.path(),
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::Never,
+            |stage| {
+                if stage == IoStage::AfterPolicyPreflight {
+                    fs::write(&policy_path, external).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(fs::read(policy_path).unwrap(), external);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_after_preflight_wins_the_atomic_compare_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let displaced = root.path().join(".oxaudit/displaced-policy");
+        let external = br#"{ "version": 1, "entries": [] }
+"#;
+
+        let error = update_policy_decision_with_test_hook(
+            root.path(),
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::Never,
+            |stage| {
+                if stage == IoStage::AfterPolicyPreflight {
+                    fs::rename(&policy_path, &displaced).unwrap();
+                    fs::write(&policy_path, external).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(fs::read(policy_path).unwrap(), external);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn late_edit_during_cas_mismatch_reversal_is_never_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let first_external = br#"{ "version": 1, "entries": [] }
+"#;
+        let latest_external = br#"{"version":999,"latest":"external"}"#;
+
+        let error = update_policy_decision_with_test_hook(
+            root.path(),
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::Never,
+            |stage| match stage {
+                IoStage::AfterPolicyPreflight => {
+                    fs::write(&policy_path, first_external).unwrap();
+                }
+                IoStage::BeforeRollbackExchange => {
+                    fs::write(&policy_path, latest_external).unwrap();
+                }
+                _ => {}
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(fs::read(policy_path).unwrap(), latest_external);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversized_replacement_after_preflight_is_exchanged_back_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let oversized = vec![b'x'; MAX_POLICY_BYTES as usize + 1];
+
+        let error = update_policy_decision_with_test_hook(
+            root.path(),
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::Never,
+            |stage| {
+                if stage == IoStage::AfterPolicyPreflight {
+                    fs::write(&policy_path, &oversized).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(fs::read(policy_path).unwrap(), oversized);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonregular_replacement_after_preflight_is_exchanged_back_unchanged() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let displaced = root.path().join(".oxaudit/displaced-policy");
+        let outside = root.path().join("outside.json");
+        fs::write(&outside, b"outside").unwrap();
+
+        let error = update_policy_decision_with_test_hook(
+            root.path(),
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::Never,
+            |stage| {
+                if stage == IoStage::AfterPolicyPreflight {
+                    fs::rename(&policy_path, &displaced).unwrap();
+                    symlink(&outside, &policy_path).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert!(fs::symlink_metadata(&policy_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(policy_path).unwrap(), b"outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creation_after_missing_preflight_wins_no_clobber_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let external = br#"{ "version": 1, "entries": [] }
+"#;
+
+        let error = update_policy_decision_with_test_hook(
+            root.path(),
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::Never,
+            |stage| {
+                if stage == IoStage::AfterPolicyPreflight {
+                    fs::write(&policy_path, external).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(fs::read(policy_path).unwrap(), external);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_never_overwrites_in_place_or_replaced_external_final_bytes() {
+        for replace_inode in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+            let policy_path = root.path().join(".oxaudit/policy.json");
+            let displaced = root.path().join(".oxaudit/attempt-displaced");
+            let external = br#"{ "version": 1, "entries": [] }
+"#;
+
+            let error = update_policy_decision_with_test_hook(
+                root.path(),
+                &finding("secret"),
+                &request(ReviewState::FalsePositive, "secret"),
+                now(),
+                WriteFailure::AfterReplaceBeforeDirectorySync,
+                |stage| {
+                    if stage == IoStage::AfterReplace {
+                        if replace_inode {
+                            fs::rename(&policy_path, &displaced).unwrap();
+                        }
+                        fs::write(&policy_path, external).unwrap();
+                    }
+                },
+            )
+            .unwrap_err();
+
+            assert_eq!(
+                error.code,
+                crate::findings::error::ErrorCode::PolicyWriteFailed
+            );
+            assert_eq!(fs::read(&policy_path).unwrap(), external);
+            assert!(fs::read_dir(root.path().join(".oxaudit"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".policy.json.")
+                        && entry.path().extension().is_some_and(|value| value == "tmp")
+                }));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn late_in_place_edit_immediately_before_rollback_exchange_wins() {
+        let root = tempfile::tempdir().unwrap();
+        write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let external = br#"{ "version": 1, "entries": [] }
+"#;
+
+        let error = update_policy_decision_with_test_hook(
+            root.path(),
+            &finding("secret"),
+            &request(ReviewState::FalsePositive, "secret"),
+            now(),
+            WriteFailure::AfterReplaceBeforeDirectorySync,
+            |stage| {
+                if stage == IoStage::BeforeRollbackExchange {
+                    fs::write(&policy_path, external).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(fs::read(policy_path).unwrap(), external);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn late_edit_before_missing_policy_rollback_is_not_unlinked() {
+        for replace_inode in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let policy_path = root.path().join(".oxaudit/policy.json");
+            let displaced = root.path().join(".oxaudit/late-attempt");
+            let external = br#"{"version":999,"latest":"external"}"#;
+
+            let error = update_policy_decision_with_test_hook(
+                root.path(),
+                &finding("secret"),
+                &request(ReviewState::FalsePositive, "secret"),
+                now(),
+                WriteFailure::AfterReplaceBeforeDirectorySync,
+                |stage| {
+                    if stage == IoStage::BeforeRollbackExchange {
+                        if replace_inode {
+                            fs::rename(&policy_path, &displaced).unwrap();
+                        }
+                        fs::write(&policy_path, external).unwrap();
+                    }
+                },
+            )
+            .unwrap_err();
+
+            assert_eq!(
+                error.code,
+                crate::findings::error::ErrorCode::PolicyWriteFailed
+            );
+            assert_eq!(fs::read(policy_path).unwrap(), external);
+        }
     }
 
     #[cfg(unix)]
