@@ -110,6 +110,15 @@ pub struct BytePatternSpec {
     /// forces them to think about the library's version space.
     pub min: u64,
     pub max: u64,
+    /// A second field to read, for libraries that expose major and minor
+    /// through separate accessors and have no combined constant.
+    ///
+    /// nettle is the case: `nettle_version_major()` and
+    /// `nettle_version_minor()` are two one-instruction functions the compiler
+    /// emits adjacently. The two are packed as `(first << 8) | second`, which
+    /// `major-minor` then renders.
+    #[serde(default)]
+    pub capture_offset_2: Option<usize>,
     /// What the pattern is, for whoever reads the file next.
     #[serde(default)]
     pub note: String,
@@ -139,6 +148,7 @@ struct Compiled {
 struct CompiledBytePattern {
     pattern: BytePattern,
     capture_offset: usize,
+    capture_offset_2: Option<usize>,
     encoding: Encoding,
     formula: VersionFormula,
     min: u64,
@@ -153,9 +163,23 @@ impl CompiledBytePattern {
             let Some(window) = raw.get(offset + self.capture_offset..) else {
                 continue;
             };
-            let Some(value) = self.encoding.read(window) else {
+            let Some(mut value) = self.encoding.read(window) else {
                 continue;
             };
+            if let Some(second) = self.capture_offset_2 {
+                let Some(window2) = raw.get(offset + second..) else {
+                    continue;
+                };
+                let Some(low) = self.encoding.read(window2) else {
+                    continue;
+                };
+                // Both halves must fit a byte; anything else means this is not
+                // the accessor pair the pattern was written for.
+                if value > 0xff || low > 0xff {
+                    continue;
+                }
+                value = (value << 8) | low;
+            }
             if value < self.min || value > self.max {
                 continue;
             }
@@ -286,8 +310,17 @@ identify it by",
                         pattern.len()
                     ));
                 }
+                if let Some(second) = byte_spec.capture_offset_2 {
+                    if second >= pattern.len() {
+                        return Err(format!(
+                            "{}: byte pattern {:?} has a second capture at {} but is only {} bytes long",
+                            spec.product, byte_spec.pattern, second, pattern.len()
+                        ));
+                    }
+                }
                 byte_patterns.push(CompiledBytePattern {
                     pattern,
+                    capture_offset_2: byte_spec.capture_offset_2,
                     capture_offset: byte_spec.capture_offset,
                     encoding: byte_spec.encoding,
                     formula: byte_spec.formula,
@@ -490,6 +523,7 @@ mod tests {
             formula: VersionFormula::Decimal10000,
             min: 10000,
             max: 19999,
+            capture_offset_2: None,
             note: String::new(),
         }];
         let error = SignatureSet::compile(vec![signature]).expect_err("must not compile");
@@ -797,6 +831,99 @@ zero CVEs rather than an error"
                 "{product}: wrong version read from its own banner"
             );
         }
+    }
+
+    /// The exact accessor bytes for each library whose version exists only as
+    /// a numeric constant, lifted from a Debian trixie binary whose version
+    /// dpkg recorded.
+    ///
+    /// `(product, identifying string, accessor bytes, expected version)`.
+    const CONSTANT_GROUND_TRUTH: [(&str, &str, &[u8], &str); 5] = [
+        (
+            "nghttp2",
+            "nghttp2_session_client_new",
+            // endbr64; cmp edi, 0x14000; mov edx, 0
+            &[0xf3, 0x0f, 0x1e, 0xfa, 0x81, 0xff, 0x00, 0x40, 0x01, 0x00, 0xba, 0x00, 0x00, 0x00, 0x00],
+            "1.64.0",
+        ),
+        (
+            "c-ares",
+            "ares_getaddrinfo",
+            // endbr64; test rdi,rdi; je +6; mov [rdi], 0x12205; lea rax,[rip+..]
+            &[
+                0xf3, 0x0f, 0x1e, 0xfa, 0x48, 0x85, 0xff, 0x74, 0x06, 0xc7, 0x07, 0x05, 0x22, 0x01,
+                0x00, 0x48, 0x8d, 0x05,
+            ],
+            "1.34.5",
+        ),
+        (
+            "mbed_tls",
+            "mbedtls_ssl_setup",
+            // endbr64; mov eax, 0x03060500; ret
+            &[0xf3, 0x0f, 0x1e, 0xfa, 0xb8, 0x00, 0x05, 0x06, 0x03, 0xc3],
+            "3.6.5",
+        ),
+        (
+            "mosquitto",
+            "mosquitto_lib_version",
+            // je +6; mov [rdx], 21; mov eax, 2000021; ret
+            &[0x74, 0x06, 0xc7, 0x02, 0x15, 0x00, 0x00, 0x00, 0xb8, 0x95, 0x84, 0x1e, 0x00, 0xc3],
+            "2.0.21",
+        ),
+        (
+            "nettle",
+            "nettle_pbkdf2",
+            // nettle_version_major() -> 3, nopw padding, nettle_version_minor() -> 10
+            &[
+                0xf3, 0x0f, 0x1e, 0xfa, 0xb8, 0x03, 0x00, 0x00, 0x00, 0xc3, 0x66, 0x0f, 0x1f, 0x44,
+                0x00, 0x00, 0xf3, 0x0f, 0x1e, 0xfa, 0xb8, 0x0a, 0x00, 0x00, 0x00, 0xc3,
+            ],
+            "3.10",
+        ),
+    ];
+
+    #[test]
+    fn every_numeric_version_constant_is_read_from_its_real_accessor() {
+        let set = &*SIGNATURES;
+        for (product, marker, bytes, expected) in CONSTANT_GROUND_TRUTH {
+            let blob = format!("\n{marker}\n");
+            let hits: Vec<_> = set
+                .detect("blob.so", &blob, bytes)
+                .into_iter()
+                .filter(|d| d.product == product)
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "{product}: expected one detection, got {hits:?}"
+            );
+            assert_eq!(
+                hits[0].version.as_deref(),
+                Some(expected),
+                "{product}: wrong version decoded from its accessor"
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_capture_landing_on_an_opcode_yields_nothing_rather_than_a_number() {
+        // nettle's minor sits at offset 21, not 20 — 20 is the `mov` opcode
+        // itself. Authoring that wrong should produce silence, not a version
+        // invented out of an instruction byte. It caught exactly that mistake.
+        let set = &*SIGNATURES;
+        let mut bytes = [
+            0xf3, 0x0f, 0x1e, 0xfa, 0xb8, 0x03, 0x00, 0x00, 0x00, 0xc3, 0x66, 0x0f, 0x1f, 0x44,
+            0x00, 0x00, 0xf3, 0x0f, 0x1e, 0xfa, 0xb8, 0x0a, 0x00, 0x00, 0x00, 0xc3,
+        ];
+        // Break the minor so it cannot fit a byte when read as a u32.
+        bytes[22] = 0xff;
+        let versions: Vec<_> = set
+            .detect("blob.so", "\nnettle_pbkdf2\n", &bytes)
+            .into_iter()
+            .filter(|d| d.product == "nettle")
+            .filter_map(|d| d.version)
+            .collect();
+        assert!(versions.is_empty(), "decoded a version from junk: {versions:?}");
     }
 
     #[test]
