@@ -1,0 +1,67 @@
+oxAudit
+Copyright 2026 Henry Cooper
+
+This product includes software developed by Henry Cooper.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+Third-party programs oxAudit can invoke, and does not distribute
+--------------------------------------------------------------------------------
+
+Binary scanning runs whichever of these external programs you have installed.
+oxAudit does not bundle, embed, link against, or redistribute any of them; it
+executes a copy you installed yourself, at arm's length. No part of their
+licensing attaches to oxAudit as a result.
+
+  cve-bin-tool    GPL-3.0-or-later   https://github.com/ossf/cve-bin-tool
+  grype           Apache-2.0         https://github.com/anchore/grype
+
+docker/cve-bin-tool/Dockerfile is a build recipe, not a distribution. The image
+it describes is built on your machine and fetches cve-bin-tool from PyPI there.
+Do not publish a built image to a registry without meeting the GPL obligations
+that would then attach to you.
+
+--------------------------------------------------------------------------------
+Detection signatures
+--------------------------------------------------------------------------------
+
+The component signatures in src-tauri/src/binscan/native/signatures.toml are
+original work. They were derived from binaries whose versions were known
+independently, using tools/derive-signatures.py, and are deliberately not
+transcribed from cve-bin-tool's checkers, which are GPL-3.0-or-later. See
+docs/binary-signatures.md for the method and its provenance.
+
+--------------------------------------------------------------------------------
+Methodology adopted from other projects
+--------------------------------------------------------------------------------
+
+Design ideas were studied and reimplemented from the projects below. No source
+code was copied from any of them; what was adopted is method, which carries no
+licence obligation. They are credited here because credit is owed.
+
+  VulnHunter      Apache-2.0   https://github.com/capitalone/VulnHunter
+                  Gate-based falsification triage and the candidate-manifest
+                  silent-drop guard (src-tauri/src/triage/, docs/vulnhunter-study.md)
+
+  VulHunt         MIT/Apache-2.0 for the BIAS crates, GPL-3.0 for the engine
+                  https://github.com/vulhunt-re/vulhunt
+                  Nibble-masked byte-pattern matching over binaries
+                  (src-tauri/src/binscan/native/bytes.rs, docs/vulhunt-study.md)
+
+  y-agent         https://github.com/gorgiaxx/y-agent
+                  Design-system structure and the design-compliance test
+                  (docs/design-system.md, docs/y-agent-adoption.md)
+
+--------------------------------------------------------------------------------
+Data sources
+--------------------------------------------------------------------------------
+
+oxAudit queries these services at runtime. It redistributes no data from them.
+
+  NVD   https://nvd.nist.gov      National Vulnerability Database (NIST)
+  OSV   https://osv.dev           Open Source Vulnerabilities (Google)
