@@ -1,0 +1,478 @@
+{
+  "matches": [
+    {
+      "vulnerability": {
+        "id": "CVE-2024-7264",
+        "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2024-7264",
+        "namespace": "nvd:cpe",
+        "severity": "Medium",
+        "urls": [
+          "http://www.openwall.com/lists/oss-security/2024/07/31/1",
+          "https://curl.se/docs/CVE-2024-7264.html",
+          "https://curl.se/docs/CVE-2024-7264.json",
+          "https://hackerone.com/reports/2629968",
+          "https://github.com/curl/curl/commit/27959ecce75cdb2809c0bdb3286e60e08fadb519",
+          "https://security.netapp.com/advisory/ntap-20240828-0008/",
+          "https://security.netapp.com/advisory/ntap-20241025-0006/",
+          "https://security.netapp.com/advisory/ntap-20241025-0010/"
+        ],
+        "description": "libcurl's ASN1 parser code has the `GTime2str()` function, used for parsing an\nASN.1 Generalized Time field. If given an syntactically incorrect field, the\nparser might end up using -1 for the length of the *time fraction*, leading to\na `strlen()` getting performed on a pointer to a heap buffer area that is not\n(purposely) null terminated.\n\nThis flaw most likely leads to a crash, but can also lead to heap contents\ngetting returned to the application when\n[CURLINFO_CERTINFO](https://curl.se/libcurl/c/CURLINFO_CERTINFO.html) is used.",
+        "cvss": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "version": "3.1",
+            "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+            "metrics": {
+              "baseScore": 6.5,
+              "exploitabilityScore": 2.9,
+              "impactScore": 3.6
+            },
+            "vendorMetadata": {}
+          },
+          {
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "type": "Secondary",
+            "version": "3.1",
+            "vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:L",
+            "metrics": {
+              "baseScore": 6.3,
+              "exploitabilityScore": 2.9,
+              "impactScore": 3.4
+            },
+            "vendorMetadata": {}
+          }
+        ],
+        "epss": [
+          {
+            "cve": "CVE-2024-7264",
+            "epss": 0.17301,
+            "percentile": 0.96843,
+            "date": "2026-08-18"
+          }
+        ],
+        "cwes": [
+          {
+            "cve": "CVE-2024-7264",
+            "cwe": "CWE-125",
+            "source": "nvd@nist.gov",
+            "type": "Primary"
+          }
+        ],
+        "fix": {
+          "versions": [
+            "8.9.1"
+          ],
+          "state": "fixed",
+          "available": [
+            {
+              "version": "8.9.1",
+              "date": "2025-09-04",
+              "kind": "first-observed"
+            }
+          ]
+        },
+        "advisories": [],
+        "risk": 9.861570000000002
+      },
+      "relatedVulnerabilities": [],
+      "matchDetails": [
+        {
+          "type": "cpe-match",
+          "matcher": "stock-matcher",
+          "searchedBy": {
+            "namespace": "nvd:cpe",
+            "cpes": [
+              "cpe:2.3:a:haxx:curl:8.7.1:*:*:*:*:*:*:*"
+            ],
+            "package": {
+              "name": "curl",
+              "version": "8.7.1"
+            }
+          },
+          "found": {
+            "vulnerabilityID": "CVE-2024-7264",
+            "versionConstraint": ">= 7.32.0, < 8.9.1 (unknown)",
+            "cpes": [
+              "cpe:2.3:a:haxx:curl:*:*:*:*:*:*:*:*"
+            ]
+          },
+          "fix": {
+            "suggestedVersion": "8.9.1"
+          }
+        }
+      ],
+      "artifact": {
+        "id": "d14d680549999e5c",
+        "name": "curl",
+        "version": "8.7.1",
+        "type": "binary",
+        "locations": [
+          {
+            "path": "/curl",
+            "accessPath": "/curl",
+            "annotations": {
+              "evidence": "primary"
+            }
+          }
+        ],
+        "language": "",
+        "licenses": [],
+        "cpes": [
+          "cpe:2.3:a:haxx:curl:8.7.1:*:*:*:*:*:*:*"
+        ],
+        "purl": "pkg:generic/curl@8.7.1",
+        "upstreams": []
+      }
+    },
+    {
+      "vulnerability": {
+        "id": "CVE-2024-6197",
+        "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2024-6197",
+        "namespace": "nvd:cpe",
+        "severity": "High",
+        "urls": [
+          "http://www.openwall.com/lists/oss-security/2024/07/24/1",
+          "http://www.openwall.com/lists/oss-security/2024/07/24/5",
+          "https://curl.se/docs/CVE-2024-6197.html",
+          "https://curl.se/docs/CVE-2024-6197.json",
+          "https://hackerone.com/reports/2559516",
+          "https://security.netapp.com/advisory/ntap-20241129-0008/",
+          "https://github.com/curl/curl/commit/3a537a4db9e65e545"
+        ],
+        "description": "libcurl's ASN1 parser has this utf8asn1str() function used for parsing an ASN.1 UTF-8 string. Itcan detect an invalid field and return error. Unfortunately, when doing so it also invokes `free()` on a 4 byte localstack buffer.  Most modern malloc implementations detect this error and immediately abort. Some however accept the input pointer and add that memory to its list of available chunks. This leads to the overwriting of nearby stack memory. The content of the overwrite is decided by the `free()` implementation; likely to be memory pointers and a set of flags.  The most likely outcome of exploting this flaw is a crash, although it cannot be ruled out that more serious results can be had in special circumstances.",
+        "cvss": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "version": "3.1",
+            "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+            "metrics": {
+              "baseScore": 7.5,
+              "exploitabilityScore": 3.9,
+              "impactScore": 3.6
+            },
+            "vendorMetadata": {}
+          },
+          {
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "type": "Secondary",
+            "version": "3.1",
+            "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+            "metrics": {
+              "baseScore": 7.5,
+              "exploitabilityScore": 3.9,
+              "impactScore": 3.6
+            },
+            "vendorMetadata": {}
+          }
+        ],
+        "epss": [
+          {
+            "cve": "CVE-2024-6197",
+            "epss": 0.04296,
+            "percentile": 0.903,
+            "date": "2026-08-18"
+          }
+        ],
+        "cwes": [
+          {
+            "cve": "CVE-2024-6197",
+            "cwe": "NVD-CWE-Other",
+            "source": "nvd@nist.gov",
+            "type": "Primary"
+          }
+        ],
+        "fix": {
+          "versions": [
+            "8.9.0"
+          ],
+          "state": "fixed",
+          "available": [
+            {
+              "version": "8.9.0",
+              "date": "2025-09-04",
+              "kind": "first-observed"
+            }
+          ]
+        },
+        "advisories": [],
+        "risk": 3.222
+      },
+      "relatedVulnerabilities": [],
+      "matchDetails": [
+        {
+          "type": "cpe-match",
+          "matcher": "stock-matcher",
+          "searchedBy": {
+            "namespace": "nvd:cpe",
+            "cpes": [
+              "cpe:2.3:a:haxx:curl:8.7.1:*:*:*:*:*:*:*"
+            ],
+            "package": {
+              "name": "curl",
+              "version": "8.7.1"
+            }
+          },
+          "found": {
+            "vulnerabilityID": "CVE-2024-6197",
+            "versionConstraint": ">= 8.6.0, < 8.9.0 (unknown)",
+            "cpes": [
+              "cpe:2.3:a:haxx:curl:*:*:*:*:*:*:*:*"
+            ]
+          },
+          "fix": {
+            "suggestedVersion": "8.9.0"
+          }
+        }
+      ],
+      "artifact": {
+        "id": "d14d680549999e5c",
+        "name": "curl",
+        "version": "8.7.1",
+        "type": "binary",
+        "locations": [
+          {
+            "path": "/curl",
+            "accessPath": "/curl",
+            "annotations": {
+              "evidence": "primary"
+            }
+          }
+        ],
+        "language": "",
+        "licenses": [],
+        "cpes": [
+          "cpe:2.3:a:haxx:curl:8.7.1:*:*:*:*:*:*:*"
+        ],
+        "purl": "pkg:generic/curl@8.7.1",
+        "upstreams": []
+      }
+    },
+    {
+      "vulnerability": {
+        "id": "CVE-2026-11856",
+        "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2026-11856",
+        "namespace": "nvd:cpe",
+        "severity": "Critical",
+        "urls": [
+          "https://curl.se/docs/CVE-2026-11856.html",
+          "https://curl.se/docs/CVE-2026-11856.json",
+          "https://hackerone.com/reports/3793260"
+        ],
+        "description": "Successfully using libcurl to do a transfer to a specific HTTP origin\n(`hostA`) with **Digest** authentication and then changing the origin to a\ndifferent one (`hostB`) for a second transfer, reusing the same handle, makes\nlibcurl wrongly pass on the  `Authorization:` header field meant for `hostA`,\nto `hostB`.",
+        "cvss": [
+          {
+            "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+            "type": "Secondary",
+            "version": "3.1",
+            "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+            "metrics": {
+              "baseScore": 9.8,
+              "exploitabilityScore": 3.9,
+              "impactScore": 5.9
+            },
+            "vendorMetadata": {}
+          }
+        ],
+        "epss": [
+          {
+            "cve": "CVE-2026-11856",
+            "epss": 0.00604,
+            "percentile": 0.46083,
+            "date": "2026-08-18"
+          }
+        ],
+        "cwes": [
+          {
+            "cve": "CVE-2026-11856",
+            "cwe": "CWE-294",
+            "source": "nvd@nist.gov",
+            "type": "Primary"
+          }
+        ],
+        "fix": {
+          "versions": [
+            "8.21.0"
+          ],
+          "state": "fixed",
+          "available": [
+            {
+              "version": "8.21.0",
+              "date": "2026-07-07",
+              "kind": "first-observed"
+            }
+          ]
+        },
+        "advisories": [],
+        "risk": 0.56776
+      },
+      "relatedVulnerabilities": [],
+      "matchDetails": [
+        {
+          "type": "cpe-match",
+          "matcher": "stock-matcher",
+          "searchedBy": {
+            "namespace": "nvd:cpe",
+            "cpes": [
+              "cpe:2.3:a:haxx:curl:8.7.1:*:*:*:*:*:*:*"
+            ],
+            "package": {
+              "name": "curl",
+              "version": "8.7.1"
+            }
+          },
+          "found": {
+            "vulnerabilityID": "CVE-2026-11856",
+            "versionConstraint": ">= 7.10.6, < 8.21.0 (unknown)",
+            "cpes": [
+              "cpe:2.3:a:haxx:curl:*:*:*:*:*:*:*:*"
+            ]
+          },
+          "fix": {
+            "suggestedVersion": "8.21.0"
+          }
+        }
+      ],
+      "artifact": {
+        "id": "d14d680549999e5c",
+        "name": "curl",
+        "version": "8.7.1",
+        "type": "binary",
+        "locations": [
+          {
+            "path": "/curl",
+            "accessPath": "/curl",
+            "annotations": {
+              "evidence": "primary"
+            }
+          }
+        ],
+        "language": "",
+        "licenses": [],
+        "cpes": [
+          "cpe:2.3:a:haxx:curl:8.7.1:*:*:*:*:*:*:*"
+        ],
+        "purl": "pkg:generic/curl@8.7.1",
+        "upstreams": []
+      }
+    }
+  ],
+  "descriptor": {
+    "db": {
+      "status": {
+        "schemaVersion": "v6.1.9",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-08-19T00:15:44Z_1787120173.tar.zst?checksum=sha256%3A57afa366cb676a2dc848b401516d5fa07fd1c259619735c5b348f9e67930091f",
+        "built": "2026-08-19T06:16:13Z",
+        "path": "/Users/admin/Library/Caches/grype/db/6/vulnerability.db",
+        "valid": true
+      },
+      "providers": {
+        "alma": {
+          "captured": "2026-08-19T00:16:28Z",
+          "input": "xxh64:bb26d4a161610aa1"
+        },
+        "alpine": {
+          "captured": "2026-08-19T00:16:30Z",
+          "input": "xxh64:45f4f91532769161"
+        },
+        "amazon": {
+          "captured": "2026-08-19T00:15:46Z",
+          "input": "xxh64:13de524b4823932d"
+        },
+        "arch": {
+          "captured": "2026-08-19T00:16:16Z",
+          "input": "xxh64:21cdd951aecac5b1"
+        },
+        "bitnami": {
+          "captured": "2026-08-19T00:15:44Z",
+          "input": "xxh64:f999b0d5b836add3"
+        },
+        "chainguard": {
+          "captured": "2026-08-19T00:16:31Z",
+          "input": "xxh64:72199261c91e8528"
+        },
+        "chainguard-libraries": {
+          "captured": "2026-08-19T00:16:39Z",
+          "input": "xxh64:0d08905ecccfea48"
+        },
+        "debian": {
+          "captured": "2026-08-19T00:16:28Z",
+          "input": "xxh64:2c3e2ccae466d741"
+        },
+        "echo": {
+          "captured": "2026-08-19T00:16:14Z",
+          "input": "xxh64:9a33a1c957253290"
+        },
+        "eol": {
+          "captured": "2026-08-19T00:16:28Z",
+          "input": "xxh64:6671d17974332ce3"
+        },
+        "epss": {
+          "captured": "2026-08-19T00:16:03Z",
+          "input": "xxh64:72ea8ed22284ec2a"
+        },
+        "fedora": {
+          "captured": "2026-08-19T00:15:52Z",
+          "input": "xxh64:2c3f12a4fd4ddc12"
+        },
+        "github": {
+          "captured": "2026-08-19T00:15:56Z",
+          "input": "xxh64:8e2f19f63fdf09d8"
+        },
+        "govulndb": {
+          "captured": "2026-08-19T00:16:21Z",
+          "input": "xxh64:2b356412cdecf9d1"
+        },
+        "hummingbird": {
+          "captured": "2026-08-19T00:17:42Z",
+          "input": "xxh64:21f8713ecd032dcb"
+        },
+        "kev": {
+          "captured": "2026-08-19T00:15:45Z",
+          "input": "xxh64:e9bdce8c95ea32ee"
+        },
+        "mariner": {
+          "captured": "2026-08-19T00:15:53Z",
+          "input": "xxh64:84274430e97b1c2f"
+        },
+        "minimos": {
+          "captured": "2026-08-19T00:16:24Z",
+          "input": "xxh64:df95766370aded3c"
+        },
+        "nvd": {
+          "captured": "2026-08-19T00:17:15Z",
+          "input": "xxh64:8c4d8c40f49f17a4"
+        },
+        "oracle": {
+          "captured": "2026-08-19T00:16:14Z",
+          "input": "xxh64:0cde0ccffc795370"
+        },
+        "photon": {
+          "captured": "2026-08-19T00:16:19Z",
+          "input": "xxh64:7fe7a02af3198884"
+        },
+        "rhel": {
+          "captured": "2026-08-19T00:17:15Z",
+          "input": "xxh64:e078213527b78979"
+        },
+        "secureos": {
+          "captured": "2026-08-19T00:16:40Z",
+          "input": "xxh64:cff23c6696a673a3"
+        },
+        "sles": {
+          "captured": "2026-08-19T00:16:39Z",
+          "input": "xxh64:727cc7d09c0f0852"
+        },
+        "ubuntu": {
+          "captured": "2026-08-19T00:18:26Z",
+          "input": "xxh64:00b552de17e0a7b1"
+        },
+        "wolfi": {
+          "captured": "2026-08-19T00:17:06Z",
+          "input": "xxh64:c4b7e8f122a5c9f3"
+        }
+      }
+    }
+  }
+}

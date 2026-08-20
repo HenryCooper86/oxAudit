@@ -195,6 +195,98 @@ pub fn resolve(configured_path: Option<&str>) -> Result<Invocation, String> {
     })
 }
 
+/// Probe a program that reports its version on stdout, using `parse` to read it.
+fn probe_program(program: &str, version_args: &[&str], parse: fn(&str) -> Option<String>) -> Option<String> {
+    let output = Command::new(program).args(version_args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse(&String::from_utf8_lossy(&output.stdout))
+        .or_else(|| parse(&String::from_utf8_lossy(&output.stderr)))
+}
+
+/// Is grype available, and which copy?
+pub fn detect_grype(configured_path: Option<&str>) -> BinaryToolStatus {
+    let configured = configured_path.map(str::trim).filter(|p| !p.is_empty());
+
+    if let Some(path) = configured {
+        if !Path::new(path).exists() {
+            return BinaryToolStatus::missing(format!(
+                "The configured grype path does not exist: {path}"
+            ));
+        }
+    }
+
+    let program = configured.unwrap_or("grype");
+    match probe_program(program, &["version"], super::grype::parse_version) {
+        Some(version) => BinaryToolStatus {
+            available: true,
+            program: Some(program.to_string()),
+            version: Some(version),
+            source: Some(if configured.is_some() {
+                ToolSource::Configured
+            } else {
+                ToolSource::Path
+            }),
+            message: None,
+        },
+        None => BinaryToolStatus::missing(
+            "grype was not found. Install it with `brew install grype`, or see \
+https://github.com/anchore/grype. It is Apache-2.0 and ships as a single static binary.",
+        ),
+    }
+}
+
+/// `docker --version` prints "Docker version 29.4.0, build …".
+fn parse_docker_version(stdout: &str) -> Option<String> {
+    stdout
+        .split_whitespace()
+        .map(|token| token.trim_end_matches(','))
+        .find(|token| {
+            token.contains('.') && token.starts_with(|c: char| c.is_ascii_digit())
+        })
+        .map(str::to_string)
+}
+
+/// Is a usable Docker daemon available?
+///
+/// `--version` answers even when the daemon is down, so `info` is what actually
+/// proves a container can start.
+pub fn detect_docker() -> BinaryToolStatus {
+    let Some(version) = probe_program("docker", &["--version"], parse_docker_version) else {
+        return BinaryToolStatus::missing(
+            "Docker was not found. The container runtime needs it; the native runtime does not.",
+        );
+    };
+
+    let daemon_up = Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+
+    if !daemon_up {
+        return BinaryToolStatus {
+            available: false,
+            program: Some("docker".into()),
+            version: Some(version),
+            source: Some(ToolSource::Path),
+            message: Some(
+                "Docker is installed but its daemon is not responding. Start Docker and retry."
+                    .into(),
+            ),
+        };
+    }
+
+    BinaryToolStatus {
+        available: true,
+        program: Some("docker".into()),
+        version: Some(version),
+        source: Some(ToolSource::Path),
+        message: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
