@@ -12,7 +12,6 @@
 //! parses ten lockfile formats natively and queries OSV directly.
 
 pub mod detect;
-pub mod exploit;
 pub mod grype;
 pub mod native;
 pub mod report;

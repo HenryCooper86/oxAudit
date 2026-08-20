@@ -611,9 +611,19 @@ KEV tracks internet-facing enterprise exploitation, not embedded busybox and
 u-boot CVEs. EPSS scored every one, so the findings sort by exploitation
 probability even where nothing is a confirmed KEV hit.
 
-### Not yet wired
+### Also wired into the dependency scanner
 
-The dependency scanner and CVE research view produce CVEs too; this batch wires
-KEV/EPSS into the binary-scan enrichment path only, where a single scan raising
-dozens of findings makes prioritization most valuable. Extending it to the other
-paths is a mechanical follow-up.
+The same signal now ranks dependency-scan findings. `exploit.rs` moved to the
+crate root (it is no longer binscan-specific), and `scan_dependencies` attaches
+KEV/EPSS to every advisory before sorting exploited-first, then by EPSS, then by
+CVSS. A dependency advisory's CVE lives in its OSV aliases rather than its id —
+OSV names an npm advisory `GHSA-…` — so `exploit::cve_among` teases it out; it is
+tested against the real GHSA→CVE shape.
+
+Verified against live data: lodash 4.17.4 and minimist 0.0.8 resolve through OSV
+to twelve CVEs, none in KEV (honest — neither is actively exploited), all
+EPSS-scored, with `CVE-2021-23337` (lodash command injection) highest at 0.21 —
+so it sorts to the top of the list.
+
+Still not wired: the CVE research view, which is a single-CVE lookup rather than
+a list to prioritize.
