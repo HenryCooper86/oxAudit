@@ -94,6 +94,21 @@ pub enum RunPersistence {
     NotSaved { retry_token: String },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetentionPolicy {
+    pub max_completed_runs_per_project: u32,
+    pub max_age_days: u32,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_completed_runs_per_project: 20,
+            max_age_days: 90,
+        }
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanRunDetail {
