@@ -158,7 +158,13 @@ export interface AppSettings {
   theme: string;
   /** Explicit cve-bin-tool path; null/empty means "find it on PATH". */
   binaryScannerPath: string | null;
+  /** How cve-bin-tool runs. Docker is often the runtime that works. */
+  binaryScannerRuntime: BinaryScannerRuntime | null;
+  /** Explicit grype path; null/empty means "find it on PATH". */
+  grypePath: string | null;
 }
+
+export type BinaryScannerRuntime = "auto" | "native" | "docker";
 
 /** Where a detected cve-bin-tool came from. */
 export type BinaryToolSource = "configured" | "path" | "pythonModule";
@@ -180,6 +186,8 @@ export interface BinaryVulnerability {
   source: string;
   remarks: string | null;
   epssProbability: number | null;
+  /** First version carrying the fix. grype reports this; cve-bin-tool does not. */
+  fixedIn: string | null;
 }
 
 export interface BinaryComponent {
@@ -188,6 +196,8 @@ export interface BinaryComponent {
   version: string;
   paths: string[];
   vulnerabilities: BinaryVulnerability[];
+  /** Which scanners saw this component. */
+  detectedBy: string[];
 }
 
 export interface BinaryScanSummary {
@@ -205,6 +215,17 @@ export interface BinaryScanResult {
   summary: BinaryScanSummary;
   databaseLastUpdated: string | null;
   durationMs: number;
+  /** Scanners that contributed to this result. */
+  scanners: string[];
+}
+
+export interface BinaryScannersStatus {
+  cveBinTool: BinaryToolStatus;
+  grype: BinaryToolStatus;
+  docker: BinaryToolStatus;
+  runtime: BinaryScannerRuntime;
+  /** Whether any scanner can run with the current selection. */
+  canScan: boolean;
 }
 
 export interface BinaryScanRequest {
