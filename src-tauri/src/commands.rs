@@ -272,6 +272,7 @@ mod scan_option_contract_tests {
 pub async fn scan_project(
     app: AppHandle,
     state: State<'_, AppState>,
+    cve: State<'_, CveState>,
     options: ScanOptions,
 ) -> Result<ScanResult, String> {
     state.cancel_scan.store(false, Ordering::Relaxed);
@@ -336,8 +337,34 @@ pub async fn scan_project(
     }
 
     let mut findings: Vec<Finding> = results.into_iter().flatten().collect();
+
+    // Exploitation signal, class-level. A source finding has a weakness class
+    // (CWE) but no CVE, so KEV can only tell us whether that *class* is being
+    // actively exploited — which is still real triage value: fix the SQL
+    // injection before the info-leak when injection is what attackers are
+    // using. EPSS is CVE-keyed and genuinely does not apply. Best-effort: the
+    // KEV catalog is the one already cached for the CVE tools, and a failure
+    // leaves findings unflagged rather than failing the scan, so the scan stays
+    // usable offline.
+    if findings.iter().any(|f| f.cwe.is_some()) {
+        app.emit("scan://progress", Value::from("exploitation-signal")).ok();
+        let kev = cve.kev_set().await;
+        if !kev.is_empty() {
+            for finding in &mut findings {
+                if let Some(cwe) = &finding.cwe {
+                    let count = kev.cwe_exploited_count(cwe);
+                    finding.cwe_exploited = count > 0;
+                    finding.cwe_exploited_count = count;
+                }
+            }
+        }
+    }
+
     findings.sort_by(|a, b| {
-        severity_rank(&b.severity).cmp(&severity_rank(&a.severity))
+        // Exploited weakness classes first, then severity, then location.
+        b.cwe_exploited
+            .cmp(&a.cwe_exploited)
+            .then_with(|| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)))
             .then_with(|| a.file_path.cmp(&b.file_path))
             .then_with(|| a.line.cmp(&b.line))
     });

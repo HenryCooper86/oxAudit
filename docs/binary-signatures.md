@@ -637,6 +637,40 @@ than re-downloaded per lookup; EPSS is one query per CVE.
 Verified against live data: `CVE-2021-44228` (Log4Shell) comes back
 `known_exploited`, `ransomware`, EPSS 100%.
 
-All three CVE-producing paths — binary scan, dependency scan, CVE research — now
-carry the signal. The one thing that does not is the source-code scanner, whose
-findings are pattern matches without a CVE to look up.
+### And the source-code scanner, at the weakness-class level
+
+The source scanner was the honest exception: its findings are regex pattern
+matches with a **CWE** but no CVE, and KEV/EPSS are CVE-keyed. But KEV entries
+*carry* CWEs, so there is a real class-level signal: is this *kind* of bug being
+actively exploited in the wild?
+
+`KevSet::cwe_exploited_count` counts the exploited CVEs sharing each CWE, and
+`scan_project` flags every finding whose CWE is represented, sorting them first.
+The correlation is not academic — measured against the live catalog, 9 of the
+12 CWEs our rules emit are in KEV:
+
+| CWE | Weakness | Exploited CVEs in KEV |
+|---|---|---|
+| CWE-78 | OS command injection | 107 |
+| CWE-502 | Unsafe deserialization | 70 |
+| CWE-79 | Cross-site scripting | 33 |
+| CWE-89 | SQL injection | 30 |
+| CWE-120 | Buffer overflow | 12 |
+| CWE-95 | Eval injection | 6 |
+| CWE-295 | Improper cert validation | 4 |
+| CWE-259 | Hardcoded password | 2 |
+| CWE-98 | PHP file inclusion | 1 |
+
+So a command-injection finding now carries "Exploited class · KEV" — command
+injection is the single most exploited weakness class in the wild. EPSS is
+CVE-keyed and genuinely cannot apply to a class, so it is deliberately left off
+rather than faked; the badge is explicit that this is a weakness class, not a
+specific CVE.
+
+Two properties kept: the correlation reuses the KEV catalog already cached for
+the CVE tools (no extra fetch mid-session), and it is best-effort — a failed
+fetch leaves findings unflagged rather than failing the scan, so source scanning
+still works offline.
+
+All four scan paths — binary, dependency, CVE research, and source — now carry
+exploitation signal, each in the form its data supports.
