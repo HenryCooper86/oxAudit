@@ -140,3 +140,70 @@ over attacker-influenceable scan output.
 
 Running it on ourselves costs nothing and is the fastest way to judge whether the
 methodology is worth building into the product.
+
+---
+
+## 7. What was built
+
+> Added 2026-08-20. §4 ranked five proposals; three are now implemented in
+> `src-tauri/src/triage/`, chosen because they are the ones that become
+> *invariants* rather than conventions. VulnHunter states each of these as a
+> rule the model is asked to follow, and a prompt cannot enforce anything.
+
+### `gates.rs` — the five questions, with rules about what a verdict may claim
+
+The gates themselves are the easy part. What is enforced here is the honesty of
+a verdict, in two directions:
+
+- **An elimination must name the deciding gate and carry evidence.** Their
+  guidance is that a blank gate means the investigation shortcut past the check.
+  `Triage::new` rejects an elimination whose gate has no note, whose gate did not
+  actually eliminate it, or whose note has empty evidence.
+- **A confirmation must have answered every gate.** Confirming while a gate
+  reads `Unknown` overstates what was established, and that is the direction
+  that costs a user their time. Their prompt does not require this; it should.
+
+An elimination deliberately does *not* need the later gates answered — once a
+gate kills a finding the rest are moot, and demanding them would make honest
+triage more expensive than sloppy triage.
+
+### `manifest.rs` — the silent-drop guard
+
+Their rule, which is the single best idea in the project: *"A candidate that was
+never listed in the table was never evaluated — that is a verification failure,
+not an implicit rejection."*
+
+`Manifest::reconcile` fails unless every candidate has exactly one verdict and
+every verdict belongs to a candidate. Four distinct errors, each naming the
+findings involved rather than counting them: dropped, invented, duplicated in
+the manifest, duplicated in the verdicts.
+
+This is the piece that matters most for a security tool. A finding that vanishes
+between "scanned" and "reported" is indistinguishable from one that was never
+there, and it is precisely the failure a language model filling a verdict table
+will produce.
+
+### `scope.rs` — production-code scope, with the exception intact
+
+Their production-code-only rule, including the part that makes it more than an
+ignore-list: **infrastructure configuration stays in scope**. An `nginx.conf`
+under `tests/` still describes who gets to be trusted. Classification is
+advisory — it ranks and annotates rather than deleting, because "a credential in
+a fixture is noise" is usually true and never always.
+
+Vendored deliberately outranks test: `node_modules/foo/test/` is somebody else's
+test suite, and calling it ours implies it is worth fixing.
+
+25 tests, verified non-vacuous by disabling the guard and watching them fail.
+
+### Not built yet
+
+- **Wiring triage to the agent loop** (§4 proposal 1). The model exists; the
+  prompt and the `Triage` action on a finding do not. This is the piece that
+  makes it visible to a user.
+- **A ground-truth benchmark** (§4 proposal 3). Still the honest gap: we ship
+  fifty rules and have never measured their precision or recall, and a triage
+  layer's own accuracy is unmeasurable without it.
+- **Severity calibration** (§4 proposal 4).
+- **§6's free move** — running `/vulnhunt` against oxAudit itself. Unchanged and
+  still worth doing.
