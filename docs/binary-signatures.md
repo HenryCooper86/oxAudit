@@ -109,7 +109,7 @@ merge into one row today.
 
 ## 5. What this cannot do
 
-- **Coverage is 57 signatures, not 365.** They are the components that dominate
+- **Coverage is 71 signatures, not 365.** They are the components that dominate
   firmware findings (see §7), and the package note covers much of the rest on
   any distribution-built target. A vendor-built stripped binary of something
   uncovered will be missed. Extending coverage is mechanical: run the harness
@@ -529,3 +529,46 @@ Two things checked rather than assumed:
 
 Negative control: on 26,077 files of a Debian image with none of the four
 installed, none fires.
+
+## 10. A wider firmware batch, and two traps it exposed
+
+> Added 2026-08-20. Fourteen more libraries, derived the usual way from Debian
+> trixie with dpkg as ground truth.
+
+Five read a version, verified against the exact bytes:
+
+| Library | Anchor | CPE |
+|---|---|---|
+| libarchive | `libarchive 3.7.4` | `libarchive:libarchive` (16 CVEs) |
+| libcap | `shared library version: libcap-2.75.` | `libcap_project:libcap` |
+| libevent | `2.1.12-stable` | `libevent_project:libevent` |
+| libpsl | `0.21.2 (+libidn2/2.3.7)` | none — inventory only |
+| ppp | `pppd.so.2.5.2` / `/usr/lib/pppd/2.5.2` | `samba:ppp` (not `canonical:ppp`, which returns 0) |
+
+Nine more are identity-only — libtasn1, dbus, gmp, openldap, libtirpc, libnftnl,
+json-c, libidn2, e2fsprogs — each anchored on a data string, never a symbol.
+
+### Two false-positive traps, both measured on 26,077 files
+
+**Translation catalogs carry a library's error strings.** libidn2's anchors
+matched 23 files — the `.so`, the `.a`, and 21 gettext `.mo` locale catalogs,
+which embed every translatable error message. A `.mo` is not the library, and a
+different library's stray catalog would be a true false positive. The fix is
+general: `filetype.rs` now recognizes the gettext MO magic (`0x950412de`, either
+endianness) and skips it, the same way it skips text. libidn2 dropped to 2 files.
+
+**Sun RPC error strings are shared heritage.** libtirpc's first anchor,
+`RPC: Can't encode arguments`, matched `libc.so.6` and MIT Kerberos's
+`libgssrpc.so` — because glibc's built-in sunrpc and every RPC descendant carry
+the same classic strings. Re-anchored on libtirpc's own diagnostics
+(`rpc_broadcast_exp: uaddr %s`, `Netconfig database not found`), absent from
+glibc.
+
+**And one avoided by design:** dbus's `org.freedesktop.DBus` protocol name is in
+glib, systemd and every dbus client — 53 files. The signature uses the daemon's
+own diagnostics (`Failed to start message bus: %s`) instead, so it reports dbus
+only where the bus daemon actually is.
+
+The lesson repeating across all three: an anchor must belong to the library, not
+to its protocol, its translations, or its ancestry. Each was caught by measuring
+what a signature matches across a real tree, not by reading it.

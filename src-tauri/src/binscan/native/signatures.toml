@@ -835,3 +835,148 @@ filename_patterns = ['^odhcp6c$']
 contains = ['Usage: odhcp6c \[options\] <interface>', 'odhcp6c\.%s\.pid']
 version_patterns = []
 aliases = ["odhcp6c"]
+
+# --- more firmware libraries -------------------------------------------------
+#
+# Batch derived from Debian trixie binaries with dpkg as ground truth. Version
+# anchors verified against the exact bytes; identity anchors are data strings
+# (error messages, banners), never symbol names. CPE identities resolved
+# against NVD's dictionary — see the tests.
+
+# libarchive states itself: `libarchive 3.7.4`.
+[[signature]]
+vendor = "libarchive"
+product = "libarchive"
+filename_patterns = ['^libarchive\.so', '^libarchive\.[0-9.]*dylib', '^bsdtar$', '^bsdcpio$']
+contains = ['libarchive [0-9]+\.[0-9]+\.[0-9]+']
+version_patterns = ['libarchive ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libarchive13", "libarchive13t64", "libarchive"]
+
+# libcap prints `%s is the shared library version: libcap-2.75.` — the version
+# is baked into that sentence.
+[[signature]]
+vendor = "libcap_project"
+product = "libcap"
+filename_patterns = ['^libcap\.so', '^libcap\.[0-9.]*dylib']
+contains = ['shared library version: libcap-[0-9]']
+version_patterns = ['shared library version: libcap-([0-9]+\.[0-9]+)']
+aliases = ["libcap2", "libcap-ng0", "libcap"]
+
+# libevent's version banner ends `-stable`, which anchors the capture.
+[[signature]]
+vendor = "libevent_project"
+product = "libevent"
+filename_patterns = ['^libevent[_.-][0-9]', '^libevent\.so', '^libevent-[0-9]']
+contains = ['[0-9]+\.[0-9]+\.[0-9]+-stable', 'event_config_new']
+version_patterns = ['([0-9]+\.[0-9]+\.[0-9]+)-stable']
+aliases = ["libevent-2.1-7", "libevent-2.1-7t64", "libevent", "libevent-core-2.1-7"]
+
+# libpsl's version string carries the libidn2 it was built against —
+# `0.21.2 (+libidn2/2.3.7)` — a shape unique to libpsl. No NVD CPE exists for
+# it, so a lookup returns nothing; identity and version are still useful.
+[[signature]]
+vendor = "libpsl"
+product = "libpsl"
+filename_patterns = ['^libpsl\.so', '^libpsl\.[0-9.]*dylib']
+contains = ['[0-9]+\.[0-9]+\.[0-9]+ \(\+libidn2/']
+version_patterns = ['([0-9]+\.[0-9]+\.[0-9]+) \(\+libidn2/']
+aliases = ["libpsl5", "libpsl5t64", "libpsl"]
+
+# ppp bakes its version into the plugin path, `/usr/lib/pppd/2.5.2`, and the
+# shared object name `pppd.so.2.5.2`. The daemon's banner is a runtime %s.
+[[signature]]
+vendor = "samba"
+product = "ppp"
+filename_patterns = ['^pppd$', '^pppd\.so']
+contains = ['pppd version %s', 'pppd\.so\.[0-9]', '/usr/lib/pppd/[0-9]']
+version_patterns = ['pppd\.so\.([0-9]+\.[0-9]+\.[0-9]+)', '/usr/lib/pppd/([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["ppp", "pppd"]
+
+# --- identity only: no version a scanner can recover ------------------------
+
+# libtasn1 carries a bare LIBTASN1_VERSION with no adjacent anchor; identity is
+# its error prefix.
+[[signature]]
+vendor = "gnu"
+product = "libtasn1"
+filename_patterns = ['^libtasn1\.so', '^libtasn1\.[0-9.]*dylib']
+contains = ['LIBTASN1 ERROR: %s', 'ASN1_MAX_NAME_SIZE']
+version_patterns = []
+aliases = ["libtasn1-6", "libtasn1", "tasn1"]
+
+# dbus builds its version banner at runtime (%s); identity is the daemon's own
+# diagnostics. NOT `org.freedesktop.DBus` — that protocol name is in glib,
+# systemd and every dbus client (53 files across a Debian tree), so it would
+# report dbus present wherever anything merely talks to it.
+[[signature]]
+vendor = "freedesktop"
+product = "dbus"
+filename_patterns = ['^dbus-daemon$', '^dbus-broker$']
+contains = [
+  'D-Bus Message Bus Daemon',
+  'Failed to start message bus: %s',
+  'Unknown username "%s" in message bus configuration file',
+]
+version_patterns = []
+aliases = ["libdbus-1-3", "dbus", "dbus-daemon"]
+
+# GMP's __gmp_version is a bare global; identity is its assertion string.
+[[signature]]
+vendor = "gmplib"
+product = "gmp"
+filename_patterns = ['^libgmp\.so', '^libgmp\.[0-9.]*dylib']
+contains = ['GNU MP assertion failed', 'GNU MP: Cannot allocate memory']
+version_patterns = []
+aliases = ["libgmp10", "gmp"]
+
+[[signature]]
+vendor = "openldap"
+product = "openldap"
+filename_patterns = ['^libldap.*\.so', '^liblber.*\.so', '^slapd$']
+contains = ["Can't contact LDAP server", 'ldap_open\(%s, %d\)']
+version_patterns = []
+aliases = ["libldap2", "libldap-2.5-0", "openldap", "libldap"]
+
+# NOT `RPC: Can't encode arguments` and the other classic Sun RPC error
+# strings — those are heritage, present in glibc's built-in sunrpc and MIT
+# Kerberos's libgssrpc alike (measured: they match libc.so.6). These anchors
+# are libtirpc's own, absent from glibc.
+[[signature]]
+vendor = "libtirpc_project"
+product = "libtirpc"
+filename_patterns = ['^libtirpc\.so', '^libtirpc\.[0-9.]*dylib']
+contains = ['rpc_broadcast_exp: uaddr %s', 'Netconfig database not found', 'clnt_tli_create failed']
+version_patterns = []
+aliases = ["libtirpc3", "libtirpc3t64", "libtirpc"]
+
+[[signature]]
+vendor = "netfilter"
+product = "libnftnl"
+filename_patterns = ['^libnftnl\.so', '^libnftnl\.[0-9.]*dylib']
+contains = ['libnftnl: attribute %d > %d \(maximum\) assertion fail', 'libnftnl: attribute %d assertion failed']
+version_patterns = []
+aliases = ["libnftnl11", "libnftnl"]
+
+[[signature]]
+vendor = "json-c"
+product = "json-c"
+filename_patterns = ['^libjson-c\.so', '^libjson-c\.[0-9.]*dylib']
+contains = ['json-c aborts with error: %s', 'json_c_set_serialization_double_format']
+version_patterns = []
+aliases = ["libjson-c5", "libjson-c4", "json-c"]
+
+[[signature]]
+vendor = "libidn2_project"
+product = "libidn2"
+filename_patterns = ['^libidn2\.so', '^libidn2\.[0-9.]*dylib']
+contains = ['input A-label is not valid', 'string contains invalid punycode data']
+version_patterns = []
+aliases = ["libidn2-0", "libidn2"]
+
+[[signature]]
+vendor = "e2fsprogs_project"
+product = "e2fsprogs"
+filename_patterns = ['^dumpe2fs$', '^mke2fs$', '^e2fsck$', '^libext2fs\.so', '^tune2fs$', '^resize2fs$']
+contains = ['Journal superblock magic number invalid!', 'while reading journal superblock']
+version_patterns = []
+aliases = ["e2fsprogs", "libext2fs2", "libext2fs2t64", "libext2fs"]
