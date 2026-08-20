@@ -10,9 +10,53 @@ containerises its fuzzing sandbox?
 
 ---
 
-## 1. The headline finding
+## 0. Update — cve-bin-tool is fixable
 
-**cve-bin-tool 3.4 cannot bootstrap its CVE database today.** Every documented
+Everything in §1 stands, but the cause turned out to be **two small upstream
+bugs**, not a dead tool. With both patched at runtime, cve-bin-tool fetches
+normally: `Adding 380851 CVE entries`.
+
+**Bug 1 — a cosmetic preflight aborts everything.** `NVD_API.nvd_count_metadata`
+(`nvd_api.py:82`) requests NIST's dashboard-statistics endpoint with
+`raise_for_status=True`. NIST now returns 403 to every client. That count is only
+used to size the fetch, and the NVD API reports `totalResults` itself
+(380,851 at time of writing), so the request should not be fatal.
+
+**Bug 2 — a failed run poisons the next one.** cve-bin-tool records a
+`time_of_last_update` even when the fetch produced nothing. Every later run then
+takes the *incremental* branch and asks for CVEs modified since that timestamp —
+seconds ago — so it adds nothing and reports an empty database. `--update now`
+does not help; only clearing the cache does.
+
+The two interact, which is why this took seven runs to isolate: fixing the 403
+alone still yields zero, because the stale timestamp routes you into the
+incremental path. Both must be addressed together.
+
+Worth filing upstream. Bug 1 is a `try`/`except` plus a `totalResults` fallback;
+bug 2 is not recording an update time when nothing was ingested.
+
+
+### The bootstrap is rate-limited to hours without an API key
+
+With both patches in place the fetch starts correctly — `Adding 380851 CVE
+entries` — but NVD's unauthenticated limit (5 requests / 30s) means the initial
+download reaches only ~3% in ten minutes. That extrapolates to roughly **5½
+hours**. An NVD API key raises the limit to 50 requests / 30s.
+
+Two consequences:
+
+- **Set an NVD API key before the first binary scan.** oxAudit already has the
+  field in Settings and already forwards it to cve-bin-tool
+  (`binscan::run::build_args`), so this costs nothing but is easy to miss.
+- **An interrupted bootstrap recreates the §0 bug 2 trap**, because the partial
+  run still records an update time. Any "refresh" path we ship should clear the
+  cache first rather than only passing `--update now`.
+
+---
+
+## 1. How it presents before you know the cause
+
+**cve-bin-tool 3.4 cannot bootstrap its CVE database.** Every documented
 data path fails, on the host and inside a clean container alike, and the tool
 refuses to do *anything* — including SBOM generation — while the database is
 empty (`cli.py:909` raises `CVEDataMissing` before any other work).
@@ -136,12 +180,42 @@ different program plus leading arguments. Path translation (host target →
 2. **Add Docker as an opt-in runtime**, not a requirement. Unlike oxfuzz there is
    no safety argument forcing it, and requiring Docker Desktop would put binary
    scanning out of reach for users who will not install it.
-3. **Reconsider the dependency.** Given cve-bin-tool cannot currently function
-   from a clean install, [syft + grype](https://github.com/anchore/grype)
-   deserve a real evaluation: Apache-2.0 (no GPL friction), single static Go
-   binaries (no Python, no undeclared helpers — so most of the Docker
-   justification evaporates), and a database pipeline Anchore operates itself.
-   They are weaker at "which OpenSSL is statically linked into this stripped
-   ELF", which is cve-bin-tool's specialty — so the honest framing is that they
-   solve *most* of the goal reliably, versus one that solves *all* of it and is
-   currently broken.
+3. **Keep cve-bin-tool, and carry the fix in our image.** See §5 for the
+   measured comparison against grype. Since the patch cannot be applied to a
+   user's own installation without fighting their package manager, the container
+   is the natural place to carry it — which is a far stronger argument for
+   Docker than reproducibility alone.
+
+
+---
+
+## 5. Measured against grype
+
+Same target, same machine: 15 MB of real macOS dylibs and binaries — OpenSSL
+(`libssl`, `libcrypto` 3.x), `libzstd`, `/usr/bin/curl`.
+
+| | cve-bin-tool 3.4 | grype 0.117.0 |
+|---|---|---|
+| Licence | GPL-3.0-or-later | Apache-2.0 |
+| Install | Python + venv + undeclared `gsutil`, `cabextract`, `rpm2cpio`, `p7zip`, `zstd` | single static Go binary (`brew install grype`) |
+| First run | seven failures before a patch made it work | **worked first try**, 86s including database download |
+| Database | ~1 GB, NVD bootstrap broken without the §0 patch | ~200 MB from Anchore's own infrastructure |
+| Components found | ~450 purpose-built checkers (should catch all four families) | **1 of 4** — only `curl 8.7.1` |
+| Findings | — (bootstrap still running at time of writing) | 34 CVEs: 4 critical, 9 high, 18 medium, 3 low |
+| Output quality | vendor/product/version, CVSS, EPSS, paths | CVE, severity, CVSS, **fix state**, EPSS, KEV |
+
+grype detected **only `curl`**. It missed OpenSSL and zstd entirely, because its
+strength is package metadata (containers, distro packages, language manifests)
+and its binary classifiers cover a limited set. cve-bin-tool's ~450 checkers
+exist precisely for "which OpenSSL is linked into this stripped object".
+
+So the trade is real and neither tool dominates:
+
+- **grype** is dramatically easier to operate and gives richer per-CVE data
+  (notably fix state), but sees far less inside raw binaries.
+- **cve-bin-tool** sees much more, and is now known to be fixable, but needs the
+  §0 patch and a heavier environment.
+
+They are complementary rather than competing: grype for package- and
+container-shaped targets, cve-bin-tool for firmware and stripped binaries.
+Running both and merging by (component, version) would cover more than either.

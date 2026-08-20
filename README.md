@@ -102,14 +102,15 @@ suppresses the fallbacks so you always scan with the copy you meant.
 The first run downloads a CVE database and can take several minutes — the page shows
 cve-bin-tool's own progress while it works, and the scan is cancellable.
 
-> **Known upstream breakage (checked 2026-08-20).** cve-bin-tool 3.4 currently cannot
-> populate its CVE database: its NVD bootstrap gets a `403` from
-> `nvd.nist.gov/rest/public/dashboard/statistics`, the legacy JSON feeds it falls back
-> to were retired, and its `gs://cve-bin-tool` mirror bucket no longer exists. This is
-> not an oxAudit fault and containerising it does not help — see
-> [`docs/binary-scanning-runtime.md`](docs/binary-scanning-runtime.md) for the full
-> investigation. oxAudit detects the resulting empty-database state and offers a forced
-> refresh rather than surfacing a Python traceback.
+> **Upstream bugs, and the workaround (checked 2026-08-20).** cve-bin-tool 3.4 cannot
+> populate its CVE database out of the box: its NVD bootstrap aborts on a `403` from
+> `nvd.nist.gov/rest/public/dashboard/statistics`, and a failed run then records an
+> update timestamp that routes every later run into an empty incremental fetch. Both
+> are small bugs — the container image in `docker/cve-bin-tool/` carries the fix, after
+> which the fetch runs normally. **Set an NVD API key first**: the unauthenticated rate
+> limit makes the initial download take hours. Full investigation, and a measured
+> comparison against grype, in
+> [`docs/binary-scanning-runtime.md`](docs/binary-scanning-runtime.md).
 
 An experimental container runtime lives in `docker/cve-bin-tool/Dockerfile`. It supplies
 the external programs cve-bin-tool needs but does not declare (`gsutil` for its mirror,
