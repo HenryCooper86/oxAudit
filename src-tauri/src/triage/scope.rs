@@ -14,28 +14,24 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+use crate::findings::domain::FindingScope;
+
+pub type Scope = FindingScope;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum Scope {
-    /// Code that ships and runs.
-    Production,
-    /// Tests and fixtures.
-    Test,
-    /// Third-party code vendored into the tree.
-    Vendored,
-    /// Machine-generated output.
-    Generated,
-    /// Documentation and examples.
-    Documentation,
-    /// Infrastructure configuration. Not production *code*, but security
-    /// relevant, so it is deliberately not lumped in with the rest.
-    Infrastructure,
+pub struct ScopeDecision {
+    pub scope: FindingScope,
+    pub reason: String,
 }
 
-impl Scope {
+impl FindingScope {
     /// Should a finding here be shown by default?
     pub fn is_reportable(self) -> bool {
-        matches!(self, Scope::Production | Scope::Infrastructure)
+        matches!(
+            self,
+            FindingScope::Production | FindingScope::Infrastructure
+        )
     }
 }
 
@@ -50,16 +46,9 @@ const VENDORED: [&str; 8] = [
     "Pods",
 ];
 
-const TESTS: [&str; 8] = [
-    "test",
-    "tests",
-    "spec",
-    "specs",
-    "fixtures",
-    "fixture",
-    "testdata",
-    "__tests__",
-];
+const FIXTURES: [&str; 3] = ["fixtures", "fixture", "testdata"];
+
+const TESTS: [&str; 5] = ["test", "tests", "spec", "specs", "__tests__"];
 
 const GENERATED: [&str; 6] = ["dist", "build", "target", "out", "generated", ".next"];
 
@@ -79,11 +68,17 @@ const INFRASTRUCTURE_FILES: [&str; 10] = [
     "my.cnf",
 ];
 
-fn segments(path: &str) -> Vec<String> {
-    path.split(['/', '\\'])
+fn segments(path: &str) -> Option<Vec<String>> {
+    let parts: Vec<String> = path
+        .split(['/', '\\'])
         .filter(|part| !part.is_empty() && *part != ".")
         .map(|part| part.to_ascii_lowercase())
-        .collect()
+        .collect();
+    if parts.is_empty() || parts.iter().any(|part| part == "..") {
+        None
+    } else {
+        Some(parts)
+    }
 }
 
 /// Classify a path.
@@ -92,18 +87,24 @@ fn segments(path: &str) -> Vec<String> {
 /// an `nginx.conf` under `test/` is still a file whose contents describe who
 /// gets to be trusted, and a rule that hides it is a rule that hides real
 /// findings.
-pub fn classify(path: &str) -> Scope {
-    let parts = segments(path);
-    let Some(file_name) = parts.last() else {
-        return Scope::Production;
+pub fn classify(path: &str) -> ScopeDecision {
+    let Some(parts) = segments(path) else {
+        return ScopeDecision {
+            scope: Scope::Unknown,
+            reason: "unknown-path".into(),
+        };
     };
+    let file_name = parts.last().expect("non-empty paths have a file name");
 
     if INFRASTRUCTURE_FILES.contains(&file_name.as_str())
         || file_name.starts_with("dockerfile")
         || file_name.ends_with(".tf")
         || file_name.ends_with(".tfvars")
     {
-        return Scope::Infrastructure;
+        return ScopeDecision {
+            scope: Scope::Infrastructure,
+            reason: "infrastructure-file".into(),
+        };
     }
 
     let directories = &parts[..parts.len().saturating_sub(1)];
@@ -112,7 +113,16 @@ pub fn classify(path: &str) -> Scope {
     // Vendored before test: a test directory inside node_modules is somebody
     // else's problem, and reporting it as ours is noise either way.
     if has(&VENDORED) {
-        return Scope::Vendored;
+        return ScopeDecision {
+            scope: Scope::Vendored,
+            reason: "vendored-directory".into(),
+        };
+    }
+    if has(&FIXTURES) {
+        return ScopeDecision {
+            scope: Scope::Fixture,
+            reason: "fixture-directory".into(),
+        };
     }
     if has(&TESTS)
         || file_name.contains(".test.")
@@ -120,15 +130,27 @@ pub fn classify(path: &str) -> Scope {
         || file_name.starts_with("test_")
         || file_name.ends_with("_test.go")
     {
-        return Scope::Test;
+        return ScopeDecision {
+            scope: Scope::Test,
+            reason: "test-name".into(),
+        };
     }
     if has(&GENERATED) || file_name.ends_with(".min.js") || file_name.ends_with(".pb.go") {
-        return Scope::Generated;
+        return ScopeDecision {
+            scope: Scope::Generated,
+            reason: "generated-directory".into(),
+        };
     }
     if has(&DOCS) {
-        return Scope::Documentation;
+        return ScopeDecision {
+            scope: Scope::Documentation,
+            reason: "documentation-directory".into(),
+        };
     }
-    Scope::Production
+    ScopeDecision {
+        scope: Scope::Production,
+        reason: "production-default".into(),
+    }
 }
 
 #[cfg(test)]
@@ -137,50 +159,59 @@ mod tests {
 
     #[test]
     fn ordinary_source_is_production() {
-        assert_eq!(classify("src/auth/login.rs"), Scope::Production);
+        assert_eq!(classify("src/auth/login.rs").scope, Scope::Production);
         assert_eq!(
-            classify("app/controllers/users_controller.rb"),
+            classify("app/controllers/users_controller.rb").scope,
             Scope::Production
         );
     }
 
     #[test]
     fn tests_and_fixtures_are_separated_from_shipping_code() {
-        assert_eq!(classify("tests/fixtures/keys.json"), Scope::Test);
-        assert_eq!(classify("src/auth/login.test.ts"), Scope::Test);
-        assert_eq!(classify("pkg/auth/login_test.go"), Scope::Test);
-        assert_eq!(classify("api/test_handlers.py"), Scope::Test);
+        assert_eq!(classify("tests/fixtures/keys.json").scope, Scope::Fixture);
+        assert_eq!(classify("src/auth/login.test.ts").scope, Scope::Test);
+        assert_eq!(classify("pkg/auth/login_test.go").scope, Scope::Test);
+        assert_eq!(classify("api/test_handlers.py").scope, Scope::Test);
     }
 
     #[test]
     fn vendored_code_outranks_a_test_directory_inside_it() {
         // node_modules/foo/test/… is not our test suite, and calling it one
         // suggests it is worth fixing.
-        assert_eq!(classify("node_modules/foo/test/index.js"), Scope::Vendored);
-        assert_eq!(classify("vendor/github.com/x/y/y.go"), Scope::Vendored);
+        assert_eq!(
+            classify("node_modules/foo/test/index.js").scope,
+            Scope::Vendored
+        );
+        assert_eq!(
+            classify("vendor/github.com/x/y/y.go").scope,
+            Scope::Vendored
+        );
     }
 
     #[test]
     fn infrastructure_config_stays_in_scope_even_under_a_test_directory() {
         // The deliberate exception, and the reason this is not just an
         // ignore-list: an nginx.conf describes who is trusted, wherever it sits.
-        assert_eq!(classify("tests/nginx.conf"), Scope::Infrastructure);
-        assert_eq!(classify("deploy/Dockerfile"), Scope::Infrastructure);
-        assert_eq!(classify("infra/main.tf"), Scope::Infrastructure);
-        assert!(classify("tests/nginx.conf").is_reportable());
+        assert_eq!(classify("tests/nginx.conf").scope, Scope::Infrastructure);
+        assert_eq!(classify("deploy/Dockerfile").scope, Scope::Infrastructure);
+        assert_eq!(classify("infra/main.tf").scope, Scope::Infrastructure);
+        assert!(classify("tests/nginx.conf").scope.is_reportable());
     }
 
     #[test]
     fn generated_output_is_not_reported() {
-        assert_eq!(classify("dist/bundle.min.js"), Scope::Generated);
-        assert_eq!(classify("target/debug/build.rs"), Scope::Generated);
-        assert_eq!(classify("api/service.pb.go"), Scope::Generated);
+        assert_eq!(classify("dist/bundle.min.js").scope, Scope::Generated);
+        assert_eq!(classify("target/debug/build.rs").scope, Scope::Generated);
+        assert_eq!(classify("api/service.pb.go").scope, Scope::Generated);
     }
 
     #[test]
     fn documentation_is_not_reported() {
-        assert_eq!(classify("docs/getting-started.md"), Scope::Documentation);
-        assert_eq!(classify("examples/demo.py"), Scope::Documentation);
+        assert_eq!(
+            classify("docs/getting-started.md").scope,
+            Scope::Documentation
+        );
+        assert_eq!(classify("examples/demo.py").scope, Scope::Documentation);
     }
 
     #[test]
@@ -192,6 +223,8 @@ mod tests {
             Scope::Vendored,
             Scope::Generated,
             Scope::Documentation,
+            Scope::Fixture,
+            Scope::Unknown,
         ] {
             assert!(
                 !scope.is_reportable(),
@@ -204,13 +237,80 @@ mod tests {
     fn a_directory_named_like_an_exclusion_does_not_match_a_file_of_that_name() {
         // `src/test.rs` is production code with an unfortunate name; only a
         // path *segment* counts.
-        assert_eq!(classify("src/test.rs"), Scope::Production);
-        assert_eq!(classify("src/vendor.rs"), Scope::Production);
+        assert_eq!(classify("src/test.rs").scope, Scope::Production);
+        assert_eq!(classify("src/vendor.rs").scope, Scope::Production);
     }
 
     #[test]
     fn windows_separators_are_understood() {
-        assert_eq!(classify(r"src\auth\login.test.ts"), Scope::Test);
-        assert_eq!(classify(r"node_modules\foo\index.js"), Scope::Vendored);
+        assert_eq!(classify(r"src\auth\login.test.ts").scope, Scope::Test);
+        assert_eq!(
+            classify(r"node_modules\foo\index.js").scope,
+            Scope::Vendored
+        );
+    }
+
+    #[test]
+    fn classification_records_the_deciding_reason_and_unknown_paths() {
+        assert_eq!(
+            classify("tests/nginx.conf"),
+            ScopeDecision {
+                scope: FindingScope::Infrastructure,
+                reason: "infrastructure-file".into(),
+            }
+        );
+        assert_eq!(
+            classify("vendor/pkg/test/a.js"),
+            ScopeDecision {
+                scope: FindingScope::Vendored,
+                reason: "vendored-directory".into(),
+            }
+        );
+        assert_eq!(
+            classify("tests/fixtures/key.json"),
+            ScopeDecision {
+                scope: FindingScope::Fixture,
+                reason: "fixture-directory".into(),
+            }
+        );
+        assert_eq!(
+            classify(""),
+            ScopeDecision {
+                scope: FindingScope::Unknown,
+                reason: "unknown-path".into(),
+            }
+        );
+        assert_eq!(
+            classify("src/../test.rs"),
+            ScopeDecision {
+                scope: FindingScope::Unknown,
+                reason: "unknown-path".into(),
+            }
+        );
+        assert_eq!(
+            classify("src/test.rs"),
+            ScopeDecision {
+                scope: FindingScope::Production,
+                reason: "production-default".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn windows_paths_and_generated_or_documentation_directories_keep_stable_reasons() {
+        assert_eq!(
+            classify(r"build\bundle.js"),
+            ScopeDecision {
+                scope: FindingScope::Generated,
+                reason: "generated-directory".into(),
+            }
+        );
+        assert_eq!(
+            classify(r"docs\guide.md"),
+            ScopeDecision {
+                scope: FindingScope::Documentation,
+                reason: "documentation-directory".into(),
+            }
+        );
     }
 }
