@@ -135,6 +135,26 @@ export function BinaryScanPage(): JSX.Element {
     }
   };
 
+  const refreshDatabase = async () => {
+    if (running) return;
+    setRunning(true);
+    setError(null);
+    setProgress("Refreshing the CVE database — this downloads roughly a gigabyte.");
+    setPageStatus("binary-scan", { label: "Refreshing CVE database", tone: "running" });
+    try {
+      await api.refreshBinaryDatabase();
+      push("success", "CVE database refreshed.");
+      clearPageStatus("binary-scan");
+    } catch (cause) {
+      const message = String(cause);
+      setError(message);
+      setPageStatus("binary-scan", { label: "Database refresh failed", tone: "error" });
+    } finally {
+      setRunning(false);
+      setProgress("");
+    }
+  };
+
   const cancel = async () => {
     try {
       await api.cancelBinaryScan();
@@ -274,7 +294,26 @@ export function BinaryScanPage(): JSX.Element {
       )}
 
       {error && !running && !error.includes("cancelled") && (
-        <InlineState tone="error" title="Binary scan failed" description={error} />
+        <InlineState
+          tone="error"
+          title="Binary scan failed"
+          description={error}
+          action={
+            // Offered only when the message is the stale-cache case, which is
+            // the one failure a refresh actually resolves.
+            error.includes("Refresh CVE database") ? (
+              <Button
+                type="button"
+                onClick={() => void refreshDatabase()}
+                variant="outline"
+                size="md"
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+                Refresh CVE database
+              </Button>
+            ) : undefined
+          }
+        />
       )}
 
       {result && !running && (
