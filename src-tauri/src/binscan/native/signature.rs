@@ -681,11 +681,28 @@ mod tests {
     /// exactly that: `cpe:2.3:a:sqlite:sqlite:3.46.1` returns 7 CVEs and
     /// `cpe:2.3:a:sqlite:sqlite3:3.46.1` returns none. Renaming a product must
     /// fail this test and send whoever did it back to the API.
-    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 4] = [
+    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 19] = [
         ("openssl", "openssl"),
         ("sqlite", "sqlite"),
         ("tukaani", "xz"),
         ("pcre", "pcre2"),
+        // Firmware staples, each resolved against NVD's CPE dictionary and
+        // then confirmed to return CVEs for a real version.
+        ("dropbear_ssh_project", "dropbear_ssh"),
+        ("thekelleys", "dnsmasq"),
+        ("lighttpd", "lighttpd"),
+        ("w1.fi", "wpa_supplicant"),
+        ("w1.fi", "hostapd"),
+        ("openbsd", "openssh"),
+        ("net-snmp", "net-snmp"),
+        ("libssh", "libssh"),
+        ("strongswan", "strongswan"),
+        ("tcpdump", "libpcap"),
+        ("lua", "lua"),
+        ("openvpn", "openvpn"),
+        ("avahi", "avahi"),
+        ("libjpeg-turbo", "libjpeg-turbo"),
+        ("denx", "u-boot"),
     ];
 
     #[test]
@@ -701,12 +718,130 @@ zero CVEs rather than an error"
         }
     }
 
+    /// One real string per firmware signature, copied out of a Debian trixie
+    /// binary whose version dpkg recorded, with the version that must come out.
+    ///
+    /// Every entry was checked end to end against the binary it came from —
+    /// this is the record of that, so a later edit to a pattern cannot quietly
+    /// stop reading a version that used to work.
+    const FIRMWARE_GROUND_TRUTH: [(&str, &str, &str, &str); 15] = [
+        ("dropbear_ssh", "dropbear", "\nSSH-2.0-dropbear_2025.89\n", "2025.89"),
+        ("dnsmasq", "dnsmasq", "\ndnsmasq-2.91\n", "2.91"),
+        (
+            "lighttpd",
+            "lighttpd",
+            "\nlighttpd/1.4.79 (ssl) - a light and fast webserver\n",
+            "1.4.79",
+        ),
+        ("wpa_supplicant", "wpa_supplicant", "\nwpa_supplicant v2.10\n", "2.10"),
+        ("hostapd", "hostapd_cli", "\nhostapd_cli v2.10\n", "2.10"),
+        ("openssh", "sshd", "\nOpenSSH_10.0p2 Debian-7+deb13u4\n", "10.0p2"),
+        ("net-snmp", "snmpd", "\nnet-snmp-5.9.4+dfsg=.\n", "5.9.4"),
+        ("libssh", "libssh.so.4", "\nlibssh_0.11.5\n", "0.11.5"),
+        ("strongswan", "charon", "\nstrongSwan 6.0.1, %s %s, %s)\n", "6.0.1"),
+        (
+            "libpcap",
+            "libpcap.so.1",
+            "\nlibpcap version 1.10.5 (with TPACKET_V3)\n",
+            "1.10.5",
+        ),
+        (
+            "lua",
+            "lua5.4",
+            "\nLua 5.4.7  Copyright (C) 1994-2024 Lua.org, PUC-Rio\n",
+            "5.4.7",
+        ),
+        (
+            "openvpn",
+            "openvpn",
+            "\nOpenVPN 2.6.14 x86_64-pc-linux-gnu [SSL (OpenSSL)] [LZO]\n",
+            "2.6.14",
+        ),
+        (
+            "avahi",
+            "avahi-daemon",
+            "\nSTATUS=%s 0.8 starting up.\navahi 0.8\n",
+            "0.8",
+        ),
+        (
+            "libjpeg-turbo",
+            "libjpeg.so.62",
+            "\nlibjpeg-turbo version 2.1.5 (build 20250503)\n",
+            "2.1.5",
+        ),
+        (
+            "u-boot",
+            "u-boot.bin",
+            "\nU-Boot 2025.01-3 (Apr 08 2025 - 23:07:41 +0000)\n",
+            "2025.01",
+        ),
+    ];
+
+    #[test]
+    fn every_firmware_signature_reads_the_version_its_binary_carries() {
+        let set = &*SIGNATURES;
+        for (product, file_name, blob, expected) in FIRMWARE_GROUND_TRUTH {
+            let hits: Vec<_> = set
+                .detect(file_name, blob, &[])
+                .into_iter()
+                .filter(|d| d.product == product)
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "{product}: expected exactly one detection, got {hits:?}"
+            );
+            assert_eq!(
+                hits[0].version.as_deref(),
+                Some(expected),
+                "{product}: wrong version read from its own banner"
+            );
+        }
+    }
+
+    #[test]
+    fn sshds_bug_compatibility_list_is_not_read_as_installed_versions() {
+        // sshd carries patterns for negotiating around old peers. A pattern
+        // matching `OpenSSH_<version>` captures every one of them and reports
+        // a router as running eight OpenSSH releases at once.
+        let set = &*SIGNATURES;
+        let compat = "\nOpenSSH_10.0\nOpenSSH_3.*\nOpenSSH_6.6.1*\nOpenSSH_6.5*,OpenSSH_6.6*\n\
+OpenSSH_7.0*,OpenSSH_7.1*\nOpenSSH_10.0p2 Debian-7+deb13u4\n";
+        let versions: Vec<_> = set
+            .detect("sshd", compat, &[])
+            .into_iter()
+            .filter(|d| d.product == "openssh")
+            .filter_map(|d| d.version)
+            .collect();
+        assert_eq!(versions, vec!["10.0p2"], "compat patterns leaked in");
+    }
+
+    #[test]
+    fn openvpns_minimum_version_sentence_is_not_read_as_a_build() {
+        // "OpenVPN 2.6.0 or higher)" is a requirement the binary states, not a
+        // version it is. Same shape as OpenSSL's "3.0.0 and newer" prose.
+        let set = &*SIGNATURES;
+        let blob = "\nOpenVPN 2.6.0 or higher)\nOpenVPN 2.6.14 x86_64-pc-linux-gnu [SSL (OpenSSL)]\n";
+        let versions: Vec<_> = set
+            .detect("openvpn", blob, &[])
+            .into_iter()
+            .filter(|d| d.product == "openvpn")
+            .filter_map(|d| d.version)
+            .collect();
+        assert_eq!(versions, vec!["2.6.14"]);
+    }
+
     #[test]
     fn the_bundled_signatures_compile_and_cover_the_common_firmware_libraries() {
         let set = &*SIGNATURES;
         assert!(set.len() >= 20, "only {} signatures bundled", set.len());
         let products: Vec<&str> = set.products().collect();
-        for expected in ["openssl", "zlib", "curl", "busybox", "glibc", "expat"] {
+        for expected in [
+            "openssl", "zlib", "curl", "busybox", "glibc", "expat",
+            // The firmware set: what an actual router image is made of.
+            "dropbear_ssh", "dnsmasq", "lighttpd", "wpa_supplicant", "hostapd",
+            "openssh", "u-boot", "libpcap", "lua", "openvpn",
+        ] {
             assert!(
                 products.contains(&expected),
                 "{expected} is a staple of embedded firmware and must be covered"
