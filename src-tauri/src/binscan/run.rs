@@ -108,6 +108,41 @@ pub fn build_args(
     args
 }
 
+/// Why a run produced no report, phrased so the user can act on it.
+///
+/// These are not hypothetical. A partially-failed first bootstrap leaves a
+/// ~1 GB cache that cve-bin-tool's `daily` policy then treats as fresh, so
+/// every later run fails instantly with "No data in CVE Database" and never
+/// self-heals. Without naming that case the app looks broken with no way out.
+pub fn explain_failure(stderr_tail: &str, exit_status: &str) -> String {
+    let haystack = stderr_tail.to_ascii_lowercase();
+
+    if haystack.contains("cvedatamissing") || haystack.contains("no data in cve database") {
+        return "cve-bin-tool's local CVE database is empty. A previous download was interrupted, and its default daily refresh now considers the stale cache current, so it will not retry on its own. Use \"Refresh CVE database\" to force a full update."
+            .to_string();
+    }
+
+    if haystack.contains("no such file or directory: 'gsutil'")
+        || haystack.contains("filenotfounderror") && haystack.contains("gsutil")
+    {
+        return "cve-bin-tool needs `gsutil` to download its CVE database mirror, and it is not installed. Install it into the same environment (`pip install gsutil`), or point Settings at an installation that has it."
+            .to_string();
+    }
+
+    if haystack.contains("modulenotfounderror") || haystack.contains("importerror") {
+        return format!(
+            "cve-bin-tool is missing a Python dependency. Reinstall it, or point Settings \
+at a complete installation.\n{stderr_tail}"
+        );
+    }
+
+    if stderr_tail.trim().is_empty() {
+        format!("cve-bin-tool wrote no report (exit {exit_status})")
+    } else {
+        format!("cve-bin-tool wrote no report (exit {exit_status}):\n{stderr_tail}")
+    }
+}
+
 /// Resolve the scan target to an existing absolute path.
 pub fn resolve_target(raw: &str) -> Result<PathBuf, String> {
     let trimmed = raw.trim();
@@ -208,11 +243,7 @@ pub async fn run(
         Ok(raw) if !raw.trim().is_empty() => raw,
         _ => {
             let detail = tail.lock().unwrap().join("\n");
-            return Err(if detail.is_empty() {
-                format!("cve-bin-tool wrote no report (exit {status})")
-            } else {
-                format!("cve-bin-tool wrote no report (exit {status}):\n{detail}")
-            });
+            return Err(explain_failure(&detail, &status.to_string()));
         }
     };
 
@@ -322,5 +353,38 @@ mod tests {
         let resolved = resolve_target(".").unwrap();
         let args = build_args(&resolved, Path::new("/tmp/o.json"), &request("."), None);
         assert!(Path::new(&args[0]).is_absolute());
+    }
+
+    #[test]
+    fn an_empty_database_names_the_trap_rather_than_dumping_a_traceback() {
+        // Hit three times while integrating: a half-finished bootstrap leaves a
+        // cache the daily policy calls fresh, so the tool never retries.
+        let tail = "ERROR cve_bin_tool - CVEDataMissing: No data in CVE Database\n                    CVEDataMissing: No data in CVE Database";
+        let message = explain_failure(tail, "exit status: 1");
+
+        assert!(message.contains("Refresh CVE database"), "got: {message}");
+        assert!(!message.contains("Traceback"));
+    }
+
+    #[test]
+    fn a_missing_gsutil_is_named_with_the_fix() {
+        let tail = "FileNotFoundError: [Errno 2] No such file or directory: 'gsutil'";
+        let message = explain_failure(tail, "exit status: 21");
+
+        assert!(message.contains("gsutil"), "got: {message}");
+        assert!(message.contains("pip install gsutil"), "got: {message}");
+    }
+
+    #[test]
+    fn an_unrecognized_failure_still_surfaces_the_tool_output() {
+        let message = explain_failure("segmentation fault in checker", "exit status: 139");
+        assert!(message.contains("segmentation fault in checker"));
+        assert!(message.contains("139"));
+    }
+
+    #[test]
+    fn a_silent_failure_at_least_reports_the_exit_status() {
+        let message = explain_failure("   ", "exit status: 2");
+        assert!(message.contains("exit status: 2"));
     }
 }
