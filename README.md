@@ -18,6 +18,7 @@ with the help of an AI assistant.
 | **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings) |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs and raw OSV records |
 | **AI assistant** | Chat with any **OpenAI-compatible** endpoint (OpenAI, Ollama, LM Studio, vLLM, Groq, OpenRouter…). **Streaming responses** with live reasoning display, typed error handling with automatic retry, **per-conversation token & cost tracking**, cancellable turns, and an **agentic tool loop**: the AI can read files, grep/glob the scanned project, run scans, search NVD, query OSV, and fetch web pages — every tool call rendered live with a status card, gated by an allow/ask/deny permission pipeline with HITL approval, a loop guard, and dual iteration/call budgets. One-click "Ask AI" on every finding and "Generate research briefing" on every CVE |
+| **Binary scanning** | Detects vulnerable components bundled inside compiled binaries, firmware images, and archives (statically linked OpenSSL, zlib, curl, …) by invoking [cve-bin-tool](https://github.com/ossf/cve-bin-tool) — a **separate GPL-3.0 program you install yourself**. oxAudit does not bundle it |
 | **Dashboard** | At-a-glance stats, quick actions, recent scan history |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
 
@@ -26,6 +27,7 @@ with the help of an AI assistant.
 - **Dashboard** — overview and quick actions
 - **Source Scan** — folder picker, scan options, live progress, filterable findings grouped by file, JSON report export
 - **Dependencies** — lockfile discovery, OSV check, vulnerable-package table with fixed versions and reference links
+- **Binary Scan** — file/folder target, cve-bin-tool detection with a first-class "not installed" state, live progress, components grouped with their CVEs
 - **CVE Research** — NVD search + OSV package lookup + detail view with AI briefing
 - **AI Assistant** — chat with code/context attachment
 - **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key
@@ -41,12 +43,20 @@ src-tauri/            Rust backend (Tauri v2)
   src/models.rs       shared serde models (camelCase ⇄ TypeScript types)
   src/scanners/       secrets.rs (rules + entropy engine), patterns.rs (source rules)
   src/deps/           lockfiles.rs (parsers), osv.rs (OSV client + CVSS math)
+  src/binscan/        detect.rs (find cve-bin-tool), run.rs (spawn), report.rs (json2)
   src/cve.rs          NVD client with rate limiting + caching, OSV enrichment
   src/ai.rs           OpenAI-compatible chat client + prompt builders
   src/commands.rs     Tauri commands (scan, deps, cve, ai, settings)
 ```
 
-All scanning is local. Network calls go only to: NVD, OSV, and the AI endpoint you configure.
+All *oxAudit* scanning is local. oxAudit itself contacts only NVD, OSV, and the AI
+endpoint you configure.
+
+**Binary scanning is the exception**, because it runs a separate program. When you use
+it, [cve-bin-tool](https://github.com/ossf/cve-bin-tool) makes its own network calls —
+to its mirror at `cveb.in` and the advisory feeds it aggregates (NVD, OSV, GitLab
+Advisory Database, Red Hat, curl) — unless you tick **Offline**, which restricts it to
+its already-downloaded database. The feature is inert until you install cve-bin-tool.
 
 ## Development
 
@@ -74,6 +84,27 @@ npm run tauri build      # produce a distributable bundle
 > The NVD API key (optional) raises the NVD rate limit from 5 to 50 requests per
 > 30 seconds — get one free at https://nvd.nist.gov/developers/request-an-api-key.
 
+## Binary scanning (cve-bin-tool)
+
+oxAudit does **not** bundle [cve-bin-tool](https://github.com/ossf/cve-bin-tool). It is
+GPL-3.0-or-later; bundling it would make oxAudit a distributor of GPL software, whereas
+invoking a copy you installed is arms-length. Install it yourself:
+
+```bash
+pipx install cve-bin-tool     # recommended
+# or: pip install cve-bin-tool
+```
+
+oxAudit finds it on PATH, falling back to `python3 -m cve_bin_tool`. If you keep it in a
+specific environment, set the path in **Settings → Binary Scanning**; an explicit path
+suppresses the fallbacks so you always scan with the copy you meant.
+
+The first run downloads a CVE database and can take several minutes — the page shows
+cve-bin-tool's own progress while it works, and the scan is cancellable.
+
+Lockfile scanning is deliberately **not** routed through it: **Dependencies** already
+parses ten lockfile formats natively and queries OSV directly.
+
 ## Security notes
 
 - API keys you configure are stored in the app config directory
@@ -81,6 +112,10 @@ npm run tauri build      # produce a distributable bundle
   never in the scanned project.
 - The secret scanner is heuristic: always confirm a finding is a real credential
   before rotating anything, and beware false positives from test fixtures.
+- Binary scanning shells out to cve-bin-tool with arguments passed directly — never
+  through a shell — and the target is canonicalized to an absolute path first. Note that
+  cve-bin-tool extracts archives (ZIP/RPM/DEB/CAB/APK) to inspect them, so pointing it at
+  untrusted firmware runs third-party extraction code on attacker-supplied input.
 - Live verification of secrets (calling AWS/GitHub to check tokens) is intentionally
   **not** performed; treat findings as candidates.
 

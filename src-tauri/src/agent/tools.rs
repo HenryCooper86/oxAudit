@@ -628,6 +628,110 @@ pub fn builtins() -> Vec<Tool> {
                 }
             }
         ),
+        // ------------------------------------------------- run_binary_scan
+        crate::tool!(
+            "run_binary_scan",
+            "Scan a binary, firmware image, or archive in the active project for vulnerable bundled components (statically linked OpenSSL, zlib, curl, …) using the user's installed cve-bin-tool. Use this when the target is compiled output rather than source or a lockfile. Slow: the first run downloads a CVE database.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File or folder inside the project to scan (defaults to the project root)." },
+                    "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Minimum severity to report." },
+                    "offline": { "type": "boolean", "description": "Use only the already-downloaded CVE database and make no network calls." }
+                }
+            }),
+            // Dangerous: this spawns a third-party process, so every call goes
+            // through the HITL approval gate rather than running unattended.
+            false, false, true,
+            |ctx, args| {
+                let proj = project_root(&ctx)?;
+                let target = match arg_str_opt(&args, "path") {
+                    Some(p) => resolve_collection_root(&proj, &p)?,
+                    None => proj.clone(),
+                };
+
+                let st = ctx.state().ok_or("app state unavailable")?;
+                let configured = st
+                    .settings
+                    .lock()
+                    .unwrap()
+                    .binary_scanner_path
+                    .clone()
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty());
+                let nvd_api_key = st.settings.lock().unwrap().nvd_api_key.clone();
+                let cancel = st.cancel_binary_scan.clone();
+                drop(st);
+                cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+
+                let probe = configured.clone();
+                let invocation = tokio::task::spawn_blocking(move || {
+                    crate::binscan::detect::resolve(probe.as_deref())
+                })
+                .await
+                .map_err(|e| format!("tool detection failed: {e}"))??;
+
+                let scratch_dir = ctx
+                    .app
+                    .path()
+                    .app_cache_dir()
+                    .map_err(|e| format!("no cache directory available: {e}"))?
+                    .join("binscan");
+
+                let request = crate::binscan::run::BinaryScanRequest {
+                    path: target.to_string_lossy().into_owned(),
+                    severity: arg_str_opt(&args, "severity"),
+                    offline: args.get("offline").and_then(|v| v.as_bool()).unwrap_or(false),
+                    update: None,
+                };
+
+                // cve-bin-tool's per-line progress is dropped on this path: the
+                // agent surface renders a tool card with a running state and has
+                // no channel for streaming sub-tool output. The Binary Scan page
+                // gets the same lines over `binscan://progress`.
+                let on_progress: std::sync::Arc<dyn Fn(String) + Send + Sync> =
+                    std::sync::Arc::new(|_line| {});
+
+                let result = crate::binscan::run::run(
+                    &invocation,
+                    &request,
+                    nvd_api_key.as_deref(),
+                    &scratch_dir,
+                    cancel,
+                    std::time::Duration::from_secs(45 * 60),
+                    on_progress,
+                )
+                .await?;
+
+                // Return a bounded summary: a firmware image can carry hundreds
+                // of components, and the whole report would swamp the context.
+                let components: Vec<Value> = result
+                    .components
+                    .iter()
+                    .take(25)
+                    .map(|c| json!({
+                        "product": c.product,
+                        "vendor": c.vendor,
+                        "version": c.version,
+                        "paths": c.paths.iter().take(5).collect::<Vec<_>>(),
+                        "cves": c.vulnerabilities.iter().take(10).map(|v| json!({
+                            "id": v.cve_id,
+                            "severity": v.severity,
+                            "score": v.score,
+                        })).collect::<Vec<_>>(),
+                    }))
+                    .collect();
+
+                Ok(json!({
+                    "target": result.target,
+                    "summary": result.summary,
+                    "databaseLastUpdated": result.database_last_updated,
+                    "durationMs": result.duration_ms,
+                    "componentsShown": components.len(),
+                    "components": components,
+                }))
+            }
+        ),
         // ----------------------------------------------------------------- todo
         crate::tool!(
             "todo",
