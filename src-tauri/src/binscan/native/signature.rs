@@ -21,16 +21,23 @@ use once_cell::sync::Lazy;
 use regex::{Regex, RegexSet};
 use serde::Deserialize;
 
+use super::bytes::{BytePattern, Encoding, VersionFormula};
+
 /// How a component was recognized. A filename match is much stronger evidence
 /// than a string match, and the UI says which one it was rather than presenting
 /// a guess and a certainty identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Evidence {
-    /// The file is named like the component (`libssl.so.3`).
-    Filename,
+    /// A byte pattern matched in the file's code and yielded a plausible
+    /// version. Weakest of the three: a code shape like "return a constant"
+    /// occurs in many libraries, which is why a byte pattern must declare the
+    /// version range it considers plausible.
+    BytePattern,
     /// The file contains a string characteristic of the component.
     Content,
+    /// The file is named like the component (`libssl.so.3`).
+    Filename,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +69,43 @@ pub struct SignatureSpec {
     /// like versions but are not.
     #[serde(default)]
     pub ignore: Vec<String>,
+    /// Byte patterns over the file's raw content, for libraries that compile
+    /// their version in as a number and never spell it out.
+    #[serde(default)]
+    pub byte_patterns: Vec<BytePatternSpec>,
+    /// Distribution package names that mean this component.
+    ///
+    /// Debian calls zstd `libzstd`; NVD's CPE calls it `facebook:zstandard`.
+    /// Without a mapping the same library detected by an ELF package note and
+    /// by a signature becomes two rows that never merge — and the note-derived
+    /// one can never be looked up in NVD, because a package note carries no
+    /// CPE vendor.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+/// A version read out of code rather than text.
+#[derive(Debug, Deserialize)]
+pub struct BytePatternSpec {
+    /// Hex with nibble wildcards: `f3 0f 1e fa b8 .. .. 00 00 c3`.
+    pub pattern: String,
+    /// Where inside the match the number begins.
+    pub capture_offset: usize,
+    pub encoding: Encoding,
+    pub formula: VersionFormula,
+    /// The version-number range this library could plausibly report.
+    ///
+    /// Required, not optional. Measured on a real libzstd.1.5.7.dylib, the
+    /// pattern for `movz w0, #imm; ret` matches 34 times and yields three
+    /// "versions": the real 1.5.7 plus 2.73.52 and 6.55.34, both of which are
+    /// ordinary functions returning a small constant. Bounding the range is
+    /// what separates the one from the other, and asking the author for it
+    /// forces them to think about the library's version space.
+    pub min: u64,
+    pub max: u64,
+    /// What the pattern is, for whoever reads the file next.
+    #[serde(default)]
+    pub note: String,
 }
 
 #[derive(Deserialize)]
@@ -74,8 +118,44 @@ struct SignatureFile {
 struct Compiled {
     vendor: String,
     product: String,
+    aliases: Vec<String>,
     version_patterns: Vec<Regex>,
     ignore: Vec<Regex>,
+    byte_patterns: Vec<CompiledBytePattern>,
+}
+
+#[derive(Debug)]
+struct CompiledBytePattern {
+    pattern: BytePattern,
+    capture_offset: usize,
+    encoding: Encoding,
+    formula: VersionFormula,
+    min: u64,
+    max: u64,
+}
+
+impl CompiledBytePattern {
+    /// Every plausible version this pattern finds in `raw`.
+    fn versions(&self, raw: &[u8]) -> Vec<String> {
+        let mut found = Vec::new();
+        for offset in self.pattern.find_all(raw) {
+            let Some(window) = raw.get(offset + self.capture_offset..) else {
+                continue;
+            };
+            let Some(value) = self.encoding.read(window) else {
+                continue;
+            };
+            if value < self.min || value > self.max {
+                continue;
+            }
+            if let Some(version) = self.formula.render(value) {
+                if !found.contains(&version) {
+                    found.push(version);
+                }
+            }
+        }
+        found
+    }
 }
 
 #[derive(Debug)]
@@ -101,7 +181,10 @@ impl SignatureSet {
             if spec.product.trim().is_empty() {
                 return Err(format!("signature {index} has no product"));
             }
-            if spec.version_patterns.is_empty() && spec.contains.is_empty() {
+            if spec.version_patterns.is_empty()
+                && spec.contains.is_empty()
+                && spec.byte_patterns.is_empty()
+            {
                 return Err(format!(
                     "signature {} has no way to match anything",
                     spec.product
@@ -147,11 +230,47 @@ impl SignatureSet {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
+            let mut byte_patterns = Vec::with_capacity(spec.byte_patterns.len());
+            for byte_spec in &spec.byte_patterns {
+                let pattern = BytePattern::parse(&byte_spec.pattern).map_err(|e| {
+                    format!("{}: bad byte pattern {:?}: {e}", spec.product, byte_spec.pattern)
+                })?;
+                if byte_spec.min >= byte_spec.max {
+                    return Err(format!(
+                        "{}: byte pattern {:?} has an empty plausible range ({}..{})",
+                        spec.product, byte_spec.pattern, byte_spec.min, byte_spec.max
+                    ));
+                }
+                if byte_spec.capture_offset >= pattern.len() {
+                    return Err(format!(
+                        "{}: byte pattern {:?} captures at {} but is only {} bytes long",
+                        spec.product,
+                        byte_spec.pattern,
+                        byte_spec.capture_offset,
+                        pattern.len()
+                    ));
+                }
+                byte_patterns.push(CompiledBytePattern {
+                    pattern,
+                    capture_offset: byte_spec.capture_offset,
+                    encoding: byte_spec.encoding,
+                    formula: byte_spec.formula,
+                    min: byte_spec.min,
+                    max: byte_spec.max,
+                });
+            }
+
             compiled.push(Compiled {
+                aliases: spec
+                    .aliases
+                    .iter()
+                    .map(|alias| alias.to_ascii_lowercase())
+                    .collect(),
                 vendor: spec.vendor,
                 product: spec.product,
                 version_patterns,
                 ignore,
+                byte_patterns,
             });
         }
 
@@ -182,18 +301,48 @@ impl SignatureSet {
         self.compiled.iter().map(|c| c.product.as_str())
     }
 
+    /// The canonical `(vendor, product)` for a distribution package name.
+    ///
+    /// A package note says `libzstd`; NVD is keyed on `facebook:zstandard`.
+    /// Resolving one to the other is what lets a note-detected component be
+    /// looked up at all, and what stops it appearing twice alongside the same
+    /// library found by signature.
+    pub fn resolve_alias(&self, package_name: &str) -> Option<(&str, &str)> {
+        let needle = package_name.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+        self.compiled
+            .iter()
+            .find(|c| {
+                c.product.eq_ignore_ascii_case(&needle)
+                    || c.aliases.iter().any(|alias| alias == &needle)
+            })
+            .map(|c| (c.vendor.as_str(), c.product.as_str()))
+    }
+
     /// Match one file. `file_name` is the base name; `blob` is its strings.
     ///
     /// A component detected at several versions inside one file yields one
     /// detection per version: firmware images genuinely do carry two builds of
     /// the same library, and collapsing them would hide the older one.
-    pub fn detect(&self, file_name: &str, blob: &str) -> Vec<Detection> {
+    pub fn detect(&self, file_name: &str, blob: &str, raw: &[u8]) -> Vec<Detection> {
         let mut candidates: Vec<Option<Evidence>> = vec![None; self.compiled.len()];
 
+        // Weakest evidence first, so a stronger kind overwrites it.
+        for (index, signature) in self.compiled.iter().enumerate() {
+            if !signature.byte_patterns.is_empty()
+                && signature
+                    .byte_patterns
+                    .iter()
+                    .any(|byte_pattern| !byte_pattern.versions(raw).is_empty())
+            {
+                candidates[index] = Some(Evidence::BytePattern);
+            }
+        }
         for index in self.content_set.matches(blob) {
             candidates[self.content_owner[index]] = Some(Evidence::Content);
         }
-        // Filename evidence is applied second so it wins where both hold.
         for index in self.filename_set.matches(file_name) {
             candidates[self.filename_owner[index]] = Some(Evidence::Filename);
         }
@@ -204,6 +353,16 @@ impl SignatureSet {
             let signature = &self.compiled[index];
 
             let mut versions: Vec<String> = Vec::new();
+            for byte_pattern in &signature.byte_patterns {
+                for version in byte_pattern.versions(raw) {
+                    if signature.ignore.iter().any(|i| i.is_match(&version)) {
+                        continue;
+                    }
+                    if !versions.contains(&version) {
+                        versions.push(version);
+                    }
+                }
+            }
             for pattern in &signature.version_patterns {
                 for capture in pattern.captures_iter(blob) {
                     let Some(found) = capture.get(1) else { continue };
@@ -266,6 +425,8 @@ mod tests {
             contains: contains.iter().map(|s| s.to_string()).collect(),
             version_patterns: versions.iter().map(|s| s.to_string()).collect(),
             ignore: Vec::new(),
+            byte_patterns: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 
@@ -296,7 +457,7 @@ mod tests {
         )])
         .expect("compiles");
 
-        let hits = set.detect("libcrypto.so.3", "part of OpenSSL\nOpenSSL 3.0.2 15 Mar 2022\n");
+        let hits = set.detect("libcrypto.so.3", "part of OpenSSL\nOpenSSL 3.0.2 15 Mar 2022\n", &[]);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].product, "openssl");
         assert_eq!(hits[0].version.as_deref(), Some("3.0.2"));
@@ -315,7 +476,7 @@ mod tests {
         )])
         .expect("compiles");
 
-        let hits = set.detect("libcrypto.so.3", "part of OpenSSL\nOpenSSL 3.0.2 x\n");
+        let hits = set.detect("libcrypto.so.3", "part of OpenSSL\nOpenSSL 3.0.2 x\n", &[]);
         assert_eq!(hits[0].evidence, Evidence::Filename);
     }
 
@@ -332,7 +493,7 @@ mod tests {
         )])
         .expect("compiles");
 
-        let hits = set.detect("busybox", "BusyBox is a multi-call binary\n");
+        let hits = set.detect("busybox", "BusyBox is a multi-call binary\n", &[]);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].version, None);
     }
@@ -349,7 +510,7 @@ mod tests {
         )])
         .expect("compiles");
 
-        let hits = set.detect("firmware.bin", "OpenSSL 1.0.2k x\nOpenSSL 3.0.2 y\n");
+        let hits = set.detect("firmware.bin", "OpenSSL 1.0.2k x\nOpenSSL 3.0.2 y\n", &[]);
         let versions: Vec<_> = hits.iter().filter_map(|h| h.version.as_deref()).collect();
         assert_eq!(versions, vec!["1.0.2k", "3.0.2"]);
     }
@@ -360,7 +521,7 @@ mod tests {
         signature.ignore = vec![r"^0\.0".to_string()];
         let set = SignatureSet::compile(vec![signature]).expect("compiles");
 
-        let hits = set.detect("vmlinuz", "Linux version 0.0.0 junk\n");
+        let hits = set.detect("vmlinuz", "Linux version 0.0.0 junk\n", &[]);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].version, None, "the only candidate was ignored");
     }
@@ -376,13 +537,33 @@ mod tests {
         ])
         .expect("compiles");
 
-        let hits = set.detect("blob", "inflate 1.2.11 Copyright\n\ncurl 8.7.1\n");
+        let hits = set.detect("blob", "inflate 1.2.11 Copyright\n\ncurl 8.7.1\n", &[]);
         let mut pairs: Vec<_> = hits
             .iter()
             .map(|h| (h.product.as_str(), h.version.as_deref().unwrap_or("")))
             .collect();
         pairs.sort();
         assert_eq!(pairs, vec![("curl", "8.7.1"), ("zlib", "1.2.11")]);
+    }
+
+    #[test]
+    fn a_distribution_package_name_resolves_to_its_cpe_identity() {
+        // Debian ships zstd as `libzstd`; NVD knows it as facebook:zstandard.
+        // Without this the same library is two rows, and the one found by ELF
+        // package note can never be looked up.
+        let set = &*SIGNATURES;
+        assert_eq!(set.resolve_alias("libzstd"), Some(("facebook", "zstandard")));
+        assert_eq!(set.resolve_alias("LIBZSTD"), Some(("facebook", "zstandard")));
+        // A product name resolves to itself, so callers need only one path.
+        assert_eq!(set.resolve_alias("zstandard"), Some(("facebook", "zstandard")));
+    }
+
+    #[test]
+    fn an_unknown_package_name_resolves_to_nothing_rather_than_a_guess() {
+        let set = &*SIGNATURES;
+        assert_eq!(set.resolve_alias("some-vendor-blob"), None);
+        assert_eq!(set.resolve_alias(""), None);
+        assert_eq!(set.resolve_alias("   "), None);
     }
 
     #[test]
@@ -405,7 +586,7 @@ mod tests {
         // Python's _hashlib. Only the first describes what is linked here.
         let set = &*SIGNATURES;
 
-        let real = set.detect("libcrypto.so.3", "part of OpenSSL\nOpenSSL 3.5.6 7 Apr 2026\n");
+        let real = set.detect("libcrypto.so.3", "part of OpenSSL\nOpenSSL 3.5.6 7 Apr 2026\n", &[]);
         assert_eq!(
             real.iter().filter_map(|d| d.version.as_deref()).collect::<Vec<_>>(),
             vec!["3.5.6"]
@@ -414,6 +595,7 @@ mod tests {
         let prose = set.detect(
             "_hashlib.cpython-313-aarch64-linux-gnu.so",
             "For OpenSSL 3.0.0 and newer it returns the state of the digest\n",
+            &[],
         );
         assert!(
             prose.is_empty(),
@@ -429,7 +611,7 @@ mod tests {
         // phantom components for every real one.
         let set = &*SIGNATURES;
         let blob = "OPENSSL_3.0.0\nOPENSSL_3.5.0\nZLIB_1.2.12\nGLIBC_2.26\nXZ_5.4\nLIBXML2_2.9.11\n";
-        let hits = set.detect("libcrypto.so.3", blob);
+        let hits = set.detect("libcrypto.so.3", blob, &[]);
         assert!(
             hits.iter().all(|h| h.version.is_none()),
             "a symbol-version tag was captured as a version: {hits:?}"
