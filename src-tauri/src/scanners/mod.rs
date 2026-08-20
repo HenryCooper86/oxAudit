@@ -4,6 +4,7 @@ pub mod secrets;
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::findings::redaction;
 use crate::fs_utils;
 use crate::models::Finding;
 
@@ -59,6 +60,11 @@ pub fn scan_file_with_relative_path(
             }
             *count += 1;
             let (line, col) = fs_utils::line_col(&starts, hit.offset);
+            let match_text = redaction::redact_exact_value(&hit.match_text, &hit.secret_value);
+            let context = redaction::redact_exact_value(
+                &fs_utils::context_lines(&content, &starts, line - 1, 2),
+                &hit.secret_value,
+            );
             findings.push(Finding {
                 id: uuid::Uuid::new_v4().to_string(),
                 category: "secret".into(),
@@ -70,8 +76,8 @@ pub fn scan_file_with_relative_path(
                 file_path: rel.clone(),
                 line,
                 column: col,
-                match_text: hit.match_text.clone(),
-                context: fs_utils::context_lines(&content, &starts, line - 1, 2),
+                match_text,
+                context,
                 language: String::new(),
                 cwe_exploited: false,
                 cwe_exploited_count: 0,

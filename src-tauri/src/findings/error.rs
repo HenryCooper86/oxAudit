@@ -49,10 +49,6 @@ impl CommandError {
         )
     }
 
-    pub fn scan_failed_with_detail(sanitized_detail: String) -> Self {
-        Self::scan_failed().with_sanitized_detail(sanitized_detail)
-    }
-
     pub fn scan_already_running() -> Self {
         Self::new(
             ErrorCode::ScanAlreadyRunning,
@@ -69,10 +65,6 @@ impl CommandError {
         )
     }
 
-    pub fn persistence_unavailable_with_detail(sanitized_detail: String) -> Self {
-        Self::persistence_unavailable().with_sanitized_detail(sanitized_detail)
-    }
-
     pub fn policy_invalid() -> Self {
         Self::new(
             ErrorCode::PolicyInvalid,
@@ -87,10 +79,6 @@ impl CommandError {
             "The project policy could not be saved.",
             true,
         )
-    }
-
-    pub fn policy_write_failed_with_detail(sanitized_detail: String) -> Self {
-        Self::policy_write_failed().with_sanitized_detail(sanitized_detail)
     }
 
     pub fn review_invalid() -> Self {
@@ -116,10 +104,5 @@ impl CommandError {
             detail: None,
             retryable,
         }
-    }
-
-    fn with_sanitized_detail(mut self, sanitized_detail: String) -> Self {
-        self.detail = Some(sanitized_detail);
-        self
     }
 }
