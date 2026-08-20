@@ -1,15 +1,39 @@
 pub mod patterns;
 pub mod secrets;
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::findings::redaction;
 use crate::fs_utils;
 use crate::models::Finding;
 
-/// Max matches kept per rule per file (guards against pathological noise).
-const MAX_MATCHES_PER_RULE: usize = 25;
+pub struct ScanFileOutcome {
+    pub findings: Vec<Finding>,
+    // Consumed by the durable scan service introduced in the next foundation slice.
+    #[allow(dead_code)]
+    pub covered_families: Vec<String>,
+}
+
+impl ScanFileOutcome {
+    fn skipped() -> Self {
+        Self {
+            findings: Vec::new(),
+            covered_families: Vec::new(),
+        }
+    }
+}
+
+fn redact_detected_secrets(text: &str, hits: &[secrets::SecretHit]) -> String {
+    hits.iter().fold(text.to_owned(), |safe, hit| {
+        let mut safe = redaction::redact_exact(&safe, &hit.secret_value);
+        if hit.secret_value.contains(['\r', '\n']) {
+            for line in hit.secret_value.lines().filter(|line| !line.is_empty()) {
+                safe = redaction::redact_exact(&safe, line);
+            }
+        }
+        safe
+    })
+}
 
 /// Scan a single file and produce findings. Returns an empty vec when the file
 /// is binary, too large, or unreadable.
@@ -29,6 +53,7 @@ pub fn scan_file(
         scan_secrets,
         scan_vulnerabilities,
     )
+    .findings
 }
 
 /// Scan a canonical contained file while preserving its caller-validated
@@ -39,32 +64,27 @@ pub fn scan_file_with_relative_path(
     max_file_size_kb: u64,
     scan_secrets: bool,
     scan_vulnerabilities: bool,
-) -> Vec<Finding> {
+) -> ScanFileOutcome {
     let max_bytes = (max_file_size_kb as u64).saturating_mul(1024);
     let content = match fs_utils::read_text_file(path, max_bytes) {
         Some(c) => c,
-        None => return Vec::new(),
+        None => return ScanFileOutcome::skipped(),
     };
     let starts = fs_utils::line_starts(&content);
     let rel = relative_path.to_string();
     let mut findings = Vec::new();
+    let mut covered_families = Vec::new();
 
     if scan_secrets {
+        covered_families.push("secret".to_string());
         let hits = secrets::scan_content(&content);
-        let mut counts: HashMap<usize, usize> = HashMap::new();
-        for hit in hits {
+        for hit in &hits {
             let rule = &secrets::SECRET_RULES[hit.rule_index];
-            let count = counts.entry(hit.rule_index).or_insert(0);
-            if *count >= MAX_MATCHES_PER_RULE {
-                continue;
-            }
-            *count += 1;
             let (line, col) = fs_utils::line_col(&starts, hit.offset);
-            let match_text = redaction::redact_exact_value(&hit.match_text, &hit.secret_value);
-            let context = redaction::redact_exact_value(
-                &fs_utils::context_lines(&content, &starts, line - 1, 2),
-                &hit.secret_value,
-            );
+            let context = fs_utils::context_lines(&content, &starts, line - 1, 2);
+            let match_text =
+                secrets::truncate(&redact_detected_secrets(&hit.match_text, &hits), 240);
+            let context = redact_detected_secrets(&context, &hits);
             findings.push(Finding {
                 id: uuid::Uuid::new_v4().to_string(),
                 category: "secret".into(),
@@ -100,15 +120,10 @@ pub fn scan_file_with_relative_path(
 
     if scan_vulnerabilities {
         if let Some(lang) = fs_utils::detect_language(path) {
+            covered_families.push("vulnerability".to_string());
             let hits = patterns::scan_content(&content, lang);
-            let mut counts: HashMap<usize, usize> = HashMap::new();
             for hit in hits {
                 let rule = &patterns::SOURCE_RULES[hit.rule_index];
-                let count = counts.entry(hit.rule_index).or_insert(0);
-                if *count >= MAX_MATCHES_PER_RULE {
-                    continue;
-                }
-                *count += 1;
                 let (line, col) = fs_utils::line_col(&starts, hit.offset);
                 findings.push(Finding {
                     id: uuid::Uuid::new_v4().to_string(),
@@ -144,5 +159,72 @@ pub fn scan_file_with_relative_path(
         }
     }
 
-    findings
+    ScanFileOutcome {
+        findings,
+        covered_families,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_file_with_relative_path;
+
+    const CANARY: &str = "oxaudit-secret-canary-7D4zP9q2";
+
+    #[test]
+    fn scanner_retains_all_thirty_matches_for_one_rule() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let source_path = directory.path().join("credentials.txt");
+        let source = (0..30)
+            .map(|_| format!("token = \"{CANARY}\";"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&source_path, source).expect("secret fixture");
+
+        let outcome =
+            scan_file_with_relative_path(&source_path, "credentials.txt", 64, true, false);
+        let matching = outcome
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "generic-api-key")
+            .count();
+
+        assert_eq!(matching, 30);
+    }
+
+    #[test]
+    fn readable_text_reports_only_enabled_supported_families() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let javascript = directory.path().join("app.js");
+        let text = directory.path().join("notes.txt");
+        std::fs::write(&javascript, "eval(input);\n").expect("javascript fixture");
+        std::fs::write(&text, "ordinary text\n").expect("text fixture");
+
+        let both = scan_file_with_relative_path(&javascript, "app.js", 64, true, true);
+        let unsupported = scan_file_with_relative_path(&text, "notes.txt", 64, false, true);
+        let disabled = scan_file_with_relative_path(&javascript, "app.js", 64, false, false);
+
+        assert_eq!(both.covered_families, ["secret", "vulnerability"]);
+        assert!(unsupported.covered_families.is_empty());
+        assert!(disabled.covered_families.is_empty());
+    }
+
+    #[test]
+    fn skipped_files_report_no_findings_or_coverage() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let missing = directory.path().join("missing.js");
+        let binary = directory.path().join("binary.js");
+        let oversized = directory.path().join("oversized.js");
+        std::fs::write(&binary, b"eval(input);\0binary").expect("binary fixture");
+        std::fs::write(&oversized, "eval(input);\n").expect("oversized fixture");
+
+        for outcome in [
+            scan_file_with_relative_path(&missing, "missing.js", 64, true, true),
+            scan_file_with_relative_path(&binary, "binary.js", 64, true, true),
+            scan_file_with_relative_path(&oversized, "oversized.js", 0, true, true),
+        ] {
+            assert!(outcome.findings.is_empty());
+            assert!(outcome.covered_families.is_empty());
+        }
+    }
 }

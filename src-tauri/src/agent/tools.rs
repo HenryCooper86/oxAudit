@@ -187,6 +187,7 @@ fn scan_agent_code_files(
                 scan_secrets,
                 scan_vulnerabilities,
             )
+            .findings
         })
         .collect();
     let secrets = findings
@@ -199,7 +200,21 @@ fn scan_agent_code_files(
         .count();
     let mut sorted = findings.clone();
     sorted.sort_by(|a, b| b.severity.cmp(&a.severity));
-    let top: Vec<Value> = sorted
+    let top = top_findings_json(&sorted);
+    json!({
+        "scan_type": scan_type,
+        "files_scanned": collection.files.len(),
+        "files_skipped": collection.skipped,
+        "secrets_found": secrets,
+        "vulnerabilities_found": vulnerabilities,
+        "total_findings": findings.len(),
+        "top_findings": top,
+        "duration_ms": started.elapsed().as_millis() as u64,
+    })
+}
+
+fn top_findings_json(findings: &[crate::models::Finding]) -> Vec<Value> {
+    findings
         .iter()
         .take(25)
         .map(|finding| {
@@ -213,17 +228,7 @@ fn scan_agent_code_files(
                 "match": truncate(&finding.match_text, 120),
             })
         })
-        .collect();
-    json!({
-        "scan_type": scan_type,
-        "files_scanned": collection.files.len(),
-        "files_skipped": collection.skipped,
-        "secrets_found": secrets,
-        "vulnerabilities_found": vulnerabilities,
-        "total_findings": findings.len(),
-        "top_findings": top,
-        "duration_ms": started.elapsed().as_millis() as u64,
-    })
+        .collect()
 }
 
 fn scan_agent_source_files(
@@ -814,7 +819,7 @@ fn strip_html(raw: &str) -> String {
 mod tests {
     use super::{
         collect_agent_files, collect_agent_lockfiles, glob_project_files, grep_project_files,
-        scan_agent_secret_files, scan_agent_source_files,
+        scan_agent_secret_files, scan_agent_source_files, top_findings_json,
     };
     use crate::agent::tool::resolve_collection_root;
     use crate::models::ScanSettings;
@@ -830,6 +835,24 @@ mod tests {
         fs::write(root.path().join("ignored.rs"), "ignored\n").unwrap();
         fs::write(root.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         root
+    }
+
+    #[test]
+    fn assistant_top_findings_never_contains_secret_material() {
+        const CANARY: &str = "oxaudit-secret-canary-7D4zP9q2";
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let source_path = directory.path().join("credentials.txt");
+        fs::write(
+            &source_path,
+            format!("const token = \"{CANARY}\";\nuse(token);"),
+        )
+        .expect("secret fixture");
+        let findings = crate::scanners::scan_file(directory.path(), &source_path, 64, true, false);
+
+        let value = serde_json::Value::Array(top_findings_json(&findings));
+
+        assert!(!value.to_string().contains(CANARY));
+        assert!(value.to_string().contains("[REDACTED]"));
     }
 
     fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
