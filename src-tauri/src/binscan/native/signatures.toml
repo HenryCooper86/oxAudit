@@ -552,3 +552,120 @@ filename_patterns = ['^u-boot\.bin$', '^u-boot\.rom$', '^u-boot$', '^uboot\.elf$
 contains = ['U-Boot [0-9]{4}\.[0-9]{2}']
 version_patterns = ['U-Boot ([0-9]{4}\.[0-9]{2})']
 aliases = ["u-boot", "u-boot-tools", "uboot"]
+
+# --- versions that exist only as numeric constants ---------------------------
+#
+# These libraries print no version anywhere. Each accessor below was located in
+# a Debian trixie binary whose version dpkg recorded, and the exact bytes are in
+# the tests.
+
+# nghttp2_version(least) compares the caller's minimum against
+# NGHTTP2_VERSION_NUM before returning the info struct.
+[[signature]]
+vendor = "nghttp2"
+product = "nghttp2"
+filename_patterns = ['^libnghttp2\.so', '^libnghttp2\.[0-9.]*dylib']
+contains = ['nghttp2_session_', 'nghttp2_submit_']
+version_patterns = []
+aliases = ["libnghttp2-14", "nghttp2"]
+
+  [[signature.byte_patterns]]
+  pattern = "f3 0f 1e fa 81 ff .. .. .. 00 ba 00 00 00 00"
+  capture_offset = 6
+  encoding = "u32-le"
+  formula = "packed8"
+  min = 65536
+  max = 196607
+  note = "nghttp2_version, x86-64 (endbr64; cmp edi, NGHTTP2_VERSION_NUM)"
+
+# ares_version(int *version) writes ARES_VERSION through the out-parameter when
+# one is supplied, then returns the string.
+[[signature]]
+vendor = "c-ares"
+product = "c-ares"
+filename_patterns = ['^libcares\.so', '^libcares\.[0-9.]*dylib']
+contains = ['ares_init_options', 'ares_getaddrinfo']
+version_patterns = []
+aliases = ["libc-ares2", "c-ares", "libcares2"]
+
+  [[signature.byte_patterns]]
+  pattern = "f3 0f 1e fa 48 85 ff 74 06 c7 07 .. .. .. 00 48 8d 05"
+  capture_offset = 11
+  encoding = "u32-le"
+  formula = "packed8"
+  min = 65536
+  max = 196607
+  note = "ares_version, x86-64 (test rdi,rdi; mov [rdi], ARES_VERSION)"
+
+# mbedtls_version_get_number() returns MBEDTLS_VERSION_NUMBER, 0xMMmmpp00.
+# The spare low byte is pinned in the pattern: it makes an otherwise generic
+# "return a constant" shape specific enough to be worth matching.
+[[signature]]
+vendor = "arm"
+product = "mbed_tls"
+filename_patterns = ['^libmbedtls\.so', '^libmbedcrypto\.so', '^libmbedx509\.so']
+contains = ['mbedtls_ssl_', 'mbedtls_x509_', 'MBEDTLS_ERR_']
+version_patterns = []
+aliases = ["libmbedtls21", "libmbedcrypto16", "libmbedx509-7", "mbedtls", "mbed_tls", "polarssl"]
+
+  [[signature.byte_patterns]]
+  pattern = "f3 0f 1e fa b8 00 .. .. 0. c3"
+  capture_offset = 5
+  encoding = "u32-le"
+  formula = "packed8-hi"
+  min = 33554432
+  max = 67108863
+  note = "mbedtls_version_get_number, x86-64"
+
+# mosquitto_lib_version(major, minor, revision) fills the out-parameters and
+# returns LIBMOSQUITTO_VERSION_NUMBER.
+[[signature]]
+vendor = "eclipse"
+product = "mosquitto"
+filename_patterns = ['^libmosquitto\.so', '^mosquitto$']
+contains = ['mosquitto_lib_version', 'mosquitto is an MQTT']
+version_patterns = []
+aliases = ["libmosquitto1", "mosquitto"]
+
+  [[signature.byte_patterns]]
+  pattern = "74 06 c7 02 .. 00 00 00 b8 .. .. .. 00 c3"
+  capture_offset = 9
+  encoding = "u32-le"
+  formula = "decimal-1000000"
+  min = 1000000
+  max = 2999999
+  note = "mosquitto_lib_version, x86-64"
+
+# nettle has no combined constant at all: nettle_version_major() and
+# nettle_version_minor() are two one-instruction functions the compiler emits
+# adjacently, separated by its usual nopw padding. Reading both is what
+# capture_offset_2 exists for.
+[[signature]]
+vendor = "nettle_project"
+product = "nettle"
+filename_patterns = ['^libnettle\.so', '^libhogweed\.so']
+contains = ['nettle_get_secp_', 'nettle_pbkdf2', 'nettle_version_major']
+version_patterns = []
+aliases = ["libnettle8", "libnettle8t64", "nettle"]
+
+  [[signature.byte_patterns]]
+  pattern = "f3 0f 1e fa b8 .. 00 00 00 c3 66 0f 1f 44 00 00 f3 0f 1e fa b8 .. 00 00 00 c3"
+  capture_offset = 5
+  capture_offset_2 = 21
+  encoding = "u32-le"
+  formula = "major-minor"
+  min = 256
+  max = 25599
+  note = "nettle_version_major/minor, x86-64 (adjacent accessors)"
+
+# libmicrohttpd stores its version as a bare string, but the linker places the
+# `@LIBMICROHTTPD` symbol-version tag immediately after it. That adjacency is
+# the anchor — a bare `1.0.1` would otherwise claim anything.
+[[signature]]
+vendor = "gnu"
+product = "libmicrohttpd"
+filename_patterns = ['^libmicrohttpd\.so']
+contains = ['MHD-worker', 'MHD_start_daemon', 'MHD_get_version']
+version_patterns = ['\n([0-9]+\.[0-9]+\.[0-9]+)\n@LIBMICROHTTPD']
+version_implies_identity = false
+aliases = ["libmicrohttpd12", "libmicrohttpd12t64", "libmicrohttpd"]
