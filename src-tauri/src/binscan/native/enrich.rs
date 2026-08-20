@@ -55,6 +55,9 @@ pub struct ComponentQuery {
     /// Packaged version — what OSV's distribution ecosystems compare against.
     pub raw_version: String,
     pub ecosystem: Option<String>,
+    /// The name OSV knows this by, which is the distribution's package name and
+    /// not necessarily the canonical product. `libzstd` for `zstandard`.
+    pub osv_name: Option<String>,
 }
 
 /// Map an ELF package note's `type`/`os` onto an OSV ecosystem.
@@ -266,6 +269,7 @@ pub fn queries_from(detections: &[Detection]) -> Vec<ComponentQuery> {
                 .clone()
                 .unwrap_or_else(|| version.to_string()),
             ecosystem: detection.ecosystem.clone(),
+            osv_name: detection.package_name.clone(),
         });
         // One file may be seen by both detectors. Keep whichever fact the other
         // lacks, so a component detected by note *and* signature can be asked
@@ -275,6 +279,18 @@ pub fn queries_from(detections: &[Detection]) -> Vec<ComponentQuery> {
         }
         if entry.ecosystem.is_none() {
             entry.ecosystem = detection.ecosystem.clone();
+        }
+        if entry.osv_name.is_none() {
+            entry.osv_name = detection.package_name.clone();
+        }
+        if entry.raw_version == entry.version {
+            // A packaged version is strictly more useful to OSV than an
+            // upstream one, so a note's version wins over a signature's.
+            if let Some(raw) = detection.raw_version.as_deref() {
+                if raw != version {
+                    entry.raw_version = raw.to_string();
+                }
+            }
         }
     }
 
@@ -290,7 +306,12 @@ pub fn osv_dependencies(queries: &[ComponentQuery]) -> Vec<Dependency> {
         .filter_map(|query| {
             Some(Dependency {
                 ecosystem: query.ecosystem.clone()?,
-                name: query.product.clone(),
+                // OSV's distribution ecosystems key on the distribution's own
+                // package name; the canonical product would match nothing.
+                name: query
+                    .osv_name
+                    .clone()
+                    .unwrap_or_else(|| query.product.clone()),
                 version: query.raw_version.clone(),
                 lockfile: String::new(),
             })
@@ -660,6 +681,7 @@ mod tests {
             version: version.map(str::to_string),
             raw_version: raw.map(str::to_string),
             ecosystem: ecosystem.map(str::to_string),
+            package_name: ecosystem.map(|_| product.to_string()),
             path: "/fw/lib/x.so".into(),
             source: super::super::scan::DetectionSource::Content,
             truncated: false,

@@ -34,6 +34,9 @@ pub const NATIVE: &str = "oxaudit";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DetectionSource {
+    /// Read out of the binary's code — a version compiled in as a number.
+    /// Weakest, because the code shape it matches is not unique to one library.
+    BytePattern,
     /// Inferred from a string in the binary.
     Content,
     /// Inferred from the file's name.
@@ -47,6 +50,7 @@ impl From<Evidence> for DetectionSource {
         match evidence {
             Evidence::Filename => DetectionSource::Filename,
             Evidence::Content => DetectionSource::Content,
+            Evidence::BytePattern => DetectionSource::BytePattern,
         }
     }
 }
@@ -67,6 +71,9 @@ pub struct Detection {
     /// OSV ecosystem this came from, when the package note named a
     /// distribution we can query.
     pub ecosystem: Option<String>,
+    /// The distribution's own package name, when it differs from the canonical
+    /// product. OSV is keyed on this; NVD is keyed on the canonical one.
+    pub package_name: Option<String>,
     pub path: String,
     pub source: DetectionSource,
     /// The file was larger than the read cap and only a prefix was examined.
@@ -102,12 +109,21 @@ pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
         if let Some(note) = package_note::read(bytes) {
             let version = upstream_version(&note.version);
             let raw = note.version.trim().to_string();
+            // Debian says `libzstd`; NVD says `facebook:zstandard`. Resolving
+            // gives the note a CPE identity it otherwise lacks entirely, and
+            // stops it becoming a second row beside the same library found by
+            // signature.
+            let (vendor, product) = match signatures.resolve_alias(&note.name) {
+                Some((vendor, product)) => (vendor.to_string(), product.to_string()),
+                None => (String::new(), note.name.clone()),
+            };
             detections.push(Detection {
-                vendor: String::new(),
-                product: note.name,
+                vendor,
+                product,
                 version: (!version.is_empty()).then_some(version),
                 raw_version: (!raw.is_empty()).then_some(raw),
                 ecosystem: super::enrich::osv_ecosystem(&note.kind, &note.os),
+                package_name: Some(note.name),
                 path: display.clone(),
                 source: DetectionSource::PackageNote,
                 truncated: extracted.truncated,
@@ -121,13 +137,14 @@ pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
         .unwrap_or_default();
     let blob = strings::extract(bytes);
 
-    for hit in signatures.detect(&file_name, &blob) {
+    for hit in signatures.detect(&file_name, &blob, bytes) {
         detections.push(Detection {
             vendor: hit.vendor,
             product: hit.product,
             raw_version: hit.version.clone(),
             version: hit.version,
             ecosystem: None,
+            package_name: None,
             path: display.clone(),
             source: hit.evidence.into(),
             truncated: extracted.truncated,
@@ -270,6 +287,7 @@ mod tests {
             version: version.map(str::to_string),
             raw_version: version.map(str::to_string),
             ecosystem: None,
+            package_name: None,
             path: path.to_string(),
             source,
             truncated: false,
@@ -326,6 +344,10 @@ mod tests {
     fn declared_metadata_outranks_an_inferred_string() {
         assert!(DetectionSource::PackageNote > DetectionSource::Filename);
         assert!(DetectionSource::Filename > DetectionSource::Content);
+        assert!(
+            DetectionSource::Content > DetectionSource::BytePattern,
+            "a characteristic string names the library; a code shape does not"
+        );
     }
 
     #[test]

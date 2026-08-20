@@ -84,7 +84,8 @@ and there is a regression test carrying both strings.
 
 **And one thing not to do:** if a library has no version string, do not invent a
 weak pattern. zstd, sqlite3, pcre2 and liblzma have nothing but symbol tags. A
-guess there is worse than silence, because §4 identifies them exactly.
+guess there is worse than silence — §4 identifies them exactly on a
+distribution build, and §6 reads them out of the code on any build.
 
 ## 4. The ELF package note
 
@@ -119,3 +120,62 @@ merge into one row today.
 - **A detection is not a vulnerability.** The scanner reports components; CVE
   enrichment through oxAudit's existing NVD and OSV clients is the next step and
   is not built yet.
+
+
+## 6. Versions compiled in as numbers
+
+A library with no version *string* often still has a version *constant*, in a
+function that returns it. zstd's `ZSTD_versionNumber` is one instruction:
+
+```
+x86-64   f3 0f 1e fa  b8 0b 29 00 00  c3     endbr64; mov eax, 0x290b; ret
+AArch64  60 21 85 52  c0 03 5f d6            movz w0, #0x290b; ret
+```
+
+`0x290b` is 10507; `1 * 10000 + 5 * 100 + 7` is 1.5.7. A byte pattern that pins
+the instruction and captures the operand reads that version out of a stripped
+binary. The technique comes from VulHunt — see `vulhunt-study.md`.
+
+```toml
+  [[signature.byte_patterns]]
+  pattern = "f3 0f 1e fa b8 .. .. 00 00 c3"
+  capture_offset = 5
+  encoding = "u32-le"
+  formula = "decimal-10000"
+  min = 10000
+  max = 19999
+```
+
+`.` is a wildcard nibble, so `..` is any byte and `5.` is any byte in
+`0x50..=0x5f`. Masking at nibble granularity is what lets a pattern pin an
+opcode while leaving a register or operand free.
+
+### Rules, again learned by getting it wrong
+
+**Declare a plausible range, always.** The field is required. On a real
+`libzstd.1.5.7.dylib` the AArch64 pattern matches 34 times — "return a small
+constant" is an ordinary code shape — and yields three plausible-looking
+versions: the true 1.5.7 plus 2.73.52 and 6.55.34. Bounding zstd to 1.x removes
+both phantoms. Widening the bound brings them back, which is how the guard is
+tested.
+
+**Let the decoder do what the mask cannot.** A nibble mask cannot express "bits
+23..31 are `010100101`", so the AArch64 pattern is loose and
+`Encoding::Arm64MovzImm16` validates the instruction word exactly. Cheap
+prefilter, exact confirmation.
+
+**One pattern per architecture.** The same source line compiles to unrelated
+bytes on x86-64 and AArch64. There is no portable pattern; write both.
+
+**Byte-pattern evidence ranks lowest.** Below a characteristic string, which is
+below a filename, which is below a declared package note. A code shape does not
+name a library; it only suggests one.
+
+### Distribution names are a different vocabulary
+
+Debian ships zstd as `libzstd`; NVD knows it as `facebook:zstandard`. Signatures
+carry `aliases` so the two reconcile — without it the same library detected by
+package note and by byte pattern becomes two rows that never merge, and the
+note-derived one can never be looked up in NVD, which needs a CPE vendor a
+package note does not carry. OSV keeps being asked under the distribution's own
+name, because that is what its distribution ecosystems are keyed on.
