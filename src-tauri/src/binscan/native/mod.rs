@@ -19,6 +19,7 @@
 //! - **One pass instead of hundreds.** Every pattern is matched with a single
 //!   `RegexSet` per file rather than one checker at a time.
 
+pub mod bytes;
 pub mod enrich;
 pub mod filetype;
 pub mod package_note;

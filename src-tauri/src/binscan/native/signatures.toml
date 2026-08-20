@@ -46,6 +46,7 @@ filename_patterns = ['^libcrypto\.so', '^libcrypto\.[0-9]+\.dylib', '^libcrypto-
 contains = ['part of OpenSSL', 'OPENSSLDIR:']
 version_patterns = ['OpenSSL ([0-9]+\.[0-9]+\.[0-9]+[a-z]*) [0-9]{1,2} [A-Z][a-z]{2} [0-9]{4}']
 ignore = ['^0\.']
+aliases = ["libssl3", "libssl3t64", "libssl1.1", "libcrypto3", "openssl"]
 
 # libgcrypt.so.20.5.0: 'This is Libgcrypt 1.11.0 - The GNU Crypto Library'
 [[signature]]
@@ -54,6 +55,7 @@ product = "libgcrypt"
 filename_patterns = ['^libgcrypt\.so']
 contains = ['This is Libgcrypt']
 version_patterns = ['This is Libgcrypt ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libgcrypt20", "libgcrypt"]
 
 # libgnutls.so.30.40.3: 'Enabled GnuTLS 3.8.9 logging...'
 [[signature]]
@@ -62,6 +64,7 @@ product = "gnutls"
 filename_patterns = ['^libgnutls\.so']
 contains = ['Enabled GnuTLS', 'GNUTLS_DEBUG_LEVEL']
 version_patterns = ['Enabled GnuTLS ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libgnutls30t64", "libgnutls30", "gnutls28"]
 
 # libkrb5.so.3.3: 'KRB5_BRAND: krb5-1.21.3-final 1.21.3 20240626'
 [[signature]]
@@ -70,6 +73,7 @@ product = "kerberos_5"
 filename_patterns = ['^libkrb5\.so']
 contains = ['KRB5_BRAND:']
 version_patterns = ['KRB5_BRAND: krb5-([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+aliases = ["libkrb5-3", "krb5", "libkrb5support0"]
 
 # libssh2.so.1.0.1: 'SSH-2.0-libssh2_1.11.1'
 [[signature]]
@@ -78,6 +82,7 @@ product = "libssh2"
 filename_patterns = ['^libssh2\.so']
 contains = ['SSH-2.0-libssh2_']
 version_patterns = ['SSH-2\.0-libssh2_([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libssh2-1", "libssh2"]
 
 # --- compression ------------------------------------------------------------
 
@@ -92,6 +97,7 @@ version_patterns = [
   'inflate ([0-9]+\.[0-9]+(?:\.[0-9]+)?[a-z]?) Copyright',
   'deflate ([0-9]+\.[0-9]+(?:\.[0-9]+)?[a-z]?) Copyright',
 ]
+aliases = ["zlib1g", "zlib", "libz1"]
 
 # bzip2recover: 'bzip2recover 1.0.8: extracts blocks from damaged .bz2 files.'
 # libbz2 itself: '1.0.8, 13-Jul-2019' — dated, which is a usable anchor.
@@ -104,6 +110,7 @@ version_patterns = [
   'bzip2recover ([0-9]+\.[0-9]+\.[0-9]+):',
   'bzip2/libbzip2 version ([0-9]+\.[0-9]+\.[0-9]+)',
 ]
+aliases = ["libbz2-1.0", "bzip2"]
 
 # xz CLI: 'xz (XZ Utils) 5.8.1'. liblzma has only XZ_5.x symbol tags, so the
 # shared library is left to the ELF package note.
@@ -113,6 +120,7 @@ product = "xz"
 filename_patterns = []
 contains = ['\(XZ Utils\) [0-9]']
 version_patterns = ['\(XZ Utils\) ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["xz-utils", "liblzma5", "xz"]
 
 # --- transfer and parsing ---------------------------------------------------
 
@@ -131,6 +139,7 @@ product = "libcurl"
 filename_patterns = ['^libcurl\.so', '^libcurl\.[0-9.]*dylib']
 contains = ['libcurl/[0-9]']
 version_patterns = ['libcurl/([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libcurl4", "libcurl4t64", "libcurl3t64-gnutls", "libcurl"]
 
 # libexpat.so.1.12.2: 'expat_2.8.2'
 [[signature]]
@@ -139,6 +148,7 @@ product = "expat"
 filename_patterns = ['^libexpat\.so', '^libexpat\.[0-9.]*dylib']
 contains = ['expat_[0-9]+\.[0-9]+\.[0-9]+']
 version_patterns = ['expat_([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libexpat1", "expat"]
 
 # libpng16.so.16.48.0: 'libpng version 1.6.48'
 [[signature]]
@@ -147,6 +157,7 @@ product = "libpng"
 filename_patterns = ['^libpng[0-9]*\.so', '^libpng[0-9]*\.[0-9.]*dylib']
 contains = ['libpng version']
 version_patterns = ['libpng version ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libpng16-16", "libpng16-16t64", "libpng"]
 
 # libxml2 carries only LIBXML2_2.x symbol tags in the build examined, so the
 # only safe anchor is the parser's own banner when it is present.
@@ -156,6 +167,7 @@ product = "libxml2"
 filename_patterns = ['^libxml2\.so', '^libxml2\.[0-9.]*dylib']
 contains = ['libxml2 version', 'xmlsoft.org']
 version_patterns = ['libxml2 version ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libxml2"]
 
 # --- system -----------------------------------------------------------------
 
@@ -176,6 +188,7 @@ product = "glibc"
 filename_patterns = ['^libc\.so\.6$', '^ld-linux']
 contains = ['GNU C Library']
 version_patterns = ['stable release version ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+aliases = ["libc6", "libc-bin", "glibc"]
 
 # bash 5.2.37: '@(#)Bash version 5.2.37(1) release GNU'
 [[signature]]
@@ -235,3 +248,47 @@ product = "international_components_for_unicode"
 filename_patterns = ['^libicuuc\.so', '^libicui18n\.so']
 contains = ['ICU [0-9]+\.[0-9]']
 version_patterns = ['ICU ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+
+# --- versions read out of code, not text ------------------------------------
+
+# zstd is the case that motivated byte patterns. libzstd carries no version
+# string at all — only `XZ_5.x`-style symbol tags and a bare "1.5.7" with
+# nothing to anchor on — so both cve-bin-tool and grype miss it entirely on a
+# stripped tree. What it does carry is ZSTD_versionNumber(), a one-instruction
+# function returning ZSTD_VERSION_NUMBER.
+#
+# `max` stops at 1.9999 deliberately. zstd has been on 1.x for a decade, and
+# widening the range to admit a hypothetical 2.x also admits 2.73.52 — one of
+# two false "versions" this pattern produces on a real libzstd.1.5.7.dylib,
+# where it matches 34 times because "return a small constant" is an ordinary
+# code shape. Revisit when zstd 2.0 ships.
+[[signature]]
+vendor = "facebook"
+product = "zstandard"
+filename_patterns = ['^libzstd\.so', '^libzstd\.[0-9.]*dylib']
+contains = []
+version_patterns = []
+aliases = ["libzstd", "zstd"]
+
+  # x86-64: endbr64 / mov eax, 0x290b / ret. Verified against Debian trixie's
+  # libzstd.so.1.5.7 (x86-64): 5 raw matches, exactly one plausible version.
+  [[signature.byte_patterns]]
+  pattern = "f3 0f 1e fa b8 .. .. 00 00 c3"
+  capture_offset = 5
+  encoding = "u32-le"
+  formula = "decimal-10000"
+  min = 10000
+  max = 19999
+  note = "ZSTD_versionNumber, x86-64 (endbr64; mov eax, imm32; ret)"
+
+  # AArch64: movz w0, #0x290b / ret. Verified against Homebrew's
+  # libzstd.1.5.7.dylib. The operand is bits 5..21 of the instruction word, so
+  # the encoding does the exact validation the nibble mask cannot.
+  [[signature.byte_patterns]]
+  pattern = ".0 .. .. 52 c0 03 5f d6"
+  capture_offset = 0
+  encoding = "arm64-movz-imm16"
+  formula = "decimal-10000"
+  min = 10000
+  max = 19999
+  note = "ZSTD_versionNumber, AArch64 (movz w0, imm16; ret)"
