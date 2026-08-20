@@ -16,7 +16,9 @@ impl Default for SseDecoder {
 
 impl SseDecoder {
     pub fn new() -> Self {
-        Self { buf: Vec::with_capacity(8192) }
+        Self {
+            buf: Vec::with_capacity(8192),
+        }
     }
 
     /// Append raw bytes from the network.
@@ -62,7 +64,11 @@ fn find_boundary(buf: &[u8]) -> Option<usize> {
         if buf[i] == b'\n' && buf[i + 1] == b'\n' {
             return Some(i);
         }
-        if buf[i] == b'\r' && i + 3 < buf.len() && buf[i + 1] == b'\n' && buf[i + 2] == b'\r' && buf[i + 3] == b'\n'
+        if buf[i] == b'\r'
+            && i + 3 < buf.len()
+            && buf[i + 1] == b'\n'
+            && buf[i + 2] == b'\r'
+            && buf[i + 3] == b'\n'
         {
             return Some(i);
         }

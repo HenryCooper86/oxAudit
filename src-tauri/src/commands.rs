@@ -262,7 +262,10 @@ mod scan_option_contract_tests {
             .collect();
         assert_eq!(
             project_relative_paths,
-            [PathBuf::from(".gitignore"), PathBuf::from("shared/exposed.js")],
+            [
+                PathBuf::from(".gitignore"),
+                PathBuf::from("shared/exposed.js")
+            ],
         );
         assert_eq!(collection.skipped, 0);
     }
@@ -285,7 +288,8 @@ pub async fn scan_project(
     let saved_scan_settings = state.settings.lock().unwrap().scan.clone();
     let effective = effective_scan_options(&options, &saved_scan_settings);
 
-    app.emit("scan://progress", Value::from("walking")).map_err(|e| e.to_string())?;
+    app.emit("scan://progress", Value::from("walking"))
+        .map_err(|e| e.to_string())?;
 
     let collection = collect_source_scan_files(root, &effective);
     let files = collection.files;
@@ -316,7 +320,10 @@ pub async fn scan_project(
             }
             let findings = scanners::scan_file_with_relative_path(
                 &file.canonical_path,
-                &file.collection_relative_path.to_string_lossy().replace('\\', "/"),
+                &file
+                    .collection_relative_path
+                    .to_string_lossy()
+                    .replace('\\', "/"),
                 max_file_size_kb,
                 scan_secrets,
                 scan_vulns,
@@ -347,7 +354,8 @@ pub async fn scan_project(
     // leaves findings unflagged rather than failing the scan, so the scan stays
     // usable offline.
     if findings.iter().any(|f| f.cwe.is_some()) {
-        app.emit("scan://progress", Value::from("exploitation-signal")).ok();
+        app.emit("scan://progress", Value::from("exploitation-signal"))
+            .ok();
         let kev = cve.kev_set().await;
         if !kev.is_empty() {
             for finding in &mut findings {
@@ -387,7 +395,10 @@ pub async fn scan_project(
     }
 
     let secrets_found = findings.iter().filter(|f| f.category == "secret").count();
-    let vulnerabilities_found = findings.iter().filter(|f| f.category == "vulnerability").count();
+    let vulnerabilities_found = findings
+        .iter()
+        .filter(|f| f.category == "vulnerability")
+        .count();
 
     let summary = ScanSummary {
         path: options.path.clone(),
@@ -406,8 +417,11 @@ pub async fn scan_project(
         rules_fired,
     };
 
-    app.emit("scan://done", serde_json::json!({ "findings": findings.len() }))
-        .ok();
+    app.emit(
+        "scan://done",
+        serde_json::json!({ "findings": findings.len() }),
+    )
+    .ok();
 
     Ok(ScanResult { summary, findings })
 }
@@ -445,15 +459,17 @@ pub async fn scan_dependencies(
     }
 
     let settings = state.settings.lock().unwrap().clone();
-    let lockfiles =
-        fs_utils::discover_lockfiles(root, root, &settings.scan.ignored_dirs);
+    let lockfiles = fs_utils::discover_lockfiles(root, root, &settings.scan.ignored_dirs);
 
     let mut all_deps = Vec::new();
     let mut lockfile_infos = Vec::new();
     let mut parse_errors: Vec<String> = Vec::new();
 
-    app.emit("deps://progress", serde_json::json!({ "phase": "parsing", "done": 0, "total": lockfiles.len() }))
-        .ok();
+    app.emit(
+        "deps://progress",
+        serde_json::json!({ "phase": "parsing", "done": 0, "total": lockfiles.len() }),
+    )
+    .ok();
 
     for (i, lf) in lockfiles.iter().enumerate() {
         let name = lf.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -478,14 +494,13 @@ pub async fn scan_dependencies(
     let deps = crate::deps::lockfiles::dedupe_dependencies(all_deps);
     let packages_queried = deps.len();
 
-    app.emit("deps://progress", serde_json::json!({ "phase": "querying-osv", "done": 0, "total": 1 }))
-        .ok();
+    app.emit(
+        "deps://progress",
+        serde_json::json!({ "phase": "querying-osv", "done": 0, "total": 1 }),
+    )
+    .ok();
 
-    let vuln_map = state
-        .osv
-        .query_batch(&deps)
-        .await
-        .unwrap_or_default();
+    let vuln_map = state.osv.query_batch(&deps).await.unwrap_or_default();
 
     let mut vulnerabilities = Vec::new();
     for dep in &deps {
@@ -561,13 +576,19 @@ pub async fn scan_dependencies(
         dependencies: deps,
         vulnerabilities,
     };
-    app.emit("deps://done", serde_json::json!({ "vulnerabilities": result.summary.vulnerabilities_found }))
-        .ok();
+    app.emit(
+        "deps://done",
+        serde_json::json!({ "vulnerabilities": result.summary.vulnerabilities_found }),
+    )
+    .ok();
     Ok(result)
 }
 
 #[tauri::command]
-pub fn find_lockfiles(state: State<'_, AppState>, path: String) -> Result<Vec<LockfileInfo>, String> {
+pub fn find_lockfiles(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<LockfileInfo>, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
         return Err(format!("path is not a directory: {path}"));
@@ -630,7 +651,11 @@ pub async fn osv_package_vulns(
 /// CVE database before it scans anything, which can take several minutes.
 const BINARY_SCAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
 
-fn scan_context(state: &AppState, app: &AppHandle, use_grype: bool) -> Result<crate::binscan::scan::ScanContext, String> {
+fn scan_context(
+    state: &AppState,
+    app: &AppHandle,
+    use_grype: bool,
+) -> Result<crate::binscan::scan::ScanContext, String> {
     let settings = state.settings.lock().unwrap().clone();
     let scratch_dir = app
         .path()
@@ -658,7 +683,6 @@ fn scan_context(state: &AppState, app: &AppHandle, use_grype: bool) -> Result<cr
     })
 }
 
-
 /// Availability of every scanner and runtime, so the UI can explain itself.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -682,13 +706,14 @@ pub async fn binary_tool_status(
 ) -> Result<BinaryScannersStatus, String> {
     let settings = state.settings.lock().unwrap().clone();
     let trimmed = |value: Option<String>| {
-        value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+        value
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
     };
     let cve_path = trimmed(settings.binary_scanner_path.clone());
     let grype_path = trimmed(settings.grype_path.clone());
-    let runtime = crate::binscan::runtime::Runtime::parse(
-        settings.binary_scanner_runtime.as_deref(),
-    );
+    let runtime =
+        crate::binscan::runtime::Runtime::parse(settings.binary_scanner_runtime.as_deref());
 
     // Each probe spawns a process, so keep them off the UI thread.
     let (cve_bin_tool, grype, docker) = tokio::task::spawn_blocking(move || {
@@ -867,7 +892,12 @@ pub async fn analyze_finding(
         .ai
         .chat(
             &settings,
-            ChatRequest { messages, temperature: None, max_tokens: None, conversation_id: None },
+            ChatRequest {
+                messages,
+                temperature: None,
+                max_tokens: None,
+                conversation_id: None,
+            },
         )
         .await
 }
@@ -887,7 +917,12 @@ pub async fn research_cve(
         .ai
         .chat(
             &settings,
-            ChatRequest { messages, temperature: None, max_tokens: None, conversation_id: None },
+            ChatRequest {
+                messages,
+                temperature: None,
+                max_tokens: None,
+                conversation_id: None,
+            },
         )
         .await
 }
@@ -1035,7 +1070,9 @@ pub async fn stream_chat(
         }
     });
 
-    Ok(StreamStarted { run_id: run_id_response })
+    Ok(StreamStarted {
+        run_id: run_id_response,
+    })
 }
 
 #[cfg(test)]
@@ -1172,7 +1209,12 @@ pub fn respond_permission(
     request_id: String,
     approve: bool,
 ) -> Result<(), String> {
-    if let Some(tx) = state.pending_permissions.lock().unwrap().remove(&request_id) {
+    if let Some(tx) = state
+        .pending_permissions
+        .lock()
+        .unwrap()
+        .remove(&request_id)
+    {
         let _ = tx.send(approve);
     }
     Ok(())
@@ -1185,7 +1227,12 @@ pub fn respond_interaction(
     request_id: String,
     answers: Value,
 ) -> Result<(), String> {
-    if let Some(tx) = state.pending_interactions.lock().unwrap().remove(&request_id) {
+    if let Some(tx) = state
+        .pending_interactions
+        .lock()
+        .unwrap()
+        .remove(&request_id)
+    {
         let _ = tx.send(answers);
     }
     Ok(())
@@ -1415,6 +1462,10 @@ pub fn session_delete(app: AppHandle, session_id: String) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn session_truncate(app: AppHandle, session_id: String, keep_count: usize) -> Result<(), String> {
+pub fn session_truncate(
+    app: AppHandle,
+    session_id: String,
+    keep_count: usize,
+) -> Result<(), String> {
     crate::sessions::SessionStore::new(&app)?.truncate(&session_id, keep_count)
 }

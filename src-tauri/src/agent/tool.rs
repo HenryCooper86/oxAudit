@@ -249,10 +249,7 @@ impl ToolRegistry {
     }
 
     pub fn openai_definitions(&self) -> Vec<Value> {
-        self.tools
-            .values()
-            .map(|t| t.openai_definition())
-            .collect()
+        self.tools.values().map(|t| t.openai_definition()).collect()
     }
 }
 
@@ -268,7 +265,9 @@ pub fn arg_str(args: &Value, key: &str) -> Result<String, String> {
 }
 
 pub fn arg_str_opt(args: &Value, key: &str) -> Option<String> {
-    args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 pub fn arg_str_default(args: &Value, key: &str, default: &str) -> String {
@@ -424,7 +423,10 @@ mod lifecycle_tests {
     async fn timed_out_hitl_wait_removes_its_pending_sender() {
         let pending = Mutex::new(HashMap::new());
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-        pending.lock().unwrap().insert("permission-timeout".into(), tx);
+        pending
+            .lock()
+            .unwrap()
+            .insert("permission-timeout".into(), tx);
 
         let result = wait_for_pending_response(
             &pending,
@@ -443,7 +445,10 @@ mod lifecycle_tests {
     async fn answered_hitl_wait_returns_response_and_leaves_no_pending_sender() {
         let pending = Mutex::new(HashMap::new());
         let (tx, rx) = tokio::sync::oneshot::channel();
-        pending.lock().unwrap().insert("interaction-answer".into(), tx);
+        pending
+            .lock()
+            .unwrap()
+            .insert("interaction-answer".into(), tx);
         let sender = pending
             .lock()
             .unwrap()

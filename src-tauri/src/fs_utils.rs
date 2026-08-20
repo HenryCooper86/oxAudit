@@ -134,17 +134,14 @@ pub fn collect_files(root: &Path, options: CollectFilesOptions<'_>) -> (Vec<Path
 /// every returned path. This preserves native project/nested ignore and
 /// negation semantics without consulting ignore files above the project, while
 /// making later reads independent from a swapped lexical symlink alias.
-pub fn collect_source_files(
-    root: &Path,
-    options: CollectFilesOptions<'_>,
-) -> SourceFileCollection {
+pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> SourceFileCollection {
     let Some((project_root, _, lexical_collection_root, project_relative_root)) =
         validated_collection_scope(
-        options.project_root,
-        root,
-        options.include_git,
-        options.follow_symlinks,
-    )
+            options.project_root,
+            root,
+            options.include_git,
+            options.follow_symlinks,
+        )
     else {
         return SourceFileCollection::empty();
     };
@@ -178,7 +175,10 @@ pub fn collect_source_files(
 
     let mut allowed_files = BTreeSet::new();
     for entry in policy_builder.build().flatten() {
-        if !entry.file_type().is_some_and(|file_type| file_type.is_file()) {
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+        {
             continue;
         }
         let Ok(canonical_path) = entry.path().canonicalize() else {
@@ -270,10 +270,10 @@ pub fn collect_source_files(
                 files
                     .entry(canonical_path)
                     .and_modify(|current: &mut SourceFile| {
-                        let candidate_is_direct =
-                            canonical_relative_path.as_ref() == Some(&candidate.project_relative_path);
-                        let current_is_direct =
-                            canonical_relative_path.as_ref() == Some(&current.project_relative_path);
+                        let candidate_is_direct = canonical_relative_path.as_ref()
+                            == Some(&candidate.project_relative_path);
+                        let current_is_direct = canonical_relative_path.as_ref()
+                            == Some(&current.project_relative_path);
                         if (candidate_is_direct && !current_is_direct)
                             || (candidate_is_direct == current_is_direct
                                 && candidate.project_relative_path < current.project_relative_path)
@@ -375,8 +375,7 @@ fn source_entry_allowed(
     ignored: &[String],
 ) -> bool {
     if !canonical_path.starts_with(project_root)
-        || (!include_git
-            && (has_git_component(lexical_path) || has_git_component(canonical_path)))
+        || (!include_git && (has_git_component(lexical_path) || has_git_component(canonical_path)))
     {
         return false;
     }
@@ -402,7 +401,9 @@ fn scoped_path_uses_symlink(project_root: &Path, root: &Path) -> bool {
         if path == project_root {
             return false;
         }
-        current = path.parent().filter(|parent| parent.starts_with(project_root));
+        current = path
+            .parent()
+            .filter(|parent| parent.starts_with(project_root));
     }
     false
 }
@@ -547,8 +548,7 @@ mod tests {
 
         for include_git in [false, true] {
             assert!(
-                !relative_files(root.path(), include_git)
-                    .contains(&PathBuf::from("ignored.rs")),
+                !relative_files(root.path(), include_git).contains(&PathBuf::from("ignored.rs")),
                 "Include .git must not invert ordinary .gitignore behavior"
             );
         }
@@ -700,7 +700,10 @@ mod tests {
             },
         );
 
-        assert!(files.is_empty(), "lexical .git components must remain excluded");
+        assert!(
+            files.is_empty(),
+            "lexical .git components must remain excluded"
+        );
     }
 
     #[test]
@@ -779,7 +782,10 @@ mod tests {
         );
         fs::remove_file(&alias).unwrap();
         symlink(outside.path(), &alias).unwrap();
-        assert_eq!(read_text_file(&included[0], 1024).as_deref(), Some("inside\n"));
+        assert_eq!(
+            read_text_file(&included[0], 1024).as_deref(),
+            Some("inside\n")
+        );
     }
 
     #[cfg(unix)]
@@ -946,12 +952,7 @@ mod tests {
             discover_lockfiles(root.path(), root.path(), &[]),
             [root.path().join("Cargo.lock").canonicalize().unwrap()],
         );
-        assert!(discover_lockfiles(
-            root.path(),
-            &root.path().join(".git"),
-            &[],
-        )
-        .is_empty());
+        assert!(discover_lockfiles(root.path(), &root.path().join(".git"), &[],).is_empty());
     }
 
     #[cfg(unix)]

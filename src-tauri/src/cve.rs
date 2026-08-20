@@ -64,7 +64,11 @@ impl CveState {
 
     /// Enforce NVD rate limits: 5 req / 30s without a key, 50 with one.
     async fn throttle(&self) {
-        let limit = if self.api_key.lock().unwrap().is_some() { 50 } else { 5 };
+        let limit = if self.api_key.lock().unwrap().is_some() {
+            50
+        } else {
+            5
+        };
         loop {
             let sleep = {
                 let mut w = self.window.lock().unwrap();
@@ -104,13 +108,21 @@ impl CveState {
         if let Some(key) = &key {
             req = req.header("apiKey", key);
         }
-        let resp = req.send().await.map_err(|e| format!("NVD request failed: {e}"))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("NVD request failed: {e}"))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("NVD returned {status}: {}", body.chars().take(300).collect::<String>()));
+            return Err(format!(
+                "NVD returned {status}: {}",
+                body.chars().take(300).collect::<String>()
+            ));
         }
-        resp.json().await.map_err(|e| format!("NVD response parse failed: {e}"))
+        resp.json()
+            .await
+            .map_err(|e| format!("NVD response parse failed: {e}"))
     }
 
     fn cache_get(&self, key: &str) -> Option<CveSearchResult> {
@@ -156,8 +168,17 @@ pub async fn search_cves(
     }
     if let Some(days) = recent_days {
         let since = chrono::Utc::now() - chrono::Duration::days(days as i64);
-        params.push(("lastModStartDate", since.format("%Y-%m-%dT%H:%M:%S%.3f").to_string() + "Z"));
-        params.push(("lastModEndDate", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string() + "Z"));
+        params.push((
+            "lastModStartDate",
+            since.format("%Y-%m-%dT%H:%M:%S%.3f").to_string() + "Z",
+        ));
+        params.push((
+            "lastModEndDate",
+            chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3f")
+                .to_string()
+                + "Z",
+        ));
     }
 
     let json = state.nvd_get(&params).await?;
@@ -210,11 +231,7 @@ pub async fn cve_detail(state: &CveState, id: &str) -> Result<CveDetail, String>
         }
     }
 
-    let osv = state
-        .osv
-        .get_vuln(&id)
-        .await
-        .unwrap_or(None);
+    let osv = state.osv.get_vuln(&id).await.unwrap_or(None);
 
     Ok(CveDetail { item, raw, osv })
 }
@@ -236,8 +253,14 @@ fn parse_cve_items(json: Value) -> Vec<CveItem> {
         .cloned()
         .unwrap_or_default();
     for entry in vulns {
-        let Some(cve) = entry.get("cve") else { continue };
-        let id = cve.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let Some(cve) = entry.get("cve") else {
+            continue;
+        };
+        let id = cve
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         if id.is_empty() {
             continue;
         }
@@ -307,9 +330,12 @@ fn parse_cve_items(json: Value) -> Vec<CveItem> {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|w| {
-                        w.get("description").and_then(|d| d.as_array()).and_then(|d| {
-                            d.iter().find(|x| x.get("lang").and_then(|l| l.as_str()) == Some("en"))
-                        })
+                        w.get("description")
+                            .and_then(|d| d.as_array())
+                            .and_then(|d| {
+                                d.iter()
+                                    .find(|x| x.get("lang").and_then(|l| l.as_str()) == Some("en"))
+                            })
                     })
                     .filter_map(|d| d.get("value").and_then(|v| v.as_str()).map(String::from))
                     .collect()
@@ -342,7 +368,9 @@ fn extract_nvd_severity(cve: &Value) -> (Option<String>, Option<f32>) {
             if let Some(arr) = metrics.get(key).and_then(|m| m.as_array()) {
                 if let Some(first) = arr.first() {
                     let data = first.get("cvssData");
-                    if let Some(score) = data.and_then(|d| d.get("baseScore").and_then(|s| s.as_f64())) {
+                    if let Some(score) =
+                        data.and_then(|d| d.get("baseScore").and_then(|s| s.as_f64()))
+                    {
                         let sev = data
                             .and_then(|d| d.get("baseSeverity").and_then(|s| s.as_str()))
                             .map(|s| s.to_ascii_lowercase())

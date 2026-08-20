@@ -276,7 +276,12 @@ pub fn scan(
 mod tests {
     use super::*;
 
-    fn detection(product: &str, version: Option<&str>, path: &str, source: DetectionSource) -> Detection {
+    fn detection(
+        product: &str,
+        version: Option<&str>,
+        path: &str,
+        source: DetectionSource,
+    ) -> Detection {
         Detection {
             vendor: String::new(),
             product: product.to_string(),
@@ -293,8 +298,18 @@ mod tests {
     #[test]
     fn one_component_gathers_every_file_it_was_seen_in() {
         let folded = fold(vec![
-            detection("openssl", Some("3.0.2"), "/fw/lib/libcrypto.so.3", DetectionSource::Filename),
-            detection("openssl", Some("3.0.2"), "/fw/bin/vendord", DetectionSource::Content),
+            detection(
+                "openssl",
+                Some("3.0.2"),
+                "/fw/lib/libcrypto.so.3",
+                DetectionSource::Filename,
+            ),
+            detection(
+                "openssl",
+                Some("3.0.2"),
+                "/fw/bin/vendord",
+                DetectionSource::Content,
+            ),
         ]);
         assert_eq!(folded.len(), 1);
         assert_eq!(folded[0].paths.len(), 2);
@@ -305,7 +320,12 @@ mod tests {
         // "there is an OpenSSL here and I cannot tell which" is a finding in
         // its own right; folding it into the known version would erase it.
         let folded = fold(vec![
-            detection("openssl", Some("3.0.2"), "/fw/lib/libcrypto.so.3", DetectionSource::Content),
+            detection(
+                "openssl",
+                Some("3.0.2"),
+                "/fw/lib/libcrypto.so.3",
+                DetectionSource::Content,
+            ),
             detection("openssl", None, "/fw/bin/blob", DetectionSource::Content),
         ]);
         assert_eq!(folded.len(), 2);
@@ -316,19 +336,37 @@ mod tests {
     fn the_same_path_is_not_recorded_twice() {
         // Both detectors firing on one file is the normal case, not an error.
         let folded = fold(vec![
-            detection("zlib", Some("1.3.1"), "/fw/lib/libz.so.1", DetectionSource::PackageNote),
-            detection("zlib", Some("1.3.1"), "/fw/lib/libz.so.1", DetectionSource::Content),
+            detection(
+                "zlib",
+                Some("1.3.1"),
+                "/fw/lib/libz.so.1",
+                DetectionSource::PackageNote,
+            ),
+            detection(
+                "zlib",
+                Some("1.3.1"),
+                "/fw/lib/libz.so.1",
+                DetectionSource::Content,
+            ),
         ]);
         assert_eq!(folded[0].paths, vec!["/fw/lib/libz.so.1"]);
     }
 
     #[test]
     fn a_vendor_from_a_signature_fills_in_what_the_package_note_lacks() {
-        let mut from_signature =
-            detection("openssl", Some("3.0.2"), "/fw/lib/libcrypto.so.3", DetectionSource::Content);
+        let mut from_signature = detection(
+            "openssl",
+            Some("3.0.2"),
+            "/fw/lib/libcrypto.so.3",
+            DetectionSource::Content,
+        );
         from_signature.vendor = "openssl".into();
-        let from_note =
-            detection("openssl", Some("3.0.2"), "/fw/lib/libcrypto.so.3", DetectionSource::PackageNote);
+        let from_note = detection(
+            "openssl",
+            Some("3.0.2"),
+            "/fw/lib/libcrypto.so.3",
+            DetectionSource::PackageNote,
+        );
 
         // Order must not matter: the note is read first in a real scan.
         let folded = fold(vec![from_note, from_signature]);

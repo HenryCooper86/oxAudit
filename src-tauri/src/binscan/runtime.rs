@@ -114,9 +114,12 @@ pub fn prepare_docker(
     let (host_mount, container_target) = if target_is_dir {
         (target.to_path_buf(), CONTAINER_SCAN_ROOT.to_string())
     } else {
-        let parent = target
-            .parent()
-            .ok_or_else(|| format!("cannot determine a folder to mount for {}", target.display()))?;
+        let parent = target.parent().ok_or_else(|| {
+            format!(
+                "cannot determine a folder to mount for {}",
+                target.display()
+            )
+        })?;
         let name = target
             .file_name()
             .ok_or_else(|| format!("cannot determine a file name for {}", target.display()))?;
@@ -280,7 +283,10 @@ mod tests {
         // The mount point itself maps to the mounted directory.
         assert_eq!(to_host_path(&rewrite, "/scan"), "/Users/me/fw");
         // Anything outside the mount is left alone rather than mangled.
-        assert_eq!(to_host_path(&rewrite, "/usr/lib/other.so"), "/usr/lib/other.so");
+        assert_eq!(
+            to_host_path(&rewrite, "/usr/lib/other.so"),
+            "/usr/lib/other.so"
+        );
         // A native run has nothing to translate.
         assert_eq!(to_host_path(&None, "/scan/x"), "/scan/x");
     }
@@ -288,9 +294,15 @@ mod tests {
     #[test]
     fn the_container_drops_privileges_and_mounts_the_target_read_only() {
         let dir = std::env::temp_dir();
-        let prepared =
-            prepare_docker("docker", DEFAULT_IMAGE, &dir, Path::new("/o/r.json"), &request(), None)
-                .unwrap();
+        let prepared = prepare_docker(
+            "docker",
+            DEFAULT_IMAGE,
+            &dir,
+            Path::new("/o/r.json"),
+            &request(),
+            None,
+        )
+        .unwrap();
 
         assert!(prepared.args.iter().any(|a| a == "--cap-drop=ALL"));
         assert!(prepared.args.iter().any(|a| a == "no-new-privileges"));
@@ -305,15 +317,27 @@ mod tests {
         let mut offline = request();
         offline.offline = true;
 
-        let prepared =
-            prepare_docker("docker", DEFAULT_IMAGE, &dir, Path::new("/o/r.json"), &offline, None)
-                .unwrap();
+        let prepared = prepare_docker(
+            "docker",
+            DEFAULT_IMAGE,
+            &dir,
+            Path::new("/o/r.json"),
+            &offline,
+            None,
+        )
+        .unwrap();
         assert!(prepared.args.iter().any(|a| a == "--network=none"));
 
         // An online scan must keep networking, or the database can never update.
-        let online =
-            prepare_docker("docker", DEFAULT_IMAGE, &dir, Path::new("/o/r.json"), &request(), None)
-                .unwrap();
+        let online = prepare_docker(
+            "docker",
+            DEFAULT_IMAGE,
+            &dir,
+            Path::new("/o/r.json"),
+            &request(),
+            None,
+        )
+        .unwrap();
         assert!(!online.args.iter().any(|a| a == "--network=none"));
     }
 
@@ -322,9 +346,15 @@ mod tests {
         // Mounting at .cache/cve-bin-tool makes cve-bin-tool's rollback rmdir
         // fail with EBUSY; this cost a full run to discover.
         let dir = std::env::temp_dir();
-        let prepared =
-            prepare_docker("docker", DEFAULT_IMAGE, &dir, Path::new("/o/r.json"), &request(), None)
-                .unwrap();
+        let prepared = prepare_docker(
+            "docker",
+            DEFAULT_IMAGE,
+            &dir,
+            Path::new("/o/r.json"),
+            &request(),
+            None,
+        )
+        .unwrap();
 
         assert!(prepared
             .args
@@ -339,12 +369,25 @@ mod tests {
     #[test]
     fn the_image_is_the_last_argument_before_the_tools_own_flags() {
         let dir = std::env::temp_dir();
-        let prepared =
-            prepare_docker("docker", DEFAULT_IMAGE, &dir, Path::new("/o/r.json"), &request(), None)
-                .unwrap();
+        let prepared = prepare_docker(
+            "docker",
+            DEFAULT_IMAGE,
+            &dir,
+            Path::new("/o/r.json"),
+            &request(),
+            None,
+        )
+        .unwrap();
 
-        let image_at = prepared.args.iter().position(|a| a == DEFAULT_IMAGE).unwrap();
+        let image_at = prepared
+            .args
+            .iter()
+            .position(|a| a == DEFAULT_IMAGE)
+            .unwrap();
         let target_at = prepared.args.iter().position(|a| a == "/scan").unwrap();
-        assert!(image_at < target_at, "docker flags must not follow the image");
+        assert!(
+            image_at < target_at,
+            "docker flags must not follow the image"
+        );
     }
 }

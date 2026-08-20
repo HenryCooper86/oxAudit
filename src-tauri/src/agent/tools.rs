@@ -11,11 +11,11 @@ use super::tool::{
     project_root, resolve_collection_root, resolve_in_project, wait_for_pending_response,
     PendingWaitError, Tool,
 };
-use rayon::prelude::*;
-use tauri::Manager;
 use crate::ai::AiStreamEvent;
 use crate::fs_utils;
 use crate::models::Vulnerability;
+use rayon::prelude::*;
+use tauri::Manager;
 
 #[cfg(test)]
 fn collect_agent_files(
@@ -983,16 +983,8 @@ mod tests {
         settings.follow_symlinks = true;
         settings.ignored_dirs.clear();
 
-        let grep = grep_project_files(
-            root.path(),
-            &alias,
-            &settings,
-            "eval",
-            "content",
-            0,
-            100,
-        )
-        .unwrap();
+        let grep =
+            grep_project_files(root.path(), &alias, &settings, "eval", "content", 0, 100).unwrap();
         let glob = glob_project_files(root.path(), &alias, &settings, "*.js", 100).unwrap();
         let source = scan_agent_source_files(root.path(), &alias, &settings);
         let secrets = scan_agent_secret_files(root.path(), &alias, &settings);
@@ -1035,7 +1027,10 @@ mod tests {
         let source = scan_agent_source_files(root.path(), &alias, &settings);
         let secrets = scan_agent_secret_files(root.path(), &alias, &settings);
 
-        assert_eq!(grep["files_with_matches"], serde_json::json!(["exposed.js"]));
+        assert_eq!(
+            grep["files_with_matches"],
+            serde_json::json!(["exposed.js"])
+        );
         assert_eq!(glob["matches"], serde_json::json!(["exposed.js"]));
         assert_eq!(source["top_findings"][0]["file"], "exposed.js");
         assert_eq!(secrets["top_findings"][0]["file"], "exposed.js");

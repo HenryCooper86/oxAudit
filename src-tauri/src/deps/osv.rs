@@ -51,7 +51,10 @@ impl OsvClient {
             .await
             .map_err(|e| format!("OSV response parse failed: {e}"))?;
         Ok(parse_vulns(
-            json.get("vulns").and_then(|v| v.as_array()).cloned().unwrap_or_default(),
+            json.get("vulns")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
             ecosystem,
             name,
             version,
@@ -97,11 +100,16 @@ impl OsvClient {
                 .json()
                 .await
                 .map_err(|e| format!("OSV batch response parse failed: {e}"))?;
-            let results = json.get("results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let results = json
+                .get("results")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             for (i, res) in results.iter().enumerate() {
                 let dep = chunk[i];
                 if let Some(vulns) = res.get("vulns").and_then(|v| v.as_array()) {
-                    let parsed = parse_vulns(vulns.clone(), &dep.ecosystem, &dep.name, &dep.version);
+                    let parsed =
+                        parse_vulns(vulns.clone(), &dep.ecosystem, &dep.name, &dep.version);
                     if !parsed.is_empty() {
                         let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
                         out.insert(key, parsed);
@@ -128,7 +136,10 @@ impl OsvClient {
         if !resp.status().is_success() {
             return Err(format!("OSV returned {}", resp.status()));
         }
-        resp.json().await.map(Some).map_err(|e| format!("parse failed: {e}"))
+        resp.json()
+            .await
+            .map(Some)
+            .map_err(|e| format!("parse failed: {e}"))
     }
 
     /// Search all known vulnerabilities for a package (no version).
@@ -174,15 +185,34 @@ fn parse_vulns(
 ) -> Vec<Vulnerability> {
     let mut out = Vec::new();
     for v in raw {
-        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let id = v
+            .get("id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         let aliases = v
             .get("aliases")
             .and_then(|a| a.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
-        let summary = v.get("summary").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let details = v.get("details").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let published = v.get("published").and_then(|x| x.as_str()).map(String::from);
+        let summary = v
+            .get("summary")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let details = v
+            .get("details")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let published = v
+            .get("published")
+            .and_then(|x| x.as_str())
+            .map(String::from);
         let modified = v.get("modified").and_then(|x| x.as_str()).map(String::from);
         let references = v
             .get("references")
@@ -258,7 +288,11 @@ fn parse_vulns(
             package_name: package_name.to_string(),
             installed_version: installed_version.to_string(),
             fixed_versions: fixed,
-            affected_range: if range_parts.is_empty() { None } else { Some(range_parts.join(", ")) },
+            affected_range: if range_parts.is_empty() {
+                None
+            } else {
+                Some(range_parts.join(", "))
+            },
             references,
             published,
             modified,
@@ -312,7 +346,10 @@ fn cvss31_base(v: &str) -> Option<f32> {
     let mut metrics = std::collections::HashMap::new();
     for part in v.split('/') {
         if let Some((k, val)) = part.split_once(':') {
-            metrics.insert(k.trim().to_ascii_uppercase(), val.trim().to_ascii_uppercase());
+            metrics.insert(
+                k.trim().to_ascii_uppercase(),
+                val.trim().to_ascii_uppercase(),
+            );
         }
     }
     let get = |k: &str| metrics.get(k).map(|s| s.as_str());
@@ -379,7 +416,10 @@ fn cvss2_base(v: &str) -> Option<f32> {
     let mut metrics = std::collections::HashMap::new();
     for part in v.split('/') {
         if let Some((k, val)) = part.split_once(':') {
-            metrics.insert(k.trim().to_ascii_uppercase(), val.trim().to_ascii_uppercase());
+            metrics.insert(
+                k.trim().to_ascii_uppercase(),
+                val.trim().to_ascii_uppercase(),
+            );
         }
     }
     let get = |k: &str| metrics.get(k).map(|s| s.as_str());
@@ -446,16 +486,31 @@ mod tests {
     #[test]
     fn cvss31_vectors() {
         // well-known vectors from NVD calculator
-        assert_eq!(cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(9.8));
-        assert_eq!(cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"), Some(5.3));
+        assert_eq!(
+            cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+            Some(9.8)
+        );
+        assert_eq!(
+            cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"),
+            Some(5.3)
+        );
         // scope-changed example (CVE-2020-0601 style vector)
-        assert_eq!(cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H"), Some(9.6));
+        assert_eq!(
+            cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H"),
+            Some(9.6)
+        );
     }
 
     #[test]
     fn cvss2_vectors() {
-        assert_eq!(cvss_vector_to_score("AV:N/AC:L/Au:N/C:P/I:P/A:P"), Some(7.5));
-        assert_eq!(cvss_vector_to_score("AV:L/AC:H/Au:N/C:C/I:C/A:C"), Some(6.2));
+        assert_eq!(
+            cvss_vector_to_score("AV:N/AC:L/Au:N/C:P/I:P/A:P"),
+            Some(7.5)
+        );
+        assert_eq!(
+            cvss_vector_to_score("AV:L/AC:H/Au:N/C:C/I:C/A:C"),
+            Some(6.2)
+        );
     }
 
     #[test]
