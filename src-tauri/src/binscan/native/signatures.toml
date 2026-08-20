@@ -748,3 +748,35 @@ filename_patterns = ['^chronyd$', '^chronyc$']
 contains = ['chronyd exiting', 'Invalid refclock option', 'chronyd \(chrony\) version']
 version_patterns = []
 aliases = ["chrony", "chronyd"]
+
+# wolfSSL — the TLS library most embedded Linux images use in place of OpenSSL,
+# and the one an OpenWrt router actually ships. It states itself plainly:
+# `wolfSSL 5.5.3` on the MIPS build in OpenWrt 21.02.7, `wolfSSL 5.7.2` on
+# Debian trixie's x86-64. The string names the library, so unlike pcre2 it can
+# carry identity as well as the version.
+[[signature]]
+vendor = "wolfssl"
+product = "wolfssl"
+filename_patterns = ['^libwolfssl\.so', '^libwolfssl\.[0-9.]*dylib']
+contains = ['wolfSSL [0-9]+\.[0-9]+\.[0-9]+', 'wolfSSL PEM routines', 'wolfSSL_Debugging_ON']
+version_patterns = ['wolfSSL ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libwolfssl", "libwolfssl42t64", "wolfssl", "cyassl"]
+
+# iptables carries no literal version: the banner is built from `%s v%s
+# (legacy): ` at runtime. The bare `1.8.7` that is present has no stable
+# neighbour — measured, it sits between `-N %s` and `append` on the MIPS build
+# and between `help` and `unexpected '!' flag` on x86-64. So identity only.
+#
+# The two anchors were checked across both builds; `Perhaps iptables or your
+# kernel needs to be upgraded.` is in the MIPS 1.8.7 build but not in either
+# 1.8.11 binary, so it is not used.
+[[signature]]
+vendor = "netfilter"
+product = "iptables"
+filename_patterns = [
+  '^iptables$', '^ip6tables$', '^iptables-restore$', '^ip6tables-restore$',
+  '^xtables-legacy-multi$', '^xtables-nft-multi$', '^libxtables\.so',
+]
+contains = ['Failed to initialize xtables', 'cannot have ! before']
+version_patterns = []
+aliases = ["iptables", "ip6tables", "libxtables12", "xtables"]
