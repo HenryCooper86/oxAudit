@@ -506,13 +506,29 @@ export function BinaryScanPage(): JSX.Element {
                     {component.vulnerabilities.map((vulnerability) => (
                       <li
                         key={vulnerability.cveId}
-                        title={`${vulnerability.source}${vulnerability.score !== null ? ` · CVSS ${vulnerability.score}` : ""}`}
-                        className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-primary px-2 py-1"
+                        title={`${vulnerability.source}${vulnerability.score !== null ? ` · CVSS ${vulnerability.score}` : ""}${vulnerability.epssProbability !== null ? ` · EPSS ${(vulnerability.epssProbability * 100).toFixed(1)}%` : ""}`}
+                        className={`inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 ${
+                          vulnerability.knownExploited
+                            ? "border-sev-critical-border bg-sev-critical-subtle"
+                            : "border-border bg-surface-primary"
+                        }`}
                       >
                         <SeverityBadge severity={vulnerability.severity} showLabel={false} />
                         <span className="font-mono text-[11px] text-text-secondary">
                           {vulnerability.cveId}
                         </span>
+                        {vulnerability.knownExploited && (
+                          <span
+                            title={
+                              vulnerability.ransomware
+                                ? "In CISA KEV — used in ransomware campaigns"
+                                : "In CISA's Known Exploited Vulnerabilities catalog"
+                            }
+                            className="inline-flex items-center gap-0.5 rounded-full bg-sev-critical px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-white"
+                          >
+                            {vulnerability.ransomware ? "KEV · ransomware" : "KEV"}
+                          </span>
+                        )}
                         {vulnerability.score !== null && (
                           <span className="font-mono text-[10px] tabular-nums text-text-muted">
                             {vulnerability.score.toFixed(1)}
