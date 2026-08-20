@@ -651,25 +651,10 @@ pub fn builtins() -> Vec<Tool> {
                 };
 
                 let st = ctx.state().ok_or("app state unavailable")?;
-                let configured = st
-                    .settings
-                    .lock()
-                    .unwrap()
-                    .binary_scanner_path
-                    .clone()
-                    .map(|p| p.trim().to_string())
-                    .filter(|p| !p.is_empty());
-                let nvd_api_key = st.settings.lock().unwrap().nvd_api_key.clone();
+                let settings = st.settings.lock().unwrap().clone();
                 let cancel = st.cancel_binary_scan.clone();
                 drop(st);
                 cancel.store(false, std::sync::atomic::Ordering::Relaxed);
-
-                let probe = configured.clone();
-                let invocation = tokio::task::spawn_blocking(move || {
-                    crate::binscan::detect::resolve(probe.as_deref())
-                })
-                .await
-                .map_err(|e| format!("tool detection failed: {e}"))??;
 
                 let scratch_dir = ctx
                     .app
@@ -677,6 +662,23 @@ pub fn builtins() -> Vec<Tool> {
                     .app_cache_dir()
                     .map_err(|e| format!("no cache directory available: {e}"))?
                     .join("binscan");
+
+                let trimmed = |value: Option<String>| {
+                    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+                };
+                let context = crate::binscan::scan::ScanContext {
+                    runtime: crate::binscan::runtime::Runtime::parse(
+                        settings.binary_scanner_runtime.as_deref(),
+                    ),
+                    cve_bin_tool_path: trimmed(settings.binary_scanner_path.clone()),
+                    grype_path: trimmed(settings.grype_path.clone()),
+                    nvd_api_key: settings.nvd_api_key.clone(),
+                    scratch_dir,
+                    use_cve_bin_tool: true,
+                    // Both scanners see different things, so the agent gets the
+                    // merged view rather than having to choose.
+                    use_grype: true,
+                };
 
                 let request = crate::binscan::run::BinaryScanRequest {
                     path: target.to_string_lossy().into_owned(),
@@ -692,16 +694,15 @@ pub fn builtins() -> Vec<Tool> {
                 let on_progress: std::sync::Arc<dyn Fn(String) + Send + Sync> =
                     std::sync::Arc::new(|_line| {});
 
-                let result = crate::binscan::run::run(
-                    &invocation,
+                let outcome = crate::binscan::scan::run_scan(
+                    &context,
                     &request,
-                    nvd_api_key.as_deref(),
-                    &scratch_dir,
                     cancel,
                     std::time::Duration::from_secs(45 * 60),
                     on_progress,
                 )
                 .await?;
+                let result = outcome.result;
 
                 // Return a bounded summary: a firmware image can carry hundreds
                 // of components, and the whole report would swamp the context.

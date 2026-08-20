@@ -16,7 +16,7 @@ import {
   SEVERITY_FILTERS,
   type SeverityFilter,
 } from "../lib/binaryScan";
-import type { BinaryScanResult, BinaryToolStatus } from "../lib/types";
+import type { BinaryScannersStatus, BinaryScanResult } from "../lib/types";
 
 
 export function BinaryScanPage(): JSX.Element {
@@ -25,7 +25,8 @@ export function BinaryScanPage(): JSX.Element {
   const activeProject = useAppStore((state) => state.activeProject);
   const push = useToastStore((state) => state.push);
 
-  const [toolStatus, setToolStatus] = useState<BinaryToolStatus | null>(null);
+  const [toolStatus, setToolStatus] = useState<BinaryScannersStatus | null>(null);
+  const [useGrype, setUseGrype] = useState(true);
   const [checkingTool, setCheckingTool] = useState(true);
   const [path, setPath] = useState(activeProject ?? "");
   const [severity, setSeverity] = useState<SeverityFilter>("all");
@@ -54,12 +55,19 @@ export function BinaryScanPage(): JSX.Element {
       // Failing to *ask* is a different problem from the tool being absent, and
       // saying so keeps a backend fault from reading as "you forgot to install it".
       if (mountedRef.current) {
-        setToolStatus({
+        const unavailable = {
           available: false,
           program: null,
           version: null,
           source: null,
-          message: `Could not check whether cve-bin-tool is installed: ${String(cause)}`,
+          message: `Could not check which scanners are installed: ${String(cause)}`,
+        };
+        setToolStatus({
+          cveBinTool: unavailable,
+          grype: unavailable,
+          docker: unavailable,
+          runtime: "auto",
+          canScan: false,
         });
       }
     } finally {
@@ -106,11 +114,14 @@ export function BinaryScanPage(): JSX.Element {
     setPageStatus("binary-scan", { label: "Scanning binaries", tone: "running" });
 
     try {
-      const scan = await api.scanBinaries({
-        path,
-        severity: severity === "all" ? null : severity,
-        offline,
-      });
+      const scan = await api.scanBinaries(
+        {
+          path,
+          severity: severity === "all" ? null : severity,
+          offline,
+        },
+        useGrype && (toolStatus?.grype.available ?? false),
+      );
       if (!mountedRef.current) return;
       setResult(scan);
       setPageStatus("binary-scan", {
@@ -165,6 +176,30 @@ export function BinaryScanPage(): JSX.Element {
 
   const components = filterComponents(result?.components ?? [], filter);
 
+  const grypeReady = toolStatus?.grype.available ?? false;
+  const cveBinToolReady =
+    toolStatus?.runtime === "docker"
+      ? (toolStatus?.docker.available ?? false)
+      : (toolStatus?.cveBinTool.available ?? false) ||
+        (toolStatus?.runtime === "auto" && (toolStatus?.docker.available ?? false));
+
+  const activeScanners = [
+    cveBinToolReady && {
+      name: "cve-bin-tool",
+      version: toolStatus?.cveBinTool.version ?? null,
+      detail:
+        toolStatus?.runtime === "docker"
+          ? "running in the container runtime"
+          : (toolStatus?.cveBinTool.program ?? ""),
+    },
+    grypeReady &&
+      useGrype && {
+        name: "grype",
+        version: toolStatus?.grype.version ?? null,
+        detail: toolStatus?.grype.program ?? "",
+      },
+  ].filter(Boolean) as { name: string; version: string | null; detail: string }[];
+
   if (checkingTool && !toolStatus) {
     return (
       <ToolPage title="Binary Scan" description="Detect vulnerable components inside compiled binaries, firmware images, and archives.">
@@ -173,7 +208,7 @@ export function BinaryScanPage(): JSX.Element {
     );
   }
 
-  if (!toolStatus?.available) {
+  if (!toolStatus?.canScan) {
     return (
       <ToolPage
         title="Binary Scan"
@@ -181,10 +216,10 @@ export function BinaryScanPage(): JSX.Element {
       >
         <InlineState
           tone="unavailable"
-          title="cve-bin-tool is not available"
+          title="No binary scanner is available"
           description={
-            toolStatus?.message ??
-            "oxAudit runs a copy of cve-bin-tool that you install, rather than bundling it."
+            toolStatus?.cveBinTool.message ??
+            "oxAudit runs scanners you install, rather than bundling them."
           }
           action={
             <Button type="button" onClick={() => void checkTool()} variant="outline" size="md">
@@ -194,19 +229,40 @@ export function BinaryScanPage(): JSX.Element {
           }
         />
         <section className="rounded-sm border border-border bg-surface-secondary p-4">
-          <h2 className="text-[13px] font-semibold text-text-primary">Installing it</h2>
+          <h2 className="text-[13px] font-semibold text-text-primary">Installing a scanner</h2>
           <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
-            cve-bin-tool is a separate GPL-3.0 program from the OpenSSF. oxAudit invokes it
-            rather than bundling it, so it stays under its own licence and you control which
-            copy runs.
+            Either works on its own, and they see different things — grype reads package
+            metadata and reports fix versions; cve-bin-tool&rsquo;s ~450 checkers find
+            components statically linked into stripped binaries. Running both covers more
+            than either.
           </p>
-          <pre className="selectable mt-3 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
-            pipx install cve-bin-tool
-          </pre>
-          <p className="mt-2 text-[12px] leading-relaxed text-text-muted">
-            If it is not on your PATH, set an explicit path in Settings. The first scan
-            downloads a CVE database and can take several minutes.
-          </p>
+          <dl className="mt-3 space-y-3">
+            <div>
+              <dt className="text-[12px] font-medium text-text-primary">
+                grype — Apache-2.0, one static binary
+              </dt>
+              <dd>
+                <pre className="selectable mt-1 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
+                  brew install grype
+                </pre>
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[12px] font-medium text-text-primary">
+                cve-bin-tool — GPL-3.0, needs Python
+              </dt>
+              <dd>
+                <pre className="selectable mt-1 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
+                  pipx install cve-bin-tool
+                </pre>
+                <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+                  Its CVE bootstrap is broken upstream; the Docker runtime carries the fix.
+                  Choose it in Settings, and build the image with{" "}
+                  <code className="font-mono">docker build -t oxaudit/cve-bin-tool:3.4 docker/cve-bin-tool</code>.
+                </p>
+              </dd>
+            </div>
+          </dl>
         </section>
       </ToolPage>
     );
@@ -217,9 +273,17 @@ export function BinaryScanPage(): JSX.Element {
       title="Binary Scan"
       description="Detect vulnerable components inside compiled binaries, firmware images, and archives."
       context={
-        <span className="font-mono text-[11px] text-text-muted">
-          {toolStatus.program}
-          {toolStatus.version ? ` · v${toolStatus.version}` : ""}
+        <span className="flex flex-wrap items-center gap-1.5">
+          {activeScanners.map((scanner) => (
+            <span
+              key={scanner.name}
+              title={scanner.detail}
+              className="inline-flex items-center gap-1 rounded-full border border-accent-glow bg-accent-subtle px-2 py-0.5 font-mono text-[10px] text-accent"
+            >
+              {scanner.name}
+              {scanner.version ? ` ${scanner.version}` : ""}
+            </span>
+          ))}
         </span>
       }
     >
@@ -265,6 +329,16 @@ export function BinaryScanPage(): JSX.Element {
               onChange={setOffline}
               disabled={running}
               label="Offline (use the downloaded database only)"
+            />
+            <Switch
+              checked={useGrype && grypeReady}
+              onChange={setUseGrype}
+              disabled={running || !grypeReady}
+              label={
+                grypeReady
+                  ? "Also run grype"
+                  : "Also run grype (not installed)"
+              }
             />
           </div>
         }
@@ -336,6 +410,7 @@ export function BinaryScanPage(): JSX.Element {
             }
             actions={
               <span className="font-mono text-[11px] tabular-nums text-text-muted">
+                {result.scanners.length > 0 ? `${result.scanners.join(" + ")} · ` : ""}
                 {(result.durationMs / 1000).toFixed(1)}s
                 {result.databaseLastUpdated ? ` · db ${result.databaseLastUpdated}` : ""}
               </span>
@@ -371,6 +446,11 @@ export function BinaryScanPage(): JSX.Element {
                     </span>
                     <span className="text-[11px] text-text-muted">{component.vendor}</span>
                     <span className="ml-auto flex items-center gap-2">
+                      {component.detectedBy.length > 0 && (
+                        <span className="hidden font-mono text-[10px] text-text-muted sm:inline">
+                          {component.detectedBy.join(" + ")}
+                        </span>
+                      )}
                       <SeverityBadge severity={highestSeverity(component)} />
                       <span className="font-mono text-[11px] tabular-nums text-text-muted">
                         {component.vulnerabilities.length} CVE
@@ -399,6 +479,14 @@ export function BinaryScanPage(): JSX.Element {
                         {vulnerability.score !== null && (
                           <span className="font-mono text-[10px] tabular-nums text-text-muted">
                             {vulnerability.score.toFixed(1)}
+                          </span>
+                        )}
+                        {vulnerability.fixedIn && (
+                          <span
+                            title={`Fixed in ${vulnerability.fixedIn}`}
+                            className="font-mono text-[10px] text-success"
+                          >
+                            →{vulnerability.fixedIn}
                           </span>
                         )}
                       </li>

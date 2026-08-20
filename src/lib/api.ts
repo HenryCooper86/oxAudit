@@ -17,7 +17,7 @@ import type {
   StoredMessage,
   BinaryScanRequest,
   BinaryScanResult,
-  BinaryToolStatus,
+  BinaryScannersStatus,
   StreamStarted,
   TodoItem,
   UsageSummary,
@@ -28,13 +28,12 @@ export const api = {
     invoke<ScanResult>("scan_project", { options }),
   cancelScan: () => invoke<void>("cancel_scan"),
   /** Whether a usable cve-bin-tool is installed, and which copy we would run. */
-  binaryToolStatus: () => invoke<BinaryToolStatus>("binary_tool_status"),
-  scanBinaries: (request: BinaryScanRequest) =>
-    invoke<BinaryScanResult>("scan_binaries", { request }),
+  binaryToolStatus: () => invoke<BinaryScannersStatus>("binary_tool_status"),
+  scanBinaries: (request: BinaryScanRequest, useGrype: boolean) =>
+    invoke<BinaryScanResult>("scan_binaries", { request, useGrype }),
   cancelBinaryScan: () => invoke<void>("cancel_binary_scan"),
   /** Force `--update now`; the only escape from cve-bin-tool's stale-cache trap. */
-  refreshBinaryDatabase: () =>
-    invoke<BinaryScanResult>("refresh_binary_database"),
+  refreshBinaryDatabase: () => invoke<void>("refresh_binary_database"),
   openScanFinding: (root: string, relativePath: string) =>
     invoke<void>("open_scan_finding", { root, relativePath }),
   scanDependencies: (path: string) =>
