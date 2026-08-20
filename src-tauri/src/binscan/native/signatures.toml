@@ -780,3 +780,58 @@ filename_patterns = [
 contains = ['Failed to initialize xtables', 'cannot have ! before']
 version_patterns = []
 aliases = ["iptables", "ip6tables", "libxtables12", "xtables"]
+
+# --- OpenWrt's own userspace ------------------------------------------------
+#
+# ubus, uci, netifd and odhcp6c are in essentially every OpenWrt-derived image,
+# which covers a large share of consumer routers and a good deal of vendor
+# firmware built on it. None of them embeds a version, and that is not an
+# oversight in the build: OpenWrt versions these as dated git snapshots
+# (`2021-06-30-4fc532c8`), so there is no release number to embed. Identity
+# only, therefore — and identity is the useful part here anyway.
+#
+# NVD registers a CPE for none of them except uci, which appears as
+# `openwrt:libuci` with a single entry and no CVEs at this version. Checked
+# against the CPE dictionary: `ubus`, `netifd`, `odhcp6c` and `libubox` all
+# return zero application CPEs. A lookup is never attempted regardless, because
+# a component with no version produces no query.
+#
+# Worth recording separately: OpenWrt itself *is* in NVD, as
+# `cpe:2.3:o:openwrt:openwrt`, with 10 CVEs at 21.02.7 — but under the `o`
+# (operating system) part, which `enrich::cpe_match_string` does not build.
+
+# ubus event names, which are data. Everything else ubus exports is a `ubus_*`
+# symbol, present in anything that links it.
+[[signature]]
+vendor = "openwrt"
+product = "ubus"
+filename_patterns = ['^ubusd$', '^ubus$', '^libubus\.so']
+contains = ['ubus\.object\.add', 'ubus\.object\.remove', 'ubus\.acl\.sequence']
+version_patterns = []
+aliases = ["ubus", "ubusd", "libubus", "libubus20210630"]
+
+# uci's aligned command list, from its usage text. `openwrt:libuci` is the
+# registered CPE spelling, so that is the product; `uci` is an alias.
+[[signature]]
+vendor = "openwrt"
+product = "libuci"
+filename_patterns = ['^uci$', '^libuci\.so']
+contains = ['commit +\[<config>\]', 'changes +\[<config>\]', 'export +\[<config>\]']
+version_patterns = []
+aliases = ["uci", "libuci", "libuci20130104"]
+
+[[signature]]
+vendor = "openwrt"
+product = "netifd"
+filename_patterns = ['^netifd$']
+contains = ["external device handler", "devicetype '%s' from file '%s'"]
+version_patterns = []
+aliases = ["netifd"]
+
+[[signature]]
+vendor = "openwrt"
+product = "odhcp6c"
+filename_patterns = ['^odhcp6c$']
+contains = ['Usage: odhcp6c \[options\] <interface>', 'odhcp6c\.%s\.pid']
+version_patterns = []
+aliases = ["odhcp6c"]
