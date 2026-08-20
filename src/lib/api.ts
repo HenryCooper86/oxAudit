@@ -15,6 +15,9 @@ import type {
   ScanResult,
   SessionInfo,
   StoredMessage,
+  BinaryScanRequest,
+  BinaryScanResult,
+  BinaryToolStatus,
   StreamStarted,
   TodoItem,
   UsageSummary,
@@ -24,6 +27,11 @@ export const api = {
   scanProject: (options: ScanOptions) =>
     invoke<ScanResult>("scan_project", { options }),
   cancelScan: () => invoke<void>("cancel_scan"),
+  /** Whether a usable cve-bin-tool is installed, and which copy we would run. */
+  binaryToolStatus: () => invoke<BinaryToolStatus>("binary_tool_status"),
+  scanBinaries: (request: BinaryScanRequest) =>
+    invoke<BinaryScanResult>("scan_binaries", { request }),
+  cancelBinaryScan: () => invoke<void>("cancel_binary_scan"),
   openScanFinding: (root: string, relativePath: string) =>
     invoke<void>("open_scan_finding", { root, relativePath }),
   scanDependencies: (path: string) =>

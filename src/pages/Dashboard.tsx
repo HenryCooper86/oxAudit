@@ -1,4 +1,4 @@
-import { Bot, Boxes, Bug, FileSearch } from "lucide-react";
+import { Binary, Bot, Boxes, Bug, FileSearch } from "lucide-react";
 import { ToolLaunchCard } from "../components/workbench/ToolLaunchCard";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { fmtDate } from "../lib/format";
@@ -7,6 +7,7 @@ import { useAppStore } from "../lib/stores";
 const tools = [
   ["Scanning", "Source Scan", "Inspect code for dangerous patterns, secrets, and risky APIs.", "Start source scan", "source-scan"],
   ["Scanning", "Dependency Scan", "Check pinned packages against the OSV advisory database.", "Check dependencies", "deps-scan"],
+  ["Scanning", "Binary Scan", "Find vulnerable components bundled inside binaries and firmware.", "Scan a binary", "binary-scan"],
   ["Research", "CVE Research", "Search NVD and OSV without requiring an active project.", "Research vulnerabilities", "cve-research"],
   ["Research", "AI Assistant", "Ask security questions with optional project or finding context.", "Open assistant", "assistant"],
 ] as const;
@@ -14,6 +15,7 @@ const tools = [
 const toolIcons = {
   "source-scan": <FileSearch size={18} strokeWidth={1.8} />,
   "deps-scan": <Boxes size={18} strokeWidth={1.8} />,
+  "binary-scan": <Binary size={18} strokeWidth={1.8} />,
   "cve-research": <Bug size={18} strokeWidth={1.8} />,
   assistant: <Bot size={18} strokeWidth={1.8} />,
 };

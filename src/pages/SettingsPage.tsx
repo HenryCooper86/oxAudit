@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Binary,
   CheckCircle2,
   Coins,
   Database,
@@ -60,6 +61,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   nvdApiKey: null,
   theme: "dark",
+  binaryScannerPath: null,
 };
 
 function cloneSettings(settings: AppSettings): AppSettings {
@@ -605,6 +607,49 @@ export function SettingsPage() {
           </div>
           <p className="mt-3 text-[11px] leading-relaxed text-text-muted">
             Scanning stays on this machine. Keys are stored in the app configuration directory and sent only to the services you configure.
+          </p>
+        </section>
+
+        <section className={sectionCls} aria-labelledby="binary-scanner-title">
+          <h2 id="binary-scanner-title" className={sectionTitleCls}>
+            <Binary size={15} aria-hidden="true" className="text-accent" />
+            Binary Scanning
+          </h2>
+          <p className={sectionDescriptionCls}>
+            Binary and firmware scanning runs{" "}
+            <a
+              href="https://github.com/ossf/cve-bin-tool"
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent underline underline-offset-2"
+            >
+              cve-bin-tool
+            </a>
+            , a separate GPL-3.0 program from the OpenSSF. oxAudit invokes a copy you install
+            rather than bundling it, so it stays under its own licence.
+          </p>
+          <div className="mt-3">
+            <Field
+              label="cve-bin-tool path"
+              htmlFor="binary-scanner-path"
+              hint="Leave empty to find it on PATH, or fall back to `python3 -m cve_bin_tool`."
+            >
+              <Input
+                id="binary-scanner-path"
+                aria-describedby="binary-scanner-path-hint"
+                value={form.binaryScannerPath ?? ""}
+                onChange={(event) =>
+                  update("binaryScannerPath", event.target.value.trim() || null)
+                }
+                placeholder="/opt/homebrew/bin/cve-bin-tool"
+                className="font-mono text-[12px]"
+              />
+            </Field>
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
+            Enabling this adds network calls to cve-bin-tool&rsquo;s own mirror (cveb.in) and
+            the advisory feeds it aggregates, beyond the NVD, OSV and AI endpoints oxAudit
+            contacts on its own.
           </p>
         </section>
 

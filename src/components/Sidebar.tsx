@@ -1,4 +1,5 @@
 import {
+  Binary,
   Bot,
   Boxes,
   Bug,
@@ -28,6 +29,7 @@ const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
     items: [
       { page: "source-scan", label: "Source Scan", icon: FileSearch },
       { page: "deps-scan", label: "Dependencies", icon: Boxes },
+      { page: "binary-scan", label: "Binary Scan", icon: Binary },
     ],
   },
   {

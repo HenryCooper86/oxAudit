@@ -12,6 +12,7 @@ import { useAppStore } from "./lib/stores";
 import { Dashboard } from "./pages/Dashboard";
 import { SourceScanPage } from "./pages/SourceScan";
 import { DepsScanPage } from "./pages/DepsScan";
+import { BinaryScanPage } from "./pages/BinaryScan";
 import { CveResearchPage } from "./pages/CveResearch";
 import { AssistantPage } from "./pages/Assistant";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -25,6 +26,8 @@ function Page() {
       return <SourceScanPage />;
     case "deps-scan":
       return <DepsScanPage />;
+    case "binary-scan":
+      return <BinaryScanPage />;
     case "cve-research":
       return <CveResearchPage />;
     case "assistant":
