@@ -1,30 +1,74 @@
 pub const REDACTED: &str = "[REDACTED]";
 
-pub fn redact_exact_value(text: &str, value: &str) -> String {
+pub fn redact_exact(text: &str, value: &str) -> String {
+    if value.is_empty() {
+        return text.to_owned();
+    }
     text.replace(value, REDACTED)
 }
 
 #[cfg(test)]
 mod tests {
-    const RAW_SECRET_CANARY: &str = "ghp_OXAUDITRAWSECRETCANARYVALUE123456789";
+    use super::redact_exact;
+
+    const CANARY: &str = "oxaudit-secret-canary-7D4zP9q2";
+    const OTHER_CANARY: &str = "oxaudit-second-canary-V8m3K1r6";
+    const PRIVATE_KEY_CANARY: &str = "OXAUDITPRIVATEKEYCANARY7D4zP9q2";
 
     #[test]
-    fn secret_findings_redact_raw_values_before_serialization() {
+    fn redaction_removes_the_exact_secret_from_match_and_context() {
+        let source = format!("const token = \"{CANARY}\";\nuse(token);");
+        let safe = redact_exact(&source, CANARY);
+
+        assert!(!safe.contains(CANARY));
+        assert_eq!(safe, "const token = \"[REDACTED]\";\nuse(token);");
+    }
+
+    #[test]
+    fn redaction_with_an_empty_secret_leaves_text_unchanged() {
+        assert_eq!(redact_exact("safe text", ""), "safe text");
+    }
+
+    #[test]
+    fn every_secret_finding_is_redacted_before_serialization() {
         let directory = tempfile::tempdir().expect("temporary source directory");
         let source_path = directory.path().join("credentials.txt");
         std::fs::write(
             &source_path,
-            format!("token = {RAW_SECRET_CANARY}\\nuse this only for the test"),
+            format!("const token = \"{CANARY}\";\nconst credential = \"{OTHER_CANARY}\";"),
         )
         .expect("secret fixture");
 
-        let finding = crate::scanners::scan_file(directory.path(), &source_path, 64, true, false)
-            .into_iter()
-            .find(|finding| finding.category == "secret")
-            .expect("secret finding");
-        let serialized = serde_json::to_string(&finding).expect("serializable finding");
+        let findings = crate::scanners::scan_file(directory.path(), &source_path, 64, true, false);
+        assert!(!findings.is_empty(), "expected at least one secret finding");
 
-        assert!(!serialized.contains(RAW_SECRET_CANARY));
+        for finding in findings {
+            let serialized = serde_json::to_string(&finding).expect("serializable finding");
+            assert!(!serialized.contains(CANARY));
+            assert!(!serialized.contains(OTHER_CANARY));
+            assert!(serialized.contains("[REDACTED]"));
+        }
+    }
+
+    #[test]
+    fn long_multiline_secret_is_redacted_from_match_and_partial_context() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let source_path = directory.path().join("private.pem");
+        let payload = (0..6)
+            .map(|index| format!("{PRIVATE_KEY_CANARY}{index}{PRIVATE_KEY_CANARY}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = format!("-----BEGIN PRIVATE KEY-----\n{payload}\n-----END PRIVATE KEY-----",);
+        std::fs::write(&source_path, source).expect("private key fixture");
+
+        let findings = crate::scanners::scan_file(directory.path(), &source_path, 64, true, false);
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "private-key")
+            .expect("private-key finding");
+        let serialized = serde_json::to_string(finding).expect("serializable finding");
+
+        assert!(!serialized.contains(PRIVATE_KEY_CANARY));
         assert!(serialized.contains("[REDACTED]"));
     }
 }
