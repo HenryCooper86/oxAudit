@@ -26,6 +26,9 @@ pub struct ScanContext {
     pub scratch_dir: PathBuf,
     pub use_cve_bin_tool: bool,
     pub use_grype: bool,
+    /// oxAudit's own scanner. Unlike the other two it needs nothing installed,
+    /// so it is the one that always has an answer.
+    pub use_native: bool,
 }
 
 /// Which scanner produced an error, so the UI can say so precisely.
@@ -39,6 +42,10 @@ pub struct ScanOutcome {
     pub result: BinaryScanResult,
     /// Scanners that failed. Empty on a fully successful scan.
     pub failures: Vec<ScannerFailure>,
+    /// Things the user should know that are not failures — a rate-limit
+    /// warning, a capped lookup, a source that did not answer. Kept distinct
+    /// from failures so neither gets lost in the other.
+    pub notes: Vec<String>,
 }
 
 /// Run the selected scanners and merge whatever they produced.
@@ -48,11 +55,34 @@ pub async fn run_scan(
     cancel: Arc<AtomicBool>,
     timeout: Duration,
     on_progress: Arc<dyn Fn(String) + Send + Sync>,
+    cve: Option<&crate::cve::CveState>,
 ) -> Result<ScanOutcome, String> {
     let target = resolve_target(&request.path)?;
 
     let mut results: Vec<BinaryScanResult> = Vec::new();
     let mut failures: Vec<ScannerFailure> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+
+    // Native first. It takes under a second and needs nothing installed, so
+    // the user has an answer on screen before either subprocess has started.
+    if context.use_native {
+        on_progress("starting oxAudit native scanner".into());
+        match run_native(&target, cancel.clone(), on_progress.clone(), cve).await {
+            Ok((result, mut native_notes)) => {
+                notes.append(&mut native_notes);
+                results.push(result);
+            }
+            Err(message) => {
+                if message.contains("cancelled") {
+                    return Err(message);
+                }
+                failures.push(ScannerFailure {
+                    scanner: super::native::scan::NATIVE.to_string(),
+                    message,
+                });
+            }
+        }
+    }
 
     if context.use_cve_bin_tool {
         on_progress("starting cve-bin-tool".into());
@@ -106,7 +136,48 @@ pub async fn run_scan(
     Ok(ScanOutcome {
         result: merge_results(results),
         failures,
+        notes,
     })
+}
+
+/// Detect components natively, then ask NVD and OSV about them.
+///
+/// Enrichment failing is a note rather than an error: the component inventory
+/// is useful on its own, and losing it because an advisory feed was
+/// unreachable would be the wrong trade.
+async fn run_native(
+    target: &Path,
+    cancel: Arc<AtomicBool>,
+    on_progress: Arc<dyn Fn(String) + Send + Sync>,
+    cve: Option<&crate::cve::CveState>,
+) -> Result<(BinaryScanResult, Vec<String>), String> {
+    use super::native::{enrich, scan as native};
+
+    let scanned = native::scan(target, cancel.clone(), on_progress.clone())?;
+    let mut result = scanned.result;
+    let mut notes = Vec::new();
+
+    let Some(cve) = cve else {
+        if !scanned.queries.is_empty() {
+            notes.push(
+                "CVE lookup was skipped because no CVE client is available; components are \
+listed without vulnerabilities."
+                    .to_string(),
+            );
+        }
+        return Ok((result, notes));
+    };
+
+    if !scanned.queries.is_empty() {
+        let enriched =
+            enrich::enrich(cve, &scanned.queries, cancel.clone(), on_progress.clone()).await;
+        // apply() re-tallies the summary, so a de-duplicated CVE is never
+        // counted twice and the headline can never drift from the list.
+        enrich::apply(&mut result, enriched.found);
+        notes.extend(enriched.notes);
+    }
+
+    Ok((result, notes))
 }
 
 async fn run_cve_bin_tool(

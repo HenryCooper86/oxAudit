@@ -675,9 +675,10 @@ pub fn builtins() -> Vec<Tool> {
                     nvd_api_key: settings.nvd_api_key.clone(),
                     scratch_dir,
                     use_cve_bin_tool: true,
-                    // Both scanners see different things, so the agent gets the
-                    // merged view rather than having to choose.
+                    // Every scanner sees different things, so the agent gets
+                    // the merged view rather than having to choose.
                     use_grype: true,
+                    use_native: true,
                 };
 
                 let request = crate::binscan::run::BinaryScanRequest {
@@ -700,6 +701,7 @@ pub fn builtins() -> Vec<Tool> {
                     cancel,
                     std::time::Duration::from_secs(45 * 60),
                     on_progress,
+                    ctx.app.try_state::<crate::cve::CveState>().as_deref(),
                 )
                 .await?;
                 let result = outcome.result;

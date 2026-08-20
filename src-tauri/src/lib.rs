@@ -3,7 +3,7 @@ mod agent;
 pub mod binscan;
 pub mod triage;
 mod commands;
-mod cve;
+pub mod cve;
 mod deps;
 mod fs_utils;
 mod models;
