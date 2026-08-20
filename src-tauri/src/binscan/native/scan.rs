@@ -34,9 +34,6 @@ pub const NATIVE: &str = "oxaudit";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DetectionSource {
-    /// Read out of the binary's code — a version compiled in as a number.
-    /// Weakest, because the code shape it matches is not unique to one library.
-    BytePattern,
     /// Inferred from a string in the binary.
     Content,
     /// Inferred from the file's name.
@@ -50,7 +47,6 @@ impl From<Evidence> for DetectionSource {
         match evidence {
             Evidence::Filename => DetectionSource::Filename,
             Evidence::Content => DetectionSource::Content,
-            Evidence::BytePattern => DetectionSource::BytePattern,
         }
     }
 }
@@ -344,10 +340,6 @@ mod tests {
     fn declared_metadata_outranks_an_inferred_string() {
         assert!(DetectionSource::PackageNote > DetectionSource::Filename);
         assert!(DetectionSource::Filename > DetectionSource::Content);
-        assert!(
-            DetectionSource::Content > DetectionSource::BytePattern,
-            "a characteristic string names the library; a code shape does not"
-        );
     }
 
     #[test]

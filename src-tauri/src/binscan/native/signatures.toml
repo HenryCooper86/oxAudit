@@ -114,13 +114,45 @@ aliases = ["libbz2-1.0", "bzip2"]
 
 # xz CLI: 'xz (XZ Utils) 5.8.1'. liblzma has only XZ_5.x symbol tags, so the
 # shared library is left to the ELF package note.
+#
+# The CLI says `xz (XZ Utils) 5.8.1`; the library says nothing, and carries only
+# `XZ_5.x` symbol tags, which are ABI versions and must never be captured. So
+# liblzma's version comes from LZMA_VERSION_NUMBER in lzma_version_number().
+#
+# One signature, not two: NVD's CPE for both is `tukaani:xz`, so a separate
+# `lzma` product would be a component that never matches a CVE.
 [[signature]]
 vendor = "tukaani"
 product = "xz"
-filename_patterns = []
-contains = ['\(XZ Utils\) [0-9]']
+filename_patterns = ['^liblzma\.so', '^liblzma\.[0-9.]*dylib', '^xz$']
+# The full error message, not the bare symbol name. `lzma_str_to_filters`
+# appears in the dynamic symbol table of anything that links liblzma, which is
+# a different claim from containing it: measured over a 21,000-file tree, the
+# symbol matches 4 files and this message matches 2.
+contains = ['\(XZ Utils\) [0-9]', 'Unsupported flags to lzma_str_to_filters\(\)']
 version_patterns = ['\(XZ Utils\) ([0-9]+\.[0-9]+\.[0-9]+)']
-aliases = ["xz-utils", "liblzma5", "xz"]
+aliases = ["xz-utils", "liblzma5", "liblzma", "lzma", "xz"]
+
+  # x86-64: endbr64; mov eax, 0x2fc290c; ret. Verified against Debian trixie's
+  # liblzma.so.5.8.1 — 2 matches of this idiom, exactly one inside the range.
+  [[signature.byte_patterns]]
+  pattern = "f3 0f 1e fa b8 .. .. .. 0. c3"
+  capture_offset = 5
+  encoding = "u32-le"
+  formula = "decimal-10000000-stability"
+  min = 50000000
+  max = 59999999
+  note = "lzma_version_number, x86-64"
+
+  # AArch64: verified against Homebrew's liblzma.5.dylib — one match.
+  [[signature.byte_patterns]]
+  pattern = ".0 .. .. 52 .0 .. .. 72 c0 03 5f d6"
+  capture_offset = 0
+  encoding = "arm64-movz-movk-imm32"
+  formula = "decimal-10000000-stability"
+  min = 50000000
+  max = 59999999
+  note = "lzma_version_number, AArch64"
 
 # --- transfer and parsing ---------------------------------------------------
 
@@ -266,7 +298,14 @@ version_patterns = ['ICU ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
 vendor = "facebook"
 product = "zstandard"
 filename_patterns = ['^libzstd\.so', '^libzstd\.[0-9.]*dylib']
-contains = []
+# Error messages, present in every build examined. zstd has no version string,
+# but it is not anonymous — these identify it, and the byte pattern below
+# supplies the number.
+contains = [
+  'Frame requires too much memory for decoding',
+  "Restored data doesn't match checksum",
+  'Unsupported frame parameter',
+]
 version_patterns = []
 aliases = ["libzstd", "zstd"]
 
@@ -292,3 +331,70 @@ aliases = ["libzstd", "zstd"]
   min = 10000
   max = 19999
   note = "ZSTD_versionNumber, AArch64 (movz w0, imm16; ret)"
+
+# sqlite3 embeds SQLITE_VERSION_NUMBER (major*1000000 + minor*1000 + patch) in
+# sqlite3_libversion_number(). The library does carry a bare "3.46.1" string,
+# but with nothing adjacent to anchor on — `SQLite format 3` establishes
+# identity and the constant supplies the version.
+#
+# Range: sqlite has been on 3.x since 2004.
+[[signature]]
+vendor = "sqlite"
+# `sqlite`, not `sqlite3`. NVD's CPE product is the former: measured,
+# cpe:2.3:a:sqlite:sqlite:3.46.1 returns 7 CVEs and
+# cpe:2.3:a:sqlite:sqlite3:3.46.1 returns none. Getting this wrong is a silent
+# failure — the scan looks clean rather than broken.
+product = "sqlite"
+filename_patterns = ['^libsqlite3\.so', '^libsqlite3\.[0-9.]*dylib']
+# NOT `SQLite format 3` — that is the database *file* header magic, so it
+# matches every .db in a tree rather than the library. NOT `sqlite3_libversion`
+# either: a symbol name appears in the dynamic symbol table of anything that
+# *links* sqlite, which is a different claim from containing it. Measured over a
+# 21,000-file tree: those two match 11 and 8 files, these match 2.
+contains = ['attempt to write a readonly database', 'SQLITE_TMPDIR', 'no such table: %s']
+version_patterns = []
+aliases = ["libsqlite3-0", "libsqlite3", "sqlite3", "sqlite"]
+
+  # x86-64: endbr64; mov eax, 0x2e7a71; ret. Verified against Debian trixie's
+  # libsqlite3.so.0.8.6 — 10 matches of this idiom in the file, exactly one
+  # inside the range.
+  [[signature.byte_patterns]]
+  pattern = "f3 0f 1e fa b8 .. .. .. 00 c3"
+  capture_offset = 5
+  encoding = "u32-le"
+  formula = "decimal-1000000"
+  min = 3000000
+  max = 3999999
+  note = "sqlite3_libversion_number, x86-64"
+
+  # AArch64: movz w0,#lo / movk w0,#hi,lsl #16 / ret. Verified against
+  # Homebrew's libsqlite3.3.53.3.dylib — one match in the file.
+  [[signature.byte_patterns]]
+  pattern = ".0 .. .. 52 .0 .. .. 72 c0 03 5f d6"
+  capture_offset = 0
+  encoding = "arm64-movz-movk-imm32"
+  formula = "decimal-1000000"
+  min = 3000000
+  max = 3999999
+  note = "sqlite3_libversion_number, AArch64"
+
+# pcre2 gets no byte pattern, deliberately.
+#
+# It has no numeric version constant to capture: there is no
+# `pcre2_version_number()`, only `pcre2_config(PCRE2_CONFIG_VERSION)` copying a
+# string. Measured — the `endbr64; mov eax, imm32; ret` idiom occurs **zero**
+# times in libpcre2-8.so.0.14.0, and the AArch64 movz/movk equivalent zero times
+# in libpcre2-8.0.dylib. There is nothing there to read.
+#
+# What it does have is `10.47 2025-10-21` as its own string, which only needed
+# an anchor. The date suffix is the anchor: a bare `10.47` is meaningless, but
+# a version followed by a release date, in a file already established as pcre2
+# by its verb strings, is not.
+[[signature]]
+vendor = "pcre"
+product = "pcre2"
+filename_patterns = ['^libpcre2-8\.so', '^libpcre2-8\.[0-9.]*dylib', '^libpcre2-16\.so', '^libpcre2-32\.so']
+contains = ['BSR_ANYCRLF\)', 'LIMIT_DEPTH=', '\(\*NUL\)', 'PCRE2_ERROR']
+version_patterns = ['\n(10\.[0-9]+) 20[0-9]{2}-[0-9]{2}-[0-9]{2}\n']
+version_implies_identity = false
+aliases = ["libpcre2-8-0", "libpcre2-8-0t64", "pcre2", "libpcre2-16-0", "libpcre2-32-0"]

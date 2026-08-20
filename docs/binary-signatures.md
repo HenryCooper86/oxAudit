@@ -150,6 +150,29 @@ binary. The technique comes from VulHunt — see `vulhunt-study.md`.
 `0x50..=0x5f`. Masking at nibble granularity is what lets a pattern pin an
 opcode while leaving a register or operand free.
 
+Four libraries use this today, each verified against real binaries of a known
+version on both x86-64 and AArch64:
+
+| Library | Constant | Idiom |
+|---|---|---|
+| zstd | `ZSTD_VERSION_NUMBER` 10507 | `mov eax, imm32; ret` / `movz w0,#imm; ret` |
+| sqlite | `SQLITE_VERSION_NUMBER` 3046001 | `mov eax, imm32; ret` / `movz`+`movk`+`ret` |
+| xz (liblzma) | `LZMA_VERSION_NUMBER` 50080012 | `mov eax, imm32; ret` / `movz`+`movk`+`ret` |
+| — | — | — |
+
+A constant too large for one AArch64 instruction is loaded as
+`movz w0, #lo16` then `movk w0, #hi16, lsl #16`, which is why
+`arm64-movz-movk-imm32` validates both words — shift and destination register
+included — before recombining the halves.
+
+**pcre2 gets no byte pattern, and that is the finding.** It has no numeric
+version constant: there is no `pcre2_version_number()`, only
+`pcre2_config(PCRE2_CONFIG_VERSION)` copying a string. Measured, the
+`endbr64; mov eax, imm32; ret` idiom occurs *zero* times in
+`libpcre2-8.so.0.14.0` and the AArch64 equivalent zero times in
+`libpcre2-8.0.dylib`. What it has is `10.47 2025-10-21` as its own string,
+which only needed an anchor — see the identity rule below.
+
 ### Rules, again learned by getting it wrong
 
 **Declare a plausible range, always.** The field is required. On a real
@@ -167,9 +190,49 @@ prefilter, exact confirmation.
 **One pattern per architecture.** The same source line compiles to unrelated
 bytes on x86-64 and AArch64. There is no portable pattern; write both.
 
-**Byte-pattern evidence ranks lowest.** Below a characteristic string, which is
-below a filename, which is below a declared package note. A code shape does not
-name a library; it only suggests one.
+**A byte pattern never establishes identity — only a version.** This was the
+expensive one. Bounded to zstd's range and measured on a single libzstd, the
+AArch64 `movz w0,#imm; ret` pattern looked precise. Run over a 21,000-file tree
+it produced **282 components instead of 34**, about forty of them phantom zstd
+versions, because "return a small constant" is an ordinary code shape in
+ordinary binaries. Ranking the evidence lowest was not enough; the pattern must
+not be able to claim a component at all. Identity comes from a `contains` string
+or a filename, and the byte pattern supplies the number once it has. A signature
+with byte patterns and nothing else is refused at compile time.
+
+zstd is still found in stripped firmware because it is not anonymous: its error
+messages (`Frame requires too much memory for decoding`) identify it perfectly
+well. It simply never states its version.
+
+**A version pattern that names nothing cannot claim the component either.**
+Same rule, string side. pcre2's `10.47 2025-10-21` says nothing about pcre2 and
+would attribute any date-suffixed number to it, so its signature sets
+`version_implies_identity = false` and earns identity from its verb strings
+(`BSR_ANYCRLF)`, `LIMIT_DEPTH=`). Almost every other signature is fine as-is,
+because `OpenSSL 3.5.6 7 Apr 2026` and `libpng version 1.6.48` name themselves.
+
+**Anchor on the library, not on its data or its callers.** Two ways to get this
+wrong, both measured over the same tree:
+
+- `SQLite format 3` is the *database file* header magic, so it matched 11 files
+  — every `.db` in the tree — rather than the library.
+- `sqlite3_libversion` and `lzma_str_to_filters` are symbol names, which appear
+  in the dynamic symbol table of anything that *links* the library. That is a
+  different claim from containing it.
+
+The replacements — `attempt to write a readonly database`, `SQLITE_TMPDIR`,
+`Unsupported flags to lzma_str_to_filters()` — match 2 files each.
+
+**Verify the CPE identity against NVD before shipping it.** `sqlite3` is the
+obvious product name and it is wrong: `cpe:2.3:a:sqlite:sqlite:3.46.1` returns
+7 CVEs, `cpe:2.3:a:sqlite:sqlite3:3.46.1` returns none. A wrong vendor or
+product is a *silent* failure — the scan reads as clean rather than broken.
+Verified pairs are listed in `VERIFIED_CPE_IDENTITIES` as a tripwire, so
+renaming one fails a test.
+
+For the same reason liblzma and the xz CLI are **one** signature, not two: NVD
+knows both as `tukaani:xz`, so a separate `lzma` product would be a component
+that never matches a CVE.
 
 ### Distribution names are a different vocabulary
 
