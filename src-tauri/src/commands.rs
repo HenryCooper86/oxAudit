@@ -470,10 +470,56 @@ pub async fn scan_dependencies(
             }
         }
     }
+    // Exploitation signal: rank these CVEs by CISA KEV and EPSS, the same way
+    // the binary scanner does. A dependency vuln's CVE is in its id or aliases.
+    let cve_ids: Vec<String> = vulnerabilities
+        .iter()
+        .filter_map(|v| {
+            crate::exploit::cve_among(
+                std::iter::once(v.id.as_str()).chain(v.aliases.iter().map(String::as_str)),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !cve_ids.is_empty() {
+        let _ = app.emit(
+            "deps://progress",
+            serde_json::json!({ "phase": "exploitation-signal", "done": 0, "total": 1 }),
+        );
+        let (kev, epss, _notes) = crate::exploit::fetch(&state.http, &cve_ids).await;
+        for vulnerability in &mut vulnerabilities {
+            // A finding's CVE is whichever of its id/aliases is a CVE.
+            let cve = crate::exploit::cve_among(
+                std::iter::once(vulnerability.id.as_str())
+                    .chain(vulnerability.aliases.iter().map(String::as_str)),
+            );
+            if let Some(cve) = cve {
+                let signal = crate::exploit::combine(&kev, &epss, &cve);
+                vulnerability.known_exploited = signal.known_exploited;
+                vulnerability.ransomware = signal.ransomware;
+                vulnerability.epss = signal.epss;
+                vulnerability.epss_percentile = signal.epss_percentile;
+            }
+        }
+    }
+
+    // Exploited-first, then by EPSS, then by CVSS — the actionable order.
     vulnerabilities.sort_by(|a, b| {
-        let sa = a.cvss_score.unwrap_or(0.0);
-        let sb = b.cvss_score.unwrap_or(0.0);
-        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        b.known_exploited
+            .cmp(&a.known_exploited)
+            .then(
+                b.epss
+                    .unwrap_or(0.0)
+                    .partial_cmp(&a.epss.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(
+                b.cvss_score
+                    .unwrap_or(0.0)
+                    .partial_cmp(&a.cvss_score.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
     });
 
     let result = DependencyScanResult {

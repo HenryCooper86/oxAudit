@@ -108,6 +108,18 @@ pub struct Vulnerability {
     pub details: String,
     pub severity: Option<String>,
     pub cvss_score: Option<f32>,
+    /// EPSS probability of exploitation in the next 30 days, `[0, 1]`.
+    #[serde(default)]
+    pub epss: Option<f64>,
+    /// EPSS percentile against all scored CVEs, `[0, 1]`.
+    #[serde(default)]
+    pub epss_percentile: Option<f64>,
+    /// In CISA's Known Exploited Vulnerabilities catalog.
+    #[serde(default)]
+    pub known_exploited: bool,
+    /// Named in a ransomware campaign, per KEV.
+    #[serde(default)]
+    pub ransomware: bool,
     pub ecosystem: String,
     pub package_name: String,
     pub installed_version: String,

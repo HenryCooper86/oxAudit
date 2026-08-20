@@ -534,11 +534,11 @@ pub async fn enrich(
             cve_ids.len()
         ));
         let (kev, epss, mut signal_notes) =
-            super::super::exploit::fetch(&state.http, &cve_ids).await;
+            crate::exploit::fetch(&state.http, &cve_ids).await;
         notes.append(&mut signal_notes);
         let mut exploited = 0usize;
         for vulnerability in found.values_mut().flatten() {
-            let signal = super::super::exploit::combine(&kev, &epss, &vulnerability.cve_id);
+            let signal = crate::exploit::combine(&kev, &epss, &vulnerability.cve_id);
             vulnerability.known_exploited = signal.known_exploited;
             vulnerability.ransomware = signal.ransomware;
             vulnerability.epss_probability = signal.epss.or(vulnerability.epss_probability);
@@ -656,6 +656,10 @@ mod tests {
             details: String::new(),
             severity: Some("HIGH".into()),
             cvss_score: Some(7.5),
+            epss: None,
+            epss_percentile: None,
+            known_exploited: false,
+            ransomware: false,
             ecosystem: "Debian".into(),
             package_name: "curl".into(),
             installed_version: "7.88.1-10+deb12u5".into(),
