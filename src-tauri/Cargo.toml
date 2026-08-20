@@ -47,6 +47,9 @@ percent-encoding = "2"
 tokio = { version = "1", features = ["time", "rt-multi-thread", "macros", "process", "io-util"] }
 futures = "0.3"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [profile.release]
 lto = true
 strip = true
