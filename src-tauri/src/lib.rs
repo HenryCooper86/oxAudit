@@ -1,5 +1,6 @@
 mod ai;
 mod agent;
+mod binscan;
 mod commands;
 mod cve;
 mod deps;
@@ -50,6 +51,9 @@ pub fn run() {
             commands::cancel_chat,
             commands::steer_chat,
             commands::todo_list,
+            commands::binary_tool_status,
+            commands::scan_binaries,
+            commands::cancel_binary_scan,
             commands::respond_permission,
             commands::respond_interaction,
             commands::set_active_project,
