@@ -590,12 +590,16 @@ fn scan_context(state: &AppState, app: &AppHandle, use_grype: bool) -> Result<cr
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BinaryScannersStatus {
+    /// oxAudit's built-in scanner. Always available — it needs nothing
+    /// installed — which is why `can_scan` is always true.
+    pub native: crate::binscan::detect::BinaryToolStatus,
     pub cve_bin_tool: crate::binscan::detect::BinaryToolStatus,
     pub grype: crate::binscan::detect::BinaryToolStatus,
     pub docker: crate::binscan::detect::BinaryToolStatus,
     /// The configured runtime preference, echoed back.
     pub runtime: String,
-    /// Whether a scan can run at all with the current selection.
+    /// Whether a scan can run at all. Always true now that the native scanner
+    /// is built in; kept in the payload so the UI need not special-case it.
     pub can_scan: bool,
 }
 
@@ -631,8 +635,17 @@ pub async fn binary_tool_status(
         crate::binscan::runtime::Runtime::Auto => cve_bin_tool.available || docker.available,
     };
 
+    // The native scanner is not probed: it is part of the binary and cannot be
+    // absent. `_usable` still feeds the per-tool display of the others.
+    let _ = cve_bin_tool_usable;
+    let native = crate::binscan::detect::BinaryToolStatus::builtin(
+        env!("CARGO_PKG_VERSION"),
+        "Built in — no installation required. Reads component versions from strings, ELF package notes and byte patterns.",
+    );
+
     Ok(BinaryScannersStatus {
-        can_scan: cve_bin_tool_usable || grype.available,
+        can_scan: true,
+        native,
         cve_bin_tool,
         grype,
         docker,
