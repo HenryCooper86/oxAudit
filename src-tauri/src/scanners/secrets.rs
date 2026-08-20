@@ -467,18 +467,17 @@ pub fn is_placeholder(value: &str) -> bool {
 }
 
 /// A single secret hit produced by the engine.
-#[allow(dead_code)]
-pub struct SecretHit {
-    pub rule_index: usize,
-    pub offset: usize,
-    pub match_text: String,
-    pub secret_value: String,
-    pub entropy: f32,
+pub(super) struct SecretHit {
+    pub(super) rule_index: usize,
+    pub(super) offset: usize,
+    pub(super) match_text: String,
+    pub(super) secret_value: String,
+    pub(super) entropy: f32,
 }
 
 /// Run all secret rules against a whole file's content.
 /// Byte offsets are relative to `content`; the scanner maps them to line numbers.
-pub fn scan_content(content: &str) -> Vec<SecretHit> {
+pub(super) fn scan_content(content: &str) -> Vec<SecretHit> {
     let mut hits = Vec::new();
     for (i, rule) in SECRET_RULES.iter().enumerate() {
         for caps in rule.regex.captures_iter(content) {
@@ -519,7 +518,7 @@ pub fn scan_content(content: &str) -> Vec<SecretHit> {
             hits.push(SecretHit {
                 rule_index: i,
                 offset: off,
-                match_text: truncate(whole, 240),
+                match_text: whole.to_string(),
                 secret_value: secret.to_string(),
                 entropy: e,
             });

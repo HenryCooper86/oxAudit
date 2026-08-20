@@ -327,7 +327,8 @@ pub async fn scan_project(
                 max_file_size_kb,
                 scan_secrets,
                 scan_vulns,
-            );
+            )
+            .findings;
             let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
             if done % 25 == 0 || done == total {
                 let _ = app.emit(
