@@ -42,7 +42,7 @@ impl CveState {
     ///
     /// A failed fetch yields an empty set, never an error: KEV is enrichment,
     /// and a CVE lookup must not fail because CISA's feed was briefly down.
-    async fn kev_set(&self) -> crate::exploit::KevSet {
+    pub(crate) async fn kev_set(&self) -> crate::exploit::KevSet {
         const KEV_TTL: Duration = Duration::from_secs(60 * 60);
         if let Some((fetched, set)) = self.kev.lock().unwrap().as_ref() {
             if fetched.elapsed() < KEV_TTL {

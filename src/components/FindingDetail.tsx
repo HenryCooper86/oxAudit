@@ -50,8 +50,27 @@ export function FindingDetail({
               {finding.category === "secret" ? "Secret" : "Vulnerability"}
             </span>
             {finding.cwe && (
-              <span className="rounded-sm border border-border bg-surface-tertiary px-1.5 py-0.5 font-mono text-[11px] text-text-muted">
+              <span
+                title={
+                  finding.cweExploited
+                    ? `${finding.cwe} is actively exploited in the wild — ${finding.cweExploitedCount} CVE(s) in CISA KEV share this weakness class`
+                    : finding.cwe
+                }
+                className={`rounded-sm border px-1.5 py-0.5 font-mono text-[11px] ${
+                  finding.cweExploited
+                    ? "border-sev-critical-border bg-sev-critical-subtle text-sev-critical"
+                    : "border-border bg-surface-tertiary text-text-muted"
+                }`}
+              >
                 {finding.cwe}
+              </span>
+            )}
+            {finding.cweExploited && (
+              <span
+                title={`${finding.cweExploitedCount} actively-exploited CVE(s) in CISA KEV share this weakness class`}
+                className="inline-flex items-center rounded-full bg-sev-critical px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-white"
+              >
+                Exploited class · KEV
               </span>
             )}
           </div>

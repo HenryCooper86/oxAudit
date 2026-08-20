@@ -71,6 +71,16 @@ pub struct Finding {
     pub context: String,
     pub language: String,
     pub cwe: Option<String>,
+    /// This finding's weakness class (CWE) is represented in CISA's Known
+    /// Exploited Vulnerabilities catalog — attackers are actively exploiting
+    /// this *kind* of bug in the wild. A source finding has no CVE, so this is
+    /// a class-level signal, not a per-finding one. EPSS, being CVE-keyed, does
+    /// not apply.
+    #[serde(default)]
+    pub cwe_exploited: bool,
+    /// How many exploited CVEs share this finding's CWE.
+    #[serde(default)]
+    pub cwe_exploited_count: usize,
     pub recommendation: String,
     /// Shannon entropy of the matched secret value (secrets only)
     pub entropy: Option<f32>,
