@@ -109,9 +109,9 @@ merge into one row today.
 
 ## 5. What this cannot do
 
-- **Coverage is 22 signatures, not 365.** They are the libraries that dominate
-  firmware findings, and the package note covers much of the rest on any
-  distribution-built target. A vendor-built stripped binary of something
+- **Coverage is 40 signatures, not 365.** They are the components that dominate
+  firmware findings (see §7), and the package note covers much of the rest on
+  any distribution-built target. A vendor-built stripped binary of something
   uncovered will be missed. Extending coverage is mechanical: run the harness
   against a corpus containing it.
 - **Signatures are build-dependent.** cve-bin-tool misses zstd on Homebrew
@@ -242,3 +242,66 @@ package note and by byte pattern becomes two rows that never merge, and the
 note-derived one can never be looked up in NVD, which needs a CPE vendor a
 package note does not carry. OSV keeps being asked under the distribution's own
 name, because that is what its distribution ecosystems are keyed on.
+
+
+## 7. Firmware coverage
+
+The set is chosen for what an embedded Linux image is actually made of, not for
+what a developer laptop has. Derived from a Debian trixie image with 41
+firmware-relevant packages installed, so dpkg's own record is the ground truth,
+and each version below is asserted in `FIRMWARE_GROUND_TRUTH`.
+
+| Component | Anchor | CPE |
+|---|---|---|
+| dropbear | `SSH-2.0-dropbear_2025.89` | `dropbear_ssh_project:dropbear_ssh` |
+| dnsmasq | `dnsmasq-2.91` | `thekelleys:dnsmasq` |
+| lighttpd | `lighttpd/1.4.79 (ssl) - a light and fast webserver` | `lighttpd:lighttpd` |
+| wpa_supplicant | `wpa_supplicant v2.10` | `w1.fi:wpa_supplicant` |
+| hostapd | `hostapd_cli v2.10` | `w1.fi:hostapd` |
+| OpenSSH | `OpenSSH_10.0p2 Debian-…` | `openbsd:openssh` |
+| u-boot | `U-Boot 2025.01-3 (Apr 08 2025 …)` | `denx:u-boot` |
+| net-snmp | `net-snmp-5.9.4` | `net-snmp:net-snmp` |
+| libssh | `libssh_0.11.5` | `libssh:libssh` |
+| strongSwan | `strongSwan 6.0.1,` | `strongswan:strongswan` |
+| libpcap | `libpcap version 1.10.5` | `tcpdump:libpcap` |
+| Lua | `Lua 5.4.7  Copyright … PUC-Rio` | `lua:lua` |
+| OpenVPN | `OpenVPN 2.6.14 x86_64-pc-linux-gnu […]` | `openvpn:openvpn` |
+| avahi | `STATUS=%s 0.8 starting up.` | `avahi:avahi` |
+| libjpeg-turbo | `libjpeg-turbo version 2.1.5` | `libjpeg-turbo:libjpeg-turbo` |
+
+Every CPE was resolved against NVD's **CPE dictionary** (`/rest/json/cpes/2.0`)
+rather than guessed, then confirmed to return CVEs for a real version. Several
+were not what they look like: ncurses is `invisible-island:ncurses`, not
+`gnu:ncurses`; hostapd is `w1.fi` and NVD also carries a typo'd `w1.f1`.
+
+u-boot matters beyond its CVE count: its banner lives in a raw image with no
+executable header, which is why the file-type gate scans headerless binary data
+rather than only recognized formats.
+
+### Three more false-positive traps, all measured
+
+**sshd carries a bug-compatibility list.** `OpenSSH_3.*`, `OpenSSH_6.6.1*`,
+`OpenSSH_7.0*,OpenSSH_7.1*` and more are patterns for negotiating around old
+peers. A signature matching `OpenSSH_<version>` reports a router as running five
+OpenSSH releases at once. Requiring the portable `pN` suffix picks the real
+banner and leaves the list alone; every portable release carries it.
+
+**"OpenVPN 2.6.0 or higher)"** is a requirement the binary states, not a version
+it is — the same shape as OpenSSL's "3.0.0 and newer" prose. Requiring the
+platform triple that follows a real build banner fixes it.
+
+**`avahi-daemon` is a service name, not a binary marker.** It appears in systemd
+units, in `/etc/passwd`, and in anything that names the service: 24 files across
+the corpus. The daemon's own `STATUS=%s … starting up.` banner matches one.
+
+### Deliberately not covered, and why
+
+- **libupnp** — its embedded string is `Portable SDK for UPnP devices/17.2.0`,
+  which is the *SDK/soname* version. Upstream is 1.14.20. Capturing it would
+  report a version that matches no CVE, which is worse than reporting nothing.
+- **libtiff, ncurses** — carry only ELF symbol-version tags (`LIBTIFF_4.0`,
+  `NCURSES6_TIC_5.0.19991023`). See rule 1.
+- **freetype, nghttp2, c-ares, readline, nettle, libwebsockets, libmicrohttpd,
+  jansson, mbedtls, chrony, mosquitto** — no version string at all in the builds
+  examined. These need byte patterns against their numeric version constants,
+  which is the obvious next batch.

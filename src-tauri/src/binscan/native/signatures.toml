@@ -398,3 +398,157 @@ contains = ['BSR_ANYCRLF\)', 'LIMIT_DEPTH=', '\(\*NUL\)', 'PCRE2_ERROR']
 version_patterns = ['\n(10\.[0-9]+) 20[0-9]{2}-[0-9]{2}-[0-9]{2}\n']
 version_implies_identity = false
 aliases = ["libpcre2-8-0", "libpcre2-8-0t64", "pcre2", "libpcre2-16-0", "libpcre2-32-0"]
+
+# --- firmware staples -------------------------------------------------------
+#
+# Every signature below was derived from a Debian trixie binary whose version
+# dpkg recorded, via tools/derive-signatures.py. The version each one reads is
+# checked against that record in the tests.
+
+# dropbear is the SSH server in most consumer routers. Its banner is the
+# protocol identification string it sends on every connection.
+[[signature]]
+vendor = "dropbear_ssh_project"
+product = "dropbear_ssh"
+filename_patterns = ['^dropbear$', '^dropbearmulti$', '^dropbearconvert$']
+contains = ['SSH-2\.0-dropbear']
+version_patterns = ['SSH-2\.0-dropbear[_ ]?([0-9][0-9a-z.]*)']
+aliases = ["dropbear", "dropbear-bin", "dropbear_ssh"]
+
+# dnsmasq: DNS/DHCP in almost every router. `dnsmasq-2.91` is its version
+# banner.
+[[signature]]
+vendor = "thekelleys"
+product = "dnsmasq"
+filename_patterns = ['^dnsmasq$']
+contains = ['dnsmasq-[0-9]', 'dnsmasq: ']
+version_patterns = ['dnsmasq-([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+aliases = ["dnsmasq", "dnsmasq-base"]
+
+[[signature]]
+vendor = "lighttpd"
+product = "lighttpd"
+filename_patterns = ['^lighttpd$']
+contains = ['a light and fast webserver', 'lighttpd/[0-9]']
+version_patterns = ['lighttpd/([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["lighttpd"]
+
+# wpa_supplicant and hostapd ship together and share a version. hostapd's own
+# daemon prints it through `hostapd v%s`, so the literal only appears in
+# hostapd_cli — which firmware ships alongside it.
+[[signature]]
+vendor = "w1.fi"
+product = "wpa_supplicant"
+filename_patterns = ['^wpa_supplicant$']
+contains = ['wpa_supplicant v[0-9]']
+version_patterns = ['wpa_supplicant v([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+aliases = ["wpasupplicant", "wpa_supplicant"]
+
+[[signature]]
+vendor = "w1.fi"
+product = "hostapd"
+filename_patterns = ['^hostapd$', '^hostapd_cli$']
+contains = ['hostapd_cli v[0-9]', 'User space daemon for IEEE 802\.11 AP']
+version_patterns = ['hostapd_cli v([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+aliases = ["hostapd"]
+
+# OpenSSH. The version must be anchored past the bug-compatibility patterns
+# sshd carries for old peers — `OpenSSH_6.6.1*`, `OpenSSH_7.4*`,
+# `OpenSSH_6.5*,OpenSSH_6.6*`. Requiring the portable `pN` suffix picks the
+# real banner (`OpenSSH_10.0p2 Debian-7+deb13u4`) and leaves the compat list
+# alone; every portable release carries it.
+[[signature]]
+vendor = "openbsd"
+product = "openssh"
+filename_patterns = ['^sshd$', '^ssh$', '^dropbearmulti$']
+contains = ['OpenSSH_[0-9]']
+version_patterns = ['OpenSSH_([0-9]+\.[0-9]+p[0-9]+)']
+aliases = ["openssh", "openssh-server", "openssh-client", "openssh-sftp-server"]
+
+[[signature]]
+vendor = "net-snmp"
+product = "net-snmp"
+filename_patterns = ['^snmpd$', '^libnetsnmp\.so', '^libnetsnmpmibs\.so']
+contains = ['net-snmp-[0-9]']
+version_patterns = ['net-snmp-([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+aliases = ["net-snmp", "snmpd", "libsnmp40"]
+
+[[signature]]
+vendor = "libssh"
+product = "libssh"
+filename_patterns = ['^libssh\.so', '^libssh\.[0-9.]*dylib']
+contains = ['libssh_[0-9]']
+version_patterns = ['libssh_([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libssh-4", "libssh"]
+
+[[signature]]
+vendor = "strongswan"
+product = "strongswan"
+filename_patterns = ['^charon$', '^charon-systemd$', '^libcharon\.so']
+contains = ['strongSwan [0-9]']
+version_patterns = ['strongSwan ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["strongswan", "strongswan-libcharon", "libstrongswan"]
+
+[[signature]]
+vendor = "tcpdump"
+product = "libpcap"
+filename_patterns = ['^libpcap\.so', '^libpcap\.[0-9.]*dylib']
+contains = ['libpcap version [0-9]']
+version_patterns = ['libpcap version ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+aliases = ["libpcap0.8", "libpcap0.8t64", "libpcap"]
+
+[[signature]]
+vendor = "lua"
+product = "lua"
+filename_patterns = ['^lua[0-9.]*$', '^liblua']
+contains = ['Copyright \(C\) [0-9-]+ Lua\.org, PUC-Rio']
+version_patterns = ['Lua ([0-9]+\.[0-9]+\.[0-9]+)  Copyright']
+aliases = ["lua5.4", "lua5.3", "lua5.1", "liblua5.4-0", "lua"]
+
+[[signature]]
+vendor = "openvpn"
+product = "openvpn"
+filename_patterns = ['^openvpn$']
+# The platform triple is required, not decorative. Without it the binary's own
+# sentence "OpenVPN 2.6.0 or higher)" — a minimum requirement, not a build —
+# reads as a second installed version. Same class as OpenSSL's "3.0.0 and
+# newer" prose; measured on the same corpus.
+contains = ['OpenVPN [0-9]+\.[0-9]+\.[0-9]+ ']
+version_patterns = ['OpenVPN ([0-9]+\.[0-9]+\.[0-9]+) [a-z0-9_]+-[a-z0-9_.-]+ \[']
+aliases = ["openvpn"]
+
+# avahi's banner is just `avahi 0.8`, which is thin on its own — identity comes
+# from the daemon's status strings instead.
+[[signature]]
+vendor = "avahi"
+product = "avahi"
+filename_patterns = ['^avahi-daemon$', '^libavahi-core\.so']
+# NOT the bare string `avahi-daemon` — that appears in systemd units, in
+# /etc/passwd, and in anything that merely names the service. Measured over the
+# corpus it matches 24 files; this banner matches exactly one, the daemon.
+contains = ['STATUS=%s [0-9]+\.[0-9]+ starting up\.']
+version_patterns = ['\navahi ([0-9]+\.[0-9]+(?:\.[0-9]+)?)\n']
+version_implies_identity = false
+aliases = ["avahi", "avahi-daemon", "libavahi-core7"]
+
+[[signature]]
+vendor = "libjpeg-turbo"
+product = "libjpeg-turbo"
+filename_patterns = ['^libjpeg\.so', '^libturbojpeg\.so']
+contains = ['libjpeg-turbo version']
+version_patterns = ['libjpeg-turbo version ([0-9]+\.[0-9]+\.[0-9]+)']
+aliases = ["libjpeg62-turbo", "libjpeg-turbo", "libjpeg-turbo8"]
+
+# u-boot, the bootloader in most embedded Linux devices. Its banner sits in a
+# raw image with no executable header at all, which is why the file-type gate
+# scans headerless binary data rather than only recognized formats.
+#
+# The capture stops at the upstream `YYYY.MM`: Debian bakes its own patch level
+# into the banner (`U-Boot 2025.01-3`), and NVD is keyed on `2025.01`.
+[[signature]]
+vendor = "denx"
+product = "u-boot"
+filename_patterns = ['^u-boot\.bin$', '^u-boot\.rom$', '^u-boot$', '^uboot\.elf$', '^u-boot\.img$']
+contains = ['U-Boot [0-9]{4}\.[0-9]{2}']
+version_patterns = ['U-Boot ([0-9]{4}\.[0-9]{2})']
+aliases = ["u-boot", "u-boot-tools", "uboot"]
