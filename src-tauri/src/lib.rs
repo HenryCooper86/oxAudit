@@ -54,6 +54,7 @@ pub fn run() {
             commands::binary_tool_status,
             commands::scan_binaries,
             commands::cancel_binary_scan,
+            commands::refresh_binary_database,
             commands::respond_permission,
             commands::respond_interaction,
             commands::set_active_project,
