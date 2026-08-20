@@ -4765,6 +4765,7 @@ dependencies = [
  "toml 0.8.2",
  "uuid",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
