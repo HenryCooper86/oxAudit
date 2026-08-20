@@ -715,7 +715,7 @@ mod tests {
     /// exactly that: `cpe:2.3:a:sqlite:sqlite:3.46.1` returns 7 CVEs and
     /// `cpe:2.3:a:sqlite:sqlite3:3.46.1` returns none. Renaming a product must
     /// fail this test and send whoever did it back to the API.
-    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 29] = [
+    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 37] = [
         ("openssl", "openssl"),
         ("sqlite", "sqlite"),
         ("tukaani", "xz"),
@@ -747,6 +747,14 @@ mod tests {
         ("jansson_project", "jansson"),
         ("wolfssl", "wolfssl"),
         ("netfilter", "iptables"),
+        ("libarchive", "libarchive"),
+        ("libcap_project", "libcap"),
+        ("samba", "ppp"),
+        ("gnu", "libtasn1"),
+        ("freedesktop", "dbus"),
+        ("gmplib", "gmp"),
+        ("openldap", "openldap"),
+        ("e2fsprogs_project", "e2fsprogs"),
     ];
 
     #[test]
@@ -768,7 +776,7 @@ zero CVEs rather than an error"
     /// Every entry was checked end to end against the binary it came from —
     /// this is the record of that, so a later edit to a pattern cannot quietly
     /// stop reading a version that used to work.
-    const FIRMWARE_GROUND_TRUTH: [(&str, &str, &str, &str); 17] = [
+    const FIRMWARE_GROUND_TRUTH: [(&str, &str, &str, &str); 22] = [
         ("dropbear_ssh", "dropbear", "\nSSH-2.0-dropbear_2025.89\n", "2025.89"),
         ("dnsmasq", "dnsmasq", "\ndnsmasq-2.91\n", "2.91"),
         (
@@ -834,6 +842,16 @@ zero CVEs rather than an error"
             "\nwolfSSL_Debugging_ON\nwolfSSL 5.7.2\n",
             "5.7.2",
         ),
+        ("libarchive", "libarchive.so.13", "\nlibarchive 3.7.4\n", "3.7.4"),
+        (
+            "libcap",
+            "libcap.so.2",
+            "\n%s is the shared library version: libcap-2.75.\n",
+            "2.75",
+        ),
+        ("libevent", "libevent-2.1.so.7", "\n%s: %d events finalizing\n2.1.12-stable\n", "2.1.12"),
+        ("libpsl", "libpsl.so.5", "\n0.21.2 (+libidn2/2.3.7)\n", "0.21.2"),
+        ("ppp", "pppd", "\npppd version %s\npppd.so.2.5.2\n", "2.5.2"),
     ];
 
     #[test]
@@ -932,7 +950,7 @@ zero CVEs rather than an error"
 
     /// Components identified by a data string alone, with no version anywhere
     /// in the binary. `(product, identifying string)`.
-    const IDENTITY_ONLY: [(&str, &str); 10] = [
+    const IDENTITY_ONLY: [(&str, &str); 20] = [
         ("freetype", "autofitter"),
         ("readline", "unrecognized history modifier"),
         ("jansson", "%s near end of file"),
@@ -950,6 +968,18 @@ zero CVEs rather than an error"
         ("libuci", "commit    [<config>]"),
         ("netifd", "external device handler"),
         ("odhcp6c", "Usage: odhcp6c [options] <interface>"),
+        ("libtasn1", "LIBTASN1 ERROR: %s"),
+        ("dbus", "D-Bus Message Bus Daemon"),
+        ("gmp", "GNU MP assertion failed"),
+        ("openldap", "Can't contact LDAP server"),
+        ("libtirpc", "rpc_broadcast_exp: uaddr %s"),
+        ("libnftnl", "libnftnl: attribute %d > %d (maximum) assertion fail"),
+        ("json-c", "json-c aborts with error: %s"),
+        ("libidn2", "input A-label is not valid"),
+        ("e2fsprogs", "Journal superblock magic number invalid!"),
+        // libcap also identifies from its version string above; this checks the
+        // versionless data path is not the only one that works — skip a dup.
+        ("libtasn1", "ASN1_MAX_NAME_SIZE"),
     ];
 
     #[test]
