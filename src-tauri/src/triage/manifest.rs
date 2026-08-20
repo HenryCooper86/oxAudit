@@ -99,6 +99,52 @@ impl Manifest {
         &self.ids
     }
 
+    /// Verify that every candidate was persisted exactly once.
+    ///
+    /// This is the same silent-drop guard as [`Self::reconcile`], applied to
+    /// the identifiers read back from persistence before a run is completed.
+    pub fn reconcile_ids<I, S>(&self, observed: I) -> Result<(), ManifestError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let candidates: BTreeSet<&str> = self.ids.iter().map(String::as_str).collect();
+        let mut seen = BTreeSet::new();
+        let mut unsolicited = BTreeSet::new();
+        let mut conflicting = BTreeSet::new();
+
+        for id in observed.into_iter().map(Into::into) {
+            if !candidates.contains(id.as_str()) {
+                unsolicited.insert(id);
+            } else if !seen.insert(id.clone()) {
+                conflicting.insert(id);
+            }
+        }
+
+        if !unsolicited.is_empty() {
+            return Err(ManifestError::Unsolicited(
+                unsolicited.into_iter().collect(),
+            ));
+        }
+        if !conflicting.is_empty() {
+            return Err(ManifestError::ConflictingVerdicts(
+                conflicting.into_iter().collect(),
+            ));
+        }
+
+        let unevaluated: Vec<String> = self
+            .ids
+            .iter()
+            .filter(|id| !seen.contains(*id))
+            .cloned()
+            .collect();
+        if !unevaluated.is_empty() {
+            return Err(ManifestError::Unevaluated(unevaluated));
+        }
+
+        Ok(())
+    }
+
     /// Check the verdicts against the candidates and return them in manifest
     /// order.
     ///
@@ -246,5 +292,30 @@ mod tests {
     fn an_empty_manifest_still_rejects_an_invented_verdict() {
         let manifest = Manifest::new(Vec::<String>::new()).expect("builds");
         assert!(manifest.reconcile(vec![verdict("F-1")]).is_err());
+    }
+
+    #[test]
+    fn observed_ids_must_account_for_every_candidate_exactly_once() {
+        let manifest = Manifest::new(["F-1", "F-2"]).expect("builds");
+
+        assert!(manifest.reconcile_ids(["F-2", "F-1"]).is_ok());
+        assert_eq!(
+            manifest
+                .reconcile_ids(["F-1", "F-99"])
+                .expect_err("must reject unsolicited ids"),
+            ManifestError::Unsolicited(vec!["F-99".into()])
+        );
+        assert_eq!(
+            manifest
+                .reconcile_ids(["F-1", "F-1", "F-2"])
+                .expect_err("must reject duplicate ids"),
+            ManifestError::ConflictingVerdicts(vec!["F-1".into()])
+        );
+        assert_eq!(
+            manifest
+                .reconcile_ids(["F-1"])
+                .expect_err("must reject missing ids"),
+            ManifestError::Unevaluated(vec!["F-2".into()])
+        );
     }
 }
