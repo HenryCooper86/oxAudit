@@ -61,7 +61,7 @@ impl CveState {
         }
     }
 
-    async fn nvd_get(&self, params: &[(&str, String)]) -> Result<Value, String> {
+    pub(crate) async fn nvd_get(&self, params: &[(&str, String)]) -> Result<Value, String> {
         self.throttle().await;
         let mut url = reqwest::Url::parse(NVD_BASE).map_err(|e| e.to_string())?;
         {

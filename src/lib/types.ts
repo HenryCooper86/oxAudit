@@ -207,6 +207,9 @@ export interface BinaryScanSummary {
   high: number;
   medium: number;
   low: number;
+  /// Findings the source rated at nothing; the buckets always sum to
+  /// `vulnerabilities`.
+  unknown: number;
 }
 
 export interface BinaryScanResult {

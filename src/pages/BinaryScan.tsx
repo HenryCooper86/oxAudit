@@ -3,7 +3,7 @@ import { Ban, Binary, Play, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { FolderPicker } from "../components/FolderPicker";
 import { SeverityBadge } from "../components/SeverityBadge";
-import { Button, Select, Switch } from "../components/ui";
+import { Button, SectionLabel, Select, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { TargetBar } from "../components/workbench/TargetBar";
@@ -33,6 +33,9 @@ export function BinaryScanPage(): JSX.Element {
   const [offline, setOffline] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string>("");
+  // Caveats that are not failures — a rate-limited or capped CVE lookup means
+  // "fewer findings than exist", which looks exactly like "clean" unless said.
+  const [notes, setNotes] = useState<string[]>([]);
   const [result, setResult] = useState<BinaryScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<SeverityFilter>("all");
@@ -97,6 +100,24 @@ export function BinaryScanPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<string>("binscan://note", ({ payload }) => {
+      const note = String(payload);
+      // De-duplicated: one note per distinct message, however many sources
+      // raised it.
+      if (!disposed) setNotes((current) => (current.includes(note) ? current : [...current, note]));
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!running) return;
     setPageStatus("binary-scan", {
       label: "Scanning binaries",
@@ -111,6 +132,7 @@ export function BinaryScanPage(): JSX.Element {
     setError(null);
     setResult(null);
     setProgress("");
+    setNotes([]);
     setPageStatus("binary-scan", { label: "Scanning binaries", tone: "running" });
 
     try {
@@ -365,6 +387,19 @@ export function BinaryScanPage(): JSX.Element {
             "Starting up. A first run downloads the CVE database before scanning, which can take several minutes."
           }
         />
+      )}
+
+      {notes.length > 0 && !running && (
+        <div className="rounded-sm border border-warning-subtle bg-warning-subtle px-4 py-3">
+          <SectionLabel>Caveats</SectionLabel>
+          <ul className="mt-2 space-y-1">
+            {notes.map((note) => (
+              <li key={note} className="text-sm text-text-secondary">
+                {note}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {error && !running && !error.includes("cancelled") && (
