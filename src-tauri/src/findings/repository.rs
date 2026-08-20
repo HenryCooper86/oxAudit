@@ -96,35 +96,32 @@ pub struct FindingsRepository {
 
 impl FindingsRepository {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CommandError> {
-        let path = path.as_ref();
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .ok_or_else(CommandError::persistence_unavailable)?;
-        prepare_database_parent(parent)?;
-        let database_existed = validate_database_path(path)?;
-        let canonical_parent = std::fs::canonicalize(parent).map_err(persistence_error)?;
-        let file_name = path
-            .file_name()
-            .ok_or_else(CommandError::persistence_unavailable)?;
-        let open_path = canonical_parent.join(file_name);
+        Self::open_with_parent_hook(path, || {})
+    }
 
-        let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        let mut connection =
-            Connection::open_with_flags(open_path, flags).map_err(persistence_error)?;
-        let metadata = std::fs::symlink_metadata(path).map_err(persistence_error)?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(CommandError::persistence_unavailable());
+    #[cfg(test)]
+    fn open_with_test_parent_hook(
+        path: impl AsRef<Path>,
+        hook: impl FnOnce(),
+    ) -> Result<Self, CommandError> {
+        Self::open_with_parent_hook(path, hook)
+    }
+
+    fn open_with_parent_hook(
+        path: impl AsRef<Path>,
+        hook: impl FnOnce(),
+    ) -> Result<Self, CommandError> {
+        let path = path.as_ref();
+
+        #[cfg(unix)]
+        {
+            return open_file_database_unix(path, hook);
         }
-        if !database_existed {
-            #[cfg(unix)]
-            protect(path, 0o600)?;
+
+        #[cfg(not(unix))]
+        {
+            open_file_database_portable(path, hook)
         }
-        initialize_connection(&connection, true)?;
-        migrate(&mut connection, MIGRATION_V1)?;
-        Ok(Self {
-            connection: Mutex::new(connection),
-        })
     }
 
     pub fn open_in_memory() -> Result<Self, CommandError> {
@@ -619,14 +616,310 @@ impl FindingsRepository {
     }
 }
 
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+struct PinnedDirectory {
+    file: std::fs::File,
+    identity: FileIdentity,
+}
+
+#[cfg(unix)]
+fn open_file_database_unix(
+    path: &Path,
+    hook: impl FnOnce(),
+) -> Result<FindingsRepository, CommandError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(CommandError::persistence_unavailable)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(CommandError::persistence_unavailable)?;
+    let pinned_parent = pin_database_parent(parent)?;
+
+    hook();
+
+    let canonical_parent = canonicalize_pinned_parent(parent, &pinned_parent)?;
+    let open_path = canonical_parent.join(file_name);
+    let pinned_database = open_database_at(&pinned_parent.file, file_name)?;
+
+    revalidate_parent_identity(parent, &canonical_parent, &pinned_parent)?;
+    revalidate_database_identity(path, &open_path, pinned_database.identity)?;
+
+    // The file is already present relative to the pinned directory, so CREATE is
+    // deliberately omitted: a later path replacement cannot make SQLite create
+    // a database in an attacker-controlled directory.
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let mut connection =
+        Connection::open_with_flags(&open_path, flags).map_err(persistence_error)?;
+
+    // SQLite accepts a pathname rather than our fd. Re-check both pinned
+    // identities after it opens and before any PRAGMA or migration can write.
+    revalidate_parent_identity(parent, &canonical_parent, &pinned_parent)?;
+    revalidate_database_identity(path, &open_path, pinned_database.identity)?;
+
+    initialize_connection(&connection, true)?;
+    migrate(&mut connection, MIGRATION_V1)?;
+    Ok(FindingsRepository {
+        connection: Mutex::new(connection),
+    })
+}
+
+#[cfg(unix)]
+fn pin_database_parent(parent: &Path) -> Result<PinnedDirectory, CommandError> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+    let created = match std::fs::symlink_metadata(parent) {
+        Ok(metadata) => {
+            validate_directory_metadata(&metadata)?;
+            require_owner_only(&metadata)?;
+            false
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            builder.create(parent).map_err(persistence_error)?;
+            true
+        }
+        Err(error) => return Err(persistence_error(error)),
+    };
+
+    let path_metadata = std::fs::symlink_metadata(parent).map_err(persistence_error)?;
+    validate_directory_metadata(&path_metadata)?;
+
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)
+        .map_err(persistence_error)?;
+    let mut handle_metadata = directory.metadata().map_err(persistence_error)?;
+    validate_directory_metadata(&handle_metadata)?;
+    if file_identity(&path_metadata) != file_identity(&handle_metadata) {
+        return Err(CommandError::persistence_unavailable());
+    }
+
+    if created {
+        let mut permissions = handle_metadata.permissions();
+        permissions.set_mode(0o700);
+        directory
+            .set_permissions(permissions)
+            .map_err(persistence_error)?;
+        handle_metadata = directory.metadata().map_err(persistence_error)?;
+    }
+    require_owner_only(&handle_metadata)?;
+
+    Ok(PinnedDirectory {
+        identity: file_identity(&handle_metadata),
+        file: directory,
+    })
+}
+
+#[cfg(unix)]
+fn canonicalize_pinned_parent(
+    parent: &Path,
+    pinned: &PinnedDirectory,
+) -> Result<std::path::PathBuf, CommandError> {
+    validate_directory_path_identity(parent, pinned.identity)?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(persistence_error)?;
+    validate_directory_path_identity(&canonical_parent, pinned.identity)?;
+    Ok(canonical_parent)
+}
+
+#[cfg(unix)]
+fn revalidate_parent_identity(
+    parent: &Path,
+    canonical_parent: &Path,
+    pinned: &PinnedDirectory,
+) -> Result<(), CommandError> {
+    let handle_metadata = pinned.file.metadata().map_err(persistence_error)?;
+    validate_directory_metadata(&handle_metadata)?;
+    if file_identity(&handle_metadata) != pinned.identity {
+        return Err(CommandError::persistence_unavailable());
+    }
+    validate_directory_path_identity(parent, pinned.identity)?;
+    validate_directory_path_identity(canonical_parent, pinned.identity)
+}
+
+#[cfg(unix)]
+fn validate_directory_path_identity(
+    path: &Path,
+    expected: FileIdentity,
+) -> Result<(), CommandError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(persistence_error)?;
+    validate_directory_metadata(&metadata)?;
+    if file_identity(&metadata) == expected {
+        Ok(())
+    } else {
+        Err(CommandError::persistence_unavailable())
+    }
+}
+
+#[cfg(unix)]
+fn validate_directory_metadata(metadata: &std::fs::Metadata) -> Result<(), CommandError> {
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        Err(CommandError::persistence_unavailable())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+struct PinnedDatabase {
+    _file: std::fs::File,
+    identity: FileIdentity,
+}
+
+#[cfg(unix)]
+fn open_database_at(
+    parent: &std::fs::File,
+    file_name: &std::ffi::OsStr,
+) -> Result<PinnedDatabase, CommandError> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let file_name = std::ffi::CString::new(file_name.as_bytes()).map_err(persistence_error)?;
+    let base_flags = libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    let (file, created) = match openat_file(
+        parent.as_raw_fd(),
+        &file_name,
+        base_flags | libc::O_CREAT | libc::O_EXCL,
+        0o600,
+    ) {
+        Ok(file) => (file, true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
+            openat_file(parent.as_raw_fd(), &file_name, base_flags, 0)
+                .map_err(persistence_error)?,
+            false,
+        ),
+        Err(error) => return Err(persistence_error(error)),
+    };
+
+    let mut metadata = file.metadata().map_err(persistence_error)?;
+    if !metadata.is_file() {
+        return Err(CommandError::persistence_unavailable());
+    }
+    if created {
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o600);
+        file.set_permissions(permissions)
+            .map_err(persistence_error)?;
+        metadata = file.metadata().map_err(persistence_error)?;
+    }
+    require_owner_only(&metadata)?;
+
+    Ok(PinnedDatabase {
+        identity: file_identity(&metadata),
+        _file: file,
+    })
+}
+
+#[cfg(unix)]
+fn openat_file(
+    parent_fd: std::os::unix::io::RawFd,
+    file_name: &std::ffi::CStr,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> std::io::Result<std::fs::File> {
+    use std::os::unix::io::FromRawFd;
+
+    // SAFETY: `parent_fd` remains owned by the caller, `file_name` is a valid
+    // NUL-terminated string, and a successful returned fd is transferred into
+    // exactly one `File` for closing.
+    let fd = unsafe {
+        libc::openat(
+            parent_fd,
+            file_name.as_ptr(),
+            flags,
+            libc::c_uint::from(mode),
+        )
+    };
+    if fd < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        // SAFETY: `openat` returned a new owned descriptor on success.
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+    }
+}
+
+#[cfg(unix)]
+fn revalidate_database_identity(
+    requested_path: &Path,
+    canonical_path: &Path,
+    expected: FileIdentity,
+) -> Result<(), CommandError> {
+    validate_database_path_identity(requested_path, expected)?;
+    validate_database_path_identity(canonical_path, expected)
+}
+
+#[cfg(unix)]
+fn validate_database_path_identity(
+    path: &Path,
+    expected: FileIdentity,
+) -> Result<(), CommandError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(persistence_error)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || file_identity(&metadata) != expected
+    {
+        Err(CommandError::persistence_unavailable())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn file_identity(metadata: &std::fs::Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt;
+
+    FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+#[cfg(not(unix))]
+fn open_file_database_portable(
+    path: &Path,
+    hook: impl FnOnce(),
+) -> Result<FindingsRepository, CommandError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(CommandError::persistence_unavailable)?;
+    prepare_database_parent(parent)?;
+    validate_database_path(path)?;
+    hook();
+    let canonical_parent = std::fs::canonicalize(parent).map_err(persistence_error)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(CommandError::persistence_unavailable)?;
+    let open_path = canonical_parent.join(file_name);
+
+    let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let mut connection =
+        Connection::open_with_flags(open_path, flags).map_err(persistence_error)?;
+    validate_database_path(path)?;
+    initialize_connection(&connection, true)?;
+    migrate(&mut connection, MIGRATION_V1)?;
+    Ok(FindingsRepository {
+        connection: Mutex::new(connection),
+    })
+}
+
+#[cfg(not(unix))]
 fn prepare_database_parent(parent: &Path) -> Result<(), CommandError> {
     match std::fs::symlink_metadata(parent) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Err(CommandError::persistence_unavailable());
             }
-            #[cfg(unix)]
-            require_owner_only(&metadata)?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir_all(parent).map_err(persistence_error)?;
@@ -634,22 +927,19 @@ fn prepare_database_parent(parent: &Path) -> Result<(), CommandError> {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Err(CommandError::persistence_unavailable());
             }
-            #[cfg(unix)]
-            protect(parent, 0o700)?;
         }
         Err(error) => return Err(persistence_error(error)),
     }
     Ok(())
 }
 
+#[cfg(not(unix))]
 fn validate_database_path(path: &Path) -> Result<bool, CommandError> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Err(CommandError::persistence_unavailable());
             }
-            #[cfg(unix)]
-            require_owner_only(&metadata)?;
             Ok(true)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -1108,19 +1398,6 @@ fn empty_summary() -> ScanSummary {
         info: 0,
         rules_fired: std::collections::BTreeMap::new(),
     }
-}
-
-#[cfg(unix)]
-fn protect(path: &Path, mode: u32) -> Result<(), CommandError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = std::fs::symlink_metadata(path).map_err(persistence_error)?;
-    if metadata.file_type().is_symlink() {
-        return Err(CommandError::persistence_unavailable());
-    }
-    let mut permissions = metadata.permissions();
-    permissions.set_mode(mode);
-    std::fs::set_permissions(path, permissions).map_err(persistence_error)
 }
 
 fn persistence_error<T>(_: T) -> CommandError {
@@ -2214,5 +2491,99 @@ mod tests {
 
         assert_eq!(mode(&parent), 0o700);
         assert_eq!(mode(&database), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_symlink_swap_is_rejected_without_writing_attacker_target() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let parent = temporary.path().join("database-parent");
+        let parked_parent = temporary.path().join("parked-parent");
+        let attacker_parent = temporary.path().join("attacker-parent");
+        std::fs::create_dir(&parent).expect("create original parent");
+        std::fs::create_dir(&attacker_parent).expect("create attacker parent");
+        set_mode(&parent, 0o700);
+        set_mode(&attacker_parent, 0o700);
+        std::fs::write(parent.join("marker"), "original").expect("write original marker");
+        std::fs::write(attacker_parent.join("marker"), "attacker").expect("write attacker marker");
+        let database = parent.join("findings.sqlite3");
+
+        let result = FindingsRepository::open_with_test_parent_hook(&database, || {
+            std::fs::rename(&parent, &parked_parent).expect("park original parent");
+            symlink(&attacker_parent, &parent).expect("swap parent for symlink");
+        });
+
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!(
+                "parent identity swap must fail (attacker_db_exists={})",
+                attacker_parent.join("findings.sqlite3").exists()
+            ),
+        };
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(error.message, "Scan results could not be saved.");
+        assert_eq!(error.detail, None);
+        assert!(!parked_parent.join("findings.sqlite3").exists());
+        assert!(!attacker_parent.join("findings.sqlite3").exists());
+        assert_eq!(mode(&parked_parent), 0o700);
+        assert_eq!(mode(&attacker_parent), 0o700);
+        assert_eq!(
+            std::fs::read_to_string(parked_parent.join("marker")).expect("original marker"),
+            "original"
+        );
+        assert_eq!(
+            std::fs::read_to_string(attacker_parent.join("marker")).expect("attacker marker"),
+            "attacker"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_regular_directory_swap_is_rejected_without_writing_replacement() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let parent = temporary.path().join("database-parent");
+        let parked_parent = temporary.path().join("parked-parent");
+        std::fs::create_dir(&parent).expect("create original parent");
+        set_mode(&parent, 0o700);
+        std::fs::write(parent.join("marker"), "original").expect("write original marker");
+        let database = parent.join("findings.sqlite3");
+
+        let result = FindingsRepository::open_with_test_parent_hook(&database, || {
+            std::fs::rename(&parent, &parked_parent).expect("park original parent");
+            std::fs::create_dir(&parent).expect("create replacement parent");
+            set_mode(&parent, 0o700);
+            std::fs::write(parent.join("marker"), "replacement").expect("write replacement marker");
+        });
+
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!(
+                "parent identity replacement must fail (replacement_db_exists={})",
+                database.exists()
+            ),
+        };
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(error.message, "Scan results could not be saved.");
+        assert_eq!(error.detail, None);
+        assert!(!parked_parent.join("findings.sqlite3").exists());
+        assert!(!parent.join("findings.sqlite3").exists());
+        assert_eq!(mode(&parked_parent), 0o700);
+        assert_eq!(mode(&parent), 0o700);
+        assert_eq!(
+            std::fs::read_to_string(parked_parent.join("marker")).expect("original marker"),
+            "original"
+        );
+        assert_eq!(
+            std::fs::read_to_string(parent.join("marker")).expect("replacement marker"),
+            "replacement"
+        );
     }
 }
