@@ -29,11 +29,6 @@ use super::bytes::{BytePattern, Encoding, VersionFormula};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Evidence {
-    /// A byte pattern matched in the file's code and yielded a plausible
-    /// version. Weakest of the three: a code shape like "return a constant"
-    /// occurs in many libraries, which is why a byte pattern must declare the
-    /// version range it considers plausible.
-    BytePattern,
     /// The file contains a string characteristic of the component.
     Content,
     /// The file is named like the component (`libssl.so.3`).
@@ -73,6 +68,18 @@ pub struct SignatureSpec {
     /// their version in as a number and never spell it out.
     #[serde(default)]
     pub byte_patterns: Vec<BytePatternSpec>,
+    /// Whether a version pattern matching is enough to say the component is
+    /// present.
+    ///
+    /// True for almost every signature, because a version pattern normally
+    /// names the library — `OpenSSL 3.5.6 7 Apr 2026`, `libpng version 1.6.48`.
+    /// pcre2 is the exception: its version string is `10.47 2025-10-21`, which
+    /// says nothing about pcre2 and would claim any file carrying a similar
+    /// date-suffixed number. Such a signature must earn its identity from a
+    /// `contains` or filename match and use the version pattern only to read
+    /// the number.
+    #[serde(default = "default_true")]
+    pub version_implies_identity: bool,
     /// Distribution package names that mean this component.
     ///
     /// Debian calls zstd `libzstd`; NVD's CPE calls it `facebook:zstandard`.
@@ -106,6 +113,10 @@ pub struct BytePatternSpec {
     /// What the pattern is, for whoever reads the file next.
     #[serde(default)]
     pub note: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -181,9 +192,22 @@ impl SignatureSet {
             if spec.product.trim().is_empty() {
                 return Err(format!("signature {index} has no product"));
             }
+            // Byte patterns cannot identify a component on their own, so one
+            // that has nothing else can never fire and would sit in the file
+            // looking like coverage it does not provide.
+            if !spec.byte_patterns.is_empty()
+                && spec.contains.is_empty()
+                && spec.filename_patterns.is_empty()
+            {
+                return Err(format!(
+                    "signature {} has byte patterns but nothing to identify it by; a byte \
+pattern supplies a version, never an identity",
+                    spec.product
+                ));
+            }
             if spec.version_patterns.is_empty()
                 && spec.contains.is_empty()
-                && spec.byte_patterns.is_empty()
+                && spec.filename_patterns.is_empty()
             {
                 return Err(format!(
                     "signature {} has no way to match anything",
@@ -208,7 +232,19 @@ impl SignatureSet {
                 version_patterns.push(regex);
             }
 
-            for pattern in spec.contains.iter().chain(spec.version_patterns.iter()) {
+            let identity_patterns: Vec<&String> = if spec.version_implies_identity {
+                spec.contains.iter().chain(spec.version_patterns.iter()).collect()
+            } else {
+                if spec.contains.is_empty() && spec.filename_patterns.is_empty() {
+                    return Err(format!(
+                        "{}: version_implies_identity is false but there is nothing else to \
+identify it by",
+                        spec.product
+                    ));
+                }
+                spec.contains.iter().collect()
+            };
+            for pattern in identity_patterns {
                 Regex::new(pattern)
                     .map_err(|e| format!("{}: bad pattern {pattern:?}: {e}", spec.product))?;
                 content_patterns.push(pattern.clone());
@@ -329,17 +365,11 @@ impl SignatureSet {
     pub fn detect(&self, file_name: &str, blob: &str, raw: &[u8]) -> Vec<Detection> {
         let mut candidates: Vec<Option<Evidence>> = vec![None; self.compiled.len()];
 
-        // Weakest evidence first, so a stronger kind overwrites it.
-        for (index, signature) in self.compiled.iter().enumerate() {
-            if !signature.byte_patterns.is_empty()
-                && signature
-                    .byte_patterns
-                    .iter()
-                    .any(|byte_pattern| !byte_pattern.versions(raw).is_empty())
-            {
-                candidates[index] = Some(Evidence::BytePattern);
-            }
-        }
+        // Byte patterns deliberately do not appear here. A code shape says
+        // nothing about *which* library it is: measured across a 21,000-file
+        // tree, `movz w0,#imm; ret` bounded to zstd's version range fires in
+        // about forty unrelated binaries. Identity has to come from a string
+        // or a filename; byte patterns only supply the version once it has.
         for index in self.content_set.matches(blob) {
             candidates[self.content_owner[index]] = Some(Evidence::Content);
         }
@@ -427,6 +457,7 @@ mod tests {
             ignore: Vec::new(),
             byte_patterns: Vec::new(),
             aliases: Vec::new(),
+            version_implies_identity: true,
         }
     }
 
@@ -442,9 +473,53 @@ mod tests {
 
     #[test]
     fn a_signature_that_can_never_match_is_rejected() {
-        let error = SignatureSet::compile(vec![spec("ghost", &[], &[], &["^ghost$"])])
+        let error = SignatureSet::compile(vec![spec("ghost", &[], &[], &[])])
             .expect_err("must not compile");
         assert!(error.contains("no way to match"), "{error}");
+    }
+
+    #[test]
+    fn a_byte_pattern_with_nothing_to_identify_it_by_is_rejected() {
+        // It can never fire, and it would sit in the signature file looking
+        // like coverage that is not there.
+        let mut signature = spec("ghost", &[], &[], &[]);
+        signature.byte_patterns = vec![BytePatternSpec {
+            pattern: "f3 0f 1e fa b8 .. .. .. 00 c3".into(),
+            capture_offset: 5,
+            encoding: Encoding::U32Le,
+            formula: VersionFormula::Decimal10000,
+            min: 10000,
+            max: 19999,
+            note: String::new(),
+        }];
+        let error = SignatureSet::compile(vec![signature]).expect_err("must not compile");
+        assert!(error.contains("never an identity"), "{error}");
+    }
+
+    #[test]
+    fn a_byte_pattern_alone_does_not_claim_a_component() {
+        // Measured across a 21,000-file tree: `movz w0,#imm; ret` bounded to
+        // zstd's range fires in about forty unrelated binaries. Identity must
+        // come from a string or a filename.
+        let set = &*SIGNATURES;
+        // The exact bytes of `movz w0,#0x290b; ret` — a real zstd version
+        // constant — in a file with nothing else to say it is zstd.
+        let raw = [0x60u8, 0x21, 0x85, 0x52, 0xc0, 0x03, 0x5f, 0xd6];
+        let hits = set.detect("vendor-blob", "nothing to see here\n", &raw);
+        assert!(
+            !hits.iter().any(|d| d.product == "zstandard"),
+            "a bare code shape claimed zstd: {hits:?}"
+        );
+
+        // With zstd's own error string present, both identity and version follow.
+        let hits = set.detect(
+            "vendor-blob",
+            "Frame requires too much memory for decoding\n",
+            &raw,
+        );
+        let zstd: Vec<_> = hits.iter().filter(|d| d.product == "zstandard").collect();
+        assert_eq!(zstd.len(), 1, "expected one zstd detection, got {hits:?}");
+        assert_eq!(zstd[0].version.as_deref(), Some("1.5.7"));
     }
 
     #[test]
@@ -547,6 +622,37 @@ mod tests {
     }
 
     #[test]
+    fn a_version_pattern_that_names_nothing_cannot_claim_the_component() {
+        // pcre2's version string is `10.47 2025-10-21`. Letting that stand as
+        // identity would attribute any file carrying a similar date-suffixed
+        // number to pcre2.
+        let set = &*SIGNATURES;
+        let bare = set.detect("firmware.bin", "\n10.47 2025-10-21\n", &[]);
+        assert!(
+            !bare.iter().any(|d| d.product == "pcre2"),
+            "a bare version-and-date claimed pcre2: {bare:?}"
+        );
+
+        // With a real pcre2 marker present, both identity and version follow.
+        let real = set.detect(
+            "firmware.bin",
+            "BSR_ANYCRLF)\nLIMIT_DEPTH=\n10.47 2025-10-21\n",
+            &[],
+        );
+        let pcre2: Vec<_> = real.iter().filter(|d| d.product == "pcre2").collect();
+        assert_eq!(pcre2.len(), 1, "expected one pcre2 detection, got {real:?}");
+        assert_eq!(pcre2[0].version.as_deref(), Some("10.47"));
+    }
+
+    #[test]
+    fn a_signature_with_no_identity_of_its_own_is_refused_at_compile_time() {
+        let mut signature = spec("ghost", &[], &[r"v([0-9.]+)"], &[]);
+        signature.version_implies_identity = false;
+        let error = SignatureSet::compile(vec![signature]).expect_err("must not compile");
+        assert!(error.contains("nothing else to identify it by"), "{error}");
+    }
+
+    #[test]
     fn a_distribution_package_name_resolves_to_its_cpe_identity() {
         // Debian ships zstd as `libzstd`; NVD knows it as facebook:zstandard.
         // Without this the same library is two rows, and the one found by ELF
@@ -564,6 +670,35 @@ mod tests {
         assert_eq!(set.resolve_alias("some-vendor-blob"), None);
         assert_eq!(set.resolve_alias(""), None);
         assert_eq!(set.resolve_alias("   "), None);
+    }
+
+    /// Every bundled signature's CPE identity, checked once against NVD's live
+    /// API and recorded here.
+    ///
+    /// This is a tripwire, not a restatement of the data file. A vendor or
+    /// product that is not NVD's spelling returns zero CVEs rather than an
+    /// error, so the scan reads as clean instead of broken. `sqlite3` cost
+    /// exactly that: `cpe:2.3:a:sqlite:sqlite:3.46.1` returns 7 CVEs and
+    /// `cpe:2.3:a:sqlite:sqlite3:3.46.1` returns none. Renaming a product must
+    /// fail this test and send whoever did it back to the API.
+    const VERIFIED_CPE_IDENTITIES: [(&str, &str); 4] = [
+        ("openssl", "openssl"),
+        ("sqlite", "sqlite"),
+        ("tukaani", "xz"),
+        ("pcre", "pcre2"),
+    ];
+
+    #[test]
+    fn products_with_a_verified_cpe_identity_keep_it() {
+        let set = &*SIGNATURES;
+        for (vendor, product) in VERIFIED_CPE_IDENTITIES {
+            assert_eq!(
+                set.resolve_alias(product),
+                Some((vendor, product)),
+                "{vendor}:{product} was verified against NVD; changing it silently returns \
+zero CVEs rather than an error"
+            );
+        }
     }
 
     #[test]

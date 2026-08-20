@@ -242,8 +242,33 @@ pub enum Encoding {
     U32Be,
     /// AArch64 `movz w<d>, #imm16`: the operand is bits 5..21 of a 32-bit
     /// little-endian instruction word, so it cannot be read as a plain integer.
+    #[serde(rename = "arm64-movz-imm16")]
     Arm64MovzImm16,
+    /// AArch64 `movz w0, #lo16` followed by `movk w0, #hi16, lsl #16` — how a
+    /// constant too large for one instruction is loaded. Both words are
+    /// validated, including the shift and destination register, before the
+    /// halves are recombined.
+    #[serde(rename = "arm64-movz-movk-imm32")]
+    Arm64MovzMovkImm32,
 }
+
+/// Decode an AArch64 wide-immediate move, returning `(imm16, hw)`.
+///
+/// `top9` distinguishes the variants: MOVZ is `010100101`, MOVK is
+/// `011100101`. `Rd` must be `w0`, since these patterns describe a function
+/// returning a constant.
+fn decode_wide_move(word: u32, top9: u32) -> Option<(u32, u32)> {
+    if (word >> 23) & 0x1ff != top9 {
+        return None;
+    }
+    if word & 0x1f != 0 {
+        return None;
+    }
+    Some(((word >> 5) & 0xffff, (word >> 21) & 0x3))
+}
+
+const MOVZ_TOP9: u32 = 0b0_1010_0101;
+const MOVK_TOP9: u32 = 0b0_1110_0101;
 
 impl Encoding {
     /// Read the number from `window`, which is the pattern's captured span.
@@ -264,11 +289,21 @@ impl Encoding {
             Encoding::Arm64MovzImm16 => {
                 let bytes = window.get(..4)?;
                 let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                // 32-bit MOVZ is sf=0 opc=10 100101, i.e. bits 23..31 == 0b010100101.
-                if (word >> 23) & 0x1ff != 0b0_1010_0101 {
+                let (imm, shift) = decode_wide_move(word, MOVZ_TOP9)?;
+                // A shifted MOVZ loads the value into a different half of the
+                // register; reading it as the whole number would be wrong.
+                (shift == 0).then_some(imm as u64)
+            }
+            Encoding::Arm64MovzMovkImm32 => {
+                let bytes = window.get(..8)?;
+                let low_word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                let high_word = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+                let (low, low_shift) = decode_wide_move(low_word, MOVZ_TOP9)?;
+                let (high, high_shift) = decode_wide_move(high_word, MOVK_TOP9)?;
+                if low_shift != 0 || high_shift != 1 {
                     return None;
                 }
-                Some(((word >> 5) & 0xffff) as u64)
+                Some(((high as u64) << 16) | low as u64)
             }
         }
     }
@@ -291,6 +326,11 @@ pub enum VersionFormula {
     NibbleHex,
     /// `(major << 16) | (minor << 8) | patch` — curl's LIBCURL_VERSION_NUM.
     Packed8,
+    /// `major * 10000000 + minor * 10000 + patch * 10 + stability` —
+    /// liblzma's LZMA_VERSION_NUMBER, where the last digit is 0 alpha,
+    /// 1 beta, 2 stable. The stability digit is dropped rather than rendered.
+    #[serde(rename = "decimal-10000000-stability")]
+    Decimal10000000Stability,
 }
 
 impl VersionFormula {
@@ -313,6 +353,14 @@ impl VersionFormula {
                 let minor = (value >> 8) & 0xf;
                 let patch = (value >> 4) & 0xf;
                 (major > 0).then(|| format!("{major}.{minor}.{patch}"))
+            }
+            VersionFormula::Decimal10000000Stability => {
+                let major = value / 10_000_000;
+                let minor = (value % 10_000_000) / 10_000;
+                let patch = (value % 10_000) / 10;
+                let stability = value % 10;
+                (major > 0 && major < 100 && stability <= 2)
+                    .then(|| format!("{major}.{minor}.{patch}"))
             }
             VersionFormula::Packed8 => {
                 let major = (value >> 16) & 0xff;
@@ -448,6 +496,44 @@ mod tests {
     }
 
     #[test]
+    fn an_arm64_movz_movk_pair_recombines_into_one_constant() {
+        // Taken verbatim from Homebrew's liblzma.5.dylib at
+        // _lzma_version_number: movz w0,#0x2920 / movk w0,#0x2fc,lsl #16 / ret.
+        let bytes = [0x00, 0x24, 0x85, 0x52, 0x80, 0x5f, 0xa0, 0x72];
+        assert_eq!(Encoding::Arm64MovzMovkImm32.read(&bytes), Some(50_080_032));
+
+        // And from libsqlite3.3.53.3.dylib at _sqlite3_libversion_number.
+        let sqlite = [0x60, 0xb9, 0x92, 0x52, 0xc0, 0x05, 0xa0, 0x72];
+        assert_eq!(Encoding::Arm64MovzMovkImm32.read(&sqlite), Some(3_053_003));
+    }
+
+    #[test]
+    fn a_movz_movk_pair_with_the_wrong_shift_is_refused() {
+        // `movk ..., lsl #32` puts the half somewhere else entirely; combining
+        // it as the high 16 bits would invent a number.
+        let mut bytes = [0x00, 0x24, 0x85, 0x52, 0x80, 0x5f, 0xa0, 0x72];
+        bytes[6] = 0xc0; // hw = 2, i.e. lsl #32
+        assert_eq!(Encoding::Arm64MovzMovkImm32.read(&bytes), None);
+    }
+
+    #[test]
+    fn a_movz_movk_pair_targeting_another_register_is_refused() {
+        // These patterns describe a function returning a constant in w0. A
+        // pair building a value in w3 is unrelated code.
+        let mut bytes = [0x00, 0x24, 0x85, 0x52, 0x80, 0x5f, 0xa0, 0x72];
+        bytes[0] |= 3; // Rd = w3
+        assert_eq!(Encoding::Arm64MovzMovkImm32.read(&bytes), None);
+    }
+
+    #[test]
+    fn a_movz_not_followed_by_a_movk_is_refused() {
+        // movz then `ret` is a different, valid shape — but it is a 16-bit
+        // constant, and reading the ret as a high half would be nonsense.
+        let bytes = [0x60, 0x21, 0x85, 0x52, 0xc0, 0x03, 0x5f, 0xd6];
+        assert_eq!(Encoding::Arm64MovzMovkImm32.read(&bytes), None);
+    }
+
+    #[test]
     fn a_word_that_is_not_a_movz_decodes_to_nothing() {
         // Reading the operand bits out of some other instruction would invent
         // a version number from unrelated code.
@@ -489,6 +575,41 @@ mod tests {
         assert_eq!(VersionFormula::Decimal10000.render(9_999_999), None);
         assert_eq!(VersionFormula::NibbleHex.render(0x0310), None);
         assert_eq!(VersionFormula::Packed8.render(0), None);
+    }
+
+    #[test]
+    fn the_lzma_constant_renders_without_its_stability_digit() {
+        // LZMA_VERSION_NUMBER ends in 0 alpha, 1 beta, 2 stable. 50080032 is
+        // 5.8.3 stable; the trailing 2 is not part of the version.
+        assert_eq!(
+            VersionFormula::Decimal10000000Stability
+                .render(50_080_032)
+                .as_deref(),
+            Some("5.8.3")
+        );
+        assert_eq!(
+            VersionFormula::Decimal10000000Stability
+                .render(50_080_012)
+                .as_deref(),
+            Some("5.8.1")
+        );
+        // 3..=9 is not a stability level, so this is some other number.
+        assert_eq!(
+            VersionFormula::Decimal10000000Stability.render(50_080_037),
+            None
+        );
+    }
+
+    #[test]
+    fn the_sqlite_constant_renders_as_its_release() {
+        assert_eq!(
+            VersionFormula::Decimal1000000.render(3_046_001).as_deref(),
+            Some("3.46.1")
+        );
+        assert_eq!(
+            VersionFormula::Decimal1000000.render(3_053_003).as_deref(),
+            Some("3.53.3")
+        );
     }
 
     #[test]
