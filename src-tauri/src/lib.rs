@@ -5,6 +5,7 @@ mod commands;
 pub mod cve;
 mod deps;
 pub mod exploit;
+pub mod findings;
 mod fs_utils;
 mod models;
 mod scanners;

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 // Scanning (source code + secrets)
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanOptions {
     pub path: String,
@@ -86,6 +86,24 @@ pub struct Finding {
     pub entropy: Option<f32>,
     /// reserved for live verification (None = not verified)
     pub verified: Option<bool>,
+    #[serde(default)]
+    pub observation_run_id: String,
+    #[serde(default)]
+    pub resolved_by_run_id: Option<String>,
+    #[serde(default)]
+    pub fingerprint_version: u16,
+    #[serde(default)]
+    pub fingerprint: String,
+    #[serde(default)]
+    pub scope: Option<crate::findings::domain::FindingScope>,
+    #[serde(default)]
+    pub scope_reason: Option<String>,
+    #[serde(default)]
+    pub review: Option<crate::findings::domain::ReviewRecord>,
+    #[serde(default)]
+    pub review_history: Vec<crate::findings::domain::ReviewRecord>,
+    #[serde(default)]
+    pub diff_status: Option<crate::findings::domain::DiffStatus>,
 }
 
 #[derive(Serialize, Clone, Debug)]
