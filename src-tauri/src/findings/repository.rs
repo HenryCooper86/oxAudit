@@ -1,14 +1,14 @@
 use std::{path::Path, sync::Mutex, time::Duration};
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::{
     coverage::CoverageManifest,
     domain::{
-        FindingScope, PolicyStatus, RecentProject, ReviewOrigin, ReviewRecord, ReviewState,
-        RunPersistence, RunStatus, ScanRunDetail,
+        FindingScope, PolicyStatus, ProjectContext, RecentProject, ReviewOrigin, ReviewRecord,
+        ReviewState, RunPersistence, RunStatus, ScanRunDetail,
     },
     error::CommandError,
 };
@@ -97,18 +97,29 @@ pub struct FindingsRepository {
 impl FindingsRepository {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, CommandError> {
         let path = path.as_ref();
-        if let Some(parent) = path
+        let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent).map_err(persistence_error)?;
-            #[cfg(unix)]
-            protect(parent, 0o700)?;
-        }
+            .ok_or_else(CommandError::persistence_unavailable)?;
+        prepare_database_parent(parent)?;
+        let database_existed = validate_database_path(path)?;
+        let canonical_parent = std::fs::canonicalize(parent).map_err(persistence_error)?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(CommandError::persistence_unavailable)?;
+        let open_path = canonical_parent.join(file_name);
 
-        let mut connection = Connection::open(path).map_err(persistence_error)?;
-        #[cfg(unix)]
-        protect(path, 0o600)?;
+        let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let mut connection =
+            Connection::open_with_flags(open_path, flags).map_err(persistence_error)?;
+        let metadata = std::fs::symlink_metadata(path).map_err(persistence_error)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(CommandError::persistence_unavailable());
+        }
+        if !database_existed {
+            #[cfg(unix)]
+            protect(path, 0o600)?;
+        }
         initialize_connection(&connection, true)?;
         migrate(&mut connection, MIGRATION_V1)?;
         Ok(Self {
@@ -131,31 +142,101 @@ impl FindingsRepository {
         canonical_path: &str,
         display_name: &str,
         opened_at: &str,
-        last_options: &ScanOptions,
-    ) -> Result<(), CommandError> {
-        let options_json = to_json(last_options)?;
-        self.connection
-            .lock()
-            .map_err(persistence_error)?
-            .execute(
-                r#"INSERT INTO projects(
-                     id, canonical_path, display_name, created_at, last_opened_at, last_options_json
-                   ) VALUES (?1, ?2, ?3, ?4, ?4, ?5)
-                   ON CONFLICT(id) DO UPDATE SET
-                     canonical_path = excluded.canonical_path,
-                     display_name = excluded.display_name,
-                     last_opened_at = excluded.last_opened_at,
-                     last_options_json = excluded.last_options_json"#,
-                params![
-                    project_id,
-                    canonical_path,
-                    display_name,
-                    opened_at,
-                    options_json
-                ],
+        last_options: Option<&ScanOptions>,
+    ) -> Result<ProjectContext, CommandError> {
+        let options_json = last_options.map(to_json).transpose()?;
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+
+        let caller_path = transaction
+            .query_row(
+                "SELECT canonical_path FROM projects WHERE id = ?1",
+                [project_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        if caller_path
+            .as_deref()
+            .is_some_and(|stored_path| stored_path != canonical_path)
+        {
+            return Err(CommandError::persistence_unavailable());
+        }
+
+        let stored_id = transaction
+            .query_row(
+                "SELECT id FROM projects WHERE canonical_path = ?1",
+                [canonical_path],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        let persisted_id = match stored_id {
+            Some(stored_id) => {
+                match options_json.as_deref() {
+                    Some(options_json) => transaction.execute(
+                        r#"UPDATE projects
+                           SET display_name = ?2, last_opened_at = ?3, last_options_json = ?4
+                           WHERE id = ?1"#,
+                        params![stored_id, display_name, opened_at, options_json],
+                    ),
+                    None => transaction.execute(
+                        r#"UPDATE projects
+                           SET display_name = ?2, last_opened_at = ?3
+                           WHERE id = ?1"#,
+                        params![stored_id, display_name, opened_at],
+                    ),
+                }
+                .map_err(persistence_error)?;
+                stored_id
+            }
+            None => {
+                transaction
+                    .execute(
+                        r#"INSERT INTO projects(
+                             id, canonical_path, display_name, created_at, last_opened_at,
+                             last_options_json
+                           ) VALUES (?1, ?2, ?3, ?4, ?4, COALESCE(?5, '{}'))"#,
+                        params![
+                            project_id,
+                            canonical_path,
+                            display_name,
+                            opened_at,
+                            options_json
+                        ],
+                    )
+                    .map_err(persistence_error)?;
+                project_id.to_owned()
+            }
+        };
+
+        let (stored_path, stored_name, stored_options): (String, String, String) = transaction
+            .query_row(
+                "SELECT canonical_path, display_name, last_options_json FROM projects WHERE id = ?1",
+                [&persisted_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(persistence_error)?;
-        Ok(())
+        let last_completed_run_id = transaction
+            .query_row(
+                r#"SELECT id FROM scan_runs
+                   WHERE project_id = ?1 AND status = 'completed'
+                   ORDER BY completed_at DESC, id DESC LIMIT 1"#,
+                [&persisted_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        let context = ProjectContext {
+            project_id: persisted_id,
+            canonical_path: stored_path,
+            display_name: stored_name,
+            policy: PolicyStatus::Missing,
+            last_completed_run_id,
+            last_options: parse_last_options(&stored_options)?,
+        };
+        transaction.commit().map_err(persistence_error)?;
+        Ok(context)
     }
 
     pub fn start_run(
@@ -173,24 +254,66 @@ impl FindingsRepository {
             PolicyStatus::Valid { hash } => Some(hash.as_str()),
             PolicyStatus::Missing | PolicyStatus::Invalid { .. } => None,
         };
-        self.connection
-            .lock()
-            .map_err(persistence_error)?
+        struct StoredRunIdentity {
+            status: String,
+            project_id: String,
+            baseline_run_id: Option<String>,
+            scanner_version: String,
+            fingerprint_version: u16,
+            options_json: String,
+            policy_status_json: String,
+            policy_hash: Option<String>,
+            started_at: String,
+        }
+
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+        let existing = transaction
+            .query_row(
+                r#"SELECT status, project_id, baseline_run_id, scanner_version,
+                          fingerprint_version, options_json, policy_status_json, policy_hash,
+                          started_at
+                   FROM scan_runs WHERE id = ?1"#,
+                [&detail.run_id],
+                |row| {
+                    Ok(StoredRunIdentity {
+                        status: row.get(0)?,
+                        project_id: row.get(1)?,
+                        baseline_run_id: row.get(2)?,
+                        scanner_version: row.get(3)?,
+                        fingerprint_version: row.get(4)?,
+                        options_json: row.get(5)?,
+                        policy_status_json: row.get(6)?,
+                        policy_hash: row.get(7)?,
+                        started_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        if let Some(existing) = existing {
+            let identical = existing.status == "running"
+                && existing.project_id == detail.project_id
+                && existing.baseline_run_id == detail.baseline_run_id
+                && existing.scanner_version == scanner_version
+                && existing.fingerprint_version == super::domain::FINGERPRINT_VERSION
+                && existing.options_json == options_json
+                && existing.policy_status_json == policy_status_json
+                && existing.policy_hash.as_deref() == policy_hash
+                && existing.started_at == detail.started_at;
+            if !identical {
+                return Err(CommandError::persistence_unavailable());
+            }
+            transaction.commit().map_err(persistence_error)?;
+            return Ok(());
+        }
+
+        transaction
             .execute(
                 r#"INSERT INTO scan_runs(
                      id, project_id, baseline_run_id, status, scanner_version, fingerprint_version,
                      options_json, policy_status_json, policy_hash, started_at
-                   ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?9)
-                   ON CONFLICT(id) DO UPDATE SET
-                     project_id = excluded.project_id,
-                     baseline_run_id = excluded.baseline_run_id,
-                     scanner_version = excluded.scanner_version,
-                     fingerprint_version = excluded.fingerprint_version,
-                     options_json = excluded.options_json,
-                     policy_status_json = excluded.policy_status_json,
-                     policy_hash = excluded.policy_hash,
-                     started_at = excluded.started_at
-                   WHERE scan_runs.status = 'running'"#,
+                   ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?8, ?9)"#,
                 params![
                     detail.run_id,
                     detail.project_id,
@@ -204,7 +327,7 @@ impl FindingsRepository {
                 ],
             )
             .map_err(persistence_error)?;
-        Ok(())
+        transaction.commit().map_err(persistence_error)
     }
 
     pub fn complete_run(
@@ -215,11 +338,11 @@ impl FindingsRepository {
         let mut connection = self.connection.lock().map_err(persistence_error)?;
         let transaction = connection.transaction().map_err(persistence_error)?;
 
-        let (project_id, status): (String, String) = transaction
+        let (project_id, status, fingerprint_version): (String, String, u16) = transaction
             .query_row(
-                "SELECT project_id, status FROM scan_runs WHERE id = ?1",
+                "SELECT project_id, status, fingerprint_version FROM scan_runs WHERE id = ?1",
                 [&detail.run_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(persistence_error)?
@@ -233,6 +356,11 @@ impl FindingsRepository {
         if status != "running"
             || detail.status != RunStatus::Completed
             || detail.project_id != project_id
+            || coverage.fingerprint_version != fingerprint_version
+            || detail
+                .findings
+                .iter()
+                .any(|finding| finding.fingerprint_version != fingerprint_version)
         {
             return Err(CommandError::persistence_unavailable());
         }
@@ -429,14 +557,7 @@ impl FindingsRepository {
                     .map(|run| {
                         run.findings
                             .iter()
-                            .filter(|finding| {
-                                finding.review.as_ref().map_or(true, |review| {
-                                    matches!(
-                                        review.state,
-                                        ReviewState::Candidate | ReviewState::Confirmed
-                                    )
-                                })
-                            })
+                            .filter(|finding| is_open_finding(finding))
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
@@ -495,6 +616,68 @@ impl FindingsRepository {
             .map_err(persistence_error)?;
         transaction.commit().map_err(persistence_error)?;
         Ok(expired + over_limit)
+    }
+}
+
+fn prepare_database_parent(parent: &Path) -> Result<(), CommandError> {
+    match std::fs::symlink_metadata(parent) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(CommandError::persistence_unavailable());
+            }
+            #[cfg(unix)]
+            require_owner_only(&metadata)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(parent).map_err(persistence_error)?;
+            let metadata = std::fs::symlink_metadata(parent).map_err(persistence_error)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(CommandError::persistence_unavailable());
+            }
+            #[cfg(unix)]
+            protect(parent, 0o700)?;
+        }
+        Err(error) => return Err(persistence_error(error)),
+    }
+    Ok(())
+}
+
+fn validate_database_path(path: &Path) -> Result<bool, CommandError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(CommandError::persistence_unavailable());
+            }
+            #[cfg(unix)]
+            require_owner_only(&metadata)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(persistence_error(error)),
+    }
+}
+
+#[cfg(unix)]
+fn require_owner_only(metadata: &std::fs::Metadata) -> Result<(), CommandError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if metadata.permissions().mode() & 0o077 == 0 {
+        Ok(())
+    } else {
+        Err(CommandError::persistence_unavailable())
+    }
+}
+
+fn is_open_finding(finding: &Finding) -> bool {
+    match finding.review.as_ref().map(|review| review.state) {
+        Some(ReviewState::Confirmed) => true,
+        None | Some(ReviewState::Candidate) => matches!(
+            finding.scope,
+            Some(FindingScope::Production | FindingScope::Infrastructure | FindingScope::Unknown)
+        ),
+        Some(ReviewState::FalsePositive | ReviewState::AcceptedRisk | ReviewState::Suppressed) => {
+            false
+        }
     }
 }
 
@@ -875,6 +1058,14 @@ fn from_json<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T, CommandErro
     serde_json::from_str(value).map_err(persistence_error)
 }
 
+fn parse_last_options(value: &str) -> Result<Option<ScanOptions>, CommandError> {
+    if matches!(value.trim(), "{}" | "null") {
+        Ok(None)
+    } else {
+        from_json(value).map(Some)
+    }
+}
+
 fn parse_json_enum<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T, CommandError> {
     from_json(&format!("\"{value}\""))
 }
@@ -923,9 +1114,11 @@ fn empty_summary() -> ScanSummary {
 fn protect(path: &Path, mode: u32) -> Result<(), CommandError> {
     use std::os::unix::fs::PermissionsExt;
 
-    let mut permissions = std::fs::metadata(path)
-        .map_err(persistence_error)?
-        .permissions();
+    let metadata = std::fs::symlink_metadata(path).map_err(persistence_error)?;
+    if metadata.file_type().is_symlink() {
+        return Err(CommandError::persistence_unavailable());
+    }
+    let mut permissions = metadata.permissions();
     permissions.set_mode(mode);
     std::fs::set_permissions(path, permissions).map_err(persistence_error)
 }
@@ -1006,6 +1199,28 @@ mod tests {
     use crate::models::{Finding, ScanOptions, ScanSummary};
 
     use super::*;
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::symlink_metadata(path)
+            .expect("read metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::symlink_metadata(path)
+            .expect("read metadata")
+            .permissions();
+        permissions.set_mode(mode);
+        std::fs::set_permissions(path, permissions).expect("set permissions");
+    }
 
     fn summary(total_findings: usize) -> ScanSummary {
         ScanSummary {
@@ -1106,7 +1321,7 @@ mod tests {
                 "/project",
                 "Project",
                 "2026-08-20T09:59:00Z",
-                &options,
+                Some(&options),
             )
             .expect("upsert project");
         repository
@@ -1116,6 +1331,119 @@ mod tests {
                 &options,
             )
             .expect("start run");
+    }
+
+    #[test]
+    fn reopening_canonical_path_with_fresh_id_returns_stored_project_identity() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let mut initial_options = ScanOptions::default();
+        initial_options.path = "/project".into();
+
+        let created = repository
+            .upsert_project(
+                "stored-project-id",
+                "/project",
+                "Initial name",
+                "2026-08-20T09:00:00Z",
+                Some(&initial_options),
+            )
+            .expect("create project");
+        let reopened = repository
+            .upsert_project(
+                "fresh-caller-id",
+                "/project",
+                "Updated name",
+                "2026-08-20T10:00:00Z",
+                None,
+            )
+            .expect("reopen project");
+
+        assert_eq!(created.project_id, "stored-project-id");
+        assert_eq!(reopened.project_id, "stored-project-id");
+        assert_eq!(reopened.canonical_path, "/project");
+        assert_eq!(reopened.display_name, "Updated name");
+        assert_eq!(reopened.last_options, Some(initial_options));
+        assert_eq!(reopened.policy, PolicyStatus::Missing);
+        let connection = repository.connection.lock().expect("lock connection");
+        let projects: i64 = connection
+            .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
+            .expect("count projects");
+        assert_eq!(projects, 1);
+    }
+
+    #[test]
+    fn existing_project_id_cannot_be_rebound_to_another_path() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        repository
+            .upsert_project(
+                "project-id",
+                "/first",
+                "First",
+                "2026-08-20T09:00:00Z",
+                Some(&ScanOptions::default()),
+            )
+            .expect("create project");
+
+        let error = repository
+            .upsert_project(
+                "project-id",
+                "/second",
+                "Rebound",
+                "2026-08-20T10:00:00Z",
+                None,
+            )
+            .expect_err("must reject project ID rebinding");
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        let connection = repository.connection.lock().expect("lock connection");
+        let stored: (String, String, String) = connection
+            .query_row(
+                "SELECT canonical_path, display_name, last_opened_at FROM projects WHERE id = ?1",
+                ["project-id"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("load original project");
+        assert_eq!(
+            stored,
+            (
+                "/first".into(),
+                "First".into(),
+                "2026-08-20T09:00:00Z".into()
+            )
+        );
+    }
+
+    #[test]
+    fn reopening_without_options_preserves_last_successful_options() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let mut options = ScanOptions::default();
+        options.path = "/project".into();
+        options.include_git = true;
+        options.extra_ignored_dirs = vec!["private-cache".into()];
+        repository
+            .upsert_project(
+                "project-id",
+                "/project",
+                "Project",
+                "2026-08-20T09:00:00Z",
+                Some(&options),
+            )
+            .expect("create project");
+
+        let reopened = repository
+            .upsert_project(
+                "new-id",
+                "/project",
+                "Project",
+                "2026-08-20T10:00:00Z",
+                None,
+            )
+            .expect("reopen without options");
+
+        assert_eq!(reopened.last_options, Some(options));
     }
 
     #[test]
@@ -1318,6 +1646,71 @@ mod tests {
     }
 
     #[test]
+    fn coverage_fingerprint_version_mismatch_rolls_back_completion() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "coverage-version-mismatch");
+        let completed = run_detail(
+            "coverage-version-mismatch",
+            RunStatus::Completed,
+            vec![finding(
+                "coverage-version-observation",
+                "coverage-version-fingerprint",
+            )],
+        );
+        let mut coverage = CoverageManifest::from_entries([("src/config.rs", ["secret"])]);
+        coverage.fingerprint_version = FINGERPRINT_VERSION + 1;
+
+        let error = repository
+            .complete_run(&completed, &coverage)
+            .expect_err("coverage version mismatch must fail");
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_running_without_findings(&repository, "coverage-version-mismatch");
+    }
+
+    #[test]
+    fn finding_fingerprint_version_mismatch_rolls_back_completion() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "finding-version-mismatch");
+        let mut mismatched = finding("finding-version-observation", "finding-version-fingerprint");
+        mismatched.fingerprint_version = FINGERPRINT_VERSION + 1;
+        let completed = run_detail(
+            "finding-version-mismatch",
+            RunStatus::Completed,
+            vec![mismatched],
+        );
+        let coverage = CoverageManifest::from_entries([("src/config.rs", ["secret"])]);
+
+        let error = repository
+            .complete_run(&completed, &coverage)
+            .expect_err("finding version mismatch must fail");
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_running_without_findings(&repository, "finding-version-mismatch");
+    }
+
+    fn assert_running_without_findings(repository: &FindingsRepository, run_id: &str) {
+        let connection = repository.connection.lock().expect("lock connection");
+        let (status, findings): (String, i64) = connection
+            .query_row(
+                r#"SELECT r.status, COUNT(f.id)
+                   FROM scan_runs r LEFT JOIN findings f ON f.run_id = r.id
+                   WHERE r.id = ?1 GROUP BY r.id"#,
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("query run integrity");
+        assert_eq!(status, "running");
+        assert_eq!(findings, 0);
+    }
+
+    #[test]
     fn interrupted_recovery_preserves_completed_baseline_and_latest_selection() {
         let repository = FindingsRepository::open_in_memory().expect("open repository");
         prepare_run(&repository, "baseline-run");
@@ -1402,6 +1795,132 @@ mod tests {
     }
 
     #[test]
+    fn start_run_rejects_completed_id_collision_without_changing_original() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "completed-collision");
+        repository
+            .complete_run(
+                &run_detail("completed-collision", RunStatus::Completed, Vec::new()),
+                &CoverageManifest::from_entries([("src/lib.rs", ["vulnerability"])]),
+            )
+            .expect("complete original run");
+        let before = stored_run_identity(&repository, "completed-collision");
+
+        let error = repository
+            .start_run(
+                &run_detail("completed-collision", RunStatus::Running, Vec::new()),
+                "scanner-1.0",
+                &ScanOptions::default(),
+            )
+            .expect_err("completed run ID must not restart");
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(
+            stored_run_identity(&repository, "completed-collision"),
+            before
+        );
+    }
+
+    #[test]
+    fn start_run_rejects_incomplete_id_collision_without_changing_original() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "incomplete-collision");
+        repository
+            .mark_incomplete(
+                "incomplete-collision",
+                "2026-08-20T10:30:00Z",
+                "scanner_failed",
+            )
+            .expect("mark original incomplete");
+        let before = stored_run_identity(&repository, "incomplete-collision");
+
+        let error = repository
+            .start_run(
+                &run_detail("incomplete-collision", RunStatus::Running, Vec::new()),
+                "scanner-1.0",
+                &ScanOptions::default(),
+            )
+            .expect_err("incomplete run ID must not restart");
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(
+            stored_run_identity(&repository, "incomplete-collision"),
+            before
+        );
+    }
+
+    #[test]
+    fn start_run_rejects_mismatched_running_collision_without_changing_original() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "running-collision");
+        let before = stored_run_identity(&repository, "running-collision");
+
+        let error = repository
+            .start_run(
+                &run_detail("running-collision", RunStatus::Running, Vec::new()),
+                "different-scanner-version",
+                &ScanOptions::default(),
+            )
+            .expect_err("mismatched running collision must fail");
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(
+            stored_run_identity(&repository, "running-collision"),
+            before
+        );
+    }
+
+    fn stored_run_identity(
+        repository: &FindingsRepository,
+        run_id: &str,
+    ) -> (
+        String,
+        String,
+        Option<String>,
+        String,
+        u16,
+        String,
+        String,
+        Option<String>,
+        String,
+    ) {
+        repository
+            .connection
+            .lock()
+            .expect("lock connection")
+            .query_row(
+                r#"SELECT status, project_id, baseline_run_id, scanner_version,
+                          fingerprint_version, options_json, policy_status_json, policy_hash,
+                          started_at
+                   FROM scan_runs WHERE id = ?1"#,
+                [run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .expect("load stored run identity")
+    }
+
+    #[test]
     fn recent_projects_report_latest_completed_open_counts() {
         let repository = FindingsRepository::open_in_memory().expect("open repository");
         prepare_run(&repository, "recent-completed");
@@ -1433,6 +1952,50 @@ mod tests {
         assert_eq!(recent[0].open_findings, 1);
         assert_eq!(recent[0].critical, 0);
         assert_eq!(recent[0].high, 1);
+    }
+
+    #[test]
+    fn recent_open_counts_exclude_nonproduction_candidates_but_include_confirmed() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "scope-count-run");
+        let mut test_candidate = finding("test-candidate", "test-candidate-fingerprint");
+        test_candidate.scope = Some(FindingScope::Test);
+        let mut documentation_confirmed = finding("docs-confirmed", "docs-confirmed-fingerprint");
+        documentation_confirmed.scope = Some(FindingScope::Documentation);
+        documentation_confirmed.severity = "critical".into();
+        repository
+            .complete_run(
+                &run_detail(
+                    "scope-count-run",
+                    RunStatus::Completed,
+                    vec![test_candidate, documentation_confirmed],
+                ),
+                &CoverageManifest::from_entries([
+                    ("src/config.rs", ["secret"]),
+                    ("docs/example.md", ["secret"]),
+                ]),
+            )
+            .expect("complete scoped run");
+        {
+            let connection = repository.connection.lock().expect("lock connection");
+            connection
+                .execute(
+                    r#"INSERT INTO reviews(
+                         id, project_id, fingerprint_version, fingerprint, state, reason,
+                         gates_json, origin, updated_at
+                       ) VALUES ('docs-confirmation', 'project-1', ?1,
+                                 'docs-confirmed-fingerprint', 'confirmed', 'verified', '[]',
+                                 'local', '2026-08-20T11:00:00Z')"#,
+                    [FINGERPRINT_VERSION],
+                )
+                .expect("insert confirmation");
+        }
+
+        let recent = repository.list_recent_projects(1).expect("list project");
+
+        assert_eq!(recent[0].open_findings, 1);
+        assert_eq!(recent[0].critical, 1);
+        assert_eq!(recent[0].high, 0);
     }
 
     #[test]
@@ -1560,9 +2123,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn file_database_uses_wal_and_owner_only_modes() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn missing_database_parent_is_created_owner_only() {
         let temporary = tempfile::tempdir().expect("temporary root");
         let parent = temporary.path().join("private");
         let database = parent.join("findings.sqlite3");
@@ -1576,13 +2137,82 @@ mod tests {
         assert_eq!(journal_mode, "wal");
         assert_eq!(mode(&parent), 0o700);
         assert_eq!(mode(&database), 0o600);
+    }
 
-        fn mode(path: &Path) -> u32 {
-            std::fs::metadata(path)
-                .expect("read metadata")
-                .permissions()
-                .mode()
-                & 0o777
-        }
+    #[cfg(unix)]
+    #[test]
+    fn existing_insecure_parent_is_rejected_without_changing_its_mode() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let parent = temporary.path().join("shared");
+        std::fs::create_dir(&parent).expect("create shared parent");
+        set_mode(&parent, 0o755);
+        let database = parent.join("findings.sqlite3");
+
+        let result = FindingsRepository::open(&database);
+
+        assert!(result.is_err());
+        assert_eq!(mode(&parent), 0o755);
+        assert!(!database.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_database_parent_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let real_parent = temporary.path().join("real-parent");
+        std::fs::create_dir(&real_parent).expect("create real parent");
+        set_mode(&real_parent, 0o700);
+        let linked_parent = temporary.path().join("linked-parent");
+        symlink(&real_parent, &linked_parent).expect("create parent symlink");
+
+        let result = FindingsRepository::open(linked_parent.join("findings.sqlite3"));
+
+        assert!(result.is_err());
+        assert!(!real_parent.join("findings.sqlite3").exists());
+        assert_eq!(mode(&real_parent), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_database_file_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let parent = temporary.path().join("private");
+        std::fs::create_dir(&parent).expect("create private parent");
+        set_mode(&parent, 0o700);
+        let real_database = parent.join("real.sqlite3");
+        std::fs::write(&real_database, []).expect("create target file");
+        set_mode(&real_database, 0o600);
+        let linked_database = parent.join("linked.sqlite3");
+        symlink(&real_database, &linked_database).expect("create database symlink");
+
+        let result = FindingsRepository::open(&linked_database);
+
+        assert!(result.is_err());
+        assert_eq!(mode(&real_database), 0o600);
+        assert_eq!(
+            std::fs::metadata(&real_database)
+                .expect("target metadata")
+                .len(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_private_parent_accepts_a_new_database() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let parent = temporary.path().join("private");
+        std::fs::create_dir(&parent).expect("create private parent");
+        set_mode(&parent, 0o700);
+        let database = parent.join("findings.sqlite3");
+
+        FindingsRepository::open(&database).expect("open database in private parent");
+
+        assert_eq!(mode(&parent), 0o700);
+        assert_eq!(mode(&database), 0o600);
     }
 }
