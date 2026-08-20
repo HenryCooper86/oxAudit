@@ -172,10 +172,7 @@ pub fn parse_report(raw: &str, target: &str, duration_ms: u64) -> Result<BinaryS
         std::collections::BTreeMap::new();
 
     for entry in report.matches {
-        let key = (
-            entry.artifact.name.clone(),
-            entry.artifact.version.clone(),
-        );
+        let key = (entry.artifact.name.clone(), entry.artifact.version.clone());
         let component = grouped.entry(key).or_insert_with(|| BinaryComponent {
             // grype does not report a vendor; leaving it blank lets the merge
             // take cve-bin-tool's when both saw the component.
@@ -225,7 +222,11 @@ pub fn parse_report(raw: &str, target: &str, duration_ms: u64) -> Result<BinaryS
                 .namespace
                 .or(entry.vulnerability.data_source)
                 .unwrap_or_else(|| GRYPE.to_string()),
-            remarks: entry.vulnerability.fix.as_ref().and_then(|f| f.state.clone()),
+            remarks: entry
+                .vulnerability
+                .fix
+                .as_ref()
+                .and_then(|f| f.state.clone()),
             epss_probability: entry.vulnerability.epss.first().and_then(|e| e.epss),
             epss_percentile: None,
             known_exploited: false,
@@ -302,7 +303,6 @@ mod tests {
       "descriptor": {"db": {"status": {"built": "2026-08-19T06:16:13Z"}}}
     }"#;
 
-
     /// Captured from a real `grype dir:… -o json` run against macOS dylibs.
     /// A hand-written sample cannot catch a field grype renames or nests
     /// differently; this can.
@@ -345,7 +345,11 @@ mod tests {
         let result = parse_report(SAMPLE, "/fw", 900).unwrap();
 
         assert_eq!(result.summary.components, 2);
-        let curl = result.components.iter().find(|c| c.product == "curl").unwrap();
+        let curl = result
+            .components
+            .iter()
+            .find(|c| c.product == "curl")
+            .unwrap();
         assert_eq!(curl.vulnerabilities.len(), 2);
         assert_eq!(curl.paths, vec!["/curl".to_string()]);
     }
@@ -353,12 +357,24 @@ mod tests {
     #[test]
     fn a_fixed_version_is_captured_but_not_invented_for_unfixed_cves() {
         let result = parse_report(SAMPLE, "/fw", 0).unwrap();
-        let curl = result.components.iter().find(|c| c.product == "curl").unwrap();
+        let curl = result
+            .components
+            .iter()
+            .find(|c| c.product == "curl")
+            .unwrap();
 
-        let fixed = curl.vulnerabilities.iter().find(|v| v.cve_id == "CVE-2026-11856").unwrap();
+        let fixed = curl
+            .vulnerabilities
+            .iter()
+            .find(|v| v.cve_id == "CVE-2026-11856")
+            .unwrap();
         assert_eq!(fixed.fixed_in.as_deref(), Some("8.9.0"));
 
-        let unfixed = curl.vulnerabilities.iter().find(|v| v.cve_id == "CVE-2024-6197").unwrap();
+        let unfixed = curl
+            .vulnerabilities
+            .iter()
+            .find(|v| v.cve_id == "CVE-2024-6197")
+            .unwrap();
         assert_eq!(unfixed.fixed_in, None, "a not-fixed CVE has no fix version");
     }
 
@@ -366,13 +382,20 @@ mod tests {
     fn grype_leaves_the_vendor_blank_so_the_merge_can_take_the_better_one() {
         let result = parse_report(SAMPLE, "/fw", 0).unwrap();
         assert!(result.components.iter().all(|c| c.vendor.is_empty()));
-        assert!(result.components.iter().all(|c| c.detected_by == vec![GRYPE.to_string()]));
+        assert!(result
+            .components
+            .iter()
+            .all(|c| c.detected_by == vec![GRYPE.to_string()]));
     }
 
     #[test]
     fn negligible_maps_onto_info_rather_than_inventing_a_severity() {
         let result = parse_report(SAMPLE, "/fw", 0).unwrap();
-        let zlib = result.components.iter().find(|c| c.product == "zlib").unwrap();
+        let zlib = result
+            .components
+            .iter()
+            .find(|c| c.product == "zlib")
+            .unwrap();
 
         assert_eq!(zlib.vulnerabilities[0].severity, "info");
         assert_eq!(result.summary.low, 0, "info must not inflate the low count");
@@ -381,19 +404,34 @@ mod tests {
     #[test]
     fn epss_is_captured_when_grype_reports_it() {
         let result = parse_report(SAMPLE, "/fw", 0).unwrap();
-        let curl = result.components.iter().find(|c| c.product == "curl").unwrap();
+        let curl = result
+            .components
+            .iter()
+            .find(|c| c.product == "curl")
+            .unwrap();
 
-        let scored = curl.vulnerabilities.iter().find(|v| v.cve_id == "CVE-2026-11856").unwrap();
+        let scored = curl
+            .vulnerabilities
+            .iter()
+            .find(|v| v.cve_id == "CVE-2026-11856")
+            .unwrap();
         assert_eq!(scored.epss_probability, Some(0.17301));
 
-        let without = curl.vulnerabilities.iter().find(|v| v.cve_id == "CVE-2024-6197").unwrap();
+        let without = curl
+            .vulnerabilities
+            .iter()
+            .find(|v| v.cve_id == "CVE-2024-6197")
+            .unwrap();
         assert_eq!(without.epss_probability, None);
     }
 
     #[test]
     fn the_database_build_date_is_read_from_the_descriptor() {
         let result = parse_report(SAMPLE, "/fw", 0).unwrap();
-        assert_eq!(result.database_last_updated.as_deref(), Some("2026-08-19T06:16:13Z"));
+        assert_eq!(
+            result.database_last_updated.as_deref(),
+            Some("2026-08-19T06:16:13Z")
+        );
     }
 
     #[test]

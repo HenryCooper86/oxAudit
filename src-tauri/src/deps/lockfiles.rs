@@ -133,11 +133,7 @@ fn parse_yarn_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     let mut current_names: Vec<String> = Vec::new();
     let mut current_version: Option<String> = None;
 
-    fn flush(
-        names: &[String],
-        version: Option<&String>,
-        out: &mut Vec<(String, String)>,
-    ) {
+    fn flush(names: &[String], version: Option<&String>, out: &mut Vec<(String, String)>) {
         if let Some(v) = version {
             for n in names {
                 if !n.is_empty() {
@@ -310,7 +306,8 @@ fn parse_gemfile_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         }
         if !line.starts_with(' ') && !line.starts_with('\t') {
             // top-level section header
-            in_gem_section = trimmed == "GEM" || trimmed.starts_with("GIT") || trimmed.starts_with("PATH");
+            in_gem_section =
+                trimmed == "GEM" || trimmed.starts_with("GIT") || trimmed.starts_with("PATH");
             continue;
         }
         if !in_gem_section {
@@ -398,7 +395,12 @@ fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
             }
             Ok(Event::Text(t)) => {
                 if in_dependency {
-                    let text = t.unescape().unwrap_or_default().into_owned().trim().to_string();
+                    let text = t
+                        .unescape()
+                        .unwrap_or_default()
+                        .into_owned()
+                        .trim()
+                        .to_string();
                     if text.is_empty() {
                         buf.clear();
                         continue;
@@ -486,13 +488,22 @@ fn parse_requirements(content: &str) -> Result<Vec<(String, String)>, String> {
         let name = name.trim_matches(['[', ']', ' ', '\'', '"']).to_string();
         if let Some(v) = version {
             let v = v.trim_matches([' ', '\'', '"', ',']);
-            if !name.is_empty() && !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c.is_ascii_alphabetic() || matches!(c, '.' | '-' | '_' | '!')) {
+            if !name.is_empty()
+                && !v.is_empty()
+                && v.chars().all(|c| {
+                    c.is_ascii_digit()
+                        || c.is_ascii_alphabetic()
+                        || matches!(c, '.' | '-' | '_' | '!')
+                })
+            {
                 out.push((name, v.to_string()));
             }
         }
     }
     if out.is_empty() {
-        return Err("no pinned requirements found (unpinned packages can't be checked against OSV)".into());
+        return Err(
+            "no pinned requirements found (unpinned packages can't be checked against OSV)".into(),
+        );
     }
     Ok(out)
 }

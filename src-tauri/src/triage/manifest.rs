@@ -215,7 +215,10 @@ mod tests {
         let error = manifest
             .reconcile(vec![verdict("F-1"), verdict("F-1"), verdict("F-2")])
             .expect_err("must reject");
-        assert_eq!(error, ManifestError::ConflictingVerdicts(vec!["F-1".into()]));
+        assert_eq!(
+            error,
+            ManifestError::ConflictingVerdicts(vec!["F-1".into()])
+        );
     }
 
     #[test]
@@ -223,14 +226,20 @@ mod tests {
         // Catching it later would mean every count in the report is already
         // wrong by the time anyone notices.
         let error = Manifest::new(["F-1", "F-2", "F-1"]).expect_err("must reject");
-        assert_eq!(error, ManifestError::DuplicateCandidates(vec!["F-1".into()]));
+        assert_eq!(
+            error,
+            ManifestError::DuplicateCandidates(vec!["F-1".into()])
+        );
     }
 
     #[test]
     fn an_empty_manifest_reconciles_with_no_verdicts() {
         let manifest = Manifest::new(Vec::<String>::new()).expect("builds");
         assert!(manifest.is_empty());
-        assert!(manifest.reconcile(Vec::new()).expect("reconciles").is_empty());
+        assert!(manifest
+            .reconcile(Vec::new())
+            .expect("reconciles")
+            .is_empty());
     }
 
     #[test]

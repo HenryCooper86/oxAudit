@@ -18,7 +18,11 @@ use errors::LlmError;
 
 /// One typed event in the AI stream, emitted to the frontend as `ai://event`.
 #[derive(Serialize, Clone, Debug)]
-#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum AiStreamEvent {
     /// A text fragment.
     Delta { content: String },
@@ -131,13 +135,19 @@ impl AiClient {
             // No total timeout for streams: a long generation would trip it.
             // Idle protection is handled per-chunk inside stream_chat; connect
             // timeout is set on the shared client (see AppState::new).
-            builder = builder.timeout(std::time::Duration::from_secs(settings.timeout_secs.max(10)));
+            builder = builder.timeout(std::time::Duration::from_secs(
+                settings.timeout_secs.max(10),
+            ));
         }
         builder
     }
 
     /// Send a non-streaming chat completion request (OpenAI-compatible API).
-    pub async fn chat(&self, settings: &AiSettings, req: ChatRequest) -> Result<ChatResponse, String> {
+    pub async fn chat(
+        &self,
+        settings: &AiSettings,
+        req: ChatRequest,
+    ) -> Result<ChatResponse, String> {
         let url = format!("{}/chat/completions", Self::base_url(settings));
         let body = Self::request_body(settings, &req, false);
         let resp = self
@@ -173,11 +183,18 @@ impl AiClient {
         let model = json.get("model").and_then(|m| m.as_str()).map(String::from);
         let usage = json.get("usage").map(|u| Usage {
             prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            completion_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            completion_tokens: u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
             total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         });
 
-        Ok(ChatResponse { content, model, usage })
+        Ok(ChatResponse {
+            content,
+            model,
+            usage,
+        })
     }
 
     /// Stream a model turn against wire-ready `messages` + OpenAI tool
@@ -212,7 +229,8 @@ impl AiClient {
                         let err = LlmError::NetworkError(e.to_string());
                         if attempt < 2 && err.is_transient() {
                             attempt += 1;
-                            tokio::time::sleep(std::time::Duration::from_secs(attempt as u64)).await;
+                            tokio::time::sleep(std::time::Duration::from_secs(attempt as u64))
+                                .await;
                             continue;
                         }
                         return Err(err);
@@ -233,9 +251,9 @@ impl AiClient {
 
             // one retry for transient failures / rate limits
             let retry_delay = match &err {
-                LlmError::RateLimited { retry_after_secs } => {
-                    Some(std::time::Duration::from_secs(retry_after_secs.unwrap_or(1).min(10)))
-                }
+                LlmError::RateLimited { retry_after_secs } => Some(std::time::Duration::from_secs(
+                    retry_after_secs.unwrap_or(1).min(10),
+                )),
                 e if e.is_transient() => Some(std::time::Duration::from_secs(2)),
                 _ => None,
             };
@@ -297,12 +315,14 @@ impl AiClient {
                 };
                 if let Some(u) = parsed.get("usage") {
                     let usage = Usage {
-                        prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                        prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
+                            as u32,
                         completion_tokens: u
                             .get("completion_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0) as u32,
-                        total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                        total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
+                            as u32,
                     };
                     final_usage = Some(usage.clone());
                     on_event(AiStreamEvent::Usage { usage });
@@ -316,12 +336,16 @@ impl AiClient {
                         if let Some(c) = delta.get("content").and_then(|v| v.as_str()) {
                             if !c.is_empty() {
                                 full_text.push_str(c);
-                                on_event(AiStreamEvent::Delta { content: c.to_string() });
+                                on_event(AiStreamEvent::Delta {
+                                    content: c.to_string(),
+                                });
                             }
                         }
                         if let Some(r) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
                             if !r.is_empty() {
-                                on_event(AiStreamEvent::Reasoning { content: r.to_string() });
+                                on_event(AiStreamEvent::Reasoning {
+                                    content: r.to_string(),
+                                });
                             }
                         }
                         if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
@@ -465,7 +489,9 @@ Sections: 1) Summary in plain language, 2) Affected components and versions, \
 record above — do not invent), 5) Mitigation & patching guidance, 6) Detection/hunting ideas.",
         cve.id,
         cve.severity.as_deref().unwrap_or("unknown"),
-        cve.cvss_score.map(|s| s.to_string()).unwrap_or_else(|| "n/a".into()),
+        cve.cvss_score
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "n/a".into()),
         cve.published.as_deref().unwrap_or("unknown"),
         cve.modified.as_deref().unwrap_or("unknown"),
         cve.affected_products.join(", "),
@@ -510,7 +536,13 @@ impl ToolCallAccumulator {
     /// Feed one streamed delta. `index` may be None (some OpenAI-compat
     /// surfaces, e.g. Gemini): then the delta is assigned the next sequential
     /// slot — defaulting to 0 would merge parallel calls into one corrupt entry.
-    fn process_delta(&mut self, index: Option<usize>, id: Option<&str>, name: Option<&str>, args: Option<&str>) {
+    fn process_delta(
+        &mut self,
+        index: Option<usize>,
+        id: Option<&str>,
+        name: Option<&str>,
+        args: Option<&str>,
+    ) {
         let idx = match index {
             Some(i) => i,
             None => self.entries.len(),
@@ -543,10 +575,13 @@ impl ToolCallAccumulator {
                 let arguments = if raw.is_empty() {
                     serde_json::json!({})
                 } else {
-                    serde_json::from_str(raw)
-                        .unwrap_or_else(|_| serde_json::json!({ "raw": raw }))
+                    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({ "raw": raw }))
                 };
-                out.push(ToolCall { id, name, arguments });
+                out.push(ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
             }
         }
         out
@@ -560,7 +595,12 @@ mod tests {
     #[test]
     fn accumulates_single_call() {
         let mut acc = ToolCallAccumulator::new();
-        acc.process_delta(Some(0), Some("call_1"), Some("search_cve"), Some("{\"query\": \"log4"));
+        acc.process_delta(
+            Some(0),
+            Some("call_1"),
+            Some("search_cve"),
+            Some("{\"query\": \"log4"),
+        );
         acc.process_delta(Some(0), None, None, Some("j\"}"));
         let calls = acc.drain();
         assert_eq!(calls.len(), 1);
@@ -572,8 +612,18 @@ mod tests {
     #[test]
     fn parallel_calls_with_indices() {
         let mut acc = ToolCallAccumulator::new();
-        acc.process_delta(Some(0), Some("a"), Some("glob"), Some("{\"pattern\": \"**/*.rs\"}"));
-        acc.process_delta(Some(1), Some("b"), Some("grep_project"), Some("{\"pattern\": \"eval\"}"));
+        acc.process_delta(
+            Some(0),
+            Some("a"),
+            Some("glob"),
+            Some("{\"pattern\": \"**/*.rs\"}"),
+        );
+        acc.process_delta(
+            Some(1),
+            Some("b"),
+            Some("grep_project"),
+            Some("{\"pattern\": \"eval\"}"),
+        );
         let calls = acc.drain();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].name, "glob");
@@ -585,7 +635,12 @@ mod tests {
         // the y-agent fix: index=None must NOT collapse into slot 0
         let mut acc = ToolCallAccumulator::new();
         acc.process_delta(None, Some("x"), Some("glob"), Some("{\"pattern\": \"a\"}"));
-        acc.process_delta(None, Some("y"), Some("search_cve"), Some("{\"query\": \"b\"}"));
+        acc.process_delta(
+            None,
+            Some("y"),
+            Some("search_cve"),
+            Some("{\"query\": \"b\"}"),
+        );
         let calls = acc.drain();
         assert_eq!(calls.len(), 2, "both calls must survive");
         assert_eq!(calls[0].name, "glob");

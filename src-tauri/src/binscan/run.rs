@@ -328,7 +328,12 @@ mod tests {
         let mut req = request("/fw");
         req.offline = true;
         req.update = Some("now".into());
-        let args = build_args(Path::new("/fw"), Path::new("/tmp/o.json"), &req, Some("secret-key"));
+        let args = build_args(
+            Path::new("/fw"),
+            Path::new("/tmp/o.json"),
+            &req,
+            Some("secret-key"),
+        );
 
         assert!(args.iter().any(|a| a == "--offline"));
         assert!(!args.iter().any(|a| a == "--update"));
@@ -340,10 +345,20 @@ mod tests {
 
     #[test]
     fn an_online_scan_forwards_a_non_blank_api_key_only() {
-        let args = build_args(Path::new("/fw"), Path::new("/o.json"), &request("/fw"), Some("k"));
+        let args = build_args(
+            Path::new("/fw"),
+            Path::new("/o.json"),
+            &request("/fw"),
+            Some("k"),
+        );
         assert!(args.windows(2).any(|w| w == ["--nvd-api-key", "k"]));
 
-        let args = build_args(Path::new("/fw"), Path::new("/o.json"), &request("/fw"), Some("   "));
+        let args = build_args(
+            Path::new("/fw"),
+            Path::new("/o.json"),
+            &request("/fw"),
+            Some("   "),
+        );
         assert!(!args.iter().any(|a| a == "--nvd-api-key"));
     }
 

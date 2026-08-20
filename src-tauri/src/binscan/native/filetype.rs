@@ -44,7 +44,10 @@ pub enum Format {
 impl Classification {
     /// Should the string extractor run on this file?
     pub fn is_scannable(self) -> bool {
-        matches!(self, Classification::Executable(_) | Classification::OpaqueBinary)
+        matches!(
+            self,
+            Classification::Executable(_) | Classification::OpaqueBinary
+        )
     }
 }
 
@@ -61,7 +64,9 @@ pub fn classify(prefix: &[u8]) -> Classification {
         return Classification::Executable(format);
     }
     // gettext MO magic, either endianness (0x950412de).
-    if prefix.starts_with(&[0xde, 0x12, 0x04, 0x95]) || prefix.starts_with(&[0x95, 0x04, 0x12, 0xde]) {
+    if prefix.starts_with(&[0xde, 0x12, 0x04, 0x95])
+        || prefix.starts_with(&[0x95, 0x04, 0x12, 0xde])
+    {
         return Classification::Localization;
     }
     if looks_binary(prefix) {

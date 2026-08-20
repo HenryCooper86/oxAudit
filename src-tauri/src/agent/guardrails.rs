@@ -111,7 +111,10 @@ mod tests {
         let args = json!({"pattern": "eval"});
         assert!(!g.record("grep_project", &args));
         assert!(!g.record("grep_project", &args));
-        assert!(g.record("grep_project", &args), "3x same tool+args must stop");
+        assert!(
+            g.record("grep_project", &args),
+            "3x same tool+args must stop"
+        );
     }
 
     #[test]

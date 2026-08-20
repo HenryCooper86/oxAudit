@@ -127,7 +127,10 @@ pub enum TriageError {
     /// An elimination that does not say which gate decided it, or why.
     UnsupportedElimination { finding_id: String, reason: String },
     /// A confirmation while a gate is still unanswered.
-    IncompleteConfirmation { finding_id: String, unanswered: Vec<Gate> },
+    IncompleteConfirmation {
+        finding_id: String,
+        unanswered: Vec<Gate>,
+    },
 }
 
 impl std::fmt::Display for TriageError {
@@ -297,10 +300,7 @@ mod tests {
             "2026-08-20",
         )
         .expect_err("must refuse");
-        assert!(matches!(
-            error,
-            TriageError::UnsupportedElimination { .. }
-        ));
+        assert!(matches!(error, TriageError::UnsupportedElimination { .. }));
     }
 
     #[test]
@@ -316,10 +316,7 @@ mod tests {
             "2026-08-20",
         )
         .expect_err("must refuse");
-        assert!(matches!(
-            error,
-            TriageError::UnsupportedElimination { .. }
-        ));
+        assert!(matches!(error, TriageError::UnsupportedElimination { .. }));
     }
 
     #[test]
@@ -337,10 +334,7 @@ mod tests {
             "2026-08-20",
         )
         .expect_err("must refuse");
-        assert!(matches!(
-            error,
-            TriageError::UnsupportedElimination { .. }
-        ));
+        assert!(matches!(error, TriageError::UnsupportedElimination { .. }));
     }
 
     #[test]

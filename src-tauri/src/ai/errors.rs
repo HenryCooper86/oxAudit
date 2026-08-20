@@ -168,7 +168,12 @@ mod tests {
     #[test]
     fn rate_limited_from_429() {
         let e = classify(429, "Too many requests", Some(7));
-        assert!(matches!(e, LlmError::RateLimited { retry_after_secs: Some(7) }));
+        assert!(matches!(
+            e,
+            LlmError::RateLimited {
+                retry_after_secs: Some(7)
+            }
+        ));
     }
 
     #[test]
@@ -185,7 +190,11 @@ mod tests {
 
     #[test]
     fn context_window_from_400() {
-        let e = classify(400, "This model's maximum context length is 128000 tokens", None);
+        let e = classify(
+            400,
+            "This model's maximum context length is 128000 tokens",
+            None,
+        );
         assert!(matches!(e, LlmError::ContextWindowExceeded));
     }
 
@@ -206,6 +215,11 @@ mod tests {
     #[test]
     fn retry_after_from_body() {
         let e = classify(429, r#"{"error":{"retry_after":12}}"#, None);
-        assert!(matches!(e, LlmError::RateLimited { retry_after_secs: Some(12) }));
+        assert!(matches!(
+            e,
+            LlmError::RateLimited {
+                retry_after_secs: Some(12)
+            }
+        ));
     }
 }

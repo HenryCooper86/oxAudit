@@ -136,9 +136,7 @@ impl BytePattern {
                 }
                 _ if character.is_ascii_hexdigit() => {
                     nibbles.push(Some(
-                        character
-                            .to_digit(16)
-                            .expect("checked to be a hex digit") as u8,
+                        character.to_digit(16).expect("checked to be a hex digit") as u8,
                     ));
                     token.push(character);
                 }
@@ -399,7 +397,10 @@ mod tests {
     fn a_plain_hex_pattern_parses_and_matches_exactly() {
         let pattern = BytePattern::parse("60 21 85 52").expect("parses");
         assert_eq!(pattern.len(), 4);
-        assert_eq!(pattern.find_all(&[0x00, 0x60, 0x21, 0x85, 0x52, 0xff]), vec![1]);
+        assert_eq!(
+            pattern.find_all(&[0x00, 0x60, 0x21, 0x85, 0x52, 0xff]),
+            vec![1]
+        );
         assert!(pattern.find_all(&[0x60, 0x21, 0x85, 0x53]).is_empty());
     }
 
@@ -556,7 +557,10 @@ mod tests {
     fn a_word_that_is_not_a_movz_decodes_to_nothing() {
         // Reading the operand bits out of some other instruction would invent
         // a version number from unrelated code.
-        assert_eq!(Encoding::Arm64MovzImm16.read(&[0xc0, 0x03, 0x5f, 0xd6]), None);
+        assert_eq!(
+            Encoding::Arm64MovzImm16.read(&[0xc0, 0x03, 0x5f, 0xd6]),
+            None
+        );
         assert_eq!(Encoding::Arm64MovzImm16.read(&[0x00, 0x00]), None);
     }
 
@@ -564,8 +568,14 @@ mod tests {
     fn plain_integer_encodings_read_both_ways_round() {
         assert_eq!(Encoding::U16Le.read(&[0x0b, 0x29]), Some(0x290b));
         assert_eq!(Encoding::U16Be.read(&[0x29, 0x0b]), Some(0x290b));
-        assert_eq!(Encoding::U32Le.read(&[0x0b, 0x29, 0x00, 0x00]), Some(0x290b));
-        assert_eq!(Encoding::U32Be.read(&[0x00, 0x00, 0x29, 0x0b]), Some(0x290b));
+        assert_eq!(
+            Encoding::U32Le.read(&[0x0b, 0x29, 0x00, 0x00]),
+            Some(0x290b)
+        );
+        assert_eq!(
+            Encoding::U32Be.read(&[0x00, 0x00, 0x29, 0x0b]),
+            Some(0x290b)
+        );
         assert_eq!(Encoding::U32Le.read(&[0x01]), None);
     }
 
@@ -646,13 +656,22 @@ mod tests {
     fn a_major_minor_pair_renders_as_two_components() {
         // nettle has no combined constant — major and minor come from two
         // separate one-instruction accessors.
-        assert_eq!(VersionFormula::MajorMinor.render(0x030a).as_deref(), Some("3.10"));
+        assert_eq!(
+            VersionFormula::MajorMinor.render(0x030a).as_deref(),
+            Some("3.10")
+        );
         assert_eq!(VersionFormula::MajorMinor.render(0x0008), None, "no major");
     }
 
     #[test]
     fn the_zlib_and_curl_constants_render_as_their_releases() {
-        assert_eq!(VersionFormula::NibbleHex.render(0x1310).as_deref(), Some("1.3.1"));
-        assert_eq!(VersionFormula::Packed8.render(0x080e01).as_deref(), Some("8.14.1"));
+        assert_eq!(
+            VersionFormula::NibbleHex.render(0x1310).as_deref(),
+            Some("1.3.1")
+        );
+        assert_eq!(
+            VersionFormula::Packed8.render(0x080e01).as_deref(),
+            Some("8.14.1")
+        );
     }
 }
