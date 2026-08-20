@@ -20,6 +20,10 @@ pub struct CveState {
     /// (timestamp, count) of requests in the current 30s window
     pub window: Mutex<(Instant, usize)>,
     pub cache: Mutex<HashMap<String, (Instant, CveSearchResult)>>,
+    /// The CISA KEV catalog, fetched at most once an hour. Research is
+    /// interactive — a user opens several CVEs in a session — so re-downloading
+    /// 1,671 entries per lookup would be wasteful.
+    pub kev: Mutex<Option<(Instant, crate::exploit::KevSet)>>,
 }
 
 impl CveState {
@@ -30,7 +34,32 @@ impl CveState {
             api_key: Mutex::new(None),
             window: Mutex::new((Instant::now(), 0)),
             cache: Mutex::new(HashMap::new()),
+            kev: Mutex::new(None),
         }
+    }
+
+    /// The KEV catalog, from the hour-long cache or freshly fetched.
+    ///
+    /// A failed fetch yields an empty set, never an error: KEV is enrichment,
+    /// and a CVE lookup must not fail because CISA's feed was briefly down.
+    async fn kev_set(&self) -> crate::exploit::KevSet {
+        const KEV_TTL: Duration = Duration::from_secs(60 * 60);
+        if let Some((fetched, set)) = self.kev.lock().unwrap().as_ref() {
+            if fetched.elapsed() < KEV_TTL {
+                return set.clone();
+            }
+        }
+        let set = match self.http.get(crate::exploit::KEV_URL).send().await {
+            Ok(response) if response.status().is_success() => response
+                .text()
+                .await
+                .ok()
+                .and_then(|body| crate::exploit::KevSet::parse(&body).ok())
+                .unwrap_or_default(),
+            _ => crate::exploit::KevSet::default(),
+        };
+        *self.kev.lock().unwrap() = Some((Instant::now(), set.clone()));
+        set
     }
 
     /// Enforce NVD rate limits: 5 req / 30s without a key, 50 with one.
@@ -152,10 +181,34 @@ pub async fn cve_detail(state: &CveState, id: &str) -> Result<CveDetail, String>
     let json = state.nvd_get(&[("cveId", id.clone())]).await?;
     let raw = json.clone();
     let items = parse_cve_items(json);
-    let item = items
+    let mut item = items
         .into_iter()
         .find(|i| i.id == id)
         .ok_or_else(|| format!("CVE {id} not found in NVD"))?;
+
+    // Exploitation signal: is this CVE known-exploited (KEV), and what is its
+    // EPSS score? Both are best-effort — a failure leaves the fields at their
+    // safe defaults rather than failing the lookup.
+    let kev = state.kev_set().await;
+    let (known_exploited, ransomware) = kev.signal(&id);
+    item.known_exploited = known_exploited;
+    item.ransomware = ransomware;
+    if let Ok(body) = state
+        .http
+        .get("https://api.first.org/data/v1/epss")
+        .query(&[("cve", id.as_str())])
+        .send()
+        .await
+    {
+        if let Ok(text) = body.text().await {
+            if let Ok(scores) = crate::exploit::parse_epss(&text) {
+                if let Some((epss, percentile)) = scores.get(&id) {
+                    item.epss = Some(*epss);
+                    item.epss_percentile = Some(*percentile);
+                }
+            }
+        }
+    }
 
     let osv = state
         .osv
@@ -273,6 +326,10 @@ fn parse_cve_items(json: Value) -> Vec<CveItem> {
             affected_products: products,
             references,
             cwes,
+            epss: None,
+            epss_percentile: None,
+            known_exploited: false,
+            ransomware: false,
         });
     }
     items
