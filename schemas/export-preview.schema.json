@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oxaudit.local/schemas/export-preview-v1.json",
+  "title": "oxAudit export preview",
+  "type": "object",
+  "required": ["format", "mediaType", "suggestedFileName", "valid", "warnings", "content", "truncated"],
+  "properties": {
+    "format": { "type": "string" },
+    "mediaType": { "type": "string" },
+    "suggestedFileName": { "type": "string" },
+    "valid": { "type": "boolean" },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "content": { "type": "string" },
+    "truncated": { "type": "boolean" }
+  }
+}

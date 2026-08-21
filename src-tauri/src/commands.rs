@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,12 +27,1236 @@ use crate::models::{
     LockfileInfo, ScanOptions, ScanSettings, StreamStarted,
 };
 
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleLibraryRuleStatus {
+    id: String,
+    title: String,
+    severity: String,
+    scope: Vec<String>,
+    fixture_health: String,
+    provenance: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleLibraryPackStatus {
+    id: String,
+    name: String,
+    version: String,
+    engine: String,
+    enabled: bool,
+    license: String,
+    source: String,
+    creation_method: String,
+    content_sha256: String,
+    validation: String,
+    rules: Vec<RuleLibraryRuleStatus>,
+    fixture_summary: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulePackValidationPreview {
+    id: String,
+    name: String,
+    version: String,
+    content_sha256: String,
+    rule_count: usize,
+    engines: Vec<String>,
+    fixture_count: usize,
+    license: String,
+    source: String,
+    validation: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityStatus {
+    schema_version: u32,
+    suite_id: String,
+    suite_version: String,
+    description: String,
+    corpus_targets: usize,
+    passed_targets: usize,
+    true_positives: usize,
+    false_positives: usize,
+    false_negatives: usize,
+    precision: Option<f64>,
+    recall: Option<f64>,
+    runtime_ms: u64,
+    misses: Vec<String>,
+    unexpected: Vec<String>,
+    limitation: String,
+    previous_precision: Option<f64>,
+    previous_recall: Option<f64>,
+    regression: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSourceStatus {
+    id: String,
+    name: String,
+    source_url: String,
+    terms_url: String,
+    license: String,
+    state: String,
+    supports_offline: bool,
+    active_snapshot_id: Option<String>,
+    fetched_at_ms: Option<u64>,
+    content_sha256: Option<String>,
+    record_count: Option<u64>,
+    validation: String,
+    limitation: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreview {
+    format: String,
+    media_type: String,
+    suggested_file_name: String,
+    valid: bool,
+    warnings: Vec<String>,
+    artifacts: usize,
+    components: usize,
+    observations: usize,
+    content: String,
+    truncated: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPreview {
+    format: String,
+    media_type: String,
+    file_name: String,
+    content_sha256: String,
+    component_records: usize,
+    finding_records: usize,
+    review_records: usize,
+    conflict_count: usize,
+    conflicts: Vec<String>,
+    unmapped_count: usize,
+    unmapped_records: Vec<String>,
+    warnings: Vec<String>,
+    can_import_inventory: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryIdentityView {
+    method: String,
+    value: String,
+    confidence: f32,
+    artifact_id: String,
+    artifact_path: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryComponentView {
+    id: String,
+    name: String,
+    version: Option<String>,
+    supplier: Option<String>,
+    ecosystem: Option<String>,
+    purl: Option<String>,
+    cpes: Vec<String>,
+    aliases: Vec<String>,
+    identities: Vec<InventoryIdentityView>,
+    advisory_ids: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InventoryView {
+    run_id: String,
+    target_label: String,
+    run_kind: oxaudit_domain::RunKind,
+    updated_at_ms: u64,
+    provider_snapshot_count: usize,
+    components: Vec<InventoryComponentView>,
+}
+
+fn report_data(
+    service: &FindingsService,
+    run_id: &oxaudit_domain::RunId,
+) -> Result<crate::adapters::reporting::ReportData, String> {
+    let run = service
+        .repository()
+        .canonical_load_run(run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "run was not found".to_string())?;
+    let (artifacts, components, observations) = service
+        .repository()
+        .canonical_load_report_graph(run_id)
+        .map_err(|error| error.to_string())?;
+    let projection = service
+        .repository()
+        .canonical_load_projection(run_id)
+        .map_err(|error| error.to_string())?;
+    Ok(crate::adapters::reporting::ReportData {
+        run,
+        artifacts,
+        components,
+        observations,
+        projection,
+    })
+}
+
+fn read_import_report(
+    path: &str,
+) -> Result<
+    (
+        PathBuf,
+        Vec<u8>,
+        crate::adapters::reporting::import::ImportAnalysis,
+    ),
+    String,
+> {
+    let path = Path::new(path)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the report: {error}"))?;
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("cannot inspect the report: {error}"))?;
+    if !metadata.is_file() {
+        return Err("the selected report is not a file".into());
+    }
+    if metadata.len() > crate::adapters::reporting::import::MAX_IMPORT_BYTES {
+        return Err("the selected report exceeds the 16 MiB import limit".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|error| format!("cannot read the report: {error}"))?;
+    let analysis = crate::adapters::reporting::import::inspect(&bytes)?;
+    Ok((path, bytes, analysis))
+}
+
+fn imported_component_conflicts(
+    service: &FindingsService,
+    analysis: &crate::adapters::reporting::import::ImportAnalysis,
+) -> Result<Vec<String>, String> {
+    let mut existing = std::collections::BTreeMap::<String, String>::new();
+    for run in service
+        .repository()
+        .canonical_list_runs(None, 100)
+        .map_err(|error| error.to_string())?
+    {
+        let (_, components, _) = service
+            .repository()
+            .canonical_load_report_graph(&run.id)
+            .map_err(|error| error.to_string())?;
+        for component in components {
+            let key = component.purl.clone().unwrap_or_else(|| {
+                format!(
+                    "{}\0{}",
+                    component.name.trim().to_ascii_lowercase(),
+                    component
+                        .version
+                        .as_deref()
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase()
+                )
+            });
+            existing.entry(key).or_insert_with(|| {
+                format!(
+                    "{} {} in {}",
+                    component.name,
+                    component.version.unwrap_or_default(),
+                    run.target_label
+                )
+            });
+        }
+    }
+    let mut conflicts = analysis
+        .components
+        .iter()
+        .filter_map(|component| {
+            existing.get(&component.conflict_key()).map(|matched| {
+                format!(
+                    "{} {} matches existing {}",
+                    component.name,
+                    component.version.as_deref().unwrap_or("version unknown"),
+                    matched
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    conflicts.sort();
+    conflicts.dedup();
+    Ok(conflicts)
+}
+
+#[tauri::command]
+pub fn preview_report_import(
+    findings: State<'_, FindingsState>,
+    path: String,
+) -> Result<ImportPreview, String> {
+    let (path, _, analysis) = read_import_report(&path)?;
+    let service = findings.service().map_err(|error| error.to_string())?;
+    let conflicts = imported_component_conflicts(service, &analysis)?;
+    let conflict_count = conflicts.len();
+    let unmapped_count = analysis.unmapped_records.len();
+    let can_import_inventory = analysis.can_import_inventory();
+    Ok(ImportPreview {
+        format: analysis.format.into(),
+        media_type: analysis.media_type.into(),
+        file_name: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "report.json".into()),
+        content_sha256: analysis.content_sha256,
+        component_records: analysis.components.len(),
+        finding_records: analysis.finding_records,
+        review_records: analysis.review_records,
+        conflict_count,
+        conflicts: conflicts.into_iter().take(200).collect(),
+        unmapped_count,
+        unmapped_records: analysis.unmapped_records.into_iter().take(200).collect(),
+        warnings: analysis.warnings,
+        can_import_inventory,
+    })
+}
+
+#[tauri::command]
+pub fn import_inventory_report(
+    app: AppHandle,
+    findings: State<'_, FindingsState>,
+    path: String,
+    expected_sha256: String,
+) -> Result<oxaudit_domain::Run, String> {
+    use sha2::Digest;
+
+    const MAX_COMPONENT_RECORDS: usize = 50_000;
+    let (path, bytes, analysis) = read_import_report(&path)?;
+    if analysis.content_sha256 != expected_sha256.to_ascii_lowercase() {
+        return Err("the report changed after preview; preview it again before importing".into());
+    }
+    if !analysis.can_import_inventory() {
+        return Err("this report has no inventory records that can be imported safely".into());
+    }
+    if analysis.components.len() > MAX_COMPONENT_RECORDS {
+        return Err("the report exceeds the 50,000-component import limit".into());
+    }
+    let service = findings.service().map_err(|error| error.to_string())?;
+    let conflicts = imported_component_conflicts(service, &analysis)?;
+    let mut run = oxaudit_domain::Run::queued(
+        oxaudit_domain::RunKind::Import,
+        path.to_string_lossy(),
+        epoch_millis(),
+    );
+    run.engine_ids
+        .push(format!("oxaudit.import.{}", analysis.format));
+    let artifact_id = oxaudit_domain::ArtifactId::parse(format!(
+        "artifact_{:x}",
+        sha2::Sha256::digest(
+            format!(
+                "{}\0{}\0{}",
+                run.id,
+                path.display(),
+                analysis.content_sha256
+            )
+            .as_bytes()
+        )
+    ))
+    .map_err(|error| error.to_string())?;
+    let artifact = oxaudit_domain::Artifact {
+        id: artifact_id.clone(),
+        kind: if matches!(analysis.format, "cyclonedx" | "cyclonedx-vex" | "spdx") {
+            oxaudit_domain::ArtifactKind::Sbom
+        } else {
+            oxaudit_domain::ArtifactKind::Report
+        },
+        location: oxaudit_domain::ArtifactLocation {
+            normalized_path: path.to_string_lossy().replace('\\', "/"),
+            canonical_path: Some(path.to_string_lossy().into_owned()),
+            parent_id: None,
+        },
+        size_bytes: bytes.len() as u64,
+        media_type: Some(analysis.media_type.into()),
+        content_sha256: Some(analysis.content_sha256.clone()),
+    };
+    let components = analysis
+        .components
+        .iter()
+        .enumerate()
+        .map(|(index, imported)| {
+            let id = oxaudit_domain::ComponentId::parse(format!(
+                "component_{:x}",
+                sha2::Sha256::digest(
+                    format!("{}\0{}\0{}", run.id, index, imported.conflict_key()).as_bytes()
+                )
+            ))
+            .map_err(|error| error.to_string())?;
+            Ok(oxaudit_domain::Component {
+                id,
+                name: imported.name.clone(),
+                version: imported.version.clone(),
+                supplier: imported.supplier.clone(),
+                ecosystem: imported.ecosystem.clone(),
+                purl: imported.purl.clone(),
+                cpes: imported.cpes.clone(),
+                aliases: imported.aliases.clone(),
+                identities: vec![oxaudit_domain::ComponentIdentity {
+                    method: oxaudit_domain::IdentityMethod::ImportedSbom,
+                    value: imported.purl.clone().unwrap_or_else(|| {
+                        format!(
+                            "{}@{}",
+                            imported.name,
+                            imported.version.as_deref().unwrap_or("unknown")
+                        )
+                    }),
+                    confidence: imported.confidence,
+                    source_artifact_id: artifact_id.clone(),
+                }],
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let canonical_repository =
+        crate::adapters::persistence::CanonicalSqliteRepository::new(service.repository());
+    let canonical_events = crate::presentation::TauriRunEvents::new(app);
+    let coordinator =
+        oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
+    let mut managed = Some(coordinator.begin(run).map_err(|error| error.to_string())?);
+    let imported = (|| -> Result<oxaudit_domain::Run, String> {
+        let lifecycle = managed.as_mut().expect("managed import run exists");
+        lifecycle
+            .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .append_artifact(&artifact)
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .transition(oxaudit_domain::RunState::Detecting, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .transition(oxaudit_domain::RunState::Normalizing, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .append_components(&components)
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .transition(oxaudit_domain::RunState::Assessing, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        for warning in &analysis.warnings {
+            lifecycle.warning("import_limitation", warning);
+        }
+        if !conflicts.is_empty() {
+            lifecycle.warning(
+                "inventory_conflicts_preserved",
+                format!(
+                    "{} component identities overlap earlier runs; both immutable records were preserved.",
+                    conflicts.len()
+                ),
+            );
+        }
+        lifecycle
+            .transition(oxaudit_domain::RunState::Persisting, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        service
+            .repository()
+            .canonical_save_projection(
+                &lifecycle.run().id,
+                "inventory-import",
+                1,
+                &serde_json::json!({
+                    "format": analysis.format,
+                    "contentSha256": analysis.content_sha256,
+                    "componentRecords": components.len(),
+                    "conflictsPreserved": conflicts.len(),
+                    "unmappedRecords": analysis.unmapped_records,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+        let outcome = managed
+            .take()
+            .expect("managed import run exists")
+            .complete(epoch_millis())
+            .map_err(|error| error.to_string())?;
+        Ok(outcome.run)
+    })();
+    if imported.is_err() {
+        if let Some(lifecycle) = managed.take() {
+            let _ = lifecycle.terminate(oxaudit_domain::RunState::Failed, epoch_millis());
+        }
+    }
+    imported
+}
+
+#[tauri::command]
+pub fn load_inventory(
+    findings: State<'_, FindingsState>,
+    run_id: String,
+) -> Result<InventoryView, String> {
+    let run_id =
+        oxaudit_domain::RunId::parse(run_id).map_err(|_| "invalid run identity".to_string())?;
+    let data = report_data(
+        findings.service().map_err(|error| error.to_string())?,
+        &run_id,
+    )?;
+    let artifact_paths = data
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            (
+                artifact.id.clone(),
+                artifact.location.normalized_path.clone(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut advisory_ids = std::collections::BTreeMap::<
+        oxaudit_domain::ComponentId,
+        std::collections::BTreeSet<String>,
+    >::new();
+    for record in &data.observations {
+        for evidence in &record.evidence {
+            if let oxaudit_domain::Evidence::AdvisoryMatch(match_evidence) = &evidence.evidence {
+                advisory_ids
+                    .entry(match_evidence.component_id.clone())
+                    .or_default()
+                    .insert(match_evidence.advisory_id.clone());
+            }
+        }
+    }
+    let components = data
+        .components
+        .into_iter()
+        .map(|component| {
+            let identities = component
+                .identities
+                .into_iter()
+                .map(|identity| InventoryIdentityView {
+                    method: serde_json::to_value(identity.method)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "unknown".into()),
+                    value: identity.value,
+                    confidence: identity.confidence,
+                    artifact_path: artifact_paths
+                        .get(&identity.source_artifact_id)
+                        .cloned()
+                        .unwrap_or_else(|| "artifact unavailable".into()),
+                    artifact_id: identity.source_artifact_id.to_string(),
+                })
+                .collect();
+            InventoryComponentView {
+                advisory_ids: advisory_ids
+                    .remove(&component.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect(),
+                id: component.id.to_string(),
+                name: component.name,
+                version: component.version,
+                supplier: component.supplier,
+                ecosystem: component.ecosystem,
+                purl: component.purl,
+                cpes: component.cpes,
+                aliases: component.aliases,
+                identities,
+            }
+        })
+        .collect();
+    Ok(InventoryView {
+        run_id: data.run.id.to_string(),
+        target_label: data.run.target_label,
+        run_kind: data.run.kind,
+        updated_at_ms: data.run.updated_at_ms,
+        provider_snapshot_count: data.run.provider_snapshot_ids.len(),
+        components,
+    })
+}
+
+#[tauri::command]
+pub fn preview_run_export(
+    findings: State<'_, FindingsState>,
+    run_id: String,
+    format: String,
+) -> Result<ExportPreview, String> {
+    const PREVIEW_LIMIT: usize = 1024 * 1024;
+    let run_id =
+        oxaudit_domain::RunId::parse(run_id).map_err(|_| "invalid run identity".to_string())?;
+    let format_value = crate::adapters::reporting::ReportFormat::parse(&format)?;
+    let data = report_data(
+        findings.service().map_err(|error| error.to_string())?,
+        &run_id,
+    )?;
+    let generated = crate::adapters::reporting::generate(&data, format_value)?;
+    let truncated = generated.bytes.len() > PREVIEW_LIMIT;
+    let preview_bytes = &generated.bytes[..generated.bytes.len().min(PREVIEW_LIMIT)];
+    let content = String::from_utf8_lossy(preview_bytes).into_owned();
+    Ok(ExportPreview {
+        format,
+        media_type: format_value.media_type().into(),
+        suggested_file_name: format!("{}-{}", run_id.as_str(), format_value.suffix()),
+        valid: true,
+        warnings: generated.warnings,
+        artifacts: data.artifacts.len(),
+        components: data.components.len(),
+        observations: data.observations.len(),
+        content,
+        truncated,
+    })
+}
+
+#[tauri::command]
+pub fn write_run_export(
+    findings: State<'_, FindingsState>,
+    run_id: String,
+    format: String,
+    output_path: String,
+) -> Result<(), String> {
+    let run_id =
+        oxaudit_domain::RunId::parse(run_id).map_err(|_| "invalid run identity".to_string())?;
+    let format = crate::adapters::reporting::ReportFormat::parse(&format)?;
+    let data = report_data(
+        findings.service().map_err(|error| error.to_string())?,
+        &run_id,
+    )?;
+    let generated = crate::adapters::reporting::generate(&data, format)?;
+    let destination = PathBuf::from(output_path);
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| "export destination must have a parent directory".to_string())?;
+    if !parent.is_dir() {
+        return Err("export destination directory does not exist".into());
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("could not create export file: {error}"))?;
+    temporary
+        .write_all(&generated.bytes)
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|error| format!("could not write export: {error}"))?;
+    temporary
+        .persist(&destination)
+        .map_err(|error| format!("could not finalize export: {}", error.error))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_verification_claims(
+    findings: State<'_, FindingsState>,
+    run_id: Option<String>,
+) -> Result<Vec<oxaudit_domain::Finding>, String> {
+    let parsed = run_id
+        .map(oxaudit_domain::RunId::parse)
+        .transpose()
+        .map_err(|_| "invalid run identity".to_string())?;
+    findings
+        .service()
+        .map_err(|error| error.to_string())?
+        .repository()
+        .canonical_list_findings(parsed.as_ref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_verifications(
+    findings: State<'_, FindingsState>,
+    finding_id: Option<String>,
+) -> Result<Vec<oxaudit_domain::Verification>, String> {
+    let parsed = finding_id
+        .map(oxaudit_domain::FindingId::parse)
+        .transpose()
+        .map_err(|_| "invalid finding identity".to_string())?;
+    findings
+        .service()
+        .map_err(|error| error.to_string())?
+        .repository()
+        .verification_list(parsed.as_ref())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn verify_finding(
+    findings: State<'_, FindingsState>,
+    finding_id: String,
+    verifier_id: String,
+    result: String,
+    limitation: String,
+) -> Result<oxaudit_domain::Verification, String> {
+    use sha2::Digest;
+
+    let finding_id = oxaudit_domain::FindingId::parse(finding_id)
+        .map_err(|_| "invalid finding identity".to_string())?;
+    let verifier_id = verifier_id.trim();
+    if verifier_id.is_empty() {
+        return Err("verifier identity is required".into());
+    }
+    let result = match result.as_str() {
+        "supported" => oxaudit_domain::VerificationResult::Supported,
+        "refuted" => oxaudit_domain::VerificationResult::Refuted,
+        "inconclusive" => oxaudit_domain::VerificationResult::Inconclusive,
+        _ => return Err("invalid verification result".into()),
+    };
+    let service = findings.service().map_err(|error| error.to_string())?;
+    let repository = service.repository();
+    let finding = repository
+        .canonical_load_finding(&finding_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "finding was not found".to_string())?;
+    let (_, _, observations) = repository
+        .canonical_load_report_graph(&finding.run_id)
+        .map_err(|error| error.to_string())?;
+    let observation = observations
+        .iter()
+        .find(|record| finding.observation_ids.contains(&record.observation.id))
+        .ok_or_else(|| "finding evidence is unavailable".to_string())?;
+    let producer_id = observation.observation.detector_id.clone();
+    if verifier_id == producer_id {
+        return Err("the producing detector cannot independently verify its own claim".into());
+    }
+    let snapshot = serde_json::to_vec(&(
+        finding.clone(),
+        &observation.observation,
+        &observation.evidence,
+    ))
+    .map_err(|error| error.to_string())?;
+    let verification = oxaudit_domain::Verification {
+        id: oxaudit_domain::VerificationId::new(),
+        finding_id,
+        producer_id,
+        verifier: oxaudit_domain::VerifierIdentity {
+            kind: "human".into(),
+            id: verifier_id.into(),
+            version: "1".into(),
+        },
+        input_snapshot_sha256: format!("{:x}", sha2::Sha256::digest(snapshot)),
+        result,
+        evidence_delta: Vec::new(),
+        limitations: if limitation.trim().is_empty() {
+            vec!["No additional limitation was recorded by the verifier.".into()]
+        } else {
+            vec![limitation.trim().into()]
+        },
+        verified_at_ms: epoch_millis(),
+    };
+    verification
+        .validate_independence()
+        .map_err(|error| error.to_string())?;
+    let mut run = repository
+        .canonical_load_run(&finding.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "verification run was not found".to_string())?;
+    run.transition(oxaudit_domain::RunState::Verifying, epoch_millis())
+        .map_err(|error| error.to_string())?;
+    repository
+        .canonical_save_run(&run)
+        .map_err(|error| error.to_string())?;
+    repository
+        .verification_save(&verification)
+        .map_err(|error| error.to_string())?;
+    run.transition(oxaudit_domain::RunState::Completed, epoch_millis())
+        .map_err(|error| error.to_string())?;
+    repository
+        .canonical_save_run(&run)
+        .map_err(|error| error.to_string())?;
+    Ok(verification)
+}
+
+struct DataSourceDefinition {
+    id: &'static str,
+    name: &'static str,
+    source_url: &'static str,
+    terms_url: &'static str,
+    license: &'static str,
+    supports_offline: bool,
+    limitation: &'static str,
+}
+
+const DATA_SOURCES: [DataSourceDefinition; 4] = [
+    DataSourceDefinition {
+        id: "osv",
+        name: "OSV",
+        source_url: "https://api.osv.dev/v1/vulns/GHSA-jfh8-c2jp-5v3q",
+        terms_url: "https://google.github.io/osv.dev/data/",
+        license: "OSV records retain their source attribution",
+        supports_offline: false,
+        limitation: "Refresh validates and caches a representative record; dependency scans persist their exact query snapshots separately.",
+    },
+    DataSourceDefinition {
+        id: "nvd",
+        name: "NVD",
+        source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2021-44228",
+        terms_url: "https://nvd.nist.gov/developers/terms-of-use",
+        license: "US Government public data; NVD terms apply",
+        supports_offline: false,
+        limitation: "This health snapshot is not the complete NVD corpus; external binary database lifecycle remains separate.",
+    },
+    DataSourceDefinition {
+        id: "cisa-kev",
+        name: "CISA KEV",
+        source_url: crate::exploit::KEV_URL,
+        terms_url: "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+        license: "US Government public data",
+        supports_offline: true,
+        limitation: "The full catalog is retained locally after a successful refresh.",
+    },
+    DataSourceDefinition {
+        id: "epss",
+        name: "FIRST EPSS",
+        source_url: "https://api.first.org/data/v1/epss?cve=CVE-2021-44228",
+        terms_url: "https://www.first.org/epss/",
+        license: "CC BY 4.0",
+        supports_offline: false,
+        limitation: "This health snapshot is a representative score, not the complete daily EPSS dataset.",
+    },
+];
+
+fn data_source_statuses(service: &FindingsService) -> Result<Vec<DataSourceStatus>, String> {
+    DATA_SOURCES
+        .iter()
+        .map(|definition| {
+            let mut snapshot = service
+                .repository()
+                .provider_latest_snapshot(definition.id)
+                .map_err(|error| error.to_string())?;
+            if definition.id == "osv" && snapshot.is_none() {
+                snapshot = service
+                    .repository()
+                    .provider_latest_snapshot("osv-query")
+                    .map_err(|error| error.to_string())?;
+            }
+            let record_count = snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.payload.get("recordCount"))
+                .and_then(serde_json::Value::as_u64);
+            Ok(DataSourceStatus {
+                id: definition.id.into(),
+                name: definition.name.into(),
+                source_url: definition.source_url.into(),
+                terms_url: definition.terms_url.into(),
+                license: definition.license.into(),
+                state: match &snapshot {
+                    Some(_) if definition.supports_offline => "offlineReady".into(),
+                    Some(_) => "onlineCached".into(),
+                    None => "notRefreshed".into(),
+                },
+                supports_offline: definition.supports_offline,
+                active_snapshot_id: snapshot.as_ref().map(|snapshot| snapshot.id.clone()),
+                fetched_at_ms: snapshot.as_ref().map(|snapshot| snapshot.fetched_at_ms),
+                content_sha256: snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.content_sha256.clone()),
+                record_count,
+                validation: if snapshot.is_some() {
+                    "valid"
+                } else {
+                    "notRun"
+                }
+                .into(),
+                limitation: definition.limitation.into(),
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn list_data_sources(
+    findings: State<'_, FindingsState>,
+) -> Result<Vec<DataSourceStatus>, String> {
+    data_source_statuses(findings.service().map_err(|error| error.to_string())?)
+}
+
+#[tauri::command]
+pub async fn refresh_data_source(
+    provider_id: String,
+    state: State<'_, AppState>,
+    findings: State<'_, FindingsState>,
+) -> Result<DataSourceStatus, String> {
+    const MAX_PROVIDER_BYTES: u64 = 32 * 1024 * 1024;
+    let definition = DATA_SOURCES
+        .iter()
+        .find(|definition| definition.id == provider_id)
+        .ok_or_else(|| "unknown provider".to_string())?;
+    let response = state
+        .http
+        .get(definition.source_url)
+        .send()
+        .await
+        .map_err(|error| format!("{} refresh failed: {error}", definition.name))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "{} returned {}",
+            definition.name,
+            response.status()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_PROVIDER_BYTES)
+    {
+        return Err("provider response exceeded the 32 MiB safety limit".into());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("{} response could not be read: {error}", definition.name))?;
+    if bytes.len() as u64 > MAX_PROVIDER_BYTES {
+        return Err("provider response exceeded the 32 MiB safety limit".into());
+    }
+    let content: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("provider JSON is invalid: {error}"))?;
+    let record_count = match definition.id {
+        "cisa-kev" => content.get("vulnerabilities"),
+        "nvd" => content.get("vulnerabilities"),
+        "epss" => content.get("data"),
+        _ => None,
+    }
+    .and_then(serde_json::Value::as_array)
+    .map_or(1, |records| records.len() as u64);
+    let content_sha256 = {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(&bytes))
+    };
+    let fetched_at_ms = epoch_millis();
+    let snapshot_id = format!("provider_{}", uuid::Uuid::new_v4());
+    let snapshot = crate::findings::repository::ProviderSnapshotRecord {
+        id: snapshot_id,
+        provider_id: definition.id.into(),
+        fetched_at_ms,
+        content_sha256,
+        payload: serde_json::json!({
+            "schemaVersion": 1,
+            "recordCount": record_count,
+            "sourceUrl": definition.source_url,
+            "content": content,
+        }),
+    };
+    let service = findings.service().map_err(|error| error.to_string())?;
+    service
+        .repository()
+        .provider_save_snapshot(&snapshot)
+        .map_err(|error| error.to_string())?;
+    data_source_statuses(service)?
+        .into_iter()
+        .find(|status| status.id == provider_id)
+        .ok_or_else(|| "refreshed provider status is unavailable".into())
+}
+
+/// Return immutable, offline metadata for every built-in rule family.
+/// Embedded source/secret engines are reported honestly as legacy compiled
+/// packs while their public declarative snapshots are completed.
+#[tauri::command]
+pub fn rule_library_status() -> Result<Vec<RuleLibraryPackStatus>, String> {
+    use sha2::Digest;
+
+    let source_snapshot_sha256 = format!(
+        "{:x}",
+        sha2::Sha256::digest(include_bytes!("scanners/patterns.rs"))
+    );
+    let secret_snapshot_sha256 = format!(
+        "{:x}",
+        sha2::Sha256::digest(include_bytes!("scanners/secrets.rs"))
+    );
+    let signature = crate::binscan::native::signature::signature_provenance_status()?;
+    let verified: std::collections::BTreeSet<_> =
+        signature.verified_products.iter().cloned().collect();
+    let mut binary_rules = signature
+        .verified_products
+        .iter()
+        .chain(signature.unverified_products.iter())
+        .map(|product| RuleLibraryRuleStatus {
+            id: format!("binary.{product}"),
+            title: product.clone(),
+            severity: "inventory".into(),
+            scope: signature.architectures.clone(),
+            fixture_health: if verified.contains(product) {
+                "verified".into()
+            } else {
+                "coverageNeeded".into()
+            },
+            provenance: "independently derived from known-version binaries".into(),
+        })
+        .collect::<Vec<_>>();
+    binary_rules.sort_by(|left, right| left.title.cmp(&right.title));
+
+    let source_rules = crate::scanners::patterns::SOURCE_RULES
+        .iter()
+        .map(|rule| RuleLibraryRuleStatus {
+            id: rule.id.into(),
+            title: rule.name.into(),
+            severity: rule.severity.into(),
+            scope: if rule.languages.is_empty() {
+                vec!["all supported languages".into()]
+            } else {
+                rule.languages
+                    .iter()
+                    .map(|language| (*language).into())
+                    .collect()
+            },
+            fixture_health: if rule.id == "js-eval" {
+                "verified".into()
+            } else {
+                "coverageNeeded".into()
+            },
+            provenance: "repository-authored Apache-2.0 rule".into(),
+        })
+        .collect::<Vec<_>>();
+    let secret_rules = crate::scanners::secrets::SECRET_RULES
+        .iter()
+        .map(|rule| RuleLibraryRuleStatus {
+            id: rule.id.into(),
+            title: rule.name.into(),
+            severity: rule.severity.into(),
+            scope: vec!["text source and configuration".into()],
+            fixture_health: "unitTested".into(),
+            provenance: "repository-authored Apache-2.0 rule".into(),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(vec![
+        RuleLibraryPackStatus {
+            id: "oxaudit.source.builtin".into(),
+            name: "Built-in source checks".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            engine: "source.regex.v1".into(),
+            enabled: true,
+            license: "Apache-2.0".into(),
+            source: "oxAudit repository-authored rules".into(),
+            creation_method: "authored".into(),
+            content_sha256: source_snapshot_sha256,
+            validation: "compiledSnapshotVerified".into(),
+            fixture_summary: "1 committed positive/negative ground-truth pair; remaining rules require fixture provenance".into(),
+            rules: source_rules,
+        },
+        RuleLibraryPackStatus {
+            id: "oxaudit.secrets.builtin".into(),
+            name: "Built-in secret checks".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            engine: "secret.regex.v1".into(),
+            enabled: true,
+            license: "Apache-2.0".into(),
+            source: "oxAudit repository-authored rules".into(),
+            creation_method: "authored".into(),
+            content_sha256: secret_snapshot_sha256,
+            validation: "compiledSnapshotVerified".into(),
+            fixture_summary: "Unit coverage is present; per-rule provenance fixtures remain a visible coverage gap".into(),
+            rules: secret_rules,
+        },
+        RuleLibraryPackStatus {
+            id: signature.pack_id,
+            name: "Native binary component signatures".into(),
+            version: signature.version,
+            engine: "binary.signature.v1".into(),
+            enabled: true,
+            license: signature.license,
+            source: signature.source,
+            creation_method: signature.creation_method,
+            content_sha256: signature.content_sha256,
+            validation: "provenanceVerified".into(),
+            fixture_summary: format!(
+                "{} of {} signatures have provenance-linked fixtures; {} remain explicitly unverified",
+                signature.verified_fixture_count,
+                signature.signature_count,
+                signature.unverified_products.len()
+            ),
+            rules: binary_rules,
+        },
+    ])
+}
+
+/// Validate an external declarative pack and all referenced fixtures without
+/// installing it or executing rule-supplied code. The compiler and fixture
+/// reader enforce independent size and path-containment budgets.
+#[tauri::command]
+pub fn validate_rule_pack(path: String) -> Result<RulePackValidationPreview, String> {
+    const MAX_PACK_BYTES: u64 = 2 * 1024 * 1024;
+    let path = Path::new(&path)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the rule pack: {error}"))?;
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("cannot inspect the rule pack: {error}"))?;
+    if !metadata.is_file() {
+        return Err("the selected rule pack is not a file".into());
+    }
+    if metadata.len() > MAX_PACK_BYTES {
+        return Err("the selected rule pack exceeds the 2 MiB manifest limit".into());
+    }
+    let input = std::fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read the rule pack: {error}"))?;
+    let pack = oxaudit_scanners::RulePack::parse_toml(&input).map_err(|error| error.to_string())?;
+    let compiled = oxaudit_scanners::CompiledRulePack::compile(pack.clone())
+        .map_err(|error| error.to_string())?;
+    let root = path
+        .parent()
+        .ok_or_else(|| "the rule pack has no containing directory".to_string())?;
+    pack.validate_fixture_files(root)
+        .map_err(|error| error.to_string())?;
+    let engines = pack
+        .rules
+        .iter()
+        .map(|rule| {
+            serde_json::to_value(rule.engine)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".into())
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let fixture_count = pack
+        .rules
+        .iter()
+        .map(|rule| rule.positive_fixtures.len() + rule.negative_fixtures.len())
+        .sum();
+    Ok(RulePackValidationPreview {
+        id: compiled.metadata().id.to_string(),
+        name: compiled.metadata().name.clone(),
+        version: compiled.metadata().version.clone(),
+        content_sha256: compiled.metadata().content_sha256.clone(),
+        rule_count: pack.rules.len(),
+        engines,
+        fixture_count,
+        license: compiled.metadata().provenance.license.clone(),
+        source: compiled.metadata().provenance.source.clone(),
+        validation: "schema, provenance, content hash, regex budgets, fixture hashes, and fixture containment verified".into(),
+    })
+}
+
+/// Execute the small committed deterministic suite. This is intentionally a
+/// contract smoke test, not a representative security-recall claim.
+#[tauri::command]
+pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatus, String> {
+    let started = Instant::now();
+    let suite: oxaudit_benchmark::BenchmarkSuite = serde_json::from_str(include_str!(
+        "../../benchmarks/ground-truth/source-smoke/suite.json"
+    ))
+    .map_err(|error| error.to_string())?;
+    suite.validate().map_err(|error| error.to_string())?;
+    let fixtures = [
+        (
+            "source-js-eval-positive",
+            "positive.js",
+            include_str!("../../benchmarks/ground-truth/source-smoke/positive.js"),
+        ),
+        (
+            "source-js-eval-negative",
+            "negative.js",
+            include_str!("../../benchmarks/ground-truth/source-smoke/negative.js"),
+        ),
+    ];
+    let mut passed_targets = 0;
+    let mut true_positives = 0;
+    let mut false_positives = 0;
+    let mut false_negatives = 0;
+    let mut misses = Vec::new();
+    let mut unexpected = Vec::new();
+    for (target_id, path, content) in fixtures {
+        let target = suite
+            .targets
+            .iter()
+            .find(|target| target.id == target_id)
+            .ok_or_else(|| format!("benchmark target {target_id} is missing"))?;
+        let actual = crate::scanners::patterns::scan_content(content, "javascript")
+            .into_iter()
+            .map(|hit| crate::scanners::patterns::SOURCE_RULES[hit.rule_index].id)
+            .collect::<Vec<_>>();
+        let expected_count = target
+            .expected
+            .iter()
+            .filter(|expected| expected.identity.artifact_path == path)
+            .map(|expected| expected.count as usize)
+            .sum::<usize>();
+        let expected_ids = target
+            .expected
+            .iter()
+            .map(|expected| expected.identity.rule_id.as_str())
+            .collect::<Vec<_>>();
+        let matched = actual
+            .iter()
+            .filter(|rule_id| expected_ids.contains(rule_id))
+            .count();
+        true_positives += matched.min(expected_count);
+        if matched < expected_count {
+            false_negatives += expected_count - matched;
+            misses.push(format!(
+                "{target_id}: expected {expected_count}, observed {matched}"
+            ));
+        }
+        for rule_id in actual
+            .iter()
+            .filter(|rule_id| !expected_ids.contains(rule_id))
+        {
+            false_positives += 1;
+            unexpected.push(format!("{target_id}: {rule_id}"));
+        }
+        if matched == expected_count
+            && actual.len() == matched
+            && (target.expected_absent.is_empty() || actual.is_empty())
+        {
+            passed_targets += 1;
+        }
+    }
+    let precision_denominator = true_positives + false_positives;
+    let recall_denominator = true_positives + false_negatives;
+    let service = findings.service().map_err(|error| error.to_string())?;
+    let previous = service
+        .repository()
+        .benchmark_latest(&suite.id)
+        .map_err(|error| error.to_string())?
+        .and_then(|value| serde_json::from_value::<QualityStatus>(value).ok());
+    let precision =
+        (precision_denominator > 0).then_some(true_positives as f64 / precision_denominator as f64);
+    let recall =
+        (recall_denominator > 0).then_some(true_positives as f64 / recall_denominator as f64);
+    let regression = previous.as_ref().is_some_and(|previous| {
+        false_positives > previous.false_positives
+            || false_negatives > previous.false_negatives
+            || matches!((precision, previous.precision), (Some(current), Some(old)) if current < old)
+            || matches!((recall, previous.recall), (Some(current), Some(old)) if current < old)
+    });
+    let status = QualityStatus {
+        schema_version: suite.schema_version,
+        suite_id: suite.id.clone(),
+        suite_version: suite.version.clone(),
+        description: suite.description,
+        corpus_targets: suite.targets.len(),
+        passed_targets,
+        true_positives,
+        false_positives,
+        false_negatives,
+        precision,
+        recall,
+        runtime_ms: started.elapsed().as_millis() as u64,
+        misses,
+        unexpected,
+        limitation: "Two repository-authored JavaScript targets validate the harness and js-eval rule only; these results do not measure representative recall.".into(),
+        previous_precision: previous.as_ref().and_then(|previous| previous.precision),
+        previous_recall: previous.as_ref().and_then(|previous| previous.recall),
+        regression,
+    };
+    service
+        .repository()
+        .benchmark_save(
+            &format!("benchmark_{}", uuid::Uuid::new_v4()),
+            &suite.id,
+            &suite.version,
+            epoch_millis(),
+            &status,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(status)
+}
+
 pub struct AppState {
     pub settings: Mutex<AppSettings>,
     pub http: reqwest::Client,
     pub ai: AiClient,
     pub osv: OsvClient,
     pub cancel_scan: AtomicBool,
+    pub cancel_dependency_scan: AtomicBool,
     /// Cancellation for an in-flight cve-bin-tool run.
     pub cancel_binary_scan: Arc<AtomicBool>,
     /// run_id -> cancellation state for in-flight chat turns
@@ -66,6 +1291,7 @@ impl AppState {
             ai: AiClient::new(http.clone()),
             osv: OsvClient::new(http.clone()),
             cancel_scan: AtomicBool::new(false),
+            cancel_dependency_scan: AtomicBool::new(false),
             cancel_binary_scan: Arc::new(AtomicBool::new(false)),
             active_chats: Mutex::new(std::collections::HashMap::new()),
             pending_steers: Mutex::new(std::collections::HashMap::new()),
@@ -925,10 +2151,53 @@ mod source_finding_command_tests {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+pub fn list_canonical_runs(
+    findings: State<'_, FindingsState>,
+    kind: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<oxaudit_domain::Run>, String> {
+    let kind = match kind.as_deref() {
+        Some("source") => Some("source"),
+        Some("secrets") => Some("secrets"),
+        Some("dependencies") => Some("dependencies"),
+        Some("binary") => Some("binary"),
+        Some("firmware") => Some("firmware"),
+        Some("import") => Some("import"),
+        Some("verification") => Some("verification"),
+        Some(_) => return Err("unknown run kind".into()),
+        None => None,
+    };
+    findings
+        .service()
+        .map_err(|error| error.to_string())?
+        .repository()
+        .canonical_list_runs(kind, limit.unwrap_or(50))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn load_canonical_projection(
+    findings: State<'_, FindingsState>,
+    run_id: String,
+) -> Result<Value, String> {
+    let run_id =
+        oxaudit_domain::RunId::parse(run_id).map_err(|_| "invalid run identity".to_string())?;
+    findings
+        .service()
+        .map_err(|error| error.to_string())?
+        .repository()
+        .canonical_load_projection(&run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "run result projection was not found".into())
+}
+
+#[tauri::command]
 pub async fn scan_dependencies(
     app: AppHandle,
     state: State<'_, AppState>,
+    findings: State<'_, FindingsState>,
     path: String,
+    offline: bool,
 ) -> Result<DependencyScanResult, String> {
     let started = Instant::now();
     let root = Path::new(&path);
@@ -936,20 +2205,66 @@ pub async fn scan_dependencies(
         return Err(format!("path is not a directory: {path}"));
     }
 
-    let settings = state.settings.lock().unwrap().clone();
-    let lockfiles = fs_utils::discover_lockfiles(root, root, &settings.scan.ignored_dirs);
+    let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+    state.cancel_dependency_scan.store(false, Ordering::SeqCst);
+    let service = findings.service().map_err(|error| error.to_string())?;
+    let canonical_repository =
+        crate::adapters::persistence::CanonicalSqliteRepository::new(service.repository());
+    let canonical_events = crate::presentation::TauriRunEvents::new(app.clone());
+    let coordinator =
+        oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
+    let mut managed = Some(
+        coordinator
+            .begin(oxaudit_domain::Run::queued(
+                oxaudit_domain::RunKind::Dependencies,
+                canonical_root.to_string_lossy(),
+                epoch_millis(),
+            ))
+            .map_err(|error| error.to_string())?,
+    );
 
-    let mut all_deps = Vec::new();
-    let mut lockfile_infos = Vec::new();
-    let mut parse_errors: Vec<String> = Vec::new();
+    let scan_result: Result<DependencyScanResult, String> = async {
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        let settings = state.settings.lock().unwrap().clone();
+        let lockfiles =
+            fs_utils::discover_lockfiles(root, root, &settings.scan.ignored_dirs);
+        let run_id = managed
+            .as_ref()
+            .expect("managed dependency run exists")
+            .run()
+            .id
+            .clone();
+        let mut canonical_artifacts = std::collections::BTreeMap::new();
+        for lockfile in &lockfiles {
+            let artifact = crate::adapters::scanners::lockfile_artifact(&run_id, lockfile)?;
+            managed
+                .as_mut()
+                .expect("managed dependency run exists")
+                .append_artifact(&artifact)
+                .map_err(|error| error.to_string())?;
+            canonical_artifacts.insert(artifact.location.normalized_path.clone(), artifact);
+        }
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .transition(oxaudit_domain::RunState::Detecting, epoch_millis())
+            .map_err(|error| error.to_string())?;
 
-    app.emit(
-        "deps://progress",
-        serde_json::json!({ "phase": "parsing", "done": 0, "total": lockfiles.len() }),
-    )
-    .ok();
+        let mut all_deps = Vec::new();
+        let mut lockfile_infos = Vec::new();
+        let mut parse_errors: Vec<String> = Vec::new();
 
-    for (i, lf) in lockfiles.iter().enumerate() {
+        app.emit(
+            "deps://progress",
+            serde_json::json!({ "phase": "parsing", "done": 0, "total": lockfiles.len() }),
+        )
+        .ok();
+
+        for (i, lf) in lockfiles.iter().enumerate() {
         let name = lf.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let kind = crate::deps::lockfiles::lockfile_kind(name);
         match crate::deps::lockfiles::parse_lockfile(lf, kind) {
@@ -967,21 +2282,162 @@ pub async fn scan_dependencies(
             "deps://progress",
             serde_json::json!({ "phase": "parsing", "done": i + 1, "total": lockfiles.len(), "parseErrors": parse_errors.len() }),
         );
-    }
+        }
 
-    let deps = crate::deps::lockfiles::dedupe_dependencies(all_deps);
-    let packages_queried = deps.len();
+        let packages_found = all_deps.len();
+        if state.cancel_dependency_scan.load(Ordering::SeqCst) {
+            return Err("dependency scan cancelled".into());
+        }
+        let deps = crate::deps::lockfiles::dedupe_dependencies(all_deps);
+        let packages_queried = deps.len();
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .transition(oxaudit_domain::RunState::Normalizing, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        let (components, declarations) = crate::adapters::scanners::dependency_graph(
+            &run_id,
+            &deps,
+            &[],
+            &canonical_artifacts,
+            None,
+        )?;
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .append_components(&components)
+            .map_err(|error| error.to_string())?;
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .append_observations(declarations)
+            .map_err(|error| error.to_string())?;
+        for parse_error in &parse_errors {
+            managed
+                .as_mut()
+                .expect("managed dependency run exists")
+                .warning("lockfile_parse_failed", parse_error.clone());
+        }
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .transition(oxaudit_domain::RunState::Enriching, epoch_millis())
+            .map_err(|error| error.to_string())?;
 
-    app.emit(
+        app.emit(
         "deps://progress",
         serde_json::json!({ "phase": "querying-osv", "done": 0, "total": 1 }),
     )
-    .ok();
+        .ok();
 
-    let vuln_map = state.osv.query_batch(&deps).await.unwrap_or_default();
+        let query_keys = deps
+            .iter()
+            .filter(|dependency| dependency.ecosystem != "unknown")
+            .map(|dependency| {
+                format!(
+                    "{}\u{0}{}\u{0}{}",
+                    dependency.ecosystem, dependency.name, dependency.version
+                )
+            })
+            .collect::<Vec<_>>();
+        let (vuln_map, osv_snapshot_id, osv_warning) = if offline {
+            match service
+                .repository()
+                .provider_latest_snapshot("osv-query")
+                .map_err(|error| error.to_string())?
+            {
+                Some(snapshot) => {
+                    let cached_keys = snapshot
+                        .payload
+                        .get("queryKeys")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|keys| {
+                            keys.iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<std::collections::BTreeSet<_>>()
+                        })
+                        .unwrap_or_default();
+                    if query_keys.iter().all(|key| cached_keys.contains(key.as_str())) {
+                        let results = serde_json::from_value(
+                            snapshot
+                                .payload
+                                .get("results")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!({})),
+                        )
+                        .map_err(|error| format!("cached OSV snapshot is invalid: {error}"))?;
+                        (results, Some(snapshot.id), None)
+                    } else {
+                        (
+                            std::collections::HashMap::new(),
+                            Some(snapshot.id),
+                            Some("The latest OSV query snapshot does not cover every selected package; unmatched packages were inventoried without advisory enrichment.".to_string()),
+                        )
+                    }
+                }
+                None => (
+                    std::collections::HashMap::new(),
+                    None,
+                    Some("No cached OSV query snapshot is available; packages were inventoried without advisory enrichment.".to_string()),
+                ),
+            }
+        } else {
+            match state.osv.query_batch(&deps).await {
+                Ok(results) => {
+                    let payload = serde_json::json!({
+                        "schemaVersion": 1,
+                        "queryKeys": query_keys,
+                        "results": results,
+                        "recordCount": results.values().map(Vec::len).sum::<usize>(),
+                    });
+                    let payload_bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+                    let content_sha256 = {
+                        use sha2::Digest;
+                        format!("{:x}", sha2::Sha256::digest(&payload_bytes))
+                    };
+                    let snapshot_id = format!("provider_{}", uuid::Uuid::new_v4());
+                    service
+                        .repository()
+                        .provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {
+                            id: snapshot_id.clone(),
+                            provider_id: "osv-query".into(),
+                            fetched_at_ms: epoch_millis(),
+                            content_sha256,
+                            payload,
+                        })
+                        .map_err(|error| error.to_string())?;
+                    (results, Some(snapshot_id), None)
+                }
+                Err(error) => (
+                    std::collections::HashMap::new(),
+                    None,
+                    Some(format!("OSV enrichment failed; package inventory is still complete: {error}")),
+                ),
+            }
+        };
+        let osv_snapshot_id = osv_snapshot_id
+            .map(oxaudit_domain::ProviderSnapshotId::parse)
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        if let Some(snapshot_id) = &osv_snapshot_id {
+            managed
+                .as_mut()
+                .expect("managed dependency run exists")
+                .record_provider_snapshot(snapshot_id.clone())
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(warning) = osv_warning {
+            managed
+                .as_mut()
+                .expect("managed dependency run exists")
+                .warning("advisory_enrichment_incomplete", warning);
+        }
+        if state.cancel_dependency_scan.load(Ordering::SeqCst) {
+            return Err("dependency scan cancelled".into());
+        }
 
-    let mut vulnerabilities = Vec::new();
-    for dep in &deps {
+        let mut vulnerabilities = Vec::new();
+        for dep in &deps {
         let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
         if let Some(vulns) = vuln_map.get(&key) {
             for mut v in vulns.clone() {
@@ -989,10 +2445,10 @@ pub async fn scan_dependencies(
                 vulnerabilities.push(v);
             }
         }
-    }
+        }
     // Exploitation signal: rank these CVEs by CISA KEV and EPSS, the same way
     // the binary scanner does. A dependency vuln's CVE is in its id or aliases.
-    let cve_ids: Vec<String> = vulnerabilities
+        let cve_ids: Vec<String> = vulnerabilities
         .iter()
         .filter_map(|v| {
             crate::exploit::cve_among(
@@ -1002,7 +2458,7 @@ pub async fn scan_dependencies(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    if !cve_ids.is_empty() {
+        if !cve_ids.is_empty() && !offline {
         let _ = app.emit(
             "deps://progress",
             serde_json::json!({ "phase": "exploitation-signal", "done": 0, "total": 1 }),
@@ -1022,10 +2478,10 @@ pub async fn scan_dependencies(
                 vulnerability.epss_percentile = signal.epss_percentile;
             }
         }
-    }
+        }
 
     // Exploited-first, then by EPSS, then by CVSS — the actionable order.
-    vulnerabilities.sort_by(|a, b| {
+        vulnerabilities.sort_by(|a, b| {
         b.known_exploited
             .cmp(&a.known_exploited)
             .then(
@@ -1040,26 +2496,88 @@ pub async fn scan_dependencies(
                     .partial_cmp(&a.cvss_score.unwrap_or(0.0))
                     .unwrap_or(std::cmp::Ordering::Equal),
             )
-    });
+        });
 
-    let result = DependencyScanResult {
+        let (_, advisory_records) = crate::adapters::scanners::dependency_graph(
+            &run_id,
+            &deps,
+            &vulnerabilities,
+            &canonical_artifacts,
+            osv_snapshot_id.as_ref(),
+        )?;
+        let advisory_records = advisory_records
+            .into_iter()
+            .filter(|record| {
+                record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch
+            })
+            .collect();
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .append_observations(advisory_records)
+            .map_err(|error| error.to_string())?;
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .transition(oxaudit_domain::RunState::Assessing, epoch_millis())
+            .map_err(|error| error.to_string())?;
+
+        let result = DependencyScanResult {
         summary: crate::models::DepScanSummary {
             path: path.clone(),
             lockfiles_found: lockfile_infos.iter().map(|l| l.path.clone()).collect(),
-            packages_found: lockfiles.iter().count(),
+            packages_found,
             packages_queried,
             vulnerabilities_found: vulnerabilities.len(),
             duration_ms: started.elapsed().as_millis() as u64,
         },
         dependencies: deps,
         vulnerabilities,
-    };
-    app.emit(
+        };
+        managed
+            .as_mut()
+            .expect("managed dependency run exists")
+            .transition(oxaudit_domain::RunState::Persisting, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        service
+            .repository()
+            .canonical_save_projection(&run_id, "dependencies", 1, &result)
+            .map_err(|error| error.to_string())?;
+        app.emit(
         "deps://done",
         serde_json::json!({ "vulnerabilities": result.summary.vulnerabilities_found }),
     )
-    .ok();
-    Ok(result)
+        .ok();
+        Ok(result)
+    }
+    .await;
+
+    match scan_result {
+        Ok(result) => {
+            managed
+                .take()
+                .expect("managed dependency run exists")
+                .complete(epoch_millis())
+                .map_err(|error| error.to_string())?;
+            Ok(result)
+        }
+        Err(error) => {
+            if let Some(managed) = managed.take() {
+                let terminal = if error.contains("cancelled") {
+                    oxaudit_domain::RunState::Cancelled
+                } else {
+                    oxaudit_domain::RunState::Failed
+                };
+                let _ = managed.terminate(terminal, epoch_millis());
+            }
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn cancel_dependency_scan(state: State<'_, AppState>) {
+    state.cancel_dependency_scan.store(true, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -1243,12 +2761,41 @@ pub async fn binary_tool_status(
 pub async fn scan_binaries(
     app: AppHandle,
     state: State<'_, AppState>,
+    findings: State<'_, FindingsState>,
     request: crate::binscan::run::BinaryScanRequest,
     use_grype: Option<bool>,
 ) -> Result<crate::binscan::report::BinaryScanResult, String> {
+    let target = Path::new(&request.path)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the binary scan target: {error}"))?;
     let context = scan_context(&state, &app, use_grype.unwrap_or(false))?;
+    let service = findings.service().map_err(|error| error.to_string())?;
+    let canonical_repository =
+        crate::adapters::persistence::CanonicalSqliteRepository::new(service.repository());
+    let canonical_events = crate::presentation::TauriRunEvents::new(app.clone());
+    let coordinator =
+        oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
+    let mut managed = Some(
+        coordinator
+            .begin(oxaudit_domain::Run::queued(
+                oxaudit_domain::RunKind::Binary,
+                target.to_string_lossy(),
+                epoch_millis(),
+            ))
+            .map_err(|error| error.to_string())?,
+    );
+    managed
+        .as_mut()
+        .expect("managed binary run exists")
+        .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
+        .map_err(|error| error.to_string())?;
     let cancel = state.cancel_binary_scan.clone();
     cancel.store(false, Ordering::Relaxed);
+    managed
+        .as_mut()
+        .expect("managed binary run exists")
+        .transition(oxaudit_domain::RunState::Detecting, epoch_millis())
+        .map_err(|error| error.to_string())?;
 
     let progress_app = app.clone();
     let on_progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
@@ -1258,17 +2805,233 @@ pub async fn scan_binaries(
     let outcome = crate::binscan::scan::run_scan(
         &context,
         &request,
-        cancel,
+        cancel.clone(),
         BINARY_SCAN_TIMEOUT,
         on_progress,
         app.try_state::<CveState>().as_deref(),
     )
-    .await?;
+    .await;
+    let mut outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if let Some(managed) = managed.take() {
+                let terminal = if cancel.load(Ordering::Relaxed) || error.contains("cancelled") {
+                    oxaudit_domain::RunState::Cancelled
+                } else {
+                    oxaudit_domain::RunState::Failed
+                };
+                let _ = managed.terminate(terminal, epoch_millis());
+            }
+            return Err(error);
+        }
+    };
+    managed
+        .as_mut()
+        .expect("managed binary run exists")
+        .transition(oxaudit_domain::RunState::Normalizing, epoch_millis())
+        .map_err(|error| error.to_string())?;
+
+    let run_id = managed
+        .as_ref()
+        .expect("managed binary run exists")
+        .run()
+        .id
+        .clone();
+    let advisory_sources = outcome
+        .result
+        .components
+        .iter()
+        .flat_map(|component| component.vulnerabilities.iter())
+        .map(|vulnerability| vulnerability.source.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for source in advisory_sources {
+        let snapshot_id = crate::adapters::scanners::binary_provider_snapshot_id(&run_id, &source)?;
+        let record_count = outcome
+            .result
+            .components
+            .iter()
+            .flat_map(|component| component.vulnerabilities.iter())
+            .filter(|vulnerability| vulnerability.source == source)
+            .count();
+        let payload = serde_json::json!({
+            "schemaVersion": 1,
+            "provider": source,
+            "recordCount": record_count,
+            "databaseLastUpdated": outcome.result.database_last_updated,
+            "scanners": outcome.result.scanners,
+            "kind": "bounded-query-receipt"
+        });
+        let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+        let content_sha256 = {
+            use sha2::Digest;
+            format!("{:x}", sha2::Sha256::digest(bytes))
+        };
+        service
+            .repository()
+            .provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {
+                id: snapshot_id.to_string(),
+                provider_id: source,
+                fetched_at_ms: epoch_millis(),
+                content_sha256,
+                payload,
+            })
+            .map_err(|error| error.to_string())?;
+        managed
+            .as_mut()
+            .expect("managed binary run exists")
+            .record_provider_snapshot(snapshot_id)
+            .map_err(|error| error.to_string())?;
+    }
+    let (artifacts, components, mut observations) =
+        crate::adapters::scanners::binary_graph(&run_id, &outcome.result)?;
+    if request.deep_analysis {
+        if target.is_file() {
+            const SEMANTIC_MAX_BYTES: u64 = 16 * 1024 * 1024;
+            let semantic_result = std::fs::metadata(&target)
+                .map_err(|error| error.to_string())
+                .and_then(|metadata| {
+                    if metadata.len() > SEMANTIC_MAX_BYTES {
+                        return Err("target exceeds the 16 MiB deep-analysis budget".into());
+                    }
+                    std::fs::read(&target).map_err(|error| error.to_string())
+                })
+                .and_then(|bytes| {
+                    if bytes.len() as u64 > SEMANTIC_MAX_BYTES {
+                        return Err("target exceeded the deep-analysis budget while reading".into());
+                    }
+                    use oxaudit_scanners::SemanticAnalyzer;
+                    let artifact_id = artifacts
+                        .first()
+                        .ok_or_else(|| "binary artifact was not projected".to_string())?
+                        .id
+                        .to_string();
+                    oxaudit_scanners::BoundedObjectAnalyzer.analyze(
+                        oxaudit_scanners::SemanticInput {
+                            artifact_id,
+                            architecture: String::new(),
+                            bytes,
+                            limits: oxaudit_scanners::SemanticAnalysisLimits {
+                                max_input_bytes: SEMANTIC_MAX_BYTES,
+                                max_functions: 25_000,
+                                max_basic_blocks: 100_000,
+                                max_seconds: 20,
+                            },
+                        },
+                    )
+                });
+            match semantic_result {
+                Ok(report) => {
+                    use oxaudit_scanners::SemanticAnalyzer;
+                    let descriptor = oxaudit_scanners::BoundedObjectAnalyzer.descriptor();
+                    let artifact_id = artifacts
+                        .first()
+                        .expect("binary graph always produces an artifact")
+                        .id
+                        .clone();
+                    for finding in &report.findings {
+                        let evidence = finding
+                            .evidence
+                            .iter()
+                            .cloned()
+                            .map(|evidence| oxaudit_domain::EvidenceRecord {
+                                id: oxaudit_domain::EvidenceId::new(),
+                                evidence,
+                            })
+                            .collect::<Vec<_>>();
+                        observations.push(oxaudit_application::ObservationRecord {
+                            observation: oxaudit_domain::Observation {
+                                id: oxaudit_domain::ObservationId::new(),
+                                run_id: run_id.clone(),
+                                artifact_id: artifact_id.clone(),
+                                kind: oxaudit_domain::ObservationKind::SemanticDataFlow,
+                                detector_id: descriptor.id.clone(),
+                                detector_version: descriptor.version.clone(),
+                                rule_id: Some(finding.rule_id.clone()),
+                                title: format!(
+                                    "Call to security-sensitive sink at 0x{:x}",
+                                    finding.function_address
+                                ),
+                                summary: finding.limitations.join(" "),
+                                evidence_ids: evidence
+                                    .iter()
+                                    .map(|record| record.id.clone())
+                                    .collect(),
+                            },
+                            evidence,
+                        });
+                    }
+                    outcome.result.semantic_analysis = Some(report);
+                }
+                Err(error) => outcome
+                    .notes
+                    .push(format!("Deep binary analysis was not completed: {error}")),
+            }
+        } else {
+            outcome.notes.push(
+                "Deep binary analysis currently accepts one object file at a time; the directory scan still completed normally.".into(),
+            );
+        }
+    }
+    let component_observations = observations
+        .iter()
+        .filter(|record| {
+            record.observation.kind == oxaudit_domain::ObservationKind::BinaryComponent
+        })
+        .count();
+    let advisory_observations = observations
+        .iter()
+        .filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch)
+        .count();
+    let expected_advisories: usize = outcome
+        .result
+        .components
+        .iter()
+        .map(|component| component.vulnerabilities.len())
+        .sum();
+    if component_observations != outcome.result.components.len()
+        || advisory_observations != expected_advisories
+    {
+        if let Some(managed) = managed.take() {
+            let _ = managed.terminate(oxaudit_domain::RunState::Incomplete, epoch_millis());
+        }
+        return Err(
+            "binary result manifest could not account for every component and advisory".into(),
+        );
+    }
+    for artifact in &artifacts {
+        managed
+            .as_mut()
+            .expect("managed binary run exists")
+            .append_artifact(artifact)
+            .map_err(|error| error.to_string())?;
+    }
+    managed
+        .as_mut()
+        .expect("managed binary run exists")
+        .append_components(&components)
+        .map_err(|error| error.to_string())?;
+    managed
+        .as_mut()
+        .expect("managed binary run exists")
+        .append_observations(observations)
+        .map_err(|error| error.to_string())?;
+    managed
+        .as_mut()
+        .expect("managed binary run exists")
+        .transition(oxaudit_domain::RunState::Enriching, epoch_millis())
+        .map_err(|error| error.to_string())?;
 
     // A scanner that failed while another succeeded is reported, not hidden:
     // the two see different things, so a partial result is easy to misread as
     // a complete one.
     for failure in &outcome.failures {
+        managed
+            .as_mut()
+            .expect("managed binary run exists")
+            .warning(
+                "scanner_failed",
+                format!("{}: {}", failure.scanner, failure.message),
+            );
         let _ = app.emit(
             "binscan://scanner-failed",
             json!({ "scanner": failure.scanner, "message": failure.message }),
@@ -1279,8 +3042,31 @@ pub async fn scan_binaries(
     // a capped or rate-limited lookup means "fewer CVEs than exist", which is
     // indistinguishable from "clean" unless we say so.
     for note in &outcome.notes {
+        managed
+            .as_mut()
+            .expect("managed binary run exists")
+            .warning("enrichment_note", note.clone());
         let _ = app.emit("binscan://note", Value::from(note.clone()));
     }
+    managed
+        .as_mut()
+        .expect("managed binary run exists")
+        .transition(oxaudit_domain::RunState::Assessing, epoch_millis())
+        .map_err(|error| error.to_string())?;
+    managed
+        .as_mut()
+        .expect("managed binary run exists")
+        .transition(oxaudit_domain::RunState::Persisting, epoch_millis())
+        .map_err(|error| error.to_string())?;
+    service
+        .repository()
+        .canonical_save_projection(&run_id, "binary", 1, &outcome.result)
+        .map_err(|error| error.to_string())?;
+    managed
+        .take()
+        .expect("managed binary run exists")
+        .complete(epoch_millis())
+        .map_err(|error| error.to_string())?;
 
     Ok(outcome.result)
 }
@@ -1319,6 +3105,7 @@ pub async fn refresh_binary_database(
         severity: None,
         offline: false,
         update: Some("now".into()),
+        deep_analysis: false,
     };
 
     crate::binscan::scan::run_scan(
@@ -1488,19 +3275,20 @@ pub async fn stream_chat(
                 let _ = app2_emit.emit("ai://event", payload);
             }
         });
-        let result = crate::agent::loop_engine::run_turn(
-            &client,
-            &settings,
-            &registry,
-            user_messages,
-            conversation_id.clone(),
-            project_root,
-            app2.clone(),
-            Some(cancel.clone()),
-            Some(steer.clone()),
-            emitter,
-        )
-        .await;
+        let result =
+            crate::agent::loop_engine::run_turn(crate::agent::loop_engine::RunTurnRequest {
+                client: &client,
+                settings: &settings,
+                registry: &registry,
+                user_messages,
+                conversation_id: conversation_id.clone(),
+                project_root,
+                app: app2.clone(),
+                cancel: Some(cancel.clone()),
+                steer: Some(steer.clone()),
+                emit: emitter,
+            })
+            .await;
         match result {
             Ok((content, usage)) => {
                 if let (Some(cid), Some(usage)) = (&conversation_id, &usage) {

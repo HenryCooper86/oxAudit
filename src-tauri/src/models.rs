@@ -33,7 +33,7 @@ impl Default for ScanOptions {
     }
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanSummary {
     pub path: String,
@@ -120,7 +120,7 @@ pub struct ScanResult {
 // Dependency / application scanning
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Dependency {
     pub ecosystem: String,
@@ -129,7 +129,7 @@ pub struct Dependency {
     pub lockfile: String,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Vulnerability {
     /// OSV id, e.g. GHSA-xxxx or CVE-xxxx
@@ -162,7 +162,7 @@ pub struct Vulnerability {
     pub lockfile: String,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DepScanSummary {
     pub path: String,
@@ -173,7 +173,7 @@ pub struct DepScanSummary {
     pub duration_ms: u64,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencyScanResult {
     pub summary: DepScanSummary,
@@ -181,7 +181,7 @@ pub struct DependencyScanResult {
     pub vulnerabilities: Vec<Vulnerability>,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct LockfileInfo {
     pub path: String,

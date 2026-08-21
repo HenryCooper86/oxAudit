@@ -277,7 +277,7 @@ fn parse_cve_items(json: Value) -> Vec<CveItem> {
             .unwrap_or("")
             .to_string();
 
-        let (severity, cvss_score) = extract_nvd_severity(&cve);
+        let (severity, cvss_score) = extract_nvd_severity(cve);
 
         let published = cve
             .get("published")

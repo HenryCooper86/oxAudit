@@ -1,0 +1,108 @@
+[pack]
+schema_version = 1
+id = "oxaudit.native-binary-signatures"
+version = "1.0.0"
+authors = ["oxAudit contributors"]
+source = "Independently known-version binaries and repository-authored regression fixtures; see docs/binary-signatures.md"
+license = "Apache-2.0"
+creation_method = "independently-derived"
+signatures_sha256 = "52af907e9835d17c2507910aad7ba74d226416eeaa9addeec5121909e5da2dee"
+architectures = ["architecture-independent strings", "x86-64", "aarch64"]
+
+[fixtures]
+positive_suites = [
+  "embedded:FIRMWARE_GROUND_TRUTH",
+  "embedded:CONSTANT_GROUND_TRUTH",
+  "embedded:IDENTITY_ONLY",
+  "embedded:zstandard-byte-identity",
+  "embedded:pcre2-identity-gate",
+]
+negative_suites = [
+  "embedded:elf-symbol-version-tags",
+  "embedded:documented-minimum-versions",
+  "embedded:sshd-compatibility-list",
+  "embedded:openvpn-minimum-version",
+  "embedded:byte-pattern-without-identity",
+]
+
+# Fixture status is explicit and exhaustive. `verified_products` have a
+# committed positive detection fixture. `unverified_products` remain available
+# because they were independently derived before the provenance contract, but
+# Quality Lab must show their fixture health as incomplete until a positive
+# receipt is added. Nothing is counted as verified merely because it compiles.
+verified_products = [
+  "avahi",
+  "c-ares",
+  "chrony",
+  "dbus",
+  "dnsmasq",
+  "dropbear_ssh",
+  "e2fsprogs",
+  "freetype",
+  "gmp",
+  "hostapd",
+  "iptables",
+  "jansson",
+  "json-c",
+  "libarchive",
+  "libcap",
+  "libevent",
+  "libidn2",
+  "libjpeg-turbo",
+  "libnftnl",
+  "libpcap",
+  "libpsl",
+  "libssh",
+  "libtasn1",
+  "libtirpc",
+  "libuci",
+  "libwebsockets",
+  "lighttpd",
+  "lua",
+  "mbed_tls",
+  "mosquitto",
+  "net-snmp",
+  "netifd",
+  "nettle",
+  "nghttp2",
+  "odhcp6c",
+  "openldap",
+  "openssh",
+  "openvpn",
+  "pcre2",
+  "ppp",
+  "readline",
+  "strongswan",
+  "u-boot",
+  "ubus",
+  "wolfssl",
+  "wpa_supplicant",
+  "zstandard",
+]
+unverified_products = [
+  "bash",
+  "binutils",
+  "busybox",
+  "bzip2",
+  "curl",
+  "expat",
+  "git",
+  "glibc",
+  "gnupg",
+  "gnutls",
+  "international_components_for_unicode",
+  "kerberos_5",
+  "libcurl",
+  "libgcrypt",
+  "libmicrohttpd",
+  "libpng",
+  "libssh2",
+  "libxml2",
+  "openssl",
+  "perl",
+  "sqlite",
+  "util-linux",
+  "xz",
+  "zlib",
+]
+unverified_reason = "Legacy independently-derived signature lacks one committed per-product positive fixture; it is not included in verified coverage claims."

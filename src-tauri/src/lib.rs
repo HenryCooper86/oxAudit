@@ -1,3 +1,4 @@
+mod adapters;
 mod agent;
 mod ai;
 pub mod binscan;
@@ -8,6 +9,7 @@ pub mod exploit;
 pub mod findings;
 mod fs_utils;
 mod models;
+mod presentation;
 mod scanners;
 mod sessions;
 mod settings;
@@ -33,7 +35,9 @@ pub(crate) fn initialize_findings_state(
         }
         let database_path = findings::database_path(app_data_root);
         let repository = FindingsRepository::open(database_path)?;
+        let recovered_at_ms = u64::try_from(recovered_at.timestamp_millis()).unwrap_or_default();
         repository.recover_interrupted_runs(recovered_at)?;
+        repository.canonical_recover_interrupted_runs(recovered_at_ms)?;
         Ok::<_, findings::error::CommandError>(FindingsService::new(repository))
     })();
     match initialized {
@@ -83,7 +87,23 @@ pub fn run() {
             commands::retry_source_run_save,
             commands::save_finding_review,
             commands::delete_finding_review,
+            commands::list_canonical_runs,
+            commands::load_canonical_projection,
+            commands::rule_library_status,
+            commands::validate_rule_pack,
+            commands::quality_status,
+            commands::list_data_sources,
+            commands::refresh_data_source,
+            commands::load_inventory,
+            commands::preview_report_import,
+            commands::import_inventory_report,
+            commands::preview_run_export,
+            commands::write_run_export,
+            commands::list_verification_claims,
+            commands::list_verifications,
+            commands::verify_finding,
             commands::scan_dependencies,
+            commands::cancel_dependency_scan,
             commands::find_lockfiles,
             commands::search_cves,
             commands::cve_detail,
@@ -451,7 +471,7 @@ mod tests {
         assert!(!first.id.is_empty());
         assert_eq!(first.package_name, "lodash");
         assert_eq!(first.installed_version, "4.17.15");
-        assert!(first.summary.len() > 0);
+        assert!(!first.summary.is_empty());
         // at least one vuln should carry CVE aliases or a severity
         let has_alias = vulns.iter().any(|v| !v.aliases.is_empty());
         let has_sev = vulns

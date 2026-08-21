@@ -265,6 +265,7 @@ pub fn parse_report(raw: &str, target: &str, duration_ms: u64) -> Result<BinaryS
         database_last_updated,
         duration_ms,
         scanners: vec![GRYPE.to_string()],
+        semantic_analysis: None,
     })
 }
 

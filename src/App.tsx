@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Toasts } from "./components/Toasts";
 import { AppShell } from "./components/workbench/AppShell";
 import { api } from "./lib/api";
@@ -17,6 +17,13 @@ import { CveResearchPage } from "./pages/CveResearch";
 import { AssistantPage } from "./pages/Assistant";
 import { SettingsPage } from "./pages/SettingsPage";
 
+const InventoryPage = lazy(() => import("./pages/Inventory").then((module) => ({ default: module.InventoryPage })));
+const RuleLibraryPage = lazy(() => import("./pages/RuleLibrary").then((module) => ({ default: module.RuleLibraryPage })));
+const QualityLabPage = lazy(() => import("./pages/QualityLab").then((module) => ({ default: module.QualityLabPage })));
+const DataSourcesPage = lazy(() => import("./pages/DataSources").then((module) => ({ default: module.DataSourcesPage })));
+const ExportCenterPage = lazy(() => import("./pages/ExportCenter").then((module) => ({ default: module.ExportCenterPage })));
+const VerificationPage = lazy(() => import("./pages/Verification").then((module) => ({ default: module.VerificationPage })));
+
 function Page() {
   const page = useAppStore((s) => s.page);
   switch (page) {
@@ -28,6 +35,18 @@ function Page() {
       return <DepsScanPage />;
     case "binary-scan":
       return <BinaryScanPage />;
+    case "inventory":
+      return <InventoryPage />;
+    case "rule-library":
+      return <RuleLibraryPage />;
+    case "quality-lab":
+      return <QualityLabPage />;
+    case "data-sources":
+      return <DataSourcesPage />;
+    case "export-center":
+      return <ExportCenterPage />;
+    case "verification":
+      return <VerificationPage />;
     case "cve-research":
       return <CveResearchPage />;
     case "assistant":
@@ -76,7 +95,9 @@ export default function App() {
 
   return (
     <AppShell>
-      <Page />
+      <Suspense fallback={<div className="p-6 text-[12px] text-text-muted" role="status">Loading workspace…</div>}>
+        <Page />
+      </Suspense>
       <Toasts />
     </AppShell>
   );

@@ -5,6 +5,7 @@ import {
   createSourceScanOptions,
   editSourceScanOption,
   hydrateSourceScanOptions,
+  hydrateSourceScanOptionsFromProject,
   resolveSourceScanOptionsUnavailable,
 } from "../src/lib/sourceScanOptions";
 import type { ScanSettings } from "../src/lib/types";
@@ -52,6 +53,7 @@ test("a failed settings attempt releases truthful fallback controls instead of b
     followSymlinks: false,
     maxFileSizeKb: 333,
     extraIgnoredDirs: [],
+    ignoreInvalidPolicy: false,
   });
 });
 
@@ -71,5 +73,34 @@ test("the submitted Source request is exactly the effective displayed controls",
     followSymlinks: false,
     maxFileSizeKb: 333,
     extraIgnoredDirs: [],
+    ignoreInvalidPolicy: false,
   });
+});
+
+test("project options hydrate untouched controls without overwriting edits", () => {
+  let state = createSourceScanOptions(savedDefaults);
+  state = editSourceScanOption(state, "includeGit", true);
+
+  const hydrated = hydrateSourceScanOptionsFromProject(state, {
+    path: "/canonical/project",
+    scanSecrets: true,
+    scanVulnerabilities: false,
+    includeGit: false,
+    followSymlinks: false,
+    maxFileSizeKb: 2048,
+    extraIgnoredDirs: ["generated"],
+    ignoreInvalidPolicy: false,
+  });
+
+  assert.deepEqual(hydrated.values, {
+    scanSecrets: true,
+    scanVulnerabilities: false,
+    includeGit: true,
+    followSymlinks: false,
+    maxFileSizeKb: 2048,
+  });
+  assert.equal(
+    buildSourceScanRequest("/canonical/project", hydrated, true).ignoreInvalidPolicy,
+    true,
+  );
 });

@@ -3,6 +3,12 @@ export type Page =
   | "source-scan"
   | "deps-scan"
   | "binary-scan"
+  | "inventory"
+  | "rule-library"
+  | "quality-lab"
+  | "data-sources"
+  | "export-center"
+  | "verification"
   | "cve-research"
   | "assistant"
   | "settings";
@@ -32,6 +38,12 @@ export const PAGE_META: Record<Page, PageMeta> = {
   "source-scan": { title: "Source Scan", group: "Scanning" },
   "deps-scan": { title: "Dependencies", group: "Scanning" },
   "binary-scan": { title: "Binary Scan", group: "Scanning" },
+  inventory: { title: "Inventory", group: "System" },
+  "rule-library": { title: "Rule Library", group: "System" },
+  "quality-lab": { title: "Quality Lab", group: "System" },
+  "data-sources": { title: "Data Sources", group: "System" },
+  "export-center": { title: "Export Center", group: "System" },
+  verification: { title: "Verification", group: "System" },
   "cve-research": { title: "CVE Research", group: "Research" },
   assistant: { title: "AI Assistant", group: "Research" },
   settings: { title: "Settings", group: "System" },

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     path::Path,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     sync::Mutex,
@@ -28,9 +28,14 @@ use super::{
     },
 };
 use crate::{
+    adapters::{
+        persistence::CanonicalSqliteRepository,
+        scanners::{source_artifact, source_observation},
+    },
     cve::CveState,
     fs_utils::{self, CollectFilesOptions},
     models::{Finding, ScanOptions, ScanResult, ScanSummary},
+    presentation::CanonicalRunEvents,
     scanners,
     triage::scope,
 };
@@ -221,6 +226,10 @@ impl Drop for ProjectScanGuard<'_> {
 }
 
 impl FindingsService {
+    pub(crate) fn repository(&self) -> &FindingsRepository {
+        &self.repository
+    }
+
     pub fn new(repository: FindingsRepository) -> Self {
         Self {
             repository,
@@ -391,6 +400,22 @@ impl FindingsService {
         };
         self.repository
             .start_run(&running, SCANNER_VERSION, &options)?;
+        let canonical_repository = CanonicalSqliteRepository::new(&self.repository);
+        let canonical_events = CanonicalRunEvents::new(events);
+        let coordinator =
+            oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
+        let mut canonical_run = oxaudit_domain::Run::queued(
+            oxaudit_domain::RunKind::Source,
+            display_name,
+            epoch_millis(),
+        );
+        canonical_run.id = oxaudit_domain::RunId::parse(run_id.clone())
+            .map_err(|_| CommandError::persistence_unavailable())?;
+        let mut managed_run = Some(
+            coordinator
+                .begin(canonical_run)
+                .map_err(|_| CommandError::persistence_unavailable())?,
+        );
         #[cfg(test)]
         self.started_run_ids.lock().unwrap().push(run_id.clone());
         let mut run_attempt = RunAttemptGuard {
@@ -400,6 +425,12 @@ impl FindingsService {
         };
         let result = async {
             self.run_test_scan_seam(&canonical_path)?;
+
+            managed_run
+                .as_mut()
+                .expect("managed run exists until terminal handling")
+                .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
+                .map_err(|_| CommandError::persistence_unavailable())?;
 
             let _ = events.emit("scan://progress", Value::from("walking"));
             let collection = fs_utils::collect_source_files(
@@ -414,6 +445,28 @@ impl FindingsService {
             if collection.files.is_empty() {
                 return Err(CommandError::scan_failed());
             }
+            let canonical_run_id = managed_run
+                .as_ref()
+                .expect("managed run exists until terminal handling")
+                .run()
+                .id
+                .clone();
+            let mut canonical_artifacts = BTreeMap::new();
+            for file in &collection.files {
+                let artifact = source_artifact(&canonical_run_id, file)
+                    .map_err(|_| CommandError::scan_failed())?;
+                managed_run
+                    .as_mut()
+                    .expect("managed run exists until terminal handling")
+                    .append_artifact(&artifact)
+                    .map_err(|_| CommandError::persistence_unavailable())?;
+                canonical_artifacts.insert(artifact.location.normalized_path.clone(), artifact);
+            }
+            managed_run
+                .as_mut()
+                .expect("managed run exists until terminal handling")
+                .transition(oxaudit_domain::RunState::Detecting, epoch_millis())
+                .map_err(|_| CommandError::persistence_unavailable())?;
             let total = collection.files.len();
             let _ = events.emit(
                 "scan://progress",
@@ -439,7 +492,7 @@ impl FindingsService {
                         options.scan_vulnerabilities,
                     );
                     let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if done.is_multiple_of(25) || done == total {
+                    if done % 25 == 0 || done == total {
                         let _ = events.emit(
                             "scan://progress",
                             serde_json::json!({"total": total, "done": done, "phase": "scanning"}),
@@ -458,6 +511,49 @@ impl FindingsService {
                 coverage_entries.push((relative, outcome.covered_families));
                 findings.extend(outcome.findings);
             }
+            if cancel.load(Ordering::Relaxed) {
+                return Err(CommandError::scan_cancelled());
+            }
+            managed_run
+                .as_mut()
+                .expect("managed run exists until terminal handling")
+                .transition(oxaudit_domain::RunState::Normalizing, epoch_millis())
+                .map_err(|_| CommandError::persistence_unavailable())?;
+            assign_fingerprints(&mut findings);
+            for finding in &mut findings {
+                let decision = scope::classify(&finding.file_path);
+                finding.scope = Some(decision.scope);
+                finding.scope_reason = Some(decision.reason);
+                finding.observation_run_id = run_id.clone();
+            }
+            let mut observation_manifest = oxaudit_application::StageManifest::new(
+                "source_observations",
+                findings.iter().map(|finding| finding.id.clone()),
+            )
+            .map_err(|_| CommandError::scan_failed())?;
+            let mut canonical_observations = Vec::with_capacity(findings.len());
+            for finding in &findings {
+                let artifact = canonical_artifacts
+                    .get(&finding.file_path)
+                    .ok_or_else(CommandError::scan_failed)?;
+                let observation = source_observation(&canonical_run_id, artifact, finding)
+                    .map_err(|_| CommandError::scan_failed())?;
+                observation_manifest.record(observation.observation.id.to_string());
+                canonical_observations.push(observation);
+            }
+            observation_manifest
+                .reconcile()
+                .map_err(|_| CommandError::scan_failed())?;
+            managed_run
+                .as_mut()
+                .expect("managed run exists until terminal handling")
+                .append_observations(canonical_observations)
+                .map_err(|_| CommandError::persistence_unavailable())?;
+            managed_run
+                .as_mut()
+                .expect("managed run exists until terminal handling")
+                .transition(oxaudit_domain::RunState::Enriching, epoch_millis())
+                .map_err(|_| CommandError::persistence_unavailable())?;
             if findings.iter().any(|finding| finding.cwe.is_some()) {
                 let _ = events.emit("scan://progress", Value::from("exploitation-signal"));
                 let kev = cve.kev_set().await;
@@ -472,13 +568,11 @@ impl FindingsService {
             if cancel.load(Ordering::Relaxed) {
                 return Err(CommandError::scan_cancelled());
             }
-            assign_fingerprints(&mut findings);
-            for finding in &mut findings {
-                let decision = scope::classify(&finding.file_path);
-                finding.scope = Some(decision.scope);
-                finding.scope_reason = Some(decision.reason);
-                finding.observation_run_id = run_id.clone();
-            }
+            managed_run
+                .as_mut()
+                .expect("managed run exists until terminal handling")
+                .transition(oxaudit_domain::RunState::Assessing, epoch_millis())
+                .map_err(|_| CommandError::persistence_unavailable())?;
             let include_project_policy =
                 !matches!(loaded_policy.status(), PolicyStatus::Invalid { .. });
             self.repository.enrich_findings_with_reviews(
@@ -556,6 +650,12 @@ impl FindingsService {
                 maintenance_warning: None,
             };
 
+            managed_run
+                .as_mut()
+                .expect("managed run exists until terminal handling")
+                .transition(oxaudit_domain::RunState::Persisting, epoch_millis())
+                .map_err(|_| CommandError::persistence_unavailable())?;
+
             self.run_test_before_completion_seam(&canonical_path);
             if cancel.load(Ordering::SeqCst) {
                 return Err(CommandError::scan_cancelled());
@@ -599,11 +699,37 @@ impl FindingsService {
         }
         .await;
         match result {
-            Ok(detail) => {
+            Ok(mut detail) => {
+                if let Some(mut canonical) = managed_run.take() {
+                    let canonical_result = match &detail.persistence {
+                        RunPersistence::Saved => canonical.complete(epoch_millis()),
+                        RunPersistence::NotSaved { .. } => {
+                            canonical.warning(
+                                "legacy_persistence_pending",
+                                "The canonical run is waiting for the existing durable-save retry.",
+                            );
+                            canonical.checkpoint()
+                        }
+                    };
+                    if canonical_result.is_err() {
+                        merge_maintenance_warning(
+                            &mut detail,
+                            "Run saved, but its canonical evidence graph could not be finalized.",
+                        );
+                    }
+                }
                 run_attempt.disarm();
                 Ok(detail)
             }
             Err(error) => {
+                if let Some(canonical) = managed_run.take() {
+                    let terminal = if error.code == super::error::ErrorCode::ScanCancelled {
+                        oxaudit_domain::RunState::Cancelled
+                    } else {
+                        oxaudit_domain::RunState::Incomplete
+                    };
+                    let _ = canonical.terminate(terminal, epoch_millis());
+                }
                 run_attempt.fail(&error);
                 Err(error)
             }
@@ -624,6 +750,15 @@ impl FindingsService {
             Ok(stored) => stored,
             Err((_, error)) => return Err(error),
         };
+        if let Ok(run_id) = oxaudit_domain::RunId::parse(pending.run_id.clone()) {
+            if let Some(mut run) = self.repository.canonical_load_run(&run_id)? {
+                if run.state == oxaudit_domain::RunState::Persisting {
+                    run.transition(oxaudit_domain::RunState::Completed, epoch_millis())
+                        .map_err(|_| CommandError::persistence_unavailable())?;
+                    self.repository.canonical_save_run(&run)?;
+                }
+            }
+        }
         reservation.remove()?;
         Ok(stored)
     }
@@ -1161,6 +1296,10 @@ fn timestamp(now: DateTime<Utc>) -> String {
     now.to_rfc3339_opts(SecondsFormat::Nanos, true)
 }
 
+fn epoch_millis() -> u64 {
+    u64::try_from(Utc::now().timestamp_millis()).unwrap_or_default()
+}
+
 fn terminal_error_code(error: &CommandError) -> &'static str {
     match error.code {
         super::error::ErrorCode::ScanCancelled => "scan_cancelled",
@@ -1267,7 +1406,7 @@ fn strip_project_policy_reviews(findings: &mut [Finding], now: DateTime<Utc>) {
                 review.origin == ReviewOrigin::Local
                     && review.superseded_at.is_none()
                     && review.state != super::domain::ReviewState::Candidate
-                    && review.expires_at.as_deref().is_none_or(|expires_at| {
+                    && review.expires_at.as_deref().map_or(true, |expires_at| {
                         DateTime::parse_from_rfc3339(expires_at)
                             .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
                     })

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type JSX } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Boxes, ExternalLink, Play, Search } from "lucide-react";
+import { Ban, Boxes, ExternalLink, Play, Search } from "lucide-react";
 import { FolderPicker } from "../components/FolderPicker";
 import { ProgressBar } from "../components/ProgressBar";
 import { SeverityBadge } from "../components/SeverityBadge";
@@ -12,10 +12,12 @@ import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import { resolveRuntimeProject } from "../lib/assistantSessions";
+import { latestCompletedRun } from "../lib/durableRuns";
 import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
-import { Button } from "../components/ui";
+import { Button, Switch } from "../components/ui";
+import { RunTimeline } from "../features/runs/RunTimeline";
 
 const vulnerabilityKey = (v: Vulnerability) => `${v.id}:${v.packageName}:${v.installedVersion}`;
 type FailedOperation = "discovery" | "check";
@@ -25,9 +27,10 @@ export function DepsScanPage() {
   const setActiveProjectStore = useAppStore((state) => state.setActiveProject);
   const setPageStatus = useAppStore((state) => state.setPageStatus);
   const clearPageStatus = useAppStore((state) => state.clearPageStatus);
+  const activeProject = useAppStore((state) => state.activeProject);
   const push = useToastStore((state) => state.push);
 
-  const [path, setPath] = useState("");
+  const [path, setPath] = useState(activeProject ?? "");
   const [running, setRunning] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [preview, setPreview] = useState<LockfileInfo[] | null>(null);
@@ -39,10 +42,43 @@ export function DepsScanPage() {
   const [progressBridgeAvailable, setProgressBridgeAvailable] = useState<boolean | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [offline, setOffline] = useState(false);
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const discoveryRequestRef = useRef(0);
   const pathRequestRef = useRef(0);
+  const historyRequestRef = useRef(0);
+
+  useEffect(() => {
+    const requestedPath = path.trim();
+    const requestId = ++historyRequestRef.current;
+    if (!requestedPath) return;
+
+    void (async () => {
+      try {
+        const runs = await api.listCanonicalRuns("dependencies");
+        const saved = latestCompletedRun(runs, "dependencies", requestedPath);
+        if (!saved || requestId !== historyRequestRef.current) return;
+        const restored = await api.loadCanonicalProjection<DependencyScanResult>(saved.id);
+        if (requestId !== historyRequestRef.current) return;
+        setResult(restored);
+        setPreview(
+          restored.summary.lockfilesFound.map((lockfilePath) => ({
+            path: lockfilePath,
+            kind: lockfilePath.split(/[\\/]/).pop() ?? "?",
+            packages: 0,
+          })),
+        );
+        setPageStatus("deps-scan", {
+          label: `Saved dependency results · ${restored.summary.vulnerabilitiesFound} vulnerabilities`,
+          tone: "success",
+        });
+      } catch {
+        // History is a convenience surface. A missing/corrupt saved projection
+        // must never prevent a fresh scan from running.
+      }
+    })();
+  }, [path, setPageStatus]);
   useEffect(() => {
     let disposed = false;
     const register = async () => {
@@ -85,6 +121,7 @@ export function DepsScanPage() {
     if (nextPath === path) return;
     const activationId = ++pathRequestRef.current;
     discoveryRequestRef.current += 1;
+    historyRequestRef.current += 1;
     setPath(nextPath);
     setDiscovering(false);
     setPreview(null);
@@ -111,6 +148,7 @@ export function DepsScanPage() {
   const findLockfiles = async () => {
     if (!path || running || discovering) return;
     const requestId = ++discoveryRequestRef.current;
+    historyRequestRef.current += 1;
     const requestedPath = path;
     setDiscovering(true);
     setError(null);
@@ -169,7 +207,7 @@ export function DepsScanPage() {
       ) {
         return;
       }
-      const scanResult = await api.scanDependencies(requestedPath);
+      const scanResult = await api.scanDependencies(requestedPath, offline);
       setResult(scanResult);
       setSelectedKey(null);
       setPreview(
@@ -204,6 +242,14 @@ export function DepsScanPage() {
       setRunning(false);
       setProgress(null);
       setPhase(null);
+    }
+  };
+
+  const cancel = async () => {
+    try {
+      await api.cancelDependencyScan();
+    } catch {
+      // The running command remains the authoritative terminal result.
     }
   };
 
@@ -252,16 +298,16 @@ export function DepsScanPage() {
               <Search size={13} aria-hidden="true" />
               {discovering ? "Finding…" : "Find lockfiles"}
             </Button>
-            <Button
-              type="button"
-              onClick={run}
-              disabled={!path || running || discovering}
-              variant="primary"
-              size="md"
-            >
-              <Play size={13} aria-hidden="true" />
-              {running ? "Checking…" : "Check dependencies"}
-            </Button>
+            {running ? (
+              <Button type="button" onClick={() => void cancel()} variant="danger" size="md">
+                <Ban size={13} aria-hidden="true" />Cancel
+              </Button>
+            ) : (
+              <Button type="button" onClick={run} disabled={!path || discovering} variant="primary" size="md">
+                <Play size={13} aria-hidden="true" />Check dependencies
+              </Button>
+            )}
+            <Switch checked={offline} onChange={setOffline} disabled={running || discovering} label="Offline (use exact saved OSV queries only)" />
           </>
         }
         secondary={
@@ -341,6 +387,12 @@ export function DepsScanPage() {
           buttonLabel="Browse…"
         />
       </TargetBar>
+
+      <RunTimeline
+        active={!running && result ? "completed" : phase === "parsing" ? "detecting" : phase === "querying-osv" || phase === "exploitation-signal" ? "enriching" : "discovering"}
+        running={running || discovering}
+        hasCompletedResult={Boolean(result)}
+      />
 
       {result && (
         <section

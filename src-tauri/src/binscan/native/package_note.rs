@@ -49,7 +49,7 @@ pub struct PackageNote {
 pub fn upstream_version(raw: &str) -> String {
     let without_epoch = raw.split_once(':').map(|(_, rest)| rest).unwrap_or(raw);
     let cut = without_epoch
-        .find(|c| c == '-' || c == '+' || c == '~')
+        .find(['-', '+', '~'])
         .unwrap_or(without_epoch.len());
     without_epoch[..cut].trim().to_string()
 }
@@ -172,9 +172,7 @@ fn scan_notes(segment: &[u8], little_endian: bool) -> Option<PackageNote> {
         cursor = cursor.checked_add(align4(name_size)?)?;
 
         let desc_end = cursor.checked_add(desc_size)?;
-        let Some(desc) = segment.get(cursor..desc_end.min(segment.len())) else {
-            return None;
-        };
+        let desc = segment.get(cursor..desc_end.min(segment.len()))?;
         cursor = cursor.checked_add(align4(desc_size)?)?;
 
         let owner = name.split(|&b| b == 0).next().unwrap_or_default();
