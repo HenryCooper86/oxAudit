@@ -361,6 +361,30 @@ pub fn reconcile_project_policy_reviews(
     )
 }
 
+pub(in crate::findings) fn authoritative_project_policy_projection<T, H, P>(
+    repository: &FindingsRepository,
+    project_id: &str,
+    now: DateTime<Utc>,
+    after_policy_load: H,
+    projection: P,
+) -> Result<(super::domain::PolicyStatus, T), CommandError>
+where
+    H: FnOnce() -> Result<(), CommandError>,
+    P: FnOnce(&FindingsRepository) -> Result<T, CommandError>,
+{
+    let (status, _, projection) = authoritative_project_policy_projection_core(
+        repository,
+        project_id,
+        now,
+        after_policy_load,
+        |authority, repository, reviews| {
+            repository.reconcile_project_policy_events(authority, reviews)
+        },
+        projection,
+    )?;
+    Ok((status, projection))
+}
+
 #[cfg(test)]
 fn reconcile_project_policy_reviews_with_reconcile<F>(
     repository: &FindingsRepository,
@@ -391,23 +415,67 @@ where
         &[ReviewRecord],
     ) -> Result<usize, CommandError>,
 {
+    let (status, inserted, ()) = authoritative_project_policy_projection_core(
+        repository,
+        project_id,
+        now,
+        || Ok(()),
+        reconcile,
+        |_| Ok(()),
+    )?;
+    if matches!(status, super::domain::PolicyStatus::Invalid { .. }) {
+        Err(CommandError::policy_invalid())
+    } else {
+        Ok(inserted)
+    }
+}
+
+fn authoritative_project_policy_projection_core<T, H, R, P>(
+    repository: &FindingsRepository,
+    project_id: &str,
+    now: DateTime<Utc>,
+    after_policy_load: H,
+    reconcile: R,
+    projection: P,
+) -> Result<(super::domain::PolicyStatus, usize, T), CommandError>
+where
+    H: FnOnce() -> Result<(), CommandError>,
+    R: FnOnce(
+        &PolicyAuthority<'_>,
+        &FindingsRepository,
+        &[ReviewRecord],
+    ) -> Result<usize, CommandError>,
+    P: FnOnce(&FindingsRepository) -> Result<T, CommandError>,
+{
     with_policy_authority(|authority| {
         let project = repository.project_context(project_id)?;
         let project_root = Path::new(&project.canonical_path);
         let loaded = load_policy_under_authority(authority, project_root)?;
-        if matches!(loaded.status(), super::domain::PolicyStatus::Invalid { .. }) {
-            return Err(CommandError::policy_invalid());
-        }
-        let reviews = build_project_policy_projection(repository, &loaded, project_id, now)?;
+        after_policy_load()?;
+        let inserted = if matches!(loaded.status(), super::domain::PolicyStatus::Invalid { .. }) {
+            0
+        } else {
+            let reviews = build_project_policy_projection(repository, &loaded, project_id, now)?;
+            revalidate_project_root(repository, project_id, project_root)?;
+            if !policy_authority_still_matches(authority, project_root, &loaded)? {
+                return Err(CommandError::policy_write_failed());
+            }
+            let inserted = reconcile(authority, repository, &reviews)?;
+            if !policy_authority_still_matches(authority, project_root, &loaded)? {
+                return Err(CommandError::policy_write_failed());
+            }
+            inserted
+        };
         revalidate_project_root(repository, project_id, project_root)?;
         if !policy_authority_still_matches(authority, project_root, &loaded)? {
             return Err(CommandError::policy_write_failed());
         }
-        let inserted = reconcile(authority, repository, &reviews)?;
+        let projection = projection(repository)?;
+        revalidate_project_root(repository, project_id, project_root)?;
         if !policy_authority_still_matches(authority, project_root, &loaded)? {
             return Err(CommandError::policy_write_failed());
         }
-        Ok(inserted)
+        Ok((loaded.status().clone(), inserted, projection))
     })
 }
 
