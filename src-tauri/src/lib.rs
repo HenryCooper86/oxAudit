@@ -22,11 +22,12 @@ use findings::{
 };
 
 pub(crate) fn initialize_findings_state(
-    data_dir: &std::path::Path,
+    app_data_root: &std::path::Path,
     recovered_at: chrono::DateTime<chrono::Utc>,
 ) -> FindingsState {
     let initialized = (|| {
-        let repository = FindingsRepository::open(data_dir.join("findings.sqlite3"))?;
+        let database_path = app_data_root.join("findings").join("findings.sqlite3");
+        let repository = FindingsRepository::open(database_path)?;
         repository.recover_interrupted_runs(recovered_at)?;
         Ok::<_, findings::error::CommandError>(FindingsService::new(repository))
     })();
@@ -117,6 +118,124 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    fn set_mode(path: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::symlink_metadata(path)
+            .expect("read permissions")
+            .permissions();
+        permissions.set_mode(mode);
+        std::fs::set_permissions(path, permissions).expect("set permissions");
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::symlink_metadata(path)
+            .expect("read permissions")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[cfg(unix)]
+    fn initialization_error(
+        state: &crate::findings::service::FindingsState,
+    ) -> crate::findings::error::CommandError {
+        match state.service() {
+            Ok(_) => panic!("findings initialization unexpectedly succeeded"),
+            Err(error) => error,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn findings_startup_uses_private_child_without_mutating_shared_app_data() {
+        let app_data = tempfile::tempdir().expect("shared app-data root");
+        let settings = app_data.path().join("settings.json");
+        let sessions = app_data.path().join("sessions");
+        let session = sessions.join("session.jsonl");
+        std::fs::create_dir(&sessions).expect("sessions directory");
+        std::fs::write(&settings, br#"{"theme":"dark"}"#).expect("settings fixture");
+        std::fs::write(&session, b"retained session\n").expect("session fixture");
+        set_mode(app_data.path(), 0o755);
+        set_mode(&settings, 0o644);
+        set_mode(&sessions, 0o755);
+        set_mode(&session, 0o644);
+        let settings_bytes = std::fs::read(&settings).unwrap();
+        let session_bytes = std::fs::read(&session).unwrap();
+
+        let state = crate::initialize_findings_state(app_data.path(), chrono::Utc::now());
+
+        assert!(state.service().is_ok());
+        assert_eq!(mode(app_data.path()), 0o755);
+        assert_eq!(mode(&settings), 0o644);
+        assert_eq!(mode(&sessions), 0o755);
+        assert_eq!(mode(&session), 0o644);
+        assert_eq!(std::fs::read(&settings).unwrap(), settings_bytes);
+        assert_eq!(std::fs::read(&session).unwrap(), session_bytes);
+        assert_eq!(mode(&app_data.path().join("findings")), 0o700);
+        assert_eq!(
+            mode(&app_data.path().join("findings/findings.sqlite3")),
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn findings_startup_rejects_unsafe_preexisting_private_child() {
+        let app_data = tempfile::tempdir().expect("shared app-data root");
+        let findings = app_data.path().join("findings");
+        std::fs::create_dir(&findings).expect("findings directory");
+        std::fs::write(app_data.path().join("settings.json"), b"preserve")
+            .expect("settings fixture");
+        set_mode(app_data.path(), 0o755);
+        set_mode(&findings, 0o755);
+
+        let state = crate::initialize_findings_state(app_data.path(), chrono::Utc::now());
+
+        let error = initialization_error(&state);
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(mode(app_data.path()), 0o755);
+        assert_eq!(mode(&findings), 0o755);
+        assert_eq!(
+            std::fs::read(app_data.path().join("settings.json")).unwrap(),
+            b"preserve"
+        );
+        assert!(!findings.join("findings.sqlite3").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn findings_startup_rejects_symlinked_private_child_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let app_data = tempfile::tempdir().expect("shared app-data root");
+        let redirected = tempfile::tempdir().expect("redirect target");
+        set_mode(app_data.path(), 0o755);
+        set_mode(redirected.path(), 0o700);
+        symlink(redirected.path(), app_data.path().join("findings"))
+            .expect("symlink findings directory");
+
+        let state = crate::initialize_findings_state(app_data.path(), chrono::Utc::now());
+
+        let error = initialization_error(&state);
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert!(!redirected.path().join("findings.sqlite3").exists());
+        assert!(std::fs::symlink_metadata(app_data.path().join("findings"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
     fn source_fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("fixture tempdir");
         let files = [
