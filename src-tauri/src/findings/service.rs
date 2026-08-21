@@ -71,6 +71,8 @@ pub struct FindingsService {
     #[cfg(test)]
     retry_reservation_pause: Mutex<Option<ScanPause>>,
     #[cfg(test)]
+    pending_eviction_pause: Mutex<Option<ScanPause>>,
+    #[cfg(test)]
     scanner_failures: Mutex<HashSet<String>>,
     #[cfg(test)]
     mark_incomplete_failures: AtomicUsize,
@@ -156,6 +158,21 @@ impl PendingSaveReservation<'_> {
         self.finished = true;
         Ok(())
     }
+
+    fn replace(mut self, pending: PendingSave) -> Result<(), CommandError> {
+        let mut pending_saves = self
+            .pending_saves
+            .lock()
+            .map_err(|_| CommandError::persistence_unavailable())?;
+        let index = pending_saves
+            .iter()
+            .position(|candidate| candidate.retry_token == self.retry_token)
+            .ok_or_else(CommandError::not_found)?;
+        pending_saves.remove(index);
+        pending_saves.push_back(pending);
+        self.finished = true;
+        Ok(())
+    }
 }
 
 impl Drop for PendingSaveReservation<'_> {
@@ -225,6 +242,8 @@ impl FindingsService {
             policy_projection_pause: Mutex::new(None),
             #[cfg(test)]
             retry_reservation_pause: Mutex::new(None),
+            #[cfg(test)]
+            pending_eviction_pause: Mutex::new(None),
             #[cfg(test)]
             scanner_failures: Mutex::new(HashSet::new()),
             #[cfg(test)]
@@ -748,34 +767,44 @@ impl FindingsService {
             retry_token: retry_token.clone(),
             in_flight: false,
         };
-        detail.persistence = RunPersistence::NotSaved { retry_token };
         apply_advisory_comparison(&mut detail, baseline, &pending.coverage);
-        let mut evicted = Vec::new();
-        {
+        let eviction = {
             let mut queue = self
                 .pending_saves
                 .lock()
                 .map_err(|_| CommandError::persistence_unavailable())?;
-            while queue.len() >= 3 {
-                if let Some(index) = queue.iter().position(|pending| !pending.in_flight) {
-                    let pending = queue
-                        .remove(index)
-                        .expect("selected pending save must still exist");
-                    evicted.push(pending.run_id);
-                } else {
-                    return Err(CommandError::persistence_unavailable());
-                }
+            if queue.len() < 3 {
+                queue.push_back(pending.clone());
+                None
+            } else {
+                let candidate = queue
+                    .iter_mut()
+                    .find(|candidate| !candidate.in_flight)
+                    .ok_or_else(CommandError::persistence_unavailable)?;
+                candidate.in_flight = true;
+                Some((candidate.run_id.clone(), candidate.retry_token.clone()))
             }
-            queue.push_back(pending);
+        };
+        if let Some((run_id, candidate_token)) = eviction {
+            let reservation = PendingSaveReservation {
+                pending_saves: &self.pending_saves,
+                retry_token: candidate_token.clone(),
+                finished: false,
+            };
+            self.run_test_pending_eviction_seam(&candidate_token);
+            self.mark_pending_evicted(&run_id)?;
+            reservation.replace(pending)?;
         }
-        for run_id in evicted {
-            let _ = self.repository.mark_incomplete(
-                &run_id,
-                &timestamp(Utc::now()),
-                "pending_save_evicted",
-            );
-        }
+        detail.persistence = RunPersistence::NotSaved { retry_token };
         Ok(detail)
+    }
+
+    fn mark_pending_evicted(&self, run_id: &str) -> Result<(), CommandError> {
+        if self.should_fail_mark_incomplete() {
+            return Err(CommandError::persistence_unavailable());
+        }
+        self.repository
+            .mark_incomplete(run_id, &timestamp(Utc::now()), "pending_save_evicted")
     }
 
     #[cfg(test)]
@@ -879,6 +908,16 @@ impl FindingsService {
         release: std::sync::Arc<std::sync::Barrier>,
     ) {
         *self.retry_reservation_pause.lock().unwrap() = Some((retry_token, entered, release));
+    }
+
+    #[cfg(test)]
+    fn pause_pending_eviction_after_reservation_for_test(
+        &self,
+        retry_token: String,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) {
+        *self.pending_eviction_pause.lock().unwrap() = Some((retry_token, entered, release));
     }
 
     #[cfg(test)]
@@ -1060,6 +1099,28 @@ impl FindingsService {
 
     #[cfg(not(test))]
     fn run_test_reserved_retry_seam(&self, _retry_token: &str) {}
+
+    #[cfg(test)]
+    fn run_test_pending_eviction_seam(&self, retry_token: &str) {
+        let pause = {
+            let mut pause = self.pending_eviction_pause.lock().unwrap();
+            if pause
+                .as_ref()
+                .is_some_and(|(token, _, _)| token == retry_token)
+            {
+                pause.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, entered, release)) = pause {
+            entered.wait();
+            release.wait();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn run_test_pending_eviction_seam(&self, _retry_token: &str) {}
 
     #[cfg(test)]
     fn run_test_completion_seam(&self, run_id: &str) -> Result<(), CommandError> {
@@ -1795,6 +1856,184 @@ mod tests {
         assert_eq!(
             service.repository.load_run(&newest_run).unwrap().run_id,
             newest_run
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_eviction_terminalization_keeps_old_token_and_declines_new_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        service.fail_next_completions_for_test(3);
+        let mut tokens = Vec::new();
+        let mut run_ids = Vec::new();
+        for index in 0..3 {
+            let project = directory.path().join(format!("project-{index}"));
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+            let pending = service
+                .scan(
+                    ScanOptions {
+                        path: project.to_string_lossy().into_owned(),
+                        scan_secrets: false,
+                        ..ScanOptions::default()
+                    },
+                    &cached_cve_state(),
+                    &AtomicBool::new(false),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .unwrap();
+            run_ids.push(pending.run_id.clone());
+            let RunPersistence::NotSaved { retry_token } = pending.persistence else {
+                panic!("fixture completion must be pending")
+            };
+            tokens.push(retry_token);
+        }
+
+        service.fail_next_mark_incomplete_for_test();
+        service.fail_next_completions_for_test(1);
+        let fourth_project = directory.path().join("project-3");
+        std::fs::create_dir(&fourth_project).unwrap();
+        std::fs::write(fourth_project.join("app.js"), "eval(input);\n").unwrap();
+        let error = service
+            .scan(
+                ScanOptions {
+                    path: fourth_project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .expect_err("a new token cannot be offered when eviction did not terminalize");
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        let queued_tokens = service
+            .pending_saves
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|pending| pending.retry_token.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(queued_tokens, tokens);
+        assert_eq!(
+            service.repository.load_run(&run_ids[0]).unwrap().status,
+            RunStatus::Running
+        );
+        let declined_run = service
+            .started_run_ids
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            service.repository.load_run(&declined_run).unwrap().status,
+            RunStatus::Incomplete
+        );
+
+        let recovered = service.retry_save(&tokens[0]).unwrap();
+        assert_eq!(recovered.run_id, run_ids[0]);
+        assert_eq!(recovered.persistence, RunPersistence::Saved);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn selected_eviction_candidate_cannot_be_retried_before_token_transition() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = Arc::new(FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        ));
+        service.fail_next_completions_for_test(3);
+        let mut tokens = Vec::new();
+        let mut run_ids = Vec::new();
+        for index in 0..3 {
+            let project = directory.path().join(format!("project-{index}"));
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+            let pending = service
+                .scan(
+                    ScanOptions {
+                        path: project.to_string_lossy().into_owned(),
+                        scan_secrets: false,
+                        ..ScanOptions::default()
+                    },
+                    &cached_cve_state(),
+                    &AtomicBool::new(false),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .unwrap();
+            run_ids.push(pending.run_id.clone());
+            let RunPersistence::NotSaved { retry_token } = pending.persistence else {
+                panic!("fixture completion must be pending")
+            };
+            tokens.push(retry_token);
+        }
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        service.pause_pending_eviction_after_reservation_for_test(
+            tokens[0].clone(),
+            entered.clone(),
+            release.clone(),
+        );
+        service.fail_next_completions_for_test(1);
+        let fourth_project = directory.path().join("project-3");
+        std::fs::create_dir(&fourth_project).unwrap();
+        std::fs::write(fourth_project.join("app.js"), "eval(input);\n").unwrap();
+        let scan = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .scan(
+                        ScanOptions {
+                            path: fourth_project.to_string_lossy().into_owned(),
+                            scan_secrets: false,
+                            ..ScanOptions::default()
+                        },
+                        &cached_cve_state(),
+                        &AtomicBool::new(false),
+                        &RecordingEvents::default(),
+                    )
+                    .await
+            })
+        };
+        entered.wait();
+
+        assert_eq!(
+            service.retry_save(&tokens[0]).unwrap_err().code,
+            crate::findings::error::ErrorCode::ScanAlreadyRunning
+        );
+        assert_eq!(
+            service.repository.load_run(&run_ids[0]).unwrap().status,
+            RunStatus::Running
+        );
+        release.wait();
+
+        let fourth = scan.await.unwrap().unwrap();
+        let RunPersistence::NotSaved { retry_token } = fourth.persistence else {
+            panic!("successful terminal transition must transfer retry ownership")
+        };
+        assert_eq!(
+            service.repository.load_run(&run_ids[0]).unwrap().status,
+            RunStatus::Incomplete
+        );
+        assert!(service
+            .pending_saves
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|pending| pending.retry_token == retry_token && pending.run_id == fourth.run_id));
+        assert_eq!(
+            service.retry_save(&retry_token).unwrap().run_id,
+            fourth.run_id
         );
     }
 
