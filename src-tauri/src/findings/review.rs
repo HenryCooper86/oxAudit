@@ -202,9 +202,10 @@ pub fn save_project_policy_review(
             request,
             now,
             || {},
-            |repository, projection| {
+            |authority, repository, projection| {
                 repository
                     .reconcile_project_policy_projection(
+                        authority,
                         &projection.reviews,
                         Some((
                             projection.selected_fingerprint_version,
@@ -233,6 +234,7 @@ fn save_project_policy_review_with_reconcile<F>(
 ) -> Result<ReviewRecord, CommandError>
 where
     F: FnOnce(
+        &PolicyAuthority<'_>,
         &FindingsRepository,
         &ProjectPolicyProjection,
     ) -> Result<Vec<ReviewRecord>, CommandError>,
@@ -269,9 +271,10 @@ where
             request,
             now,
             before_root_revalidation,
-            |repository, projection| {
+            |authority, repository, projection| {
                 repository
                     .reconcile_project_policy_projection(
+                        authority,
                         &projection.reviews,
                         Some((
                             projection.selected_fingerprint_version,
@@ -295,6 +298,7 @@ fn save_project_policy_review_under_authority<F, G>(
 ) -> Result<ReviewRecord, CommandError>
 where
     F: FnOnce(
+        &PolicyAuthority<'_>,
         &FindingsRepository,
         &ProjectPolicyProjection,
     ) -> Result<Vec<ReviewRecord>, CommandError>,
@@ -328,8 +332,8 @@ where
     if !policy_authority_still_matches(authority, project_root, &loaded)? {
         return Err(CommandError::policy_write_failed());
     }
-    let stored =
-        reconcile(repository, &projection).map_err(|_| CommandError::policy_write_failed())?;
+    let stored = reconcile(authority, repository, &projection)
+        .map_err(|_| CommandError::policy_write_failed())?;
     if !policy_authority_still_matches(authority, project_root, &loaded)? {
         return Err(CommandError::policy_write_failed());
     }
@@ -347,9 +351,14 @@ pub fn reconcile_project_policy_reviews(
     project_id: &str,
     now: DateTime<Utc>,
 ) -> Result<usize, CommandError> {
-    reconcile_project_policy_reviews_core(repository, project_id, now, |repository, reviews| {
-        repository.reconcile_project_policy_events(reviews)
-    })
+    reconcile_project_policy_reviews_core(
+        repository,
+        project_id,
+        now,
+        |authority, repository, reviews| {
+            repository.reconcile_project_policy_events(authority, reviews)
+        },
+    )
 }
 
 #[cfg(test)]
@@ -360,7 +369,11 @@ fn reconcile_project_policy_reviews_with_reconcile<F>(
     reconcile: F,
 ) -> Result<usize, CommandError>
 where
-    F: FnOnce(&FindingsRepository, &[ReviewRecord]) -> Result<usize, CommandError>,
+    F: FnOnce(
+        &PolicyAuthority<'_>,
+        &FindingsRepository,
+        &[ReviewRecord],
+    ) -> Result<usize, CommandError>,
 {
     reconcile_project_policy_reviews_core(repository, project_id, now, reconcile)
 }
@@ -372,7 +385,11 @@ fn reconcile_project_policy_reviews_core<F>(
     reconcile: F,
 ) -> Result<usize, CommandError>
 where
-    F: FnOnce(&FindingsRepository, &[ReviewRecord]) -> Result<usize, CommandError>,
+    F: FnOnce(
+        &PolicyAuthority<'_>,
+        &FindingsRepository,
+        &[ReviewRecord],
+    ) -> Result<usize, CommandError>,
 {
     with_policy_authority(|authority| {
         let project = repository.project_context(project_id)?;
@@ -386,7 +403,7 @@ where
         if !policy_authority_still_matches(authority, project_root, &loaded)? {
             return Err(CommandError::policy_write_failed());
         }
-        let inserted = reconcile(repository, &reviews)?;
+        let inserted = reconcile(authority, repository, &reviews)?;
         if !policy_authority_still_matches(authority, project_root, &loaded)? {
             return Err(CommandError::policy_write_failed());
         }
@@ -1057,7 +1074,7 @@ mod tests {
             root.path(),
             &policy_request,
             now(),
-            |_, _| Err(crate::findings::error::CommandError::persistence_unavailable()),
+            |_, _, _| Err(crate::findings::error::CommandError::persistence_unavailable()),
         )
         .unwrap_err();
         assert_eq!(failed.code, ErrorCode::PolicyWriteFailed);
@@ -1153,7 +1170,7 @@ mod tests {
             root.path(),
             &request_a,
             now(),
-            |_, _| Err(crate::findings::error::CommandError::persistence_unavailable()),
+            |_, _, _| Err(crate::findings::error::CommandError::persistence_unavailable()),
         )
         .expect_err("A commits to the file before the injected DB failure");
         assert_eq!(failed.code, ErrorCode::PolicyWriteFailed);
@@ -1221,11 +1238,12 @@ mod tests {
                 &a_root,
                 &request,
                 now(),
-                |repository, projection| {
+                |authority, repository, projection| {
                     a_projected_worker.wait();
                     release_a_worker.wait();
                     repository
                         .reconcile_project_policy_projection(
+                            authority,
                             &projection.reviews,
                             Some((
                                 projection.selected_fingerprint_version,
@@ -1291,7 +1309,7 @@ mod tests {
             root.path(),
             &request,
             now(),
-            |repository, projection| {
+            |authority, repository, projection| {
                 let mut policy: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
                 policy["entries"]
@@ -1308,6 +1326,7 @@ mod tests {
                 std::fs::write(&policy_path, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
                 repository
                     .reconcile_project_policy_projection(
+                        authority,
                         &projection.reviews,
                         Some((
                             projection.selected_fingerprint_version,
@@ -1339,6 +1358,51 @@ mod tests {
     }
 
     #[test]
+    fn stale_project_policy_record_cannot_replay_outside_live_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
+
+        let stale = save_project_policy_review(
+            &repository,
+            &valid_false_positive(ReviewOrigin::ProjectPolicy),
+            now(),
+        )
+        .unwrap();
+        let mut changed = valid_false_positive(ReviewOrigin::ProjectPolicy);
+        changed.reason = "A second evidence review eliminated reachability".into();
+        let current =
+            save_project_policy_review(&repository, &changed, now() + chrono::Duration::seconds(1))
+                .unwrap();
+        let authoritative_bytes = std::fs::read(root.path().join(".oxaudit/policy.json")).unwrap();
+
+        let replay = repository
+            .inject_local_review_event_for_test(&stale)
+            .expect_err("a detached stale ProjectPolicy record must not mutate SQLite");
+        assert_eq!(replay.code, ErrorCode::ReviewInvalid);
+        assert_eq!(replay.detail, None);
+        let active = repository.load_run("run-1").unwrap().findings[0]
+            .review
+            .clone()
+            .unwrap();
+        assert_eq!(active.id, current.id);
+        assert_eq!(active.reason, changed.reason);
+        assert_eq!(
+            std::fs::read(root.path().join(".oxaudit/policy.json")).unwrap(),
+            authoritative_bytes
+        );
+        assert_eq!(
+            load_policy(root.path())
+                .unwrap()
+                .policy()
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn standalone_reconcile_holds_the_same_authority_as_project_save() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("project");
@@ -1365,7 +1429,7 @@ mod tests {
             &root,
             &valid_false_positive(ReviewOrigin::ProjectPolicy),
             now(),
-            |_, _| Err(CommandError::persistence_unavailable()),
+            |_, _, _| Err(CommandError::persistence_unavailable()),
         )
         .expect_err("A remains file-authoritative after the injected DB failure");
         assert_eq!(failed.code, ErrorCode::PolicyWriteFailed);
@@ -1382,10 +1446,10 @@ mod tests {
                 &repository,
                 "project-1",
                 now(),
-                |repository, reviews| {
+                |authority, repository, reviews| {
                     projected_worker.wait();
                     release_worker.wait();
-                    repository.reconcile_project_policy_events(reviews)
+                    repository.reconcile_project_policy_events(authority, reviews)
                 },
             )
         });
@@ -1747,14 +1811,14 @@ mod tests {
             root.path(),
             &valid_false_positive(ReviewOrigin::ProjectPolicy),
             now(),
-            |repository, projection| {
+            |authority, repository, projection| {
                 let mut invalid_batch = projection.reviews.clone();
                 let mut invalid = invalid_batch[0].clone();
                 invalid.project_id = "missing-project".into();
                 invalid.fingerprint = "fedcba9876543210".into();
                 invalid_batch.push(invalid);
                 repository
-                    .reconcile_project_policy_projection(&invalid_batch, None)
+                    .reconcile_project_policy_projection(authority, &invalid_batch, None)
                     .map(|(stored, _)| stored)
             },
         )
@@ -1781,9 +1845,10 @@ mod tests {
         invalid_project.project_id = "missing-project".into();
         invalid_project.fingerprint = "fedcba9876543210".into();
 
-        let error = repository
-            .reconcile_project_policy_events(&[valid, invalid_project])
-            .expect_err("one invalid event must roll back the complete policy projection");
+        let error = with_policy_authority(|authority| {
+            repository.reconcile_project_policy_events(authority, &[valid, invalid_project])
+        })
+        .expect_err("one invalid event must roll back the complete policy projection");
         assert_eq!(error.code, ErrorCode::PersistenceUnavailable);
         assert!(repository.load_run("run-1").unwrap().findings[0]
             .review_history
@@ -1955,7 +2020,7 @@ mod tests {
         );
         expired.expires_at = Some("2000-01-01T00:00:00Z".into());
         let expired = repository
-            .save_review_event(&record_from_request(
+            .inject_local_review_event_for_test(&record_from_request(
                 &expired,
                 None,
                 now() + chrono::Duration::seconds(1),
