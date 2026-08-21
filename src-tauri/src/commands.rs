@@ -844,7 +844,7 @@ mod source_finding_command_tests {
         let project = temporary.path().join("project");
         std::fs::create_dir(&project).unwrap();
         std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
-        let database_path = data_dir.join("findings.sqlite3");
+        let database_path = data_dir.join("findings/findings.sqlite3");
         let service = FindingsService::new(FindingsRepository::open(&database_path).unwrap());
         let options = ScanOptions {
             path: project.to_string_lossy().into_owned(),
