@@ -1,10 +1,8 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use rayon::prelude::*;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -14,12 +12,16 @@ use crate::ai::usage::{UsageStore, UsageSummary};
 use crate::ai::AiClient;
 use crate::cve::CveState;
 use crate::deps::osv::OsvClient;
+use crate::findings::{
+    domain::ScanRunDetail,
+    error::CommandError,
+    service::{FindingsState, ScanEventSink},
+};
 use crate::fs_utils;
 use crate::models::{
     AiSettings, AppSettings, ChatRequest, ChatResponse, DependencyScanResult, Finding,
-    LockfileInfo, ScanOptions, ScanResult, ScanSettings, ScanSummary, StreamStarted,
+    LockfileInfo, ScanOptions, ScanSettings, StreamStarted,
 };
-use crate::scanners;
 
 pub struct AppState {
     pub settings: Mutex<AppSettings>,
@@ -77,10 +79,6 @@ fn usage_path(app: &AppHandle) -> PathBuf {
         .app_config_dir()
         .map(|d| d.join("usage.json"))
         .unwrap_or_else(|_| PathBuf::from("usage.json"))
-}
-
-fn cancel_checked(state: &AppState) -> bool {
-    state.cancel_scan.load(Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +156,7 @@ fn effective_scan_options(submitted: &ScanOptions, saved: &ScanSettings) -> Effe
     }
 }
 
+#[cfg(test)]
 fn collect_source_scan_files(
     root: &Path,
     effective: &EffectiveScanOptions,
@@ -198,6 +197,7 @@ mod scan_option_contract_tests {
             scan_secrets: false,
             scan_vulnerabilities: true,
             extra_ignored_dirs: vec!["request-ignore".into()],
+            ignore_invalid_policy: false,
         };
 
         let effective = effective_scan_options(&submitted, &saved);
@@ -235,6 +235,34 @@ mod scan_option_contract_tests {
         assert_eq!(effective.max_file_size_kb, 1);
         assert!(effective.scan_secrets);
         assert!(!effective.scan_vulnerabilities);
+    }
+
+    #[test]
+    fn invalid_policy_override_defaults_false_for_existing_frontends() {
+        let legacy = serde_json::json!({
+            "path": "/project",
+            "includeGit": false,
+            "followSymlinks": false,
+            "maxFileSizeKb": 1024,
+            "scanSecrets": true,
+            "scanVulnerabilities": true,
+            "extraIgnoredDirs": []
+        });
+        let parsed: ScanOptions = serde_json::from_value(legacy).unwrap();
+        assert!(!parsed.ignore_invalid_policy);
+
+        let explicit: ScanOptions = serde_json::from_value(serde_json::json!({
+            "path": "/project",
+            "includeGit": false,
+            "followSymlinks": false,
+            "maxFileSizeKb": 1024,
+            "scanSecrets": true,
+            "scanVulnerabilities": true,
+            "extraIgnoredDirs": [],
+            "ignoreInvalidPolicy": true
+        }))
+        .unwrap();
+        assert!(explicit.ignore_invalid_policy);
     }
 
     #[cfg(unix)]
@@ -275,172 +303,38 @@ mod scan_option_contract_tests {
 pub async fn scan_project(
     app: AppHandle,
     state: State<'_, AppState>,
+    findings: State<'_, FindingsState>,
     cve: State<'_, CveState>,
     options: ScanOptions,
-) -> Result<ScanResult, String> {
-    state.cancel_scan.store(false, Ordering::Relaxed);
-    let started = Instant::now();
-    let root = Path::new(&options.path);
-    if !root.is_dir() {
-        return Err(format!("path is not a directory: {}", options.path));
-    }
-
+) -> Result<ScanRunDetail, CommandError> {
     let saved_scan_settings = state.settings.lock().unwrap().scan.clone();
     let effective = effective_scan_options(&options, &saved_scan_settings);
+    let mut durable_options = options;
+    durable_options.include_git = effective.include_git;
+    durable_options.follow_symlinks = effective.follow_symlinks;
+    durable_options.max_file_size_kb = effective.max_file_size_kb;
+    durable_options.scan_secrets = effective.scan_secrets;
+    durable_options.scan_vulnerabilities = effective.scan_vulnerabilities;
+    durable_options.extra_ignored_dirs = effective.ignored_dirs;
 
-    app.emit("scan://progress", Value::from("walking"))
-        .map_err(|e| e.to_string())?;
-
-    let collection = collect_source_scan_files(root, &effective);
-    let files = collection.files;
-    let skipped = collection.skipped;
-    let total_bytes = collection.total_bytes;
-
-    if files.is_empty() {
-        return Err("no files found to scan (check ignore rules / path)".into());
-    }
-
-    let total = files.len();
-    let processed = std::sync::atomic::AtomicUsize::new(0);
-    let max_file_size_kb = effective.max_file_size_kb;
-    let scan_secrets = effective.scan_secrets;
-    let scan_vulns = effective.scan_vulnerabilities;
-
-    app.emit(
-        "scan://progress",
-        serde_json::json!({ "total": total, "done": 0, "phase": "scanning" }),
-    )
-    .map_err(|e| e.to_string())?;
-
-    let results: Vec<Vec<Finding>> = files
-        .par_iter()
-        .map(|file| {
-            if cancel_checked(&state) {
-                return Vec::new();
-            }
-            let findings = scanners::scan_file_with_relative_path(
-                &file.canonical_path,
-                &file
-                    .collection_relative_path
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-                max_file_size_kb,
-                scan_secrets,
-                scan_vulns,
-            )
-            .findings;
-            let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-            if done % 25 == 0 || done == total {
-                let _ = app.emit(
-                    "scan://progress",
-                    serde_json::json!({ "total": total, "done": done, "phase": "scanning" }),
-                );
-            }
-            findings
-        })
-        .collect();
-
-    if cancel_checked(&state) {
-        return Err("scan cancelled".into());
-    }
-
-    let mut findings: Vec<Finding> = results.into_iter().flatten().collect();
-
-    // Exploitation signal, class-level. A source finding has a weakness class
-    // (CWE) but no CVE, so KEV can only tell us whether that *class* is being
-    // actively exploited — which is still real triage value: fix the SQL
-    // injection before the info-leak when injection is what attackers are
-    // using. EPSS is CVE-keyed and genuinely does not apply. Best-effort: the
-    // KEV catalog is the one already cached for the CVE tools, and a failure
-    // leaves findings unflagged rather than failing the scan, so the scan stays
-    // usable offline.
-    if findings.iter().any(|f| f.cwe.is_some()) {
-        app.emit("scan://progress", Value::from("exploitation-signal"))
-            .ok();
-        let kev = cve.kev_set().await;
-        if !kev.is_empty() {
-            for finding in &mut findings {
-                if let Some(cwe) = &finding.cwe {
-                    let count = kev.cwe_exploited_count(cwe);
-                    finding.cwe_exploited = count > 0;
-                    finding.cwe_exploited_count = count;
-                }
-            }
+    struct TauriEvents(AppHandle);
+    impl ScanEventSink for TauriEvents {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            let _ = self.0.emit(event, payload);
+            Ok(())
         }
     }
 
-    findings.sort_by(|a, b| {
-        // Exploited weakness classes first, then severity, then location.
-        b.cwe_exploited
-            .cmp(&a.cwe_exploited)
-            .then_with(|| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)))
-            .then_with(|| a.file_path.cmp(&b.file_path))
-            .then_with(|| a.line.cmp(&b.line))
-    });
-
-    let mut critical = 0;
-    let mut high = 0;
-    let mut medium = 0;
-    let mut low = 0;
-    let mut info = 0;
-    let mut rules_fired: BTreeMap<String, usize> = BTreeMap::new();
-    for f in &findings {
-        match f.severity.as_str() {
-            "critical" => critical += 1,
-            "high" => high += 1,
-            "medium" => medium += 1,
-            "low" => low += 1,
-            _ => info += 1,
-        }
-        *rules_fired.entry(f.rule_id.clone()).or_insert(0) += 1;
-    }
-
-    let secrets_found = findings.iter().filter(|f| f.category == "secret").count();
-    let vulnerabilities_found = findings
-        .iter()
-        .filter(|f| f.category == "vulnerability")
-        .count();
-
-    let summary = ScanSummary {
-        path: options.path.clone(),
-        files_scanned: files.len(),
-        files_skipped: skipped,
-        bytes_scanned: total_bytes,
-        duration_ms: started.elapsed().as_millis() as u64,
-        secrets_found,
-        vulnerabilities_found,
-        total_findings: findings.len(),
-        critical,
-        high,
-        medium,
-        low,
-        info,
-        rules_fired,
-    };
-
-    app.emit(
-        "scan://done",
-        serde_json::json!({ "findings": findings.len() }),
-    )
-    .ok();
-
-    Ok(ScanResult { summary, findings })
+    findings
+        .service()?
+        .scan(durable_options, &cve, &state.cancel_scan, &TauriEvents(app))
+        .await
 }
 
 #[tauri::command]
 pub fn cancel_scan(state: State<'_, AppState>) -> Result<(), String> {
     state.cancel_scan.store(true, Ordering::Relaxed);
     Ok(())
-}
-
-fn severity_rank(s: &str) -> u8 {
-    match s {
-        "critical" => 5,
-        "high" => 4,
-        "medium" => 3,
-        "low" => 2,
-        _ => 1,
-    }
 }
 
 // ---------------------------------------------------------------------------

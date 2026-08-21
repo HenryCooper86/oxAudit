@@ -16,6 +16,10 @@ pub mod triage;
 use tauri::Manager;
 
 use commands::AppState;
+use findings::{
+    repository::FindingsRepository,
+    service::{FindingsService, FindingsState},
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -28,6 +32,19 @@ pub fn run() {
         .manage(state)
         .manage(cve_state)
         .setup(|app| {
+            let findings_state = (|| {
+                let data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|_| findings::error::CommandError::persistence_unavailable())?;
+                let repository = FindingsRepository::open(data_dir.join("findings.sqlite3"))?;
+                repository.recover_interrupted_runs(chrono::Utc::now())?;
+                Ok::<_, findings::error::CommandError>(FindingsService::new(repository))
+            })();
+            app.manage(match findings_state {
+                Ok(service) => FindingsState::available(service),
+                Err(error) => FindingsState::unavailable(error),
+            });
             // Load persisted settings, apply NVD key
             let settings = settings::load(app.handle());
             if let Some(app_state) = app.try_state::<AppState>() {
