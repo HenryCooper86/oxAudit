@@ -345,3 +345,36 @@ test("a todos event carries the whole list so the panel never rebuilds state fro
   });
   await handle.finished;
 });
+
+test("context budget metadata is routed before a model turn", async () => {
+  const budgets: unknown[] = [];
+  const handle = streamChat({ messages: [], conversationId: "session-context" }, {
+    onContextBudget: (budget) => budgets.push(budget),
+  });
+  await waitFor(() => harness.commandCount("stream_chat") === 1);
+  harness.streamStart.resolve({ runId: handle.runId });
+  await waitFor(() => harness.commandCount("plugin:event|listen") === 4);
+
+  harness.emit("ai://event", {
+    runId: handle.runId,
+    type: "context_budget",
+    estimatedTokens: 12_345,
+    contextWindow: 128_000,
+    reservedOutputTokens: 2_048,
+  });
+
+  await waitFor(() => budgets.length === 1);
+  assert.deepEqual(budgets[0], {
+    estimatedTokens: 12_345,
+    contextWindow: 128_000,
+    reservedOutputTokens: 2_048,
+  });
+
+  harness.emit("ai://done", {
+    runId: handle.runId,
+    content: "",
+    model: null,
+    usage: null,
+  });
+  await handle.finished;
+});

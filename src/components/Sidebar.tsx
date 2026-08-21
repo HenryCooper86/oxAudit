@@ -20,6 +20,7 @@ import type { JSX } from "react";
 import { SectionLabel } from "./ui";
 import { useAppStore } from "../lib/stores";
 import type { Page } from "../lib/workbench";
+import { PanelCollapseButton } from "./workbench/PanelCollapseButton";
 
 type NavigationItem = {
   page: Page;
@@ -71,10 +72,12 @@ export function Sidebar({
   open,
   onClose,
   compact = false,
+  onToggleCompact,
 }: {
   open: boolean;
   onClose: () => void;
   compact?: boolean;
+  onToggleCompact: () => void;
 }): JSX.Element {
   const page = useAppStore((state) => state.page);
   const setPage = useAppStore((state) => state.setPage);
@@ -133,7 +136,26 @@ export function Sidebar({
           </button>
         </div>
 
-        <nav className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pt-1.5">
+        <div
+          className={`hidden h-[42px] shrink-0 items-center border-b border-border px-2 min-[901px]:flex ${compact ? "justify-center" : "justify-between"}`}
+        >
+          {!compact && (
+            <span className="pl-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+              Navigation
+            </span>
+          )}
+          <PanelCollapseButton
+            controls="primary-navigation-content"
+            expanded={!compact}
+            label="navigation"
+            onToggle={onToggleCompact}
+          />
+        </div>
+
+        <nav
+          id="primary-navigation-content"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pt-1.5"
+        >
           {NAVIGATION_GROUPS.map((group) => (
             <div
               key={group.label}

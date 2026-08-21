@@ -1254,6 +1254,8 @@ pub struct AppState {
     pub settings: Mutex<AppSettings>,
     pub http: reqwest::Client,
     pub ai: AiClient,
+    /// Shared per-tool request budgets for network-backed assistant tools.
+    pub tool_rate_limiter: crate::agent::rate_limit::ToolRateLimiter,
     pub osv: OsvClient,
     pub cancel_scan: AtomicBool,
     pub cancel_dependency_scan: AtomicBool,
@@ -1289,6 +1291,7 @@ impl AppState {
             settings: Mutex::new(AppSettings::default()),
             http: http.clone(),
             ai: AiClient::new(http.clone()),
+            tool_rate_limiter: crate::agent::rate_limit::ToolRateLimiter::oxaudit_defaults(),
             osv: OsvClient::new(http.clone()),
             cancel_scan: AtomicBool::new(false),
             cancel_dependency_scan: AtomicBool::new(false),
@@ -3396,6 +3399,24 @@ mod stream_protocol_tests {
         assert_eq!(payload["toolCallId"], "tool-1");
         assert_eq!(payload["durationMs"], 12);
         assert_eq!(payload["resultPreview"], "ok");
+    }
+
+    #[test]
+    fn context_budget_payload_keeps_the_frontend_metadata_contract() {
+        let payload = stream_event_payload(
+            "run-context",
+            AiStreamEvent::ContextBudget {
+                estimated_tokens: 12_345,
+                context_window: 128_000,
+                reserved_output_tokens: 2_048,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(payload["type"], "context_budget");
+        assert_eq!(payload["estimatedTokens"], 12_345);
+        assert_eq!(payload["contextWindow"], 128_000);
+        assert_eq!(payload["reservedOutputTokens"], 2_048);
     }
 
     #[test]

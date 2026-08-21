@@ -295,6 +295,7 @@ export function CveResearchPage(): JSX.Element {
             }
           />
           <SplitWorkspace
+            panelId="cve-results"
             listLabel="CVE results"
             detailLabel="CVE dossier"
             hasSelection={selectedCveId !== null}

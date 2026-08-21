@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect } from "react";
 import { Toasts } from "./components/Toasts";
+import { ReadinessWizard } from "./components/onboarding/ReadinessWizard";
 import { AppShell } from "./components/workbench/AppShell";
 import { api } from "./lib/api";
 import {
@@ -104,6 +105,7 @@ export default function App() {
       <Suspense fallback={<div className="p-6 text-[12px] text-text-muted" role="status">Loading workspace…</div>}>
         <Page />
       </Suspense>
+      <ReadinessWizard />
       <Toasts />
     </AppShell>
   );

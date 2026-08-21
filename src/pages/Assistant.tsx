@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Ban,
   ClipboardPaste,
@@ -9,21 +9,30 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Send,
+  Search,
   Settings2,
   Sparkles,
   Trash2,
   User,
   X,
 } from "lucide-react";
-import Markdown from "react-markdown";
 import { BrandMark } from "../components/brand/BrandMark";
 import { AssistantActivityPanel } from "../components/chat/AssistantActivityPanel";
 import { ApprovalModal } from "../components/chat/ApprovalModal";
 import { AskUserModal } from "../components/chat/AskUserModal";
+import { ChatSearchToolbar } from "../components/chat/ChatSearchToolbar";
+import { ContextBudgetMeter } from "../components/chat/ContextBudgetMeter";
+import { HighlightedText, SearchableMarkdown } from "../components/chat/SearchHighlight";
 import { SessionSidebar } from "../components/chat/SessionSidebar";
 import { ThinkingCard } from "../components/chat/ThinkingCard";
 import { ToolCallCard } from "../components/chat/ToolCallCard";
 import { streamChat, type StreamHandle } from "../lib/aiEvents";
+import { nextSearchIndex } from "../lib/chatSearch";
+import {
+  buildContextBudget,
+  estimateMessageTokens,
+  type ContextBudgetMetadata,
+} from "../lib/contextBudget";
 import { planRewind } from "../lib/rewind";
 import { api } from "../lib/api";
 import {
@@ -106,6 +115,7 @@ function toUiMessages(messages: StoredMessage[]): UiMessage[] {
 
 export function AssistantPage() {
   const aiReadiness = useAppStore((state) => state.aiReadiness);
+  const settings = useAppStore((state) => state.settings);
   const aiReady = aiReadiness.status === "ready";
   const assistantHandoff = useAppStore((state) => state.assistantHandoff);
   const clearAssistantHandoff = useAppStore(
@@ -150,6 +160,13 @@ export function AssistantPage() {
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [askUser, setAskUser] = useState<AskPrompt | null>(null);
   const [activityOpen, setActivityOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [contextBudgetMetadata, setContextBudgetMetadata] =
+    useState<ContextBudgetMetadata | null>(null);
 
   const conversationId = useRef<string>(crypto.randomUUID());
   const streamHandleRef = useRef<StreamHandle | null>(null);
@@ -166,6 +183,8 @@ export function AssistantPage() {
   const streamingRef = useRef(streaming);
   streamingRef.current = streaming;
   const bottomRef = useRef<HTMLDivElement>(null);
+  const conversationScrollRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const contextCloseRef = useRef<HTMLButtonElement>(null);
   const contextDialogRef = useRef<HTMLElement>(null);
   const contextReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -281,6 +300,7 @@ export function AssistantPage() {
     conversationId.current = info.id;
     setActiveSessionId(info.id);
     setModel(null);
+    setContextBudgetMetadata(null);
     setConvUsage(null);
     setUnavailableProject(null);
     setPendingSteers([]);
@@ -367,12 +387,48 @@ export function AssistantPage() {
   }, [assistantHandoff, clearAssistantHandoff]);
 
   useEffect(() => {
+    if (searchOpen && deferredSearchQuery.trim()) return;
     const behavior = window.matchMedia("(prefers-reduced-motion: reduce)")
       .matches
       ? "auto"
       : "smooth";
     bottomRef.current?.scrollIntoView({ behavior });
-  }, [messages, busy, streaming.text, toolRecords]);
+  }, [messages, busy, streaming.text, toolRecords, searchOpen, deferredSearchQuery]);
+
+  useEffect(() => {
+    const onFindShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") {
+        return;
+      }
+      if (contextOpen) return;
+      event.preventDefault();
+      setSearchOpen(true);
+      requestAnimationFrame(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      });
+    };
+    document.addEventListener("keydown", onFindShortcut);
+    return () => document.removeEventListener("keydown", onFindShortcut);
+  }, [contextOpen]);
+
+  useLayoutEffect(() => {
+    const root = conversationScrollRef.current;
+    if (!searchOpen || !deferredSearchQuery.trim() || !root) {
+      setSearchTotal(0);
+      return;
+    }
+    const matches = Array.from(
+      root.querySelectorAll<HTMLElement>("[data-chat-search-match]"),
+    );
+    const nextIndex = matches.length === 0 ? 0 : Math.min(searchIndex, matches.length - 1);
+    setSearchTotal(matches.length);
+    if (nextIndex !== searchIndex) setSearchIndex(nextIndex);
+    matches.forEach((match, index) => {
+      match.classList.toggle("chat-search-match--active", index === nextIndex);
+    });
+    matches[nextIndex]?.scrollIntoView({ block: "center" });
+  }, [deferredSearchQuery, messages, searchIndex, searchOpen, streaming.text]);
 
   useEffect(() => {
     if (!contextOpen) return;
@@ -486,6 +542,7 @@ export function AssistantPage() {
     setPermission(null);
     setAskUser(null);
     setStreaming({ text: "", reasoning: "", thinking: false });
+    setContextBudgetMetadata(null);
     setToolRecords([]);
     turnToolsRef.current.clear();
     if (usage) refreshUsage();
@@ -530,6 +587,7 @@ export function AssistantPage() {
     turnToolsRef.current.clear();
     setToolRecords([]);
     setStreaming({ text: "", reasoning: "", thinking: false });
+    setContextBudgetMetadata(null);
 
     api
       .sessionAppend(activeSessionId, stored)
@@ -552,6 +610,7 @@ export function AssistantPage() {
             thinking: true,
           })),
         onUsage: () => undefined,
+        onContextBudget: setContextBudgetMetadata,
         onToolStart: (toolCall) =>
           upsertTool({
             toolCallId: toolCall.toolCallId,
@@ -632,6 +691,7 @@ export function AssistantPage() {
             push("error", message);
           }
           setStreaming({ text: "", reasoning: "", thinking: false });
+          setContextBudgetMetadata(null);
         },
       },
     );
@@ -775,6 +835,7 @@ export function AssistantPage() {
     setTodos([]);
     setConvUsage(null);
     setModel(null);
+    setContextBudgetMetadata(null);
     setToolRecords([]);
     turnToolsRef.current.clear();
     if (!activeSessionId) return;
@@ -801,6 +862,28 @@ export function AssistantPage() {
     for (const tool of toolRecords) toolsById.set(tool.toolCallId, tool);
     return Array.from(toolsById.values());
   }, [messages, toolRecords]);
+  const contextBudget = useMemo(() => {
+    const localEstimate = estimateMessageTokens([
+      ...messages,
+      ...(streaming.text ? [{ content: streaming.text }] : []),
+    ]);
+    return buildContextBudget(
+      Math.max(localEstimate, contextBudgetMetadata?.estimatedTokens ?? 0),
+      contextBudgetMetadata?.contextWindow ?? settings?.ai.contextWindow ?? 128000,
+      contextBudgetMetadata?.reservedOutputTokens ?? settings?.ai.maxTokens ?? 2048,
+    );
+  }, [contextBudgetMetadata, messages, settings, streaming.text]);
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchIndex(0);
+    setSearchTotal(0);
+    assistantFallbackRef.current?.focus();
+  };
+  const openSearch = () => {
+    setSearchOpen(true);
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  };
   const availabilityLabel = {
     loading: "AI settings loading",
     checking: "AI endpoint checking",
@@ -919,6 +1002,16 @@ export function AssistantPage() {
             ) : null}
             <button
               type="button"
+              onClick={openSearch}
+              aria-expanded={searchOpen}
+              title="Search conversation (⌘/Ctrl+F)"
+              aria-label="Search conversation"
+              className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
+            >
+              <Search size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
               onClick={() => setActivityOpen((open) => !open)}
               aria-expanded={activityOpen}
               aria-controls="assistant-activity-panel"
@@ -944,6 +1037,26 @@ export function AssistantPage() {
             </button>
           </div>
         </header>
+
+        {searchOpen && (
+          <ChatSearchToolbar
+            ref={searchInputRef}
+            query={searchQuery}
+            current={searchIndex}
+            total={searchTotal}
+            onQueryChange={(query) => {
+              setSearchQuery(query);
+              setSearchIndex(0);
+            }}
+            onNext={() =>
+              setSearchIndex((current) => nextSearchIndex(current, searchTotal, 1))
+            }
+            onPrevious={() =>
+              setSearchIndex((current) => nextSearchIndex(current, searchTotal, -1))
+            }
+            onClose={closeSearch}
+          />
+        )}
 
         {activeUnavailableProject && (
           <div
@@ -981,6 +1094,7 @@ export function AssistantPage() {
         )}
 
         <div
+          ref={conversationScrollRef}
           aria-busy={busy}
           className="min-h-0 flex-1 overflow-y-auto"
         >
@@ -1071,10 +1185,10 @@ export function AssistantPage() {
                               steered mid-run
                             </span>
                           )}
-                          {message.content}
+                          <HighlightedText text={message.content} query={deferredSearchQuery} />
                         </div>
                       ) : (
-                        <Markdown>{message.content}</Markdown>
+                        <SearchableMarkdown content={message.content} query={deferredSearchQuery} />
                       )}
                     </div>
                   </div>
@@ -1114,7 +1228,7 @@ export function AssistantPage() {
                     )}
                     {streaming.text && (
                       <div className="selectable md-body text-[14px] leading-[1.72] text-text-primary">
-                        <Markdown>{streaming.text}</Markdown>
+                        <SearchableMarkdown content={streaming.text} query={deferredSearchQuery} />
                         <span
                           aria-hidden="true"
                           className="ml-0.5 inline-block h-3.5 w-[6px] animate-pulse rounded-[2px] bg-accent align-middle"
@@ -1208,6 +1322,7 @@ export function AssistantPage() {
                     {(convUsage.totalTokens / 1000).toFixed(1)}k · ${convUsage.costUsd.toFixed(4)}
                   </span>
                 )}
+                <ContextBudgetMeter budget={contextBudget} />
                 {busy ? (
                   <>
                     <button

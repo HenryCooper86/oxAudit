@@ -54,7 +54,7 @@ impl LlmError {
                 "Model not found on this endpoint — check the model name in Settings.".into()
             }
             LlmError::ContextWindowExceeded => {
-                "Conversation too long for the model's context window — start a new chat or compact.".into()
+                "Conversation too long for the configured context window — start a new chat, rewind earlier turns, or raise the model context setting.".into()
             }
             LlmError::ServerError => "AI provider returned a server error — try again.".into(),
             LlmError::NetworkError(e) => format!("Network error contacting AI provider: {e}"),

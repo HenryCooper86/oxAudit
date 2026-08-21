@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+.chat-search-match {
+  border-radius: 2px;
+  background: var(--warning-subtle);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--warning-border);
+}
+
+.chat-search-match--active {
+  background: var(--warning);
+  color: var(--warning-contrast);
+  box-shadow: none;
+}
+
 /* ============================================================
    oxAudit — Global Design System
 

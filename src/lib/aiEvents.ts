@@ -14,6 +14,11 @@ export interface StreamHandlers {
   onDelta?: (content: string) => void;
   onReasoning?: (content: string) => void;
   onUsage?: (usage: Usage) => void;
+  onContextBudget?: (budget: {
+    estimatedTokens: number;
+    contextWindow: number;
+    reservedOutputTokens: number;
+  }) => void;
   onToolStart?: (tc: { toolCallId: string; name: string; arguments: string }) => void;
   onToolResult?: (tr: {
     toolCallId: string;
@@ -143,6 +148,13 @@ export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
                 break;
               case "usage":
                 h.onUsage?.(ev.usage);
+                break;
+              case "context_budget":
+                h.onContextBudget?.({
+                  estimatedTokens: ev.estimatedTokens,
+                  contextWindow: ev.contextWindow,
+                  reservedOutputTokens: ev.reservedOutputTokens,
+                });
                 break;
               case "tool_start":
                 h.onToolStart?.({

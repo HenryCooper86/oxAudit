@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::guardrails::{classify, LoopGuard, Permission};
+use super::rate_limit::RateLimitDecision;
 use super::tool::{
     wait_for_pending_response, PendingWaitError, RunCancellation, SteerQueue, ToolContext,
     ToolRegistry,
@@ -341,6 +342,35 @@ Let me summarize what I have and ask you how to proceed.",
                 name: tc.name.clone(),
                 arguments: truncate(&tc.arguments.to_string(), 400),
             });
+            if let Some(RateLimitDecision::Limited { retry_after }) = app
+                .try_state::<AppState>()
+                .map(|state| state.tool_rate_limiter.check(&tc.name))
+            {
+                let retry_after_ms = retry_after.as_millis().max(1) as u64;
+                let retry_after_secs = retry_after.as_secs_f64().ceil() as u64;
+                let message = format!(
+                    "Per-tool rate limit reached. Retry `{}` in about {}s.",
+                    tc.name,
+                    retry_after_secs.max(1)
+                );
+                emit(AiStreamEvent::ToolResult {
+                    tool_call_id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    success: false,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    result_preview: message.clone(),
+                });
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json!({
+                        "error": "rate_limited",
+                        "message": message,
+                        "retryAfterMs": retry_after_ms,
+                    }).to_string(),
+                }));
+                continue;
+            }
             let ctx = ToolContext {
                 app: app.clone(),
                 conversation_id: conversation_id.clone(),
