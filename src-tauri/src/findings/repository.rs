@@ -15,6 +15,7 @@ use super::{
     domain::{
         DiffStatus, FindingScope, PolicyStatus, ProjectContext, RecentProject, RetentionPolicy,
         ReviewOrigin, ReviewRecord, ReviewState, RunPersistence, RunStatus, ScanRunDetail,
+        ScanRunSummary,
     },
     error::CommandError,
     policy::PolicyAuthority,
@@ -900,6 +901,201 @@ impl FindingsRepository {
                         .iter()
                         .filter(|finding| finding.severity == "high")
                         .count(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn list_runs(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ScanRunSummary>, CommandError> {
+        struct StoredRunSummary {
+            run_id: String,
+            project_id: String,
+            baseline_run_id: Option<String>,
+            status: RunStatus,
+            started_at: String,
+            completed_at: Option<String>,
+            coverage: Option<CoverageManifest>,
+            effective_at: DateTime<Utc>,
+        }
+
+        #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+        struct ObservationIdentity {
+            fingerprint_version: u16,
+            fingerprint: String,
+            category: String,
+            file_path: String,
+        }
+
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+                [project_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(persistence_error)?;
+        if !exists {
+            return Err(CommandError::not_found());
+        }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut runs = {
+            let mut statement = connection
+                .prepare(
+                    r#"SELECT id, project_id, baseline_run_id, status, started_at,
+                              completed_at, coverage_json
+                       FROM scan_runs WHERE project_id = ?1"#,
+                )
+                .map_err(persistence_error)?;
+            let rows = statement
+                .query_map([project_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                })
+                .map_err(persistence_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(persistence_error)?;
+            rows.into_iter()
+                .map(
+                    |(
+                        run_id,
+                        project_id,
+                        baseline_run_id,
+                        status,
+                        started_at,
+                        completed_at,
+                        coverage_json,
+                    )| {
+                        let effective_at = parse_utc_timestamp(
+                            completed_at.as_deref().unwrap_or(started_at.as_str()),
+                        )?;
+                        Ok(StoredRunSummary {
+                            run_id,
+                            project_id,
+                            baseline_run_id,
+                            status: parse_run_status(&status)?,
+                            started_at,
+                            completed_at,
+                            coverage: coverage_json.as_deref().map(from_json).transpose()?,
+                            effective_at,
+                        })
+                    },
+                )
+                .collect::<Result<Vec<_>, CommandError>>()?
+        };
+        runs.sort_by(|left, right| {
+            right
+                .effective_at
+                .cmp(&left.effective_at)
+                .then_with(|| right.run_id.cmp(&left.run_id))
+        });
+        runs.truncate(limit);
+
+        let relevant_run_ids = runs
+            .iter()
+            .flat_map(|run| std::iter::once(run.run_id.clone()).chain(run.baseline_run_id.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut observations = BTreeMap::<String, Vec<ObservationIdentity>>::new();
+        if !relevant_run_ids.is_empty() {
+            let placeholders = std::iter::repeat_n("?", relevant_run_ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                r#"SELECT run_id, fingerprint_version, fingerprint, category,
+                          json_extract(payload_json, '$.filePath')
+                   FROM findings WHERE run_id IN ({placeholders}) ORDER BY run_id, rowid"#
+            );
+            let mut statement = connection.prepare(&sql).map_err(persistence_error)?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(relevant_run_ids.iter()), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        ObservationIdentity {
+                            fingerprint_version: row.get(1)?,
+                            fingerprint: row.get(2)?,
+                            category: row.get(3)?,
+                            file_path: row.get(4)?,
+                        },
+                    ))
+                })
+                .map_err(persistence_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(persistence_error)?;
+            for (run_id, identity) in rows {
+                observations.entry(run_id).or_default().push(identity);
+            }
+        }
+
+        runs.into_iter()
+            .map(|run| {
+                let current = observations.get(&run.run_id).cloned().unwrap_or_default();
+                let (total_findings, new_findings, resolved_findings) = if run.status
+                    != RunStatus::Completed
+                {
+                    (0, 0, 0)
+                } else if let Some(baseline_run_id) = run.baseline_run_id.as_deref() {
+                    let baseline = observations
+                        .get(baseline_run_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let current_keys = current
+                        .iter()
+                        .map(|observation| {
+                            (
+                                observation.fingerprint_version,
+                                observation.fingerprint.as_str(),
+                            )
+                        })
+                        .collect::<BTreeSet<_>>();
+                    let baseline_keys = baseline
+                        .iter()
+                        .map(|observation| {
+                            (
+                                observation.fingerprint_version,
+                                observation.fingerprint.as_str(),
+                            )
+                        })
+                        .collect::<BTreeSet<_>>();
+                    let coverage = run
+                        .coverage
+                        .as_ref()
+                        .ok_or_else(CommandError::persistence_unavailable)?;
+                    let new_findings = current_keys.difference(&baseline_keys).count();
+                    let resolved_findings = baseline
+                        .iter()
+                        .filter(|observation| {
+                            !current_keys.contains(&(
+                                observation.fingerprint_version,
+                                observation.fingerprint.as_str(),
+                            )) && coverage.is_covered(&observation.file_path, &observation.category)
+                        })
+                        .count();
+                    (current.len(), new_findings, resolved_findings)
+                } else {
+                    (current.len(), current.len(), 0)
+                };
+                Ok(ScanRunSummary {
+                    run_id: run.run_id,
+                    project_id: run.project_id,
+                    status: run.status,
+                    started_at: run.started_at,
+                    completed_at: run.completed_at,
+                    total_findings,
+                    new_findings,
+                    resolved_findings,
                 })
             })
             .collect()
@@ -3732,6 +3928,119 @@ mod tests {
                 finding.diff_status.is_none() && finding.resolved_by_run_id.is_none()
             }));
         }
+    }
+
+    #[test]
+    fn list_runs_is_bounded_instant_ordered_and_counts_comparisons_without_payload_loads() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let coverage = CoverageManifest::from_entries([("src/config.rs", ["secret"])]);
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "first-run",
+            "2026-08-20T08:00:00Z",
+            vec![
+                finding("first-shared", "shared"),
+                finding("first-old", "old"),
+            ],
+            &coverage,
+        );
+        complete_project_run(
+            &repository,
+            "project-1",
+            "/project",
+            "compared-run",
+            "2026-08-20T09:00:00Z",
+            vec![
+                finding("current-shared", "shared"),
+                finding("current-new", "new"),
+            ],
+            &coverage,
+        );
+        for (run_id, completed_at) in [
+            ("offset-newer", "2026-08-20T12:00:00.100000000+02:00"),
+            ("nano-older", "2026-08-20T10:00:00.090000000Z"),
+            ("tie-a", "2026-08-20T09:30:00.000000001Z"),
+            ("tie-z", "2026-08-20T09:30:00.000000001Z"),
+        ] {
+            prepare_project_run_at(
+                &repository,
+                "project-1",
+                "/project",
+                run_id,
+                "2026-08-20T07:00:00Z",
+            );
+            repository
+                .mark_incomplete(run_id, completed_at, "fixture_incomplete")
+                .expect("mark fixture incomplete");
+        }
+
+        let runs = repository.list_runs("project-1", 20).expect("list runs");
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "offset-newer",
+                "nano-older",
+                "tie-z",
+                "tie-a",
+                "compared-run",
+                "first-run"
+            ]
+        );
+        let first = runs.iter().find(|run| run.run_id == "first-run").unwrap();
+        assert_eq!(
+            (
+                first.total_findings,
+                first.new_findings,
+                first.resolved_findings
+            ),
+            (2, 2, 0)
+        );
+        let compared = runs
+            .iter()
+            .find(|run| run.run_id == "compared-run")
+            .unwrap();
+        assert_eq!(
+            (
+                compared.total_findings,
+                compared.new_findings,
+                compared.resolved_findings
+            ),
+            (2, 1, 1)
+        );
+        let incomplete = runs
+            .iter()
+            .find(|run| run.run_id == "offset-newer")
+            .unwrap();
+        assert_eq!(incomplete.status, RunStatus::Incomplete);
+        assert_eq!(
+            (
+                incomplete.total_findings,
+                incomplete.new_findings,
+                incomplete.resolved_findings
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            repository
+                .list_runs("project-1", 2)
+                .unwrap()
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["offset-newer", "nano-older"]
+        );
+        assert!(repository.list_runs("project-1", 0).unwrap().is_empty());
+        assert_eq!(
+            repository
+                .list_runs("unknown-project", 10)
+                .unwrap_err()
+                .code,
+            crate::findings::error::ErrorCode::NotFound
+        );
     }
 
     #[test]
