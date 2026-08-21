@@ -22,6 +22,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
       temperature: 0.2,
       timeoutSecs: 60,
       maxTokens: 2048,
+      contextWindow: 128000,
       systemPrompt: "",
     },
     scan: {

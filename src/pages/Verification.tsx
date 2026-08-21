@@ -69,6 +69,7 @@ export function VerificationPage(): JSX.Element {
         <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <ResultsToolbar countLabel={`${visible.length} of ${claims.length} claims`} search={<label className="relative"><span className="sr-only">Search claims</span><Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search claims…" className="w-56 rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[12px] text-text-primary" /></label>} />
           <SplitWorkspace
+            panelId="verification-claims"
             listLabel="Claims"
             detailLabel="Independent verification"
             hasSelection={selectedId !== null}

@@ -30,6 +30,12 @@ pub enum AiStreamEvent {
     Reasoning { content: String },
     /// Token usage reported mid-stream (OpenAI `stream_options.include_usage`).
     Usage { usage: Usage },
+    /// Local, approximate context consumption before this model request.
+    ContextBudget {
+        estimated_tokens: u32,
+        context_window: u32,
+        reserved_output_tokens: u32,
+    },
     /// The model requested a tool call; the loop is about to execute it.
     ToolStart {
         tool_call_id: String,
@@ -118,6 +124,25 @@ impl AiClient {
             "stream": true,
             "stream_options": { "include_usage": true },
         })
+    }
+
+    fn estimate_context_tokens(messages: &[Value], tools: &[Value]) -> u32 {
+        let message_chars = messages
+            .iter()
+            .map(|message| message.to_string().chars().count())
+            .sum::<usize>();
+        let tool_chars = tools
+            .iter()
+            .map(|tool| tool.to_string().chars().count())
+            .sum::<usize>();
+        let framing = messages.len().saturating_mul(4);
+        ((message_chars.saturating_add(tool_chars).saturating_add(3)) / 4)
+            .saturating_add(framing)
+            .min(u32::MAX as usize) as u32
+    }
+
+    fn context_fits(estimated_tokens: u32, settings: &AiSettings) -> bool {
+        estimated_tokens.saturating_add(settings.max_tokens) <= settings.context_window
     }
 
     fn authed_request(
@@ -215,6 +240,15 @@ impl AiClient {
         cancel: Option<Arc<AtomicBool>>,
         mut on_event: impl FnMut(AiStreamEvent) + Send,
     ) -> Result<StreamOutcome, LlmError> {
+        let estimated_tokens = Self::estimate_context_tokens(&messages, &tools);
+        on_event(AiStreamEvent::ContextBudget {
+            estimated_tokens,
+            context_window: settings.context_window,
+            reserved_output_tokens: settings.max_tokens,
+        });
+        if !Self::context_fits(estimated_tokens, settings) {
+            return Err(LlmError::ContextWindowExceeded);
+        }
         let url = format!("{}/chat/completions", Self::base_url(settings));
         let body = Self::loop_request_body(settings, &messages, &tools);
 
@@ -654,5 +688,26 @@ mod tests {
         let calls = acc.drain();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments["raw"], "not json");
+    }
+
+    #[test]
+    fn context_estimate_accounts_for_messages_tools_and_framing() {
+        let messages = vec![serde_json::json!({ "role": "user", "content": "hello" })];
+        let without_tools = AiClient::estimate_context_tokens(&messages, &[]);
+        let with_tools = AiClient::estimate_context_tokens(
+            &messages,
+            &[serde_json::json!({ "type": "function", "name": "search" })],
+        );
+        assert!(without_tools >= 4);
+        assert!(with_tools > without_tools);
+    }
+
+    #[test]
+    fn context_preflight_reserves_output_tokens() {
+        let mut settings = AiSettings::default();
+        settings.context_window = 1_000;
+        settings.max_tokens = 200;
+        assert!(AiClient::context_fits(800, &settings));
+        assert!(!AiClient::context_fits(801, &settings));
     }
 }

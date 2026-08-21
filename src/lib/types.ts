@@ -671,6 +671,8 @@ export interface AiSettings {
   temperature: number;
   timeoutSecs: number;
   maxTokens: number;
+  /** Model input + output capacity used for local preflight and UI metadata. */
+  contextWindow: number;
   systemPrompt: string;
 }
 
@@ -816,6 +818,12 @@ export type AiStreamEvent = { runId: string } & (
   | { type: "delta"; content: string }
   | { type: "reasoning"; content: string }
   | { type: "usage"; usage: Usage }
+  | {
+      type: "context_budget";
+      estimatedTokens: number;
+      contextWindow: number;
+      reservedOutputTokens: number;
+    }
   | { type: "tool_start"; toolCallId: string; name: string; arguments: string }
   | {
       type: "tool_result";

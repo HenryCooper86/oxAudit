@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useState, type JSX } from "react";
+import {
+  cacheNavigationCollapsed,
+  readNavigationCollapsed,
+  resolveNavigationCollapsed,
+} from "../../lib/navigationPreference";
 import { useAppStore } from "../../lib/stores";
 import { useAppTheme } from "../../lib/useTheme";
 import { Sidebar } from "../Sidebar";
@@ -7,7 +12,14 @@ import { WorkbenchHeader } from "./WorkbenchHeader";
 
 export function AppShell({ children }: { children: React.ReactNode }): JSX.Element {
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const compactNavigation = useAppStore((state) => state.page === "assistant");
+  const page = useAppStore((state) => state.page);
+  const [collapsedPreference, setCollapsedPreference] = useState<boolean | null>(
+    readNavigationCollapsed,
+  );
+  const compactNavigation = resolveNavigationCollapsed(
+    collapsedPreference,
+    page === "assistant",
+  );
 
   useAppTheme();
 
@@ -17,6 +29,12 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
       document.getElementById("navigation-menu-button")?.focus();
     });
   }, []);
+
+  const toggleCompactNavigation = useCallback(() => {
+    const next = !compactNavigation;
+    setCollapsedPreference(next);
+    cacheNavigationCollapsed(next);
+  }, [compactNavigation]);
 
   useEffect(() => {
     if (!navigationOpen) return;
@@ -66,12 +84,13 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
 
   return (
     <div
-      className={`grid h-full overflow-hidden bg-surface-primary max-[900px]:grid-cols-1 ${compactNavigation ? "grid-cols-[52px_minmax(0,1fr)]" : "grid-cols-[240px_minmax(0,1fr)]"}`}
+      className={`grid h-full overflow-hidden bg-surface-primary transition-[grid-template-columns] duration-200 motion-reduce:transition-none max-[900px]:grid-cols-1 ${compactNavigation ? "grid-cols-[52px_minmax(0,1fr)]" : "grid-cols-[240px_minmax(0,1fr)]"}`}
     >
       <Sidebar
         open={navigationOpen}
         onClose={closeNavigation}
         compact={compactNavigation}
+        onToggleCompact={toggleCompactNavigation}
       />
       <section
         inert={navigationOpen}

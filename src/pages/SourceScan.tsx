@@ -698,6 +698,7 @@ export function SourceScanPage(): JSX.Element {
           <div id="source-results-panel" role="tabpanel" aria-labelledby={`source-results-tab-${query.view}`}>
             {filtered.length > 0 ? (
               <SplitWorkspace
+                panelId="source-findings"
                 listLabel="Findings"
                 detailLabel="Finding detail"
                 hasSelection={hasExplicitSelection}

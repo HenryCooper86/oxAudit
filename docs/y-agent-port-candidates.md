@@ -18,7 +18,7 @@ What follows is everything else worth taking, ranked.
 
 ## Tier 1 — status
 
-**Items 1, 2 and 4 are implemented** (2026-08-19). What shipped, and the one
+**Items 1–5 are implemented** (completed 2026-08-21). What shipped, and the one
 design decision in each that is not obvious from the diff:
 
 - **Steer** — the loop drains queued messages only at iteration boundaries, and
@@ -38,7 +38,7 @@ design decision in each that is not obvious from the diff:
   the UI never reconstructs state from a sequence of operations, and
   `todo_list` restores it when switching back to a session between turns.
 
-Full tier below; items 3 and 5 remain open.
+Full tier below.
 
 ### ~~1. Steer / follow-up queue~~ — DONE · value: high · effort: S–M
 **y-agent:** `chat-panel/steerCoalescing.ts`, `chat-box/SteerChip.tsx`, `FollowUpQueue.tsx`.
@@ -62,15 +62,15 @@ read-only, so there is nothing to un-write.
 *Shipped as:* `src/lib/rewind.ts` (`planRewind`) over the existing
 `session_truncate` command, plus a hover control on every user turn.
 
-### 3. Chat search · value: medium-high · effort: S
+### ~~3. Chat search~~ — DONE · value: medium-high · effort: S
 **y-agent:** `ChatSearchToolbar.tsx`, `chat-box/searchHighlightUtils.ts`, `HighlightedText.tsx`.
 
-Find-in-conversation with match highlighting and next/prev. Sessions get long fast
-when the agent is dumping grep output; scrolling is currently the only option.
+Find-in-conversation with case-insensitive highlighting, wrapped next/previous
+navigation, Enter/Shift+Enter controls, Escape, and Cmd/Ctrl+F. Highlighting is
+deferred so long Markdown transcripts do not make the search input stutter.
 
-*Note:* the `--search-match-bg` / `--search-match-active-bg` tokens were removed
-from `index.css` because nothing consumed them. Re-add them (values are in
-y-agent's `styles/index.css`) when this lands.
+*Shipped as:* `ChatSearchToolbar`, `SearchHighlight`, and pure navigation/split
+helpers in `src/lib/chatSearch.ts`, using oxAudit's existing semantic tokens.
 
 ### ~~4. Todo panel~~ — DONE · value: medium · effort: S
 **y-agent:** `chat-panel/AgentTodoPanel.tsx`, `agentTodoState.ts`, `agentTodoResult.ts`.
@@ -82,12 +82,13 @@ card, so multi-step research was hard to follow.
 `todo_list` command for restoring a plan between turns, and
 `components/chat/AgentTodoPanel.tsx` pinned above the composer.
 
-### 5. Per-tool rate limiter · value: medium · effort: S
+### ~~5. Per-tool rate limiter~~ — DONE · value: medium · effort: S
 **y-agent:** `y-tools/rate_limiter.rs` (~40-line token bucket).
 
-`cve.rs` already rate-limits NVD. There is no bucket in front of `web_fetch` or
-`query_osv_package`, so a looping agent can hammer OSV. The bucket is small and
-self-contained.
+`cve.rs` already rate-limits NVD. Agent-driven network tools now also use shared,
+per-tool token buckets from `AppState`, so separate conversations cannot each
+start with a fresh burst. A refusal is emitted as a failed tool result with a
+bounded retry time, which makes the limit visible in the existing tool card.
 
 ---
 
@@ -100,8 +101,10 @@ Long sessions currently just grow until the provider rejects the request. y-agen
 does a preflight token estimate, summarizes the older half, and marks the seam with
 an undoable divider.
 
-*Blocker to note:* this needs a per-model `context_window` value, which the original
-P1 notes already flagged as unfinished. That's the first step.
+*Foundation shipped:* settings now carry a backward-compatible `context_window`,
+every agent model turn emits estimated input + reserved output metadata, local
+preflight stops requests that cannot fit, and the composer shows a live budget
+meter. Automatic summarization/compaction and its undo seam remain open.
 
 ### 7. Command palette / slash commands · value: medium · effort: M
 **y-agent:** `input-area/CommandMenu.tsx`, `lib/commandMap.ts` (31KB — most of it is theirs, not ours).
@@ -138,7 +141,7 @@ lineage, and experience journals — that machinery exists to manage a scale we 
 |---|---|---|
 | Scheduler / recurring scans | `y-scheduler`, `AutomationPanel`, `DagGraph` | Real value (nightly re-scan of a repo) but a large surface; wants the knowledge base first so results accumulate somewhere |
 | Diagnostics / trace panel | `observation/DiagnosticsPanel.tsx` (41KB), `ObservabilityPanel.tsx` | We already track tokens and cost; full local tracing + Langfuse export is more than we need |
-| Setup wizard | `wizard/SetupWizard.tsx` | Nice first-run polish; Settings already does the job |
+| ~~Setup wizard~~ — DONE | `wizard/SetupWizard.tsx` | A four-step GUI-first readiness flow now checks native scanning and advisory sources, treats AI as optional, persists completion, and can be reopened from Settings |
 | Message feedback | `assistantFeedback.ts`, `messageFeedbackRendering` | Thumbs up/down only pays off if the signal goes somewhere |
 | Mermaid + Monaco rendering | `MermaidBlock.tsx`, `MonacoEditorCore.tsx` | Monaco is a heavy dep for read-only code display; revisit if we add an editor |
 | Background tasks panel | `BackgroundTasksPanel.tsx`, `ansiOutputParser.ts` | Belongs with the scheduler |
@@ -161,10 +164,9 @@ Unchanged from the original study, and re-confirmed on this pass:
 
 ## Suggested order
 
-The Tier 1 chat slice (steer, rewind, todo panel) is done. **Chat search (3)** and
-the **per-tool rate limiter (5)** are the small remaining items and can land
-together — search also restores the two `--search-match-*` tokens noted above.
+The Tier 1 chat slice is complete, along with the first-launch readiness wizard
+and context-window metadata/preflight foundation.
 
-**Context compaction (6)** is the next structural piece, and should start with the
-per-model `context_window` field that P1 left unfinished; without it there is
-nothing to run a preflight estimate against.
+**Context compaction (6)** is the next structural piece. It can now build on the
+configured context window and live estimates rather than inventing another
+parallel token-budget contract.

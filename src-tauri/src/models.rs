@@ -248,7 +248,13 @@ pub struct AiSettings {
     pub temperature: f32,
     pub timeout_secs: u64,
     pub max_tokens: u32,
+    #[serde(default = "default_context_window")]
+    pub context_window: u32,
     pub system_prompt: String,
+}
+
+fn default_context_window() -> u32 {
+    128_000
 }
 
 impl Default for AiSettings {
@@ -261,6 +267,7 @@ impl Default for AiSettings {
             temperature: 0.2,
             timeout_secs: 120,
             max_tokens: 2048,
+            context_window: default_context_window(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
         }
     }
