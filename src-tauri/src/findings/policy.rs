@@ -1,4 +1,10 @@
-use std::{collections::HashSet, io::Write, ops::Range, path::Path, sync::Mutex};
+use std::{
+    collections::HashSet,
+    io::Write,
+    ops::Range,
+    path::Path,
+    sync::{Mutex, MutexGuard},
+};
 #[cfg(windows)]
 use std::{fs, path::PathBuf};
 #[cfg(unix)]
@@ -156,6 +162,24 @@ static KNOWN_CREDENTIAL_PREFIX: Lazy<Regex> = Lazy::new(|| {
 });
 static TOKEN_CANDIDATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z0-9_+/=.-]{24,}").unwrap());
 static POLICY_UPDATE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+pub(crate) struct PolicyAuthority<'a> {
+    _guard: MutexGuard<'a, ()>,
+}
+
+pub(crate) fn with_policy_authority<T>(
+    operation: impl FnOnce(&PolicyAuthority<'_>) -> Result<T, CommandError>,
+) -> Result<T, CommandError> {
+    let guard = POLICY_UPDATE_LOCK
+        .lock()
+        .map_err(|_| CommandError::policy_write_failed())?;
+    operation(&PolicyAuthority { _guard: guard })
+}
+
+#[cfg(test)]
+pub(crate) fn test_policy_authority_is_available() -> bool {
+    POLICY_UPDATE_LOCK.try_lock().is_ok()
+}
 
 pub fn load_policy(project_root: impl AsRef<Path>) -> Result<LoadedPolicy, CommandError> {
     load_policy_with_hook(project_root.as_ref(), |_| {})
@@ -416,27 +440,6 @@ pub(crate) fn reproject_or_clear_orphaned_policy_review(
     if current.policy_hash.as_deref() == loaded.hash() {
         return Ok(current.clone());
     }
-    if let Some(entry) = loaded.policy().and_then(|policy| {
-        policy.entries.iter().find(|entry| {
-            matches!(entry, PolicyEntry::Finding {
-                fingerprint_version,
-                fingerprint,
-                expires_at,
-                ..
-            } if *fingerprint_version == current.fingerprint_version
-                && fingerprint == &current.fingerprint
-                && !is_expired(expires_at.as_deref(), &now))
-        })
-    }) {
-        return Ok(review_from_entry(
-            entry,
-            &current.project_id,
-            current.fingerprint_version,
-            &current.fingerprint,
-            loaded.hash(),
-            &now,
-        ));
-    }
     Ok(candidate_review(
         &current.project_id,
         current.fingerprint_version,
@@ -500,13 +503,61 @@ fn update_policy_decision_core(
     failure: WriteFailure,
     mut hook: impl FnMut(IoStage),
 ) -> Result<ReviewRecord, CommandError> {
-    let _update_guard = POLICY_UPDATE_LOCK
-        .lock()
-        .map_err(|_| CommandError::policy_write_failed())?;
+    with_policy_authority(|authority| {
+        let reloaded = update_policy_decision_under_authority_with_hook(
+            authority,
+            project_root,
+            finding,
+            request,
+            now,
+            failure,
+            &mut hook,
+        )?;
+        apply_policy(
+            &reloaded,
+            &request.project_id,
+            finding.fingerprint_version,
+            &finding.fingerprint,
+            &finding.category,
+            &finding.rule_id,
+            &finding.file_path,
+            None,
+            now,
+        )
+    })
+}
+
+pub(crate) fn update_policy_decision_under_authority(
+    authority: &PolicyAuthority<'_>,
+    project_root: &Path,
+    finding: &Finding,
+    request: &ReviewRequest,
+    now: DateTime<Utc>,
+) -> Result<LoadedPolicy, CommandError> {
+    update_policy_decision_under_authority_with_hook(
+        authority,
+        project_root,
+        finding,
+        request,
+        now,
+        WriteFailure::Never,
+        &mut |_| {},
+    )
+}
+
+fn update_policy_decision_under_authority_with_hook(
+    _authority: &PolicyAuthority<'_>,
+    project_root: &Path,
+    finding: &Finding,
+    request: &ReviewRequest,
+    now: DateTime<Utc>,
+    failure: WriteFailure,
+    hook: &mut impl FnMut(IoStage),
+) -> Result<LoadedPolicy, CommandError> {
     validate_update_input(finding, request, &now).map_err(|_| CommandError::review_invalid())?;
 
     let mut capability = open_update_capability(project_root, failure)?;
-    let loaded = load_policy_for_update(&mut capability, &mut hook)?;
+    let loaded = load_policy_for_update(&mut capability, &mut *hook)?;
     let initial_bytes = loaded.authoritative_bytes.clone();
     let mut policy = match loaded.status() {
         PolicyStatus::Missing => PolicyFile {
@@ -551,7 +602,7 @@ fn update_policy_decision_core(
         &bytes,
         initial_bytes.as_deref(),
         failure,
-        &mut hook,
+        &mut *hook,
     )?;
     if terminal != PolicyWriteTerminal::CandidateDurablyCommitted {
         return Err(CommandError::policy_write_failed());
@@ -561,17 +612,22 @@ fn update_policy_decision_core(
     if !matches!(reloaded.status(), PolicyStatus::Valid { .. }) {
         return Err(CommandError::policy_write_failed());
     }
-    apply_policy(
-        &reloaded,
-        &request.project_id,
-        finding.fingerprint_version,
-        &finding.fingerprint,
-        &finding.category,
-        &finding.rule_id,
-        &finding.file_path,
-        None,
-        now,
-    )
+    Ok(reloaded)
+}
+
+pub(crate) fn load_policy_under_authority(
+    _authority: &PolicyAuthority<'_>,
+    project_root: &Path,
+) -> Result<LoadedPolicy, CommandError> {
+    load_policy(project_root)
+}
+
+pub(crate) fn policy_authority_still_matches(
+    authority: &PolicyAuthority<'_>,
+    project_root: &Path,
+    expected: &LoadedPolicy,
+) -> Result<bool, CommandError> {
+    load_policy_under_authority(authority, project_root).map(|current| current == *expected)
 }
 
 fn parse_and_validate(bytes: &[u8], mode: ValidationMode<'_>) -> Result<PolicyFile, InvalidPolicy> {
