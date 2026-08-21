@@ -1335,7 +1335,7 @@ git commit -m "feat(scan): expose durable finding commands"
 - Consumes: all preceding foundation tasks.
 - Produces: reproducible verification evidence for the workflow plan.
 
-- [ ] **Step 1: Run the sensitive-data canary suite**
+- [x] **Step 1: Run the sensitive-data canary suite**
 
 ~~~bash
 cargo test --manifest-path src-tauri/Cargo.toml redaction
@@ -1345,7 +1345,7 @@ cargo test --manifest-path src-tauri/Cargo.toml policy
 
 Expected: all tests pass and every canary absence assertion succeeds.
 
-- [ ] **Step 2: Run the complete automated baseline**
+- [x] **Step 2: Run the complete automated baseline**
 
 ~~~bash
 npm test
@@ -1358,7 +1358,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
 
 Expected: every command exits 0. Clippy may report pre-existing advisory warnings but must introduce no warning in src-tauri/src/findings, scanners/mod.rs, triage/scope.rs, triage/manifest.rs, or modified Source Scan command code.
 
-- [ ] **Step 3: Inspect a disposable file database directly**
+- [x] **Step 3: Inspect a disposable file database directly**
 
 Add a file_database_survives_restart_and_contains_no_secret_canary test that creates a TempDir database, runs the service, drops and reopens the repository, queries sqlite_master for the five logical tables, loads the completed run, and executes this parameterized assertion:
 
@@ -1379,11 +1379,11 @@ cargo test --manifest-path src-tauri/Cargo.toml file_database_survives_restart_a
 
 Expected: the disposable database reopens, all tables are present, the completed run loads, and the canary count is zero.
 
-- [ ] **Step 4: Record QA evidence**
+- [x] **Step 4: Record QA evidence**
 
 The QA document records command, exit code, test counts, test database path, redaction canary used, restart outcome, and any pre-existing advisory lint warnings. Do not include source excerpts or credentials.
 
-- [ ] **Step 5: Commit foundation verification**
+- [x] **Step 5: Commit foundation verification**
 
 ~~~bash
 git add docs/superpowers/qa/2026-08-20-oxaudit-durable-scan-foundation.md
@@ -1394,10 +1394,10 @@ git commit -m "docs: verify durable scan foundation"
 
 Do not begin the Source Scan/Results workflow plan until:
 
-- a sanitized completed scan survives a real process restart;
-- line insertion preserves finding identity;
-- disabled or failed coverage cannot create a resolved finding;
-- test, fixture, generated, vendored, documentation, and unknown candidates remain queryable;
-- review and policy validation tests pass;
-- a failed completion returns NotSaved and an idempotent retry succeeds;
-- the current Source Scan page still builds and can display the compatibility result.
+- [x] a sanitized completed scan survives a real process restart;
+- [x] line insertion preserves finding identity;
+- [x] disabled or failed coverage cannot create a resolved finding;
+- [x] test, fixture, generated, vendored, documentation, and unknown candidates remain queryable;
+- [x] review and policy validation tests pass;
+- [x] a failed completion returns NotSaved and an idempotent retry succeeds;
+- [x] the current Source Scan page still builds and can display the compatibility result.

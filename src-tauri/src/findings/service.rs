@@ -1331,7 +1331,10 @@ fn apply_advisory_comparison(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{atomic::AtomicBool, Arc, Barrier, Mutex};
+    use std::{
+        collections::BTreeSet,
+        sync::{atomic::AtomicBool, Arc, Barrier, Mutex},
+    };
 
     use crate::{
         cve::CveState,
@@ -1676,6 +1679,132 @@ mod tests {
         let names = events.0.lock().unwrap();
         assert!(names.iter().any(|name| name == "scan://progress"));
         assert!(names.iter().any(|name| name == "scan://done"));
+    }
+
+    #[tokio::test]
+    async fn file_database_survives_restart_and_contains_no_secret_canary() {
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("app-data");
+        std::fs::create_dir(&app_data).unwrap();
+        let database = crate::findings::database_path(&app_data);
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+
+        let raw_canary = format!("ghp_OxAuditRestartCanary{}", "7".repeat(16));
+        assert_eq!(raw_canary.len(), 40);
+        std::fs::write(
+            project.join("credentials.js"),
+            format!("const token = '{raw_canary}';\n"),
+        )
+        .unwrap();
+
+        let saved = {
+            let service = FindingsService::new(
+                crate::findings::repository::FindingsRepository::open(&database).unwrap(),
+            );
+            service
+                .scan(
+                    ScanOptions {
+                        path: project.to_string_lossy().into_owned(),
+                        scan_secrets: true,
+                        scan_vulnerabilities: false,
+                        ..ScanOptions::default()
+                    },
+                    &cached_cve_state(),
+                    &AtomicBool::new(false),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .unwrap()
+        };
+        let sanitized = saved
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "github-token")
+            .expect("scan must retain the sanitized canary finding");
+        assert!(!sanitized.fingerprint.is_empty());
+        assert!(sanitized
+            .match_text
+            .contains(crate::findings::redaction::REDACTED));
+        assert!(!serde_json::to_string(&saved).unwrap().contains(&raw_canary));
+        let fingerprint = sanitized.fingerprint.clone();
+
+        let restarted = {
+            let service = FindingsService::new(
+                crate::findings::repository::FindingsRepository::open(&database).unwrap(),
+            );
+            service.load_run(&saved.run_id).unwrap()
+        };
+        let restarted_finding = restarted
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "github-token")
+            .expect("restart must load the sanitized canary finding");
+        assert_eq!(restarted_finding.fingerprint, fingerprint);
+        assert!(restarted_finding
+            .match_text
+            .contains(crate::findings::redaction::REDACTED));
+        assert!(!serde_json::to_string(&restarted)
+            .unwrap()
+            .contains(&raw_canary));
+
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let schema_tables = {
+            let mut statement = connection
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<BTreeSet<_>, _>>()
+                .unwrap()
+        };
+        let required_tables = [
+            "schema_migrations",
+            "projects",
+            "scan_runs",
+            "findings",
+            "reviews",
+        ];
+        for table in required_tables {
+            assert!(
+                schema_tables.contains(table),
+                "missing logical table {table}"
+            );
+        }
+
+        let mut searched_columns = 0usize;
+        for table in required_tables {
+            let columns = {
+                let pragma = format!("PRAGMA table_info(\"{table}\")");
+                let mut statement = connection.prepare(&pragma).unwrap();
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            };
+            for column in columns {
+                assert!(column
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+                let query = format!(
+                    "SELECT COUNT(*) FROM \"{table}\" WHERE CAST(\"{column}\" AS TEXT) LIKE '%' || ?1 || '%'"
+                );
+                let leaked: i64 = connection
+                    .query_row(&query, [raw_canary.as_str()], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(
+                    leaked, 0,
+                    "raw canary reached durable column {table}.{column}"
+                );
+                searched_columns += 1;
+            }
+        }
+        assert!(
+            searched_columns > 0,
+            "schema inspection must search columns"
+        );
     }
 
     #[tokio::test]
