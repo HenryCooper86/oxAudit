@@ -16,6 +16,7 @@ use super::{
     domain::{
         DiffStatus, PolicyStatus, ProjectContext, RecentProject, RetentionPolicy, ReviewOrigin,
         ReviewRecord, ReviewRequest, ReviewState, RunPersistence, RunStatus, ScanRunDetail,
+        ScanRunSummary,
     },
     error::CommandError,
     fingerprint::assign_fingerprints,
@@ -59,7 +60,15 @@ pub struct FindingsService {
     #[cfg(test)]
     scan_pause: Mutex<Option<ScanPause>>,
     #[cfg(test)]
+    before_completion_pause: Mutex<Option<ScanPause>>,
+    #[cfg(test)]
+    policy_refresh_pause: Mutex<Option<ScanPause>>,
+    #[cfg(test)]
     scanner_failures: Mutex<HashSet<String>>,
+    #[cfg(test)]
+    mark_incomplete_failures: AtomicUsize,
+    #[cfg(test)]
+    retention_maintenance_failures: AtomicUsize,
     #[cfg(test)]
     started_run_ids: Mutex<Vec<String>>,
 }
@@ -111,6 +120,33 @@ struct ProjectScanGuard<'a> {
     active_projects: &'a Mutex<HashSet<String>>,
 }
 
+struct RunAttemptGuard<'a> {
+    service: &'a FindingsService,
+    run_id: String,
+    armed: bool,
+}
+
+impl RunAttemptGuard<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn fail(&mut self, error: &CommandError) {
+        self.armed = false;
+        self.service
+            .mark_incomplete_best_effort(&self.run_id, terminal_error_code(error));
+    }
+}
+
+impl Drop for RunAttemptGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.service
+                .mark_incomplete_best_effort(&self.run_id, "scan_failed");
+        }
+    }
+}
+
 impl Drop for ProjectScanGuard<'_> {
     fn drop(&mut self) {
         if let Ok(mut active) = self.active_projects.lock() {
@@ -134,7 +170,15 @@ impl FindingsService {
             #[cfg(test)]
             scan_pause: Mutex::new(None),
             #[cfg(test)]
+            before_completion_pause: Mutex::new(None),
+            #[cfg(test)]
+            policy_refresh_pause: Mutex::new(None),
+            #[cfg(test)]
             scanner_failures: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            mark_incomplete_failures: AtomicUsize::new(0),
+            #[cfg(test)]
+            retention_maintenance_failures: AtomicUsize::new(0),
             #[cfg(test)]
             started_run_ids: Mutex::new(Vec::new()),
         }
@@ -188,6 +232,14 @@ impl FindingsService {
 
     pub fn list_recent_projects(&self, limit: usize) -> Result<Vec<RecentProject>, CommandError> {
         self.repository.list_recent_projects(limit)
+    }
+
+    pub fn list_runs(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ScanRunSummary>, CommandError> {
+        self.repository.list_runs(project_id, limit)
     }
 
     pub fn save_review(
@@ -261,217 +313,219 @@ impl FindingsService {
             .start_run(&running, SCANNER_VERSION, &options)?;
         #[cfg(test)]
         self.started_run_ids.lock().unwrap().push(run_id.clone());
-        self.run_test_scan_seam(&canonical_path, &run_id)?;
-
-        let _ = events.emit("scan://progress", Value::from("walking"));
-        let collection = fs_utils::collect_source_files(
-            &canonical,
-            CollectFilesOptions {
-                project_root: &canonical,
-                include_git: options.include_git,
-                follow_symlinks: options.follow_symlinks,
-                extra_ignored: &options.extra_ignored_dirs,
-            },
-        );
-        if collection.files.is_empty() {
-            return self.fail_started_run(&run_id, "scan_failed", CommandError::scan_failed());
-        }
-        let total = collection.files.len();
-        let _ = events.emit(
-            "scan://progress",
-            serde_json::json!({"total": total, "done": 0, "phase": "scanning"}),
-        );
-        let processed = AtomicUsize::new(0);
-        let outcomes = collection
-            .files
-            .par_iter()
-            .map(|file| {
-                if cancel.load(Ordering::Relaxed) {
-                    return None;
-                }
-                let relative = file
-                    .project_relative_path
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let outcome = scanners::scan_file_with_relative_path(
-                    &file.canonical_path,
-                    &relative,
-                    options.max_file_size_kb.max(1),
-                    options.scan_secrets,
-                    options.scan_vulnerabilities,
-                );
-                let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                if done.is_multiple_of(25) || done == total {
-                    let _ = events.emit(
-                        "scan://progress",
-                        serde_json::json!({"total": total, "done": done, "phase": "scanning"}),
-                    );
-                }
-                Some((relative, outcome))
-            })
-            .collect::<Vec<_>>();
-        if cancel.load(Ordering::Relaxed) || outcomes.iter().any(Option::is_none) {
-            return self.fail_started_run(
-                &run_id,
-                "scan_cancelled",
-                CommandError::scan_cancelled(),
-            );
-        }
-
-        let mut findings = Vec::new();
-        let mut coverage_entries = Vec::new();
-        for (relative, outcome) in outcomes.into_iter().flatten() {
-            coverage_entries.push((relative, outcome.covered_families));
-            findings.extend(outcome.findings);
-        }
-        if findings.iter().any(|finding| finding.cwe.is_some()) {
-            let _ = events.emit("scan://progress", Value::from("exploitation-signal"));
-            let kev = cve.kev_set().await;
-            for finding in &mut findings {
-                if let Some(cwe) = finding.cwe.as_deref() {
-                    let count = kev.cwe_exploited_count(cwe);
-                    finding.cwe_exploited = count > 0;
-                    finding.cwe_exploited_count = count;
-                }
-            }
-        }
-        if cancel.load(Ordering::Relaxed) {
-            return self.fail_started_run(
-                &run_id,
-                "scan_cancelled",
-                CommandError::scan_cancelled(),
-            );
-        }
-        assign_fingerprints(&mut findings);
-        for finding in &mut findings {
-            let decision = scope::classify(&finding.file_path);
-            finding.scope = Some(decision.scope);
-            finding.scope_reason = Some(decision.reason);
-            finding.observation_run_id = run_id.clone();
-        }
-        let include_project_policy =
-            !matches!(loaded_policy.status(), PolicyStatus::Invalid { .. });
-        self.repository.enrich_findings_with_reviews(
-            &project.project_id,
-            &mut findings,
-            include_project_policy,
-            Utc::now(),
-        )?;
-        if include_project_policy {
-            let review_now = Utc::now();
-            for finding in &mut findings {
-                let local = finding
-                    .review
-                    .as_ref()
-                    .filter(|review| review.origin == ReviewOrigin::Local);
-                let projected = apply_policy(
-                    &loaded_policy,
-                    &project.project_id,
-                    finding.fingerprint_version,
-                    &finding.fingerprint,
-                    &finding.category,
-                    &finding.rule_id,
-                    &finding.file_path,
-                    local,
-                    review_now,
-                )?;
-                if projected.state == ReviewState::Candidate {
-                    finding.review = None;
-                } else {
-                    if !finding.review_history.iter().any(|review| {
-                        review.origin == projected.origin
-                            && review.state == projected.state
-                            && review.policy_hash == projected.policy_hash
-                            && review.superseded_at.is_none()
-                    }) {
-                        finding.review_history.insert(0, projected.clone());
-                    }
-                    finding.review = Some(projected);
-                }
-            }
-        }
-        sort_findings(&mut findings);
-        let summary = summarize(
-            canonical_path,
-            collection.files.len(),
-            collection.skipped,
-            collection.total_bytes,
-            started_instant.elapsed().as_millis() as u64,
-            &findings,
-        );
-        let coverage = CoverageManifest::from_entries(coverage_entries);
-        let started_cutoff = DateTime::parse_from_rfc3339(&started_at)
-            .map_err(|_| CommandError::persistence_unavailable())?
-            .with_timezone(&Utc);
-        let advisory_baseline = self.repository.latest_compatible_baseline(
-            &project.project_id,
-            super::domain::FINGERPRINT_VERSION,
-            &coverage,
-            started_cutoff,
-        )?;
-        let completed_at = timestamp(Utc::now());
-        let completed = ScanRunDetail {
-            project_id: project.project_id.clone(),
+        let mut run_attempt = RunAttemptGuard {
+            service: self,
             run_id: run_id.clone(),
-            baseline_run_id: advisory_baseline
-                .as_ref()
-                .map(|baseline| baseline.run_id.clone()),
-            status: RunStatus::Completed,
-            persistence: RunPersistence::Saved,
-            policy: loaded_policy.status().clone(),
-            started_at,
-            completed_at: Some(completed_at.clone()),
-            summary: summary.clone(),
-            findings: findings.clone(),
-            maintenance_warning: None,
+            armed: true,
         };
+        let result = async {
+            self.run_test_scan_seam(&canonical_path)?;
 
-        let completion = if self.should_fail_completion() {
-            Err(CommandError::persistence_unavailable())
-        } else {
-            let result = self.repository.complete_run(&completed, &coverage);
-            if result.is_ok() && self.should_fail_after_committed_completion() {
+            let _ = events.emit("scan://progress", Value::from("walking"));
+            let collection = fs_utils::collect_source_files(
+                &canonical,
+                CollectFilesOptions {
+                    project_root: &canonical,
+                    include_git: options.include_git,
+                    follow_symlinks: options.follow_symlinks,
+                    extra_ignored: &options.extra_ignored_dirs,
+                },
+            );
+            if collection.files.is_empty() {
+                return Err(CommandError::scan_failed());
+            }
+            let total = collection.files.len();
+            let _ = events.emit(
+                "scan://progress",
+                serde_json::json!({"total": total, "done": 0, "phase": "scanning"}),
+            );
+            let processed = AtomicUsize::new(0);
+            let outcomes = collection
+                .files
+                .par_iter()
+                .map(|file| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return None;
+                    }
+                    let relative = file
+                        .project_relative_path
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let outcome = scanners::scan_file_with_relative_path(
+                        &file.canonical_path,
+                        &relative,
+                        options.max_file_size_kb.max(1),
+                        options.scan_secrets,
+                        options.scan_vulnerabilities,
+                    );
+                    let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if done.is_multiple_of(25) || done == total {
+                        let _ = events.emit(
+                            "scan://progress",
+                            serde_json::json!({"total": total, "done": done, "phase": "scanning"}),
+                        );
+                    }
+                    Some((relative, outcome))
+                })
+                .collect::<Vec<_>>();
+            if cancel.load(Ordering::Relaxed) || outcomes.iter().any(Option::is_none) {
+                return Err(CommandError::scan_cancelled());
+            }
+
+            let mut findings = Vec::new();
+            let mut coverage_entries = Vec::new();
+            for (relative, outcome) in outcomes.into_iter().flatten() {
+                coverage_entries.push((relative, outcome.covered_families));
+                findings.extend(outcome.findings);
+            }
+            if findings.iter().any(|finding| finding.cwe.is_some()) {
+                let _ = events.emit("scan://progress", Value::from("exploitation-signal"));
+                let kev = cve.kev_set().await;
+                for finding in &mut findings {
+                    if let Some(cwe) = finding.cwe.as_deref() {
+                        let count = kev.cwe_exploited_count(cwe);
+                        finding.cwe_exploited = count > 0;
+                        finding.cwe_exploited_count = count;
+                    }
+                }
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Err(CommandError::scan_cancelled());
+            }
+            assign_fingerprints(&mut findings);
+            for finding in &mut findings {
+                let decision = scope::classify(&finding.file_path);
+                finding.scope = Some(decision.scope);
+                finding.scope_reason = Some(decision.reason);
+                finding.observation_run_id = run_id.clone();
+            }
+            let include_project_policy =
+                !matches!(loaded_policy.status(), PolicyStatus::Invalid { .. });
+            self.repository.enrich_findings_with_reviews(
+                &project.project_id,
+                &mut findings,
+                include_project_policy,
+                Utc::now(),
+            )?;
+            if include_project_policy {
+                let review_now = Utc::now();
+                for finding in &mut findings {
+                    let local = finding
+                        .review
+                        .as_ref()
+                        .filter(|review| review.origin == ReviewOrigin::Local);
+                    let projected = apply_policy(
+                        &loaded_policy,
+                        &project.project_id,
+                        finding.fingerprint_version,
+                        &finding.fingerprint,
+                        &finding.category,
+                        &finding.rule_id,
+                        &finding.file_path,
+                        local,
+                        review_now,
+                    )?;
+                    if projected.state == ReviewState::Candidate {
+                        finding.review = None;
+                    } else {
+                        if !finding.review_history.iter().any(|review| {
+                            review.origin == projected.origin
+                                && review.state == projected.state
+                                && review.policy_hash == projected.policy_hash
+                                && review.superseded_at.is_none()
+                        }) {
+                            finding.review_history.insert(0, projected.clone());
+                        }
+                        finding.review = Some(projected);
+                    }
+                }
+            }
+            sort_findings(&mut findings);
+            let summary = summarize(
+                canonical_path.clone(),
+                collection.files.len(),
+                collection.skipped,
+                collection.total_bytes,
+                started_instant.elapsed().as_millis() as u64,
+                &findings,
+            );
+            let coverage = CoverageManifest::from_entries(coverage_entries);
+            let started_cutoff = DateTime::parse_from_rfc3339(&started_at)
+                .map_err(|_| CommandError::persistence_unavailable())?
+                .with_timezone(&Utc);
+            let advisory_baseline = self.repository.latest_compatible_baseline(
+                &project.project_id,
+                super::domain::FINGERPRINT_VERSION,
+                &coverage,
+                started_cutoff,
+            )?;
+            let completed_at = timestamp(Utc::now());
+            let completed = ScanRunDetail {
+                project_id: project.project_id.clone(),
+                run_id: run_id.clone(),
+                baseline_run_id: advisory_baseline
+                    .as_ref()
+                    .map(|baseline| baseline.run_id.clone()),
+                status: RunStatus::Completed,
+                persistence: RunPersistence::Saved,
+                policy: loaded_policy.status().clone(),
+                started_at,
+                completed_at: Some(completed_at.clone()),
+                summary: summary.clone(),
+                findings: findings.clone(),
+                maintenance_warning: None,
+            };
+
+            self.run_test_before_completion_seam(&canonical_path);
+            if cancel.load(Ordering::SeqCst) {
+                return Err(CommandError::scan_cancelled());
+            }
+            let completion = if self.should_fail_completion() {
                 Err(CommandError::persistence_unavailable())
             } else {
-                result
-            }
-        };
-        let mut stored = match completion {
-            Ok(stored) => stored,
-            Err(_) => {
-                return Ok(self.retain_pending(completed, coverage, advisory_baseline.as_ref()))
-            }
-        };
-        if !matches!(loaded_policy.status(), PolicyStatus::Invalid { .. }) {
-            let refreshed = if self.should_fail_post_completion_policy_refresh() {
-                Err(CommandError::policy_write_failed())
-            } else {
-                reconcile_project_policy_reviews(&self.repository, &project.project_id, Utc::now())
-                    .and_then(|_| self.repository.load_run(&run_id))
-            };
-            match refreshed {
-                Ok(reloaded) => stored = reloaded,
-                Err(_) => {
-                    strip_project_policy_reviews(&mut stored.findings, Utc::now());
-                    stored.maintenance_warning = Some(POLICY_REFRESH_WARNING.into());
+                let result = self.repository.complete_run_with_maintenance(
+                    &completed,
+                    &coverage,
+                    self.retention_policy_for_attempt(),
+                    Utc::now(),
+                );
+                if result.is_ok() && self.should_fail_after_committed_completion() {
+                    Err(CommandError::persistence_unavailable())
+                } else {
+                    result
                 }
+            };
+            let stored = match completion {
+                Ok(stored) => stored,
+                Err(_) => {
+                    return Ok(self.retain_pending(completed, coverage, advisory_baseline.as_ref()))
+                }
+            };
+            let stored = match self.refresh_saved_policy(stored, &project.project_id) {
+                Ok(stored) => stored,
+                Err((stored, _)) => {
+                    let mut stored = *stored;
+                    merge_maintenance_warning(&mut stored, POLICY_REFRESH_WARNING);
+                    stored
+                }
+            };
+            let _ = events.emit(
+                "scan://done",
+                serde_json::json!({"findings": stored.findings.len()}),
+            );
+            Ok(stored)
+        }
+        .await;
+        match result {
+            Ok(detail) => {
+                run_attempt.disarm();
+                Ok(detail)
             }
-        } else {
-            strip_project_policy_reviews(&mut stored.findings, Utc::now());
+            Err(error) => {
+                run_attempt.fail(&error);
+                Err(error)
+            }
         }
-        if self
-            .repository
-            .apply_retention(Utc::now(), RetentionPolicy::default())
-            .is_err()
-            && stored.maintenance_warning.is_none()
-        {
-            stored.maintenance_warning = Some(RETENTION_WARNING.into());
-        }
-        let _ = events.emit(
-            "scan://done",
-            serde_json::json!({"findings": stored.findings.len()}),
-        );
-        Ok(stored)
     }
 
     pub fn retry_save(&self, retry_token: &str) -> Result<ScanRunDetail, CommandError> {
@@ -484,24 +538,16 @@ impl FindingsService {
             .cloned()
             .ok_or_else(CommandError::not_found)?;
         let detail = pending.detail();
-        let stored = self.repository.complete_run(&detail, &pending.coverage)?;
-        let project = self.repository.project_context(&pending.project_id)?;
-        let loaded = load_policy(&project.canonical_path)?;
-        let mut stored = if matches!(loaded.status(), PolicyStatus::Invalid { .. }) {
-            let mut stored = stored;
-            strip_project_policy_reviews(&mut stored.findings, Utc::now());
-            stored
-        } else {
-            reconcile_project_policy_reviews(&self.repository, &pending.project_id, Utc::now())?;
-            self.repository.load_run(&pending.run_id)?
+        let stored = self.repository.complete_run_with_maintenance(
+            &detail,
+            &pending.coverage,
+            self.retention_policy_for_attempt(),
+            Utc::now(),
+        )?;
+        let stored = match self.refresh_saved_policy(stored, &pending.project_id) {
+            Ok(stored) => stored,
+            Err((_, error)) => return Err(error),
         };
-        if self
-            .repository
-            .apply_retention(Utc::now(), RetentionPolicy::default())
-            .is_err()
-        {
-            stored.maintenance_warning = Some(RETENTION_WARNING.into());
-        }
         let mut pending_saves = self
             .pending_saves
             .lock()
@@ -513,6 +559,90 @@ impl FindingsService {
             pending_saves.remove(index);
         }
         Ok(stored)
+    }
+
+    fn refresh_saved_policy(
+        &self,
+        mut stored: ScanRunDetail,
+        project_id: &str,
+    ) -> Result<ScanRunDetail, (Box<ScanRunDetail>, CommandError)> {
+        let project = match self.repository.project_context(project_id) {
+            Ok(project) => project,
+            Err(error) => {
+                strip_project_policy_reviews(&mut stored.findings, Utc::now());
+                return Err((Box::new(stored), error));
+            }
+        };
+        let loaded = match load_policy(&project.canonical_path) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                strip_project_policy_reviews(&mut stored.findings, Utc::now());
+                return Err((Box::new(stored), error));
+            }
+        };
+        stored.policy = loaded.status().clone();
+        if matches!(loaded.status(), PolicyStatus::Invalid { .. }) {
+            strip_project_policy_reviews(&mut stored.findings, Utc::now());
+            return Ok(stored);
+        }
+        self.run_test_policy_refresh_seam(&project.canonical_path);
+        if self.should_fail_post_completion_policy_refresh() {
+            return self.failed_policy_refresh(
+                stored,
+                &project.canonical_path,
+                CommandError::policy_write_failed(),
+            );
+        }
+        if let Err(error) =
+            reconcile_project_policy_reviews(&self.repository, project_id, Utc::now())
+        {
+            return self.failed_policy_refresh(stored, &project.canonical_path, error);
+        }
+        let mut reloaded = match self.repository.load_run(&stored.run_id) {
+            Ok(reloaded) => reloaded,
+            Err(error) => {
+                return self.failed_policy_refresh(stored, &project.canonical_path, error);
+            }
+        };
+        if let Some(warning) = stored.maintenance_warning {
+            merge_maintenance_warning(&mut reloaded, &warning);
+        }
+        let current = match load_policy(&project.canonical_path) {
+            Ok(current) => current,
+            Err(error) => {
+                return self.failed_policy_refresh(reloaded, &project.canonical_path, error);
+            }
+        };
+        reloaded.policy = current.status().clone();
+        let projection_matches_current = current.status() == loaded.status()
+            && reloaded.findings.iter().all(|finding| {
+                finding.review.as_ref().is_none_or(|review| {
+                    review.origin != ReviewOrigin::ProjectPolicy
+                        || matches!(
+                            current.status(),
+                            PolicyStatus::Valid { hash }
+                                if review.policy_hash.as_deref() == Some(hash.as_str())
+                        )
+                })
+            });
+        if !projection_matches_current {
+            strip_project_policy_reviews(&mut reloaded.findings, Utc::now());
+            return Err((Box::new(reloaded), CommandError::policy_write_failed()));
+        }
+        Ok(reloaded)
+    }
+
+    fn failed_policy_refresh(
+        &self,
+        mut stored: ScanRunDetail,
+        canonical_path: &str,
+        error: CommandError,
+    ) -> Result<ScanRunDetail, (Box<ScanRunDetail>, CommandError)> {
+        if let Ok(current) = load_policy(canonical_path) {
+            stored.policy = current.status().clone();
+        }
+        strip_project_policy_reviews(&mut stored.findings, Utc::now());
+        Err((Box::new(stored), error))
     }
 
     fn acquire_project(
@@ -537,16 +667,13 @@ impl FindingsService {
         })
     }
 
-    fn fail_started_run<T>(
-        &self,
-        run_id: &str,
-        error_code: &str,
-        error: CommandError,
-    ) -> Result<T, CommandError> {
+    fn mark_incomplete_best_effort(&self, run_id: &str, error_code: &str) {
+        if self.should_fail_mark_incomplete() {
+            return;
+        }
         let _ = self
             .repository
             .mark_incomplete(run_id, &timestamp(Utc::now()), error_code);
-        Err(error)
     }
 
     fn retain_pending(
@@ -656,12 +783,80 @@ impl FindingsService {
     }
 
     #[cfg(test)]
+    fn pause_before_completion_for_test(
+        &self,
+        canonical_path: String,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) {
+        *self.before_completion_pause.lock().unwrap() = Some((canonical_path, entered, release));
+    }
+
+    #[cfg(test)]
+    fn pause_policy_refresh_after_load_for_test(
+        &self,
+        canonical_path: String,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) {
+        *self.policy_refresh_pause.lock().unwrap() = Some((canonical_path, entered, release));
+    }
+
+    #[cfg(test)]
+    fn fail_next_mark_incomplete_for_test(&self) {
+        self.mark_incomplete_failures.store(1, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn should_fail_mark_incomplete(&self) -> bool {
+        self.mark_incomplete_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    #[cfg(not(test))]
+    fn should_fail_mark_incomplete(&self) -> bool {
+        false
+    }
+
+    #[cfg(test)]
+    fn fail_next_retention_maintenance_for_test(&self) {
+        self.retention_maintenance_failures
+            .store(1, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn retention_policy_for_attempt(&self) -> RetentionPolicy {
+        if self
+            .retention_maintenance_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            RetentionPolicy {
+                max_completed_runs_per_project: 0,
+                max_age_days: 0,
+            }
+        } else {
+            RetentionPolicy::default()
+        }
+    }
+
+    #[cfg(not(test))]
+    fn retention_policy_for_attempt(&self) -> RetentionPolicy {
+        RetentionPolicy::default()
+    }
+
+    #[cfg(test)]
     fn fail_next_scanner_for_test(&self, canonical_path: String) {
         self.scanner_failures.lock().unwrap().insert(canonical_path);
     }
 
     #[cfg(test)]
-    fn run_test_scan_seam(&self, canonical_path: &str, run_id: &str) -> Result<(), CommandError> {
+    fn run_test_scan_seam(&self, canonical_path: &str) -> Result<(), CommandError> {
         let pause = {
             let mut pause = self.scan_pause.lock().unwrap();
             if pause
@@ -678,15 +873,59 @@ impl FindingsService {
             release.wait();
         }
         if self.scanner_failures.lock().unwrap().remove(canonical_path) {
-            return self.fail_started_run(run_id, "scan_failed", CommandError::scan_failed());
+            return Err(CommandError::scan_failed());
         }
         Ok(())
     }
 
     #[cfg(not(test))]
-    fn run_test_scan_seam(&self, _canonical_path: &str, _run_id: &str) -> Result<(), CommandError> {
+    fn run_test_scan_seam(&self, _canonical_path: &str) -> Result<(), CommandError> {
         Ok(())
     }
+
+    #[cfg(test)]
+    fn run_test_before_completion_seam(&self, canonical_path: &str) {
+        let pause = {
+            let mut pause = self.before_completion_pause.lock().unwrap();
+            if pause
+                .as_ref()
+                .is_some_and(|(path, _, _)| path == canonical_path)
+            {
+                pause.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, entered, release)) = pause {
+            entered.wait();
+            release.wait();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn run_test_before_completion_seam(&self, _canonical_path: &str) {}
+
+    #[cfg(test)]
+    fn run_test_policy_refresh_seam(&self, canonical_path: &str) {
+        let pause = {
+            let mut pause = self.policy_refresh_pause.lock().unwrap();
+            if pause
+                .as_ref()
+                .is_some_and(|(path, _, _)| path == canonical_path)
+            {
+                pause.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, entered, release)) = pause {
+            entered.wait();
+            release.wait();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn run_test_policy_refresh_seam(&self, _canonical_path: &str) {}
 }
 
 impl PendingSave {
@@ -709,6 +948,32 @@ impl PendingSave {
 
 fn timestamp(now: DateTime<Utc>) -> String {
     now.to_rfc3339_opts(SecondsFormat::Nanos, true)
+}
+
+fn terminal_error_code(error: &CommandError) -> &'static str {
+    match error.code {
+        super::error::ErrorCode::ScanCancelled => "scan_cancelled",
+        super::error::ErrorCode::PolicyInvalid => "policy_invalid",
+        super::error::ErrorCode::ReviewInvalid => "review_invalid",
+        super::error::ErrorCode::ScanFailed => "scan_failed",
+        _ => "scan_failed",
+    }
+}
+
+fn merge_maintenance_warning(detail: &mut ScanRunDetail, warning: &str) {
+    match detail.maintenance_warning.as_mut() {
+        Some(current)
+            if warning == RETENTION_WARNING && current.as_str() == POLICY_REFRESH_WARNING =>
+        {
+            *current = format!("{RETENTION_WARNING}\n{POLICY_REFRESH_WARNING}");
+        }
+        Some(current) if current != warning && !current.split("\n").any(|part| part == warning) => {
+            current.push('\n');
+            current.push_str(warning);
+        }
+        Some(_) => {}
+        None => detail.maintenance_warning = Some(warning.to_owned()),
+    }
 }
 
 fn empty_summary(path: String) -> ScanSummary {
@@ -859,7 +1124,7 @@ mod tests {
         models::ScanOptions,
     };
 
-    use super::{FindingsService, ScanEventSink};
+    use super::{FindingsService, ScanEventSink, POLICY_REFRESH_WARNING, RETENTION_WARNING};
 
     #[derive(Default)]
     struct RecordingEvents(Mutex<Vec<String>>);
@@ -893,10 +1158,88 @@ mod tests {
         state
     }
 
+    fn seed_aged_baseline(
+        service: &FindingsService,
+        project: &std::path::Path,
+    ) -> crate::findings::domain::ScanRunDetail {
+        let context = service.inspect_project(project).unwrap();
+        let mut outcome = crate::scanners::scan_file_with_relative_path(
+            &project.join("app.js"),
+            "app.js",
+            1024,
+            false,
+            true,
+        );
+        crate::findings::fingerprint::assign_fingerprints(&mut outcome.findings);
+        let run_id = format!("aged-baseline-{}", uuid::Uuid::new_v4());
+        for finding in &mut outcome.findings {
+            let decision = crate::triage::scope::classify(&finding.file_path);
+            finding.scope = Some(decision.scope);
+            finding.scope_reason = Some(decision.reason);
+            finding.observation_run_id = run_id.clone();
+        }
+        let coverage = crate::findings::coverage::CoverageManifest::from_entries(vec![(
+            "app.js".to_owned(),
+            outcome.covered_families,
+        )]);
+        let started_at = "2025-01-01T00:00:00.000000000Z".to_owned();
+        let running = crate::findings::domain::ScanRunDetail {
+            project_id: context.project_id.clone(),
+            run_id: run_id.clone(),
+            baseline_run_id: None,
+            status: RunStatus::Running,
+            persistence: RunPersistence::Saved,
+            policy: crate::findings::domain::PolicyStatus::Missing,
+            started_at: started_at.clone(),
+            completed_at: None,
+            summary: super::summarize(
+                project.to_string_lossy().into_owned(),
+                1,
+                0,
+                16,
+                1,
+                &outcome.findings,
+            ),
+            findings: Vec::new(),
+            maintenance_warning: None,
+        };
+        service
+            .repository
+            .start_run(&running, "test-scanner", &ScanOptions::default())
+            .unwrap();
+        let mut completed = running;
+        completed.status = RunStatus::Completed;
+        completed.completed_at = Some("2025-01-01T00:00:01.000000000Z".to_owned());
+        completed.findings = outcome.findings;
+        service
+            .repository
+            .complete_run(&completed, &coverage)
+            .unwrap()
+    }
+
     #[test]
     fn service_can_be_constructed_over_a_repository() {
         let repository = crate::findings::repository::FindingsRepository::open_in_memory().unwrap();
         let _service = FindingsService::new(repository);
+    }
+
+    #[test]
+    fn service_exposes_the_bounded_run_list_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        let context = service.inspect_project(&project).unwrap();
+        assert!(service
+            .list_runs(&context.project_id, 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            service.list_runs("unknown-project", 10).unwrap_err().code,
+            crate::findings::error::ErrorCode::NotFound
+        );
     }
 
     #[tokio::test]
@@ -951,6 +1294,111 @@ mod tests {
         let names = events.0.lock().unwrap();
         assert!(names.iter().any(|name| name == "scan://progress"));
         assert!(names.iter().any(|name| name == "scan://done"));
+    }
+
+    #[tokio::test]
+    async fn normal_scan_returns_post_retention_projection_that_matches_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let database = directory.path().join("data/findings.sqlite3");
+        let options = ScanOptions {
+            path: project.to_string_lossy().into_owned(),
+            scan_secrets: false,
+            ..ScanOptions::default()
+        };
+        let saved = {
+            let service = FindingsService::new(
+                crate::findings::repository::FindingsRepository::open(&database).unwrap(),
+            );
+            let baseline = seed_aged_baseline(&service, &project);
+            let saved = service
+                .scan(
+                    options.clone(),
+                    &cached_cve_state(),
+                    &AtomicBool::new(false),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                service
+                    .repository
+                    .load_run(&baseline.run_id)
+                    .unwrap_err()
+                    .code,
+                crate::findings::error::ErrorCode::NotFound
+            );
+            assert_eq!(saved.baseline_run_id, None);
+            assert_eq!(saved.findings.len(), 1);
+            assert_eq!(saved.findings[0].diff_status, Some(DiffStatus::New));
+            saved
+        };
+        let restarted = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open(&database).unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap(),
+            serde_json::to_value(restarted.load_run(&saved.run_id).unwrap()).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_returns_post_retention_projection_that_matches_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let database = directory.path().join("data/findings.sqlite3");
+        let options = ScanOptions {
+            path: project.to_string_lossy().into_owned(),
+            scan_secrets: false,
+            ..ScanOptions::default()
+        };
+        let saved = {
+            let service = FindingsService::new(
+                crate::findings::repository::FindingsRepository::open(&database).unwrap(),
+            );
+            let baseline = seed_aged_baseline(&service, &project);
+            service.fail_next_completions_for_test(1);
+            let pending = service
+                .scan(
+                    options,
+                    &cached_cve_state(),
+                    &AtomicBool::new(false),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .unwrap();
+            let RunPersistence::NotSaved { retry_token } = pending.persistence else {
+                panic!("injected failure must retain a retry token")
+            };
+            assert_eq!(
+                pending.baseline_run_id.as_deref(),
+                Some(baseline.run_id.as_str())
+            );
+            let saved = service.retry_save(&retry_token).unwrap();
+            assert_eq!(
+                service
+                    .repository
+                    .load_run(&baseline.run_id)
+                    .unwrap_err()
+                    .code,
+                crate::findings::error::ErrorCode::NotFound
+            );
+            assert_eq!(saved.baseline_run_id, None);
+            assert_eq!(saved.findings.len(), 1);
+            assert_eq!(saved.findings[0].diff_status, Some(DiffStatus::New));
+            saved
+        };
+        let restarted = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open(&database).unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap(),
+            serde_json::to_value(restarted.load_run(&saved.run_id).unwrap()).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1196,6 +1644,140 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(completed.status, RunStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn post_start_policy_failure_marks_exact_run_incomplete_without_masking_primary() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        let options = ScanOptions {
+            path: project.to_string_lossy().into_owned(),
+            scan_secrets: false,
+            ..ScanOptions::default()
+        };
+        let mut scanned = crate::scanners::scan_file_with_relative_path(
+            &project.join("app.js"),
+            "app.js",
+            1024,
+            false,
+            true,
+        )
+        .findings;
+        crate::findings::fingerprint::assign_fingerprints(&mut scanned);
+        let fingerprint = scanned[0].fingerprint.clone();
+        std::fs::write(
+            project.join(".oxaudit/policy.json"),
+            serde_json::json!({
+                "version": 1,
+                "entries": [{
+                    "kind": "finding",
+                    "fingerprintVersion": crate::findings::domain::FINGERPRINT_VERSION,
+                    "fingerprint": &fingerprint,
+                    "category": "secret",
+                    "state": "suppressed",
+                    "reason": "valid entry with the wrong authoritative category"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let error = service
+            .scan(
+                options.clone(),
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, crate::findings::error::ErrorCode::PolicyInvalid);
+        let failed_run = service
+            .started_run_ids
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            service.repository.load_run(&failed_run).unwrap().status,
+            RunStatus::Incomplete
+        );
+
+        service.fail_next_mark_incomplete_for_test();
+        let error = service
+            .scan(
+                options,
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, crate::findings::error::ErrorCode::PolicyInvalid);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_immediately_before_completion_never_commits_observations() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let service = Arc::new(FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        ));
+        let canonical = project
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        service.pause_before_completion_for_test(
+            canonical.clone(),
+            entered.clone(),
+            release.clone(),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task = {
+            let service = service.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                service
+                    .scan(
+                        ScanOptions {
+                            path: canonical,
+                            scan_secrets: false,
+                            ..ScanOptions::default()
+                        },
+                        &cached_cve_state(),
+                        &cancel,
+                        &RecordingEvents::default(),
+                    )
+                    .await
+            })
+        };
+        entered.wait();
+        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        release.wait();
+
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(error.code, crate::findings::error::ErrorCode::ScanCancelled);
+        let run_id = service
+            .started_run_ids
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        let stored = service.repository.load_run(&run_id).unwrap();
+        assert_eq!(stored.status, RunStatus::Incomplete);
+        assert!(stored.findings.is_empty());
     }
 
     #[tokio::test]
@@ -1517,6 +2099,358 @@ mod tests {
                 .as_ref()
                 .map(|review| review.state),
             Some(crate::findings::domain::ReviewState::Suppressed)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saved_scan_reports_policy_removed_during_completion() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let policy_path = project.join(".oxaudit/policy.json");
+        std::fs::write(
+            &policy_path,
+            r#"{"version":1,"entries":[{"kind":"suppression","ruleId":"js-eval","pathPattern":"app.js","state":"suppressed","reason":"approved local fixture"}]}"#,
+        )
+        .unwrap();
+        let service = Arc::new(FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        ));
+        let canonical = project
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        service.pause_before_completion_for_test(
+            canonical.clone(),
+            entered.clone(),
+            release.clone(),
+        );
+        let task = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .scan(
+                        ScanOptions {
+                            path: canonical,
+                            scan_secrets: false,
+                            ..ScanOptions::default()
+                        },
+                        &cached_cve_state(),
+                        &AtomicBool::new(false),
+                        &RecordingEvents::default(),
+                    )
+                    .await
+            })
+        };
+        entered.wait();
+        std::fs::remove_file(&policy_path).unwrap();
+        release.wait();
+        let saved = task.await.unwrap().unwrap();
+        assert_eq!(saved.policy, crate::findings::domain::PolicyStatus::Missing);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saved_scan_reports_invalid_current_policy_and_keeps_audit_history_inactive() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let policy_path = project.join(".oxaudit/policy.json");
+        std::fs::write(
+            &policy_path,
+            r#"{"version":1,"entries":[{"kind":"suppression","ruleId":"js-eval","pathPattern":"app.js","state":"suppressed","reason":"approved local fixture"}]}"#,
+        )
+        .unwrap();
+        let service = Arc::new(FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        ));
+        let options = ScanOptions {
+            path: project.to_string_lossy().into_owned(),
+            scan_secrets: false,
+            ..ScanOptions::default()
+        };
+        service
+            .scan(
+                options.clone(),
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+        let canonical = project
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        service.pause_before_completion_for_test(canonical, entered.clone(), release.clone());
+        let task = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .scan(
+                        options,
+                        &cached_cve_state(),
+                        &AtomicBool::new(false),
+                        &RecordingEvents::default(),
+                    )
+                    .await
+            })
+        };
+        entered.wait();
+        let invalid_bytes = b"{ invalid policy bytes must remain exact }";
+        std::fs::write(&policy_path, invalid_bytes).unwrap();
+        release.wait();
+        let saved = task.await.unwrap().unwrap();
+        assert!(matches!(
+            saved.policy,
+            crate::findings::domain::PolicyStatus::Invalid { .. }
+        ));
+        assert_eq!(std::fs::read(&policy_path).unwrap(), invalid_bytes);
+        let current = saved
+            .findings
+            .iter()
+            .find(|finding| finding.observation_run_id == saved.run_id)
+            .unwrap();
+        assert_ne!(
+            current.review.as_ref().map(|review| review.origin),
+            Some(crate::findings::domain::ReviewOrigin::ProjectPolicy)
+        );
+        assert!(current.review_history.iter().any(|review| {
+            review.origin == crate::findings::domain::ReviewOrigin::ProjectPolicy
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn policy_mutation_during_refresh_returns_current_status_conservatively() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let policy_path = project.join(".oxaudit/policy.json");
+        std::fs::write(
+            &policy_path,
+            r#"{"version":1,"entries":[{"kind":"suppression","ruleId":"js-eval","pathPattern":"app.js","state":"suppressed","reason":"approved local fixture"}]}"#,
+        )
+        .unwrap();
+        let service = Arc::new(FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        ));
+        let options = ScanOptions {
+            path: project.to_string_lossy().into_owned(),
+            scan_secrets: false,
+            ..ScanOptions::default()
+        };
+        service
+            .scan(
+                options.clone(),
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+        let canonical = project
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        service.pause_policy_refresh_after_load_for_test(
+            canonical,
+            entered.clone(),
+            release.clone(),
+        );
+        let task = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .scan(
+                        options,
+                        &cached_cve_state(),
+                        &AtomicBool::new(false),
+                        &RecordingEvents::default(),
+                    )
+                    .await
+            })
+        };
+        entered.wait();
+        std::fs::write(&policy_path, b"{ invalid concurrent policy }").unwrap();
+        release.wait();
+        let saved = task.await.unwrap().unwrap();
+        assert!(matches!(
+            saved.policy,
+            crate::findings::domain::PolicyStatus::Invalid { .. }
+        ));
+        assert_eq!(
+            saved.maintenance_warning.as_deref(),
+            Some(POLICY_REFRESH_WARNING)
+        );
+        let current = saved
+            .findings
+            .iter()
+            .find(|finding| finding.observation_run_id == saved.run_id)
+            .unwrap();
+        assert_ne!(
+            current.review.as_ref().map(|review| review.origin),
+            Some(crate::findings::domain::ReviewOrigin::ProjectPolicy)
+        );
+        assert!(current.review_history.iter().any(|review| {
+            review.origin == crate::findings::domain::ReviewOrigin::ProjectPolicy
+        }));
+    }
+
+    #[tokio::test]
+    async fn retry_reports_current_missing_or_invalid_policy_without_losing_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        for transition in ["missing", "invalid"] {
+            let project = directory.path().join(transition);
+            std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+            std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+            let policy_path = project.join(".oxaudit/policy.json");
+            std::fs::write(
+                &policy_path,
+                r#"{"version":1,"entries":[{"kind":"suppression","ruleId":"js-eval","pathPattern":"app.js","state":"suppressed","reason":"approved local fixture"}]}"#,
+            )
+            .unwrap();
+            let options = ScanOptions {
+                path: project.to_string_lossy().into_owned(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            };
+            service
+                .scan(
+                    options.clone(),
+                    &cached_cve_state(),
+                    &AtomicBool::new(false),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .unwrap();
+            service.fail_next_completions_for_test(1);
+            let pending = service
+                .scan(
+                    options,
+                    &cached_cve_state(),
+                    &AtomicBool::new(false),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .unwrap();
+            let RunPersistence::NotSaved { retry_token } = pending.persistence else {
+                panic!("injected failure must retain a retry token")
+            };
+            if transition == "missing" {
+                std::fs::remove_file(&policy_path).unwrap();
+            } else {
+                std::fs::write(&policy_path, b"{ invalid current policy }").unwrap();
+            }
+            let saved = service.retry_save(&retry_token).unwrap();
+            if transition == "missing" {
+                assert_eq!(saved.policy, crate::findings::domain::PolicyStatus::Missing);
+            } else {
+                assert!(matches!(
+                    saved.policy,
+                    crate::findings::domain::PolicyStatus::Invalid { .. }
+                ));
+                let current = saved
+                    .findings
+                    .iter()
+                    .find(|finding| finding.observation_run_id == saved.run_id)
+                    .unwrap();
+                assert_ne!(
+                    current.review.as_ref().map(|review| review.origin),
+                    Some(crate::findings::domain::ReviewOrigin::ProjectPolicy)
+                );
+                assert!(current.review_history.iter().any(|review| {
+                    review.origin == crate::findings::domain::ReviewOrigin::ProjectPolicy
+                }));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_retry_keeps_token_until_policy_refresh_heals() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        service.fail_next_completions_for_test(1);
+        let pending = service
+            .scan(
+                ScanOptions {
+                    path: project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+        let RunPersistence::NotSaved { retry_token } = pending.persistence else {
+            panic!("injected failure must retain a retry token")
+        };
+        service.fail_next_post_completion_policy_refresh_for_test();
+        let error = service.retry_save(&retry_token).unwrap_err();
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PolicyWriteFailed
+        );
+        assert_eq!(
+            service.repository.load_run(&pending.run_id).unwrap().status,
+            RunStatus::Completed
+        );
+        let healed = service.retry_save(&retry_token).unwrap();
+        assert_eq!(healed.run_id, pending.run_id);
+        assert_eq!(
+            service.retry_save(&retry_token).unwrap_err().code,
+            crate::findings::error::ErrorCode::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_and_policy_refresh_warnings_merge_in_fixed_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        service.fail_next_retention_maintenance_for_test();
+        service.fail_next_post_completion_policy_refresh_for_test();
+        let saved = service
+            .scan(
+                ScanOptions {
+                    path: project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+        let expected = format!("{RETENTION_WARNING}\n{POLICY_REFRESH_WARNING}");
+        assert_eq!(
+            saved.maintenance_warning.as_deref(),
+            Some(expected.as_str())
         );
     }
 }
