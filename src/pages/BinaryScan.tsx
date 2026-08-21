@@ -9,6 +9,7 @@ import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { latestCompletedRun } from "../lib/durableRuns";
 import { useAppStore, useToastStore } from "../lib/stores";
 import {
   filterComponents,
@@ -17,6 +18,7 @@ import {
   type SeverityFilter,
 } from "../lib/binaryScan";
 import type { BinaryScannersStatus, BinaryScanResult } from "../lib/types";
+import { RunTimeline } from "../features/runs/RunTimeline";
 
 
 export function BinaryScanPage(): JSX.Element {
@@ -31,6 +33,7 @@ export function BinaryScanPage(): JSX.Element {
   const [path, setPath] = useState(activeProject ?? "");
   const [severity, setSeverity] = useState<SeverityFilter>("all");
   const [offline, setOffline] = useState(false);
+  const [deepAnalysis, setDeepAnalysis] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string>("");
   // Caveats that are not failures — a rate-limited or capped CVE lookup means
@@ -40,6 +43,7 @@ export function BinaryScanPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<SeverityFilter>("all");
   const mountedRef = useRef(true);
+  const historyRequestRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -91,6 +95,29 @@ export function BinaryScanPage(): JSX.Element {
     void checkTool();
   }, [checkTool]);
 
+  useEffect(() => {
+    const requestedPath = path.trim();
+    const requestId = ++historyRequestRef.current;
+    if (!requestedPath) return;
+
+    void (async () => {
+      try {
+        const runs = await api.listCanonicalRuns("binary");
+        const saved = latestCompletedRun(runs, "binary", requestedPath);
+        if (!saved || requestId !== historyRequestRef.current) return;
+        const restored = await api.loadCanonicalProjection<BinaryScanResult>(saved.id);
+        if (requestId !== historyRequestRef.current || !mountedRef.current) return;
+        setResult(restored);
+        setPageStatus("binary-scan", {
+          label: `Saved binary results · ${restored.summary.vulnerabilities} CVEs`,
+          tone: restored.summary.vulnerabilities > 0 ? "error" : "success",
+        });
+      } catch {
+        // Saved history is best-effort and never blocks a new scan.
+      }
+    })();
+  }, [path, setPageStatus]);
+
   // cve-bin-tool's own output is the only sign of life during a first run,
   // where it downloads the CVE database before scanning anything.
   useEffect(() => {
@@ -137,9 +164,9 @@ export function BinaryScanPage(): JSX.Element {
 
   const run = async () => {
     if (!path.trim() || running) return;
+    historyRequestRef.current += 1;
     setRunning(true);
     setError(null);
-    setResult(null);
     setProgress("");
     setNotes([]);
     setPageStatus("binary-scan", { label: "Scanning binaries", tone: "running" });
@@ -150,6 +177,7 @@ export function BinaryScanPage(): JSX.Element {
           path,
           severity: severity === "all" ? null : severity,
           offline,
+          deepAnalysis,
         },
         useGrype && (toolStatus?.grype.available ?? false),
       );
@@ -175,6 +203,16 @@ export function BinaryScanPage(): JSX.Element {
         setProgress("");
       }
     }
+  };
+
+  const changePath = (nextPath: string) => {
+    if (nextPath === path) return;
+    historyRequestRef.current += 1;
+    setPath(nextPath);
+    setResult(null);
+    setError(null);
+    setNotes([]);
+    clearPageStatus("binary-scan");
   };
 
   const refreshDatabase = async () => {
@@ -355,6 +393,12 @@ export function BinaryScanPage(): JSX.Element {
               label="Offline (use the downloaded database only)"
             />
             <Switch
+              checked={deepAnalysis}
+              onChange={setDeepAnalysis}
+              disabled={running}
+              label="Deep object calls (single file, bounded)"
+            />
+            <Switch
               checked={useGrype && grypeReady}
               onChange={setUseGrype}
               disabled={running || !grypeReady}
@@ -372,13 +416,19 @@ export function BinaryScanPage(): JSX.Element {
         </label>
         <FolderPicker
           value={path}
-          onChange={setPath}
+          onChange={changePath}
           disabled={running}
           allowFiles
           placeholder="Choose a binary, firmware image, archive, or folder…"
           inputLabel="Binary scan target"
         />
       </TargetBar>
+
+      <RunTimeline
+        active={!running && result ? "completed" : !running ? "discovering" : progress.toLowerCase().includes("enrich") ? "enriching" : "detecting"}
+        running={running}
+        hasCompletedResult={Boolean(result)}
+      />
 
       {running && (
         <InlineState
@@ -545,6 +595,31 @@ export function BinaryScanPage(): JSX.Element {
                       </li>
                     ))}
                   </ul>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {result?.semanticAnalysis && !running && (
+        <section className="rounded-sm border border-border bg-surface-secondary p-4">
+          <h2 className="text-[13px] font-semibold text-text-primary">Deep object-call analysis</h2>
+          <p className="mt-1 font-mono text-[11px] text-text-muted">
+            {result.semanticAnalysis.architecture} · {result.semanticAnalysis.functionsAnalyzed.toLocaleString()} functions · {result.semanticAnalysis.callEdges.toLocaleString()} relocation call edges · {result.semanticAnalysis.unresolvedEdges.toLocaleString()} unresolved
+          </p>
+          <p className="mt-2 text-[11px] leading-relaxed text-text-muted">{result.semanticAnalysis.limitations.join(" ")}</p>
+          {result.semanticAnalysis.findings.length === 0 ? (
+            <InlineState tone="empty" compact title="No bounded dangerous-sink calls were found" description="This does not prove their absence in stripped or statically resolved code." />
+          ) : (
+            <ul className="mt-3 divide-y divide-border rounded-sm border border-border bg-surface-primary">
+              {result.semanticAnalysis.findings.map((finding) => (
+                <li key={`${finding.ruleId}:${finding.functionAddress}`} className="px-3 py-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-mono text-[12px] text-text-primary">{finding.ruleId}</span>
+                    <span className="font-mono text-[10px] text-text-muted">0x{finding.functionAddress.toString(16)} · {(finding.confidence * 100).toFixed(0)}% evidence confidence</span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-text-muted">{finding.limitations.join(" ")}</p>
                 </li>
               ))}
             </ul>

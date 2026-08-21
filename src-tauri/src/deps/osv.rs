@@ -14,7 +14,6 @@ impl OsvClient {
     }
 
     /// Query OSV for a single package@version.
-
     pub async fn query_package(
         &self,
         ecosystem: &str,

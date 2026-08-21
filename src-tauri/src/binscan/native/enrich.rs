@@ -811,6 +811,7 @@ mod tests {
             database_last_updated: None,
             duration_ms: 0,
             scanners: vec!["oxaudit".into()],
+            semantic_analysis: None,
         }
     }
 

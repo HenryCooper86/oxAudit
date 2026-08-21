@@ -5,6 +5,12 @@ import {
   Bug,
   FileSearch,
   LayoutDashboard,
+  Library,
+  PackageSearch,
+  Gauge,
+  Database,
+  FileOutput,
+  BadgeCheck,
   Settings,
   X,
 } from "lucide-react";
@@ -37,6 +43,17 @@ const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
     items: [
       { page: "cve-research", label: "CVE Research", icon: Bug },
       { page: "assistant", label: "AI Assistant", icon: Bot },
+    ],
+  },
+  {
+    label: "Trust & quality",
+    items: [
+      { page: "inventory", label: "Inventory", icon: PackageSearch },
+      { page: "rule-library", label: "Rule Library", icon: Library },
+      { page: "quality-lab", label: "Quality Lab", icon: Gauge },
+      { page: "data-sources", label: "Data Sources", icon: Database },
+      { page: "export-center", label: "Export Center", icon: FileOutput },
+      { page: "verification", label: "Verification", icon: BadgeCheck },
     ],
   },
 ];

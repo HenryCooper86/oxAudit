@@ -83,13 +83,34 @@ export function resolveSourceScanOptionsUnavailable(
   return state.resolved ? state : { ...state, resolved: true };
 }
 
+export function hydrateSourceScanOptionsFromProject(
+  state: SourceScanOptionsState,
+  options: ScanOptions | null,
+): SourceScanOptionsState {
+  if (!options) return state;
+  const loaded: SourceScanOptionValues = {
+    scanSecrets: options.scanSecrets,
+    scanVulnerabilities: options.scanVulnerabilities,
+    includeGit: options.includeGit,
+    followSymlinks: options.followSymlinks,
+    maxFileSizeKb: options.maxFileSizeKb,
+  };
+  const values = { ...state.values };
+  for (const key of Object.keys(loaded) as SourceScanOptionKey[]) {
+    if (!state.edited[key]) values[key] = loaded[key] as never;
+  }
+  return { ...state, values, resolved: true };
+}
+
 export function buildSourceScanRequest(
   path: string,
   state: SourceScanOptionsState,
+  ignoreInvalidPolicy = false,
 ): ScanOptions {
   return {
     path,
     ...state.values,
     extraIgnoredDirs: [],
+    ignoreInvalidPolicy,
   };
 }

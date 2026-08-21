@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oxaudit.dev/schemas/benchmark-result-v1.json",
+  "title": "oxAudit benchmark state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "suiteId", "suiteVersion", "startedAtMs", "updatedAtMs", "results", "metrics"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "suiteId": { "type": "string", "minLength": 1 },
+    "suiteVersion": { "type": "string", "minLength": 1 },
+    "startedAtMs": { "type": "integer", "minimum": 0 },
+    "updatedAtMs": { "type": "integer", "minimum": 0 },
+    "completedAtMs": { "type": ["integer", "null"], "minimum": 0 },
+    "results": { "type": "object" },
+    "metrics": {
+      "type": "object",
+      "required": ["corpusTargets", "completedTargets", "truePositives", "falsePositives", "falseNegatives", "runtimeMs"],
+      "properties": {
+        "corpusTargets": { "type": "integer", "minimum": 0 },
+        "completedTargets": { "type": "integer", "minimum": 0 },
+        "truePositives": { "type": "integer", "minimum": 0 },
+        "falsePositives": { "type": "integer", "minimum": 0 },
+        "falseNegatives": { "type": "integer", "minimum": 0 },
+        "precision": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "recall": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "runtimeMs": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

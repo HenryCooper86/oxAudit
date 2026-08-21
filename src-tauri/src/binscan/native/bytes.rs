@@ -103,7 +103,7 @@ impl BytePattern {
             if nibbles.is_empty() {
                 return Ok(());
             }
-            if nibbles.len() % 2 != 0 {
+            if nibbles.len() & 1 == 1 {
                 return Err(PatternError::OddNibbles(token.clone()));
             }
             for pair in nibbles.chunks(2) {

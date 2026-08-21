@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oxaudit.local/schemas/run-v1.json",
+  "title": "oxAudit canonical run export",
+  "type": "object",
+  "required": ["schemaVersion", "run", "artifacts", "components", "observations"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "run": { "type": "object", "required": ["id", "kind", "state"] },
+    "artifacts": { "type": "array" },
+    "components": { "type": "array" },
+    "observations": { "type": "array" },
+    "projection": {}
+  },
+  "additionalProperties": false
+}

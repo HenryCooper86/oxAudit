@@ -98,6 +98,90 @@ CREATE UNIQUE INDEX reviews_active_origin_idx
   WHERE superseded_at IS NULL;
 "#;
 
+const MIGRATION_V2: &str = r#"
+CREATE TABLE canonical_runs (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  target_label TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE canonical_artifacts (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES canonical_runs(id) ON DELETE CASCADE,
+  payload_json TEXT NOT NULL,
+  UNIQUE(run_id, id)
+);
+
+CREATE TABLE canonical_components (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES canonical_runs(id) ON DELETE CASCADE,
+  payload_json TEXT NOT NULL,
+  UNIQUE(run_id, id)
+);
+
+CREATE TABLE canonical_observations (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES canonical_runs(id) ON DELETE CASCADE,
+  payload_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  UNIQUE(run_id, id)
+);
+
+CREATE TABLE canonical_projections (
+  run_id TEXT PRIMARY KEY REFERENCES canonical_runs(id) ON DELETE CASCADE,
+  projection_kind TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX canonical_runs_state_idx ON canonical_runs(state, updated_at_ms DESC);
+CREATE INDEX canonical_artifacts_run_idx ON canonical_artifacts(run_id);
+CREATE INDEX canonical_components_run_idx ON canonical_components(run_id);
+CREATE INDEX canonical_observations_run_idx ON canonical_observations(run_id);
+
+CREATE TABLE provider_snapshots (
+  id TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  fetched_at_ms INTEGER NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE verification_records (
+  id TEXT PRIMARY KEY,
+  finding_id TEXT NOT NULL,
+  verified_at_ms INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+);
+"#;
+
+const MIGRATION_V3: &str = r#"
+CREATE TABLE canonical_findings (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES canonical_runs(id) ON DELETE CASCADE,
+  payload_json TEXT NOT NULL,
+  UNIQUE(run_id, id)
+);
+CREATE INDEX canonical_findings_run_idx ON canonical_findings(run_id);
+CREATE INDEX verification_records_finding_idx
+  ON verification_records(finding_id, verified_at_ms DESC);
+"#;
+
+const MIGRATION_V4: &str = r#"
+CREATE TABLE benchmark_results (
+  id TEXT PRIMARY KEY,
+  suite_id TEXT NOT NULL,
+  suite_version TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+);
+CREATE INDEX benchmark_results_suite_idx
+  ON benchmark_results(suite_id, recorded_at_ms DESC);
+"#;
+
 const RETENTION_MAINTENANCE_WARNING: &str =
     "Run saved, but old scan history could not be cleaned up.";
 
@@ -105,6 +189,15 @@ pub struct FindingsRepository {
     connection: Mutex<Connection>,
     #[cfg(test)]
     fail_post_maintenance_reload: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderSnapshotRecord {
+    pub id: String,
+    pub provider_id: String,
+    pub fetched_at_ms: u64,
+    pub content_sha256: String,
+    pub payload: serde_json::Value,
 }
 
 impl FindingsRepository {
@@ -146,6 +239,682 @@ impl FindingsRepository {
             #[cfg(test)]
             fail_post_maintenance_reload: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    pub(crate) fn canonical_create_run(
+        &self,
+        run: &oxaudit_domain::Run,
+    ) -> Result<(), CommandError> {
+        let payload = to_json(run)?;
+        let kind = enum_name(&run.kind)?;
+        let state = enum_name(&run.state)?;
+        let updated_at_ms = i64::try_from(run.updated_at_ms).map_err(persistence_error)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let existing = connection
+            .query_row(
+                "SELECT payload_json FROM canonical_runs WHERE id = ?1",
+                [run.id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        if let Some(existing) = existing {
+            return if existing == payload {
+                Ok(())
+            } else {
+                Err(CommandError::persistence_unavailable())
+            };
+        }
+        connection
+            .execute(
+                r#"INSERT INTO canonical_runs(
+                     id, kind, state, target_label, payload_json, updated_at_ms
+                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                params![
+                    run.id.as_str(),
+                    kind,
+                    state,
+                    run.target_label,
+                    payload,
+                    updated_at_ms
+                ],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn canonical_save_run(&self, run: &oxaudit_domain::Run) -> Result<(), CommandError> {
+        let payload = to_json(run)?;
+        let state = enum_name(&run.state)?;
+        let updated_at_ms = i64::try_from(run.updated_at_ms).map_err(persistence_error)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let changed = connection
+            .execute(
+                r#"UPDATE canonical_runs
+                   SET state = ?2, target_label = ?3, payload_json = ?4, updated_at_ms = ?5
+                   WHERE id = ?1"#,
+                params![
+                    run.id.as_str(),
+                    state,
+                    run.target_label,
+                    payload,
+                    updated_at_ms
+                ],
+            )
+            .map_err(persistence_error)?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(CommandError::persistence_unavailable())
+        }
+    }
+
+    pub(crate) fn canonical_append_artifact(
+        &self,
+        run_id: &oxaudit_domain::RunId,
+        artifact: &oxaudit_domain::Artifact,
+    ) -> Result<(), CommandError> {
+        let payload = to_json(artifact)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let existing = connection
+            .query_row(
+                "SELECT run_id, payload_json FROM canonical_artifacts WHERE id = ?1",
+                [artifact.id.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        if let Some((stored_run_id, stored_payload)) = existing {
+            return if stored_run_id == run_id.as_str() && stored_payload == payload {
+                Ok(())
+            } else {
+                Err(CommandError::persistence_unavailable())
+            };
+        }
+        connection
+            .execute(
+                "INSERT INTO canonical_artifacts(id, run_id, payload_json) VALUES (?1, ?2, ?3)",
+                params![artifact.id.as_str(), run_id.as_str(), payload],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn canonical_append_observations(
+        &self,
+        run_id: &oxaudit_domain::RunId,
+        observations: &[oxaudit_application::ObservationRecord],
+    ) -> Result<(), CommandError> {
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+        for record in observations {
+            let payload = to_json(&record.observation)?;
+            let evidence = to_json(&record.evidence)?;
+            let existing = transaction
+                .query_row(
+                    "SELECT run_id, payload_json, evidence_json FROM canonical_observations WHERE id = ?1",
+                    [record.observation.id.as_str()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(persistence_error)?;
+            if let Some((stored_run_id, stored_payload, stored_evidence)) = existing {
+                if stored_run_id != run_id.as_str()
+                    || stored_payload != payload
+                    || stored_evidence != evidence
+                {
+                    return Err(CommandError::persistence_unavailable());
+                }
+                continue;
+            }
+            transaction
+                .execute(
+                    r#"INSERT INTO canonical_observations(
+                         id, run_id, payload_json, evidence_json
+                       ) VALUES (?1, ?2, ?3, ?4)"#,
+                    params![
+                        record.observation.id.as_str(),
+                        run_id.as_str(),
+                        payload,
+                        evidence
+                    ],
+                )
+                .map_err(persistence_error)?;
+            if matches!(
+                record.observation.kind,
+                oxaudit_domain::ObservationKind::SourceWeakness
+                    | oxaudit_domain::ObservationKind::SecretCandidate
+                    | oxaudit_domain::ObservationKind::AdvisoryMatch
+                    | oxaudit_domain::ObservationKind::PolicyConcern
+                    | oxaudit_domain::ObservationKind::SemanticDataFlow
+            ) {
+                let finding_id =
+                    record
+                        .observation
+                        .id
+                        .as_str()
+                        .replacen("observation_", "finding_", 1);
+                let finding = oxaudit_domain::Finding {
+                    id: oxaudit_domain::FindingId::parse(finding_id).map_err(persistence_error)?,
+                    run_id: run_id.clone(),
+                    fingerprint: record.observation.id.as_str().to_owned(),
+                    fingerprint_version: 1,
+                    title: record.observation.title.clone(),
+                    severity: oxaudit_domain::Severity::Info,
+                    state: oxaudit_domain::FindingState::Candidate,
+                    classifications: Vec::new(),
+                    observation_ids: vec![record.observation.id.clone()],
+                    evidence_ids: record.observation.evidence_ids.clone(),
+                };
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO canonical_findings(id, run_id, payload_json) VALUES (?1, ?2, ?3)",
+                        params![finding.id.as_str(), run_id.as_str(), to_json(&finding)?],
+                    )
+                    .map_err(persistence_error)?;
+            }
+        }
+        transaction.commit().map_err(persistence_error)
+    }
+
+    pub(crate) fn canonical_append_components(
+        &self,
+        run_id: &oxaudit_domain::RunId,
+        components: &[oxaudit_domain::Component],
+    ) -> Result<(), CommandError> {
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+        for component in components {
+            let payload = to_json(component)?;
+            let existing = transaction
+                .query_row(
+                    "SELECT run_id, payload_json FROM canonical_components WHERE id = ?1",
+                    [component.id.as_str()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(persistence_error)?;
+            if let Some((stored_run_id, stored_payload)) = existing {
+                if stored_run_id != run_id.as_str() || stored_payload != payload {
+                    return Err(CommandError::persistence_unavailable());
+                }
+                continue;
+            }
+            transaction
+                .execute(
+                    "INSERT INTO canonical_components(id, run_id, payload_json) VALUES (?1, ?2, ?3)",
+                    params![component.id.as_str(), run_id.as_str(), payload],
+                )
+                .map_err(persistence_error)?;
+        }
+        transaction.commit().map_err(persistence_error)
+    }
+
+    pub(crate) fn canonical_load_run(
+        &self,
+        run_id: &oxaudit_domain::RunId,
+    ) -> Result<Option<oxaudit_domain::Run>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let payload = connection
+            .query_row(
+                "SELECT payload_json FROM canonical_runs WHERE id = ?1",
+                [run_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        payload
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .transpose()
+    }
+
+    pub(crate) fn canonical_load_report_graph(
+        &self,
+        run_id: &oxaudit_domain::RunId,
+    ) -> Result<crate::adapters::scanners::ScanGraph, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let load_payloads = |table: &str| -> Result<Vec<String>, CommandError> {
+            let sql = format!("SELECT payload_json FROM {table} WHERE run_id = ?1 ORDER BY id");
+            let mut statement = connection.prepare(&sql).map_err(persistence_error)?;
+            let rows = statement
+                .query_map([run_id.as_str()], |row| row.get::<_, String>(0))
+                .map_err(persistence_error)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(persistence_error)
+        };
+        let artifacts = load_payloads("canonical_artifacts")?
+            .into_iter()
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .collect::<Result<Vec<_>, _>>()?;
+        let components = load_payloads("canonical_components")?
+            .into_iter()
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT payload_json, evidence_json FROM canonical_observations WHERE run_id = ?1 ORDER BY id",
+            )
+            .map_err(persistence_error)?;
+        let rows = statement
+            .query_map([run_id.as_str()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(persistence_error)?;
+        let observations = rows
+            .map(|row| {
+                let (observation, evidence) = row.map_err(persistence_error)?;
+                Ok(oxaudit_application::ObservationRecord {
+                    observation: serde_json::from_str(&observation).map_err(persistence_error)?,
+                    evidence: serde_json::from_str(&evidence).map_err(persistence_error)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CommandError>>()?;
+        Ok((artifacts, components, observations))
+    }
+
+    pub(crate) fn canonical_list_findings(
+        &self,
+        run_id: Option<&oxaudit_domain::RunId>,
+    ) -> Result<Vec<oxaudit_domain::Finding>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let mut payloads = Vec::new();
+        match run_id {
+            Some(run_id) => {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT payload_json FROM canonical_findings WHERE run_id = ?1 ORDER BY id",
+                    )
+                    .map_err(persistence_error)?;
+                let rows = statement
+                    .query_map([run_id.as_str()], |row| row.get::<_, String>(0))
+                    .map_err(persistence_error)?;
+                for row in rows {
+                    payloads.push(row.map_err(persistence_error)?);
+                }
+            }
+            None => {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT payload_json FROM canonical_findings ORDER BY rowid DESC LIMIT 500",
+                    )
+                    .map_err(persistence_error)?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(persistence_error)?;
+                for row in rows {
+                    payloads.push(row.map_err(persistence_error)?);
+                }
+            }
+        }
+        payloads
+            .into_iter()
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .collect()
+    }
+
+    pub(crate) fn canonical_load_finding(
+        &self,
+        finding_id: &oxaudit_domain::FindingId,
+    ) -> Result<Option<oxaudit_domain::Finding>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let payload = connection
+            .query_row(
+                "SELECT payload_json FROM canonical_findings WHERE id = ?1",
+                [finding_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        payload
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .transpose()
+    }
+
+    pub(crate) fn verification_save(
+        &self,
+        verification: &oxaudit_domain::Verification,
+    ) -> Result<(), CommandError> {
+        verification
+            .validate_independence()
+            .map_err(persistence_error)?;
+        let verified_at_ms =
+            i64::try_from(verification.verified_at_ms).map_err(persistence_error)?;
+        let payload = to_json(verification)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        connection
+            .execute(
+                r#"INSERT INTO verification_records(id, finding_id, verified_at_ms, payload_json)
+                   VALUES (?1, ?2, ?3, ?4)"#,
+                params![
+                    verification.id.as_str(),
+                    verification.finding_id.as_str(),
+                    verified_at_ms,
+                    payload
+                ],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn verification_list(
+        &self,
+        finding_id: Option<&oxaudit_domain::FindingId>,
+    ) -> Result<Vec<oxaudit_domain::Verification>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let mut payloads = Vec::new();
+        match finding_id {
+            Some(finding_id) => {
+                let mut statement = connection
+                    .prepare("SELECT payload_json FROM verification_records WHERE finding_id = ?1 ORDER BY verified_at_ms DESC")
+                    .map_err(persistence_error)?;
+                let rows = statement
+                    .query_map([finding_id.as_str()], |row| row.get::<_, String>(0))
+                    .map_err(persistence_error)?;
+                for row in rows {
+                    payloads.push(row.map_err(persistence_error)?);
+                }
+            }
+            None => {
+                let mut statement = connection
+                    .prepare("SELECT payload_json FROM verification_records ORDER BY verified_at_ms DESC LIMIT 500")
+                    .map_err(persistence_error)?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(persistence_error)?;
+                for row in rows {
+                    payloads.push(row.map_err(persistence_error)?);
+                }
+            }
+        }
+        payloads
+            .into_iter()
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .collect()
+    }
+
+    pub(crate) fn benchmark_latest(
+        &self,
+        suite_id: &str,
+    ) -> Result<Option<serde_json::Value>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let payload = connection
+            .query_row(
+                "SELECT payload_json FROM benchmark_results WHERE suite_id = ?1 ORDER BY recorded_at_ms DESC, id DESC LIMIT 1",
+                [suite_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        payload
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .transpose()
+    }
+
+    pub(crate) fn benchmark_save(
+        &self,
+        id: &str,
+        suite_id: &str,
+        suite_version: &str,
+        recorded_at_ms: u64,
+        payload: &impl Serialize,
+    ) -> Result<(), CommandError> {
+        let recorded_at_ms = i64::try_from(recorded_at_ms).map_err(persistence_error)?;
+        let payload = to_json(payload)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        connection
+            .execute(
+                "INSERT INTO benchmark_results(id, suite_id, suite_version, recorded_at_ms, payload_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, suite_id, suite_version, recorded_at_ms, payload],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn canonical_recover_interrupted_runs(
+        &self,
+        recovered_at_ms: u64,
+    ) -> Result<usize, CommandError> {
+        let payloads = {
+            let connection = self.connection.lock().map_err(persistence_error)?;
+            let mut statement = connection
+                .prepare(
+                    r#"SELECT payload_json FROM canonical_runs
+                       WHERE state NOT IN ('completed', 'cancelled', 'incomplete', 'failed')"#,
+                )
+                .map_err(persistence_error)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(persistence_error)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(persistence_error)?
+        };
+        for payload in &payloads {
+            let mut run: oxaudit_domain::Run =
+                serde_json::from_str(payload).map_err(persistence_error)?;
+            let terminal = if run.state == oxaudit_domain::RunState::Cancelling {
+                oxaudit_domain::RunState::Cancelled
+            } else {
+                oxaudit_domain::RunState::Incomplete
+            };
+            run.transition(terminal, recovered_at_ms)
+                .map_err(persistence_error)?;
+            run.warnings.push(oxaudit_domain::RunWarning {
+                code: "interrupted_by_restart".into(),
+                message: "The application restarted before this run reached a terminal state."
+                    .into(),
+            });
+            self.canonical_save_run(&run)?;
+        }
+        Ok(payloads.len())
+    }
+
+    pub(crate) fn canonical_save_projection(
+        &self,
+        run_id: &oxaudit_domain::RunId,
+        projection_kind: &str,
+        schema_version: u32,
+        payload: &impl Serialize,
+    ) -> Result<(), CommandError> {
+        if projection_kind.trim().is_empty() || schema_version == 0 {
+            return Err(CommandError::persistence_unavailable());
+        }
+        let schema_version_i64 = i64::from(schema_version);
+        let payload = to_json(payload)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let existing = connection
+            .query_row(
+                r#"SELECT projection_kind, schema_version, payload_json
+                   FROM canonical_projections WHERE run_id = ?1"#,
+                [run_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        if let Some(existing) = existing {
+            return if existing == (projection_kind.to_owned(), schema_version_i64, payload) {
+                Ok(())
+            } else {
+                Err(CommandError::persistence_unavailable())
+            };
+        }
+        connection
+            .execute(
+                r#"INSERT INTO canonical_projections(
+                     run_id, projection_kind, schema_version, payload_json
+                   ) VALUES (?1, ?2, ?3, ?4)"#,
+                params![
+                    run_id.as_str(),
+                    projection_kind,
+                    schema_version_i64,
+                    payload
+                ],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn canonical_load_projection(
+        &self,
+        run_id: &oxaudit_domain::RunId,
+    ) -> Result<Option<serde_json::Value>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let payload = connection
+            .query_row(
+                "SELECT payload_json FROM canonical_projections WHERE run_id = ?1",
+                [run_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        payload
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .transpose()
+    }
+
+    pub(crate) fn canonical_list_runs(
+        &self,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<oxaudit_domain::Run>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let limit = i64::try_from(limit.clamp(1, 100)).map_err(persistence_error)?;
+        let mut payloads = Vec::new();
+        match kind {
+            Some(kind) => {
+                let mut statement = connection
+                    .prepare(
+                        r#"SELECT payload_json FROM canonical_runs
+                           WHERE kind = ?1 ORDER BY updated_at_ms DESC, id DESC LIMIT ?2"#,
+                    )
+                    .map_err(persistence_error)?;
+                let rows = statement
+                    .query_map(params![kind, limit], |row| row.get::<_, String>(0))
+                    .map_err(persistence_error)?;
+                for row in rows {
+                    payloads.push(row.map_err(persistence_error)?);
+                }
+            }
+            None => {
+                let mut statement = connection
+                    .prepare(
+                        r#"SELECT payload_json FROM canonical_runs
+                           ORDER BY updated_at_ms DESC, id DESC LIMIT ?1"#,
+                    )
+                    .map_err(persistence_error)?;
+                let rows = statement
+                    .query_map([limit], |row| row.get::<_, String>(0))
+                    .map_err(persistence_error)?;
+                for row in rows {
+                    payloads.push(row.map_err(persistence_error)?);
+                }
+            }
+        }
+        payloads
+            .into_iter()
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .collect()
+    }
+
+    pub(crate) fn provider_save_snapshot(
+        &self,
+        snapshot: &ProviderSnapshotRecord,
+    ) -> Result<(), CommandError> {
+        let fetched_at_ms = i64::try_from(snapshot.fetched_at_ms).map_err(persistence_error)?;
+        let payload = to_json(&snapshot.payload)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let existing = connection
+            .query_row(
+                "SELECT provider_id, fetched_at_ms, content_sha256, payload_json FROM provider_snapshots WHERE id = ?1",
+                [snapshot.id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        if let Some(existing) = existing {
+            return if existing
+                == (
+                    snapshot.provider_id.clone(),
+                    fetched_at_ms,
+                    snapshot.content_sha256.clone(),
+                    payload,
+                ) {
+                Ok(())
+            } else {
+                Err(CommandError::persistence_unavailable())
+            };
+        }
+        connection
+            .execute(
+                r#"INSERT INTO provider_snapshots(
+                     id, provider_id, fetched_at_ms, content_sha256, payload_json
+                   ) VALUES (?1, ?2, ?3, ?4, ?5)
+                   "#,
+                params![
+                    snapshot.id,
+                    snapshot.provider_id,
+                    fetched_at_ms,
+                    snapshot.content_sha256,
+                    payload
+                ],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn provider_latest_snapshot(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<ProviderSnapshotRecord>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let row = connection
+            .query_row(
+                r#"SELECT id, provider_id, fetched_at_ms, content_sha256, payload_json
+                   FROM provider_snapshots WHERE provider_id = ?1
+                   ORDER BY fetched_at_ms DESC, id DESC LIMIT 1"#,
+                [provider_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        row.map(
+            |(id, provider_id, fetched_at_ms, content_sha256, payload)| {
+                Ok(ProviderSnapshotRecord {
+                    id,
+                    provider_id,
+                    fetched_at_ms: u64::try_from(fetched_at_ms).map_err(persistence_error)?,
+                    content_sha256,
+                    payload: serde_json::from_str(&payload).map_err(persistence_error)?,
+                })
+            },
+        )
+        .transpose()
     }
 
     pub fn upsert_project(
@@ -1039,7 +1808,8 @@ impl FindingsRepository {
             .collect::<BTreeSet<_>>();
         let mut observations = BTreeMap::<String, Vec<ObservationIdentity>>::new();
         if !relevant_run_ids.is_empty() {
-            let placeholders = std::iter::repeat_n("?", relevant_run_ids.len())
+            let placeholders = std::iter::repeat("?")
+                .take(relevant_run_ids.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!(
@@ -1870,7 +2640,7 @@ fn latest_observation_from_connection(
             .as_deref()
             .ok_or_else(CommandError::persistence_unavailable)
             .and_then(parse_utc_timestamp)?;
-        let replace = newest.as_ref().is_none_or(|(newest_at, newest_run)| {
+        let replace = newest.as_ref().map_or(true, |(newest_at, newest_run)| {
             completed_at > *newest_at || (completed_at == *newest_at && run_id > *newest_run)
         });
         if replace {
@@ -1963,7 +2733,7 @@ fn latest_project_observations_from_connection(
                 .ok_or_else(CommandError::persistence_unavailable)
                 .and_then(parse_utc_timestamp)?;
             let identity = (fingerprint_version, fingerprint.clone());
-            let replace = winners.get(&identity).is_none_or(|current| {
+            let replace = winners.get(&identity).map_or(true, |current| {
                 completed_at > current.completed_at
                     || (completed_at == current.completed_at && run_id > current.run_id)
             });
@@ -2521,7 +3291,7 @@ fn select_active_review(history: &[ReviewRecord], now: DateTime<Utc>) -> Option<
         })
         .find(|review| {
             review.state != ReviewState::Candidate
-                && review.expires_at.as_deref().is_none_or(|expires_at| {
+                && review.expires_at.as_deref().map_or(true, |expires_at| {
                     DateTime::parse_from_rfc3339(expires_at)
                         .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
                 })
@@ -2539,7 +3309,7 @@ fn select_active_local_review(
             review.origin == ReviewOrigin::Local
                 && review.superseded_at.is_none()
                 && review.state != ReviewState::Candidate
-                && review.expires_at.as_deref().is_none_or(|expires_at| {
+                && review.expires_at.as_deref().map_or(true, |expires_at| {
                     DateTime::parse_from_rfc3339(expires_at)
                         .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
                 })
@@ -2746,6 +3516,14 @@ fn to_json(value: &impl Serialize) -> Result<String, CommandError> {
     serde_json::to_string(value).map_err(persistence_error)
 }
 
+fn enum_name(value: &impl Serialize) -> Result<String, CommandError> {
+    serde_json::to_value(value)
+        .map_err(persistence_error)?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(CommandError::persistence_unavailable)
+}
+
 fn from_json<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T, CommandError> {
     serde_json::from_str(value).map_err(persistence_error)
 }
@@ -2846,10 +3624,104 @@ fn migrate(connection: &mut Connection, migration_v1: &str) -> Result<(), Comman
                 |row| row.get::<_, bool>(0),
             )
             .map_err(persistence_error)?;
-    if applied {
-        return Ok(());
+    if !applied {
+        apply_migration(connection, 1, migration_v1)?;
     }
+    let version_two_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 2)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(persistence_error)?;
+    if !version_two_applied {
+        apply_migration(connection, 2, MIGRATION_V2)?;
+    }
+    let version_three_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 3)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(persistence_error)?;
+    if !version_three_applied {
+        apply_migration(connection, 3, MIGRATION_V3)?;
+    }
+    backfill_canonical_findings(connection)?;
+    let version_four_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 4)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(persistence_error)?;
+    if !version_four_applied {
+        apply_migration(connection, 4, MIGRATION_V4)?;
+    }
+    Ok(())
+}
 
+fn backfill_canonical_findings(connection: &mut Connection) -> Result<(), CommandError> {
+    let payloads = {
+        let mut statement = connection
+            .prepare("SELECT payload_json FROM canonical_observations ORDER BY id")
+            .map_err(persistence_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(persistence_error)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(persistence_error)?
+    };
+    let transaction = connection.transaction().map_err(persistence_error)?;
+    for payload in payloads {
+        let observation: oxaudit_domain::Observation =
+            serde_json::from_str(&payload).map_err(persistence_error)?;
+        if !matches!(
+            observation.kind,
+            oxaudit_domain::ObservationKind::SourceWeakness
+                | oxaudit_domain::ObservationKind::SecretCandidate
+                | oxaudit_domain::ObservationKind::AdvisoryMatch
+                | oxaudit_domain::ObservationKind::PolicyConcern
+                | oxaudit_domain::ObservationKind::SemanticDataFlow
+        ) {
+            continue;
+        }
+        let finding = oxaudit_domain::Finding {
+            id: oxaudit_domain::FindingId::parse(observation.id.as_str().replacen(
+                "observation_",
+                "finding_",
+                1,
+            ))
+            .map_err(persistence_error)?,
+            run_id: observation.run_id.clone(),
+            fingerprint: observation.id.as_str().to_owned(),
+            fingerprint_version: 1,
+            title: observation.title.clone(),
+            severity: oxaudit_domain::Severity::Info,
+            state: oxaudit_domain::FindingState::Candidate,
+            classifications: Vec::new(),
+            observation_ids: vec![observation.id.clone()],
+            evidence_ids: observation.evidence_ids.clone(),
+        };
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO canonical_findings(id, run_id, payload_json) VALUES (?1, ?2, ?3)",
+                params![
+                    finding.id.as_str(),
+                    finding.run_id.as_str(),
+                    to_json(&finding)?
+                ],
+            )
+            .map_err(persistence_error)?;
+    }
+    transaction.commit().map_err(persistence_error)
+}
+
+fn apply_migration(
+    connection: &mut Connection,
+    version: u32,
+    sql: &str,
+) -> Result<(), CommandError> {
     let transaction = connection.transaction().map_err(persistence_error)?;
     transaction
         .execute_batch(
@@ -2859,13 +3731,11 @@ fn migrate(connection: &mut Connection, migration_v1: &str) -> Result<(), Comman
                );"#,
         )
         .map_err(persistence_error)?;
-    transaction
-        .execute_batch(migration_v1)
-        .map_err(persistence_error)?;
+    transaction.execute_batch(sql).map_err(persistence_error)?;
     transaction
         .execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?1)",
-            [Utc::now().to_rfc3339()],
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
+            params![version, Utc::now().to_rfc3339()],
         )
         .map_err(persistence_error)?;
     transaction.commit().map_err(persistence_error)
@@ -3200,7 +4070,7 @@ mod tests {
     }
 
     #[test]
-    fn creates_version_one_schema() {
+    fn creates_current_schema() {
         let repository = FindingsRepository::open_in_memory().expect("open repository");
         let connection = repository.connection.lock().expect("lock connection");
         let tables = [
@@ -3209,6 +4079,15 @@ mod tests {
             "scan_runs",
             "findings",
             "reviews",
+            "canonical_runs",
+            "canonical_artifacts",
+            "canonical_components",
+            "canonical_observations",
+            "canonical_findings",
+            "canonical_projections",
+            "provider_snapshots",
+            "verification_records",
+            "benchmark_results",
         ];
 
         for table in tables {
@@ -3228,11 +4107,42 @@ mod tests {
         assert_eq!(foreign_keys, 1);
 
         let version: i64 = connection
-            .query_row("SELECT version FROM schema_migrations", [], |row| {
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
                 row.get(0)
             })
             .expect("query migration version");
-        assert_eq!(version, 1);
+        assert_eq!(version, 4);
+    }
+
+    #[test]
+    fn provider_snapshot_identity_is_immutable_and_idempotent() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let snapshot = ProviderSnapshotRecord {
+            id: "provider_fixture".into(),
+            provider_id: "osv-query".into(),
+            fetched_at_ms: 42,
+            content_sha256: "a".repeat(64),
+            payload: serde_json::json!({"schemaVersion": 1, "results": {}}),
+        };
+
+        repository
+            .provider_save_snapshot(&snapshot)
+            .expect("save provider snapshot");
+        repository
+            .provider_save_snapshot(&snapshot)
+            .expect("same immutable snapshot is idempotent");
+
+        let mut collision = snapshot.clone();
+        collision.payload = serde_json::json!({"schemaVersion": 1, "results": {"changed": []}});
+        assert!(repository.provider_save_snapshot(&collision).is_err());
+        assert_eq!(
+            repository
+                .provider_latest_snapshot("osv-query")
+                .expect("load latest snapshot")
+                .expect("snapshot exists")
+                .payload,
+            snapshot.payload
+        );
     }
 
     #[test]

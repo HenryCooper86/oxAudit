@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "id": "oxaudit.source-smoke",
+  "version": "1.0.0",
+  "description": "A deliberately small deterministic source-scanner contract. It proves the harness and js-eval rule; it is not a representative recall claim.",
+  "provenance": {
+    "authors": ["oxAudit contributors"],
+    "source": "Repository-authored positive and negative JavaScript fixtures",
+    "license": "Apache-2.0",
+    "creationMethod": "authored",
+    "contentSha256": "e70a749b8305a5ee91b5b0926a7491318fa6c8ef839160b27524d16402cedeea"
+  },
+  "targets": [
+    {
+      "id": "source-js-eval-positive",
+      "inputPath": "positive.js",
+      "inputSha256": "0083fe297764882864f2e6c0a84ae673c94125282a2c7f2dc252615d329cbe50",
+      "platform": "any",
+      "architecture": "any",
+      "expected": [
+        {
+          "identity": {
+            "ruleId": "js-eval",
+            "artifactPath": "positive.js"
+          },
+          "count": 1,
+          "evidenceKind": "file_location"
+        }
+      ],
+      "expectedAbsent": [],
+      "allowedVariants": []
+    },
+    {
+      "id": "source-js-eval-negative",
+      "inputPath": "negative.js",
+      "inputSha256": "147213bc69194e9fe56f46ac94000b27629c1e45d345d9a0dd062c6c0f3ed8ac",
+      "platform": "any",
+      "architecture": "any",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-eval",
+          "artifactPath": "negative.js"
+        }
+      ],
+      "allowedVariants": []
+    }
+  ]
+}

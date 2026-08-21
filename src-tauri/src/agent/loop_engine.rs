@@ -106,18 +106,32 @@ fn close_steers(
 /// Run one user turn: streams text events, executes any tool calls the model
 /// requests (with guardrails), and continues until the model answers or the
 /// budgets are exhausted. Returns the final answer text + last usage.
-pub async fn run_turn(
-    client: &AiClient,
-    settings: &AiSettings,
-    registry: &ToolRegistry,
-    user_messages: Vec<Value>,
-    conversation_id: Option<String>,
-    project_root: Option<PathBuf>,
-    app: tauri::AppHandle,
-    cancel: Option<Arc<RunCancellation>>,
-    steer: Option<Arc<SteerQueue>>,
-    emit: Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
-) -> Result<(String, Option<Usage>), LlmError> {
+pub struct RunTurnRequest<'a> {
+    pub client: &'a AiClient,
+    pub settings: &'a AiSettings,
+    pub registry: &'a ToolRegistry,
+    pub user_messages: Vec<Value>,
+    pub conversation_id: Option<String>,
+    pub project_root: Option<PathBuf>,
+    pub app: tauri::AppHandle,
+    pub cancel: Option<Arc<RunCancellation>>,
+    pub steer: Option<Arc<SteerQueue>>,
+    pub emit: Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
+}
+
+pub async fn run_turn(request: RunTurnRequest<'_>) -> Result<(String, Option<Usage>), LlmError> {
+    let RunTurnRequest {
+        client,
+        settings,
+        registry,
+        user_messages,
+        conversation_id,
+        project_root,
+        app,
+        cancel,
+        steer,
+        emit,
+    } = request;
     let hint = "You are running inside VulnCompanion, a security research desktop app. \
 You have research tools available: read_file, grep_project, glob, run_scan, search_cve, \
 get_cve_detail, query_osv_package, web_fetch, ask_user, todo. \
@@ -195,7 +209,7 @@ you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Repl
             // queue is empty, so this cannot drop a steer that raced the
             // decision: if one is pending we keep the run alive and let the
             // model respond to it instead of ending the turn here.
-            let finished = steer.as_ref().is_none_or(|queue| queue.close_if_empty());
+            let finished = steer.as_ref().map_or(true, |queue| queue.close_if_empty());
             if finished {
                 return Ok((outcome.content, final_usage));
             }
@@ -382,6 +396,11 @@ mod steer_tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    type RecordedSteers = (
+        Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
+        Arc<StdMutex<Vec<String>>>,
+    );
+
     fn assistant_requesting(names: &[&str]) -> Value {
         json!({
             "role": "assistant",
@@ -399,10 +418,7 @@ mod steer_tests {
     }
 
     /// Collects emitted events so tests can assert on what the UI would see.
-    fn recorder() -> (
-        Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
-        Arc<StdMutex<Vec<String>>>,
-    ) {
+    fn recorder() -> RecordedSteers {
         let seen = Arc::new(StdMutex::new(Vec::new()));
         let sink = seen.clone();
         let emit: Arc<dyn Fn(AiStreamEvent) + Send + Sync> = Arc::new(move |ev| {

@@ -491,6 +491,42 @@ pub fn line_starts(content: &str) -> Vec<usize> {
     starts
 }
 
+/// Given a byte offset and the line-start index, return (1-based line, 1-based column).
+pub fn line_col(starts: &[usize], offset: usize) -> (usize, usize) {
+    let idx = match starts.binary_search(&offset) {
+        Ok(i) => i,
+        Err(i) => i - 1,
+    };
+    (idx + 1, offset - starts[idx] + 1)
+}
+
+/// Extract `radius` lines around `line_index` (0-based) from the content.
+pub fn context_lines(content: &str, starts: &[usize], line_index: usize, radius: usize) -> String {
+    if starts.is_empty() {
+        return String::new();
+    }
+    let first = line_index.saturating_sub(radius);
+    let last = (line_index + radius).min(starts.len() - 1);
+    let mut out = String::new();
+    for i in first..=last {
+        let start = starts[i];
+        let end = starts.get(i + 1).copied().unwrap_or(content.len());
+        let line = &content[start..end.min(content.len())];
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        out.push_str(&format!("{:>5} │ {}\n", i + 1, trimmed));
+    }
+    out
+}
+
+/// Turn a relative display path into a cross-platform string.
+#[cfg(test)]
+pub fn display_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -921,7 +957,7 @@ mod tests {
         );
 
         let canonical_file = direct_file.canonicalize().unwrap();
-        assert_eq!(file, [canonical_file.clone()]);
+        assert_eq!(file.as_slice(), std::slice::from_ref(&canonical_file));
         assert_eq!(subdirectory, [canonical_file]);
 
         let direct_collection = collect_source_files(
@@ -968,40 +1004,4 @@ mod tests {
 
         assert!(discover_lockfiles(&alias, &alias, &[]).is_empty());
     }
-}
-
-/// Given a byte offset and the line-start index, return (1-based line, 1-based column).
-pub fn line_col(starts: &[usize], offset: usize) -> (usize, usize) {
-    let idx = match starts.binary_search(&offset) {
-        Ok(i) => i,
-        Err(i) => i - 1,
-    };
-    (idx + 1, offset - starts[idx] + 1)
-}
-
-/// Extract `radius` lines around `line_index` (0-based) from the content.
-pub fn context_lines(content: &str, starts: &[usize], line_index: usize, radius: usize) -> String {
-    if starts.is_empty() {
-        return String::new();
-    }
-    let first = line_index.saturating_sub(radius);
-    let last = (line_index + radius).min(starts.len() - 1);
-    let mut out = String::new();
-    for i in first..=last {
-        let start = starts[i];
-        let end = starts.get(i + 1).copied().unwrap_or(content.len());
-        let line = &content[start..end.min(content.len())];
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        out.push_str(&format!("{:>5} │ {}\n", i + 1, trimmed));
-    }
-    out
-}
-
-/// Turn a relative display path into a cross-platform string.
-#[cfg(test)]
-pub fn display_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
 }

@@ -86,13 +86,6 @@ pub fn classify(status: u16, body: &str, retry_after: Option<u64>) -> LlmError {
         401 | 403 => {
             if has("insufficient_quota") || has("quota") || has("balance") || has("billing") {
                 LlmError::QuotaExhausted
-            } else if has("api key")
-                || has("invalid key")
-                || has("authentication")
-                || has("unauthorized")
-                || has("api_key")
-            {
-                LlmError::AuthFailed
             } else {
                 LlmError::AuthFailed
             }
