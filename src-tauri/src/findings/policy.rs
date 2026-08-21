@@ -403,6 +403,49 @@ pub fn apply_policy(
     ))
 }
 
+pub(crate) fn reproject_or_clear_orphaned_policy_review(
+    loaded: &LoadedPolicy,
+    current: &ReviewRecord,
+    now: DateTime<Utc>,
+) -> Result<ReviewRecord, CommandError> {
+    if matches!(loaded.status(), PolicyStatus::Invalid { .. })
+        || current.origin != ReviewOrigin::ProjectPolicy
+    {
+        return Err(CommandError::policy_invalid());
+    }
+    if current.policy_hash.as_deref() == loaded.hash() {
+        return Ok(current.clone());
+    }
+    if let Some(entry) = loaded.policy().and_then(|policy| {
+        policy.entries.iter().find(|entry| {
+            matches!(entry, PolicyEntry::Finding {
+                fingerprint_version,
+                fingerprint,
+                expires_at,
+                ..
+            } if *fingerprint_version == current.fingerprint_version
+                && fingerprint == &current.fingerprint
+                && !is_expired(expires_at.as_deref(), &now))
+        })
+    }) {
+        return Ok(review_from_entry(
+            entry,
+            &current.project_id,
+            current.fingerprint_version,
+            &current.fingerprint,
+            loaded.hash(),
+            &now,
+        ));
+    }
+    Ok(candidate_review(
+        &current.project_id,
+        current.fingerprint_version,
+        &current.fingerprint,
+        loaded.hash(),
+        &now,
+    ))
+}
+
 pub fn update_policy_decision(
     project_root: impl AsRef<Path>,
     finding: &Finding,
@@ -920,11 +963,15 @@ fn validate_finding_decision(
                 if !seen.insert(note.gate) || !safe_required_text(&note.evidence) {
                     return Err(InvalidPolicy);
                 }
-                if note.verdict == GateVerdict::Eliminates {
-                    eliminating += 1;
-                    if note.gate != deciding_gate {
-                        return Err(InvalidPolicy);
+                match note.verdict {
+                    GateVerdict::Survives => {}
+                    GateVerdict::Eliminates => {
+                        eliminating += 1;
+                        if note.gate != deciding_gate {
+                            return Err(InvalidPolicy);
+                        }
                     }
+                    GateVerdict::Unknown => return Err(InvalidPolicy),
                 }
             }
             if eliminating != 1 {
@@ -4588,8 +4635,8 @@ mod tests {
             },
             GateNote {
                 gate: Gate::AttackerControlled,
-                verdict: GateVerdict::Unknown,
-                evidence: "Not evaluated after elimination".into(),
+                verdict: GateVerdict::Survives,
+                evidence: "The input cannot be controlled externally".into(),
             },
         ];
         let loaded = load_json(
@@ -4618,6 +4665,10 @@ mod tests {
             ]),
             serde_json::json!([
                 {"gate":"intended","verdict":"survives","evidence":"   "},
+                {"gate":"reachable","verdict":"eliminates","evidence":"Excluded"}
+            ]),
+            serde_json::json!([
+                {"gate":"intended","verdict":"unknown","evidence":"Not evaluated"},
                 {"gate":"reachable","verdict":"eliminates","evidence":"Excluded"}
             ]),
         ];

@@ -6,7 +6,8 @@ use super::{
     domain::{ReviewOrigin, ReviewRecord, ReviewRequest, ReviewState},
     error::CommandError,
     policy::{
-        apply_policy, contains_credential_material, load_policy, update_policy_decision,
+        apply_policy, contains_credential_material, load_policy,
+        reproject_or_clear_orphaned_policy_review, update_policy_decision,
         validate_portable_review_fields,
     },
     repository::FindingsRepository,
@@ -149,38 +150,72 @@ pub fn save_local_review(
     request: &ReviewRequest,
     now: DateTime<Utc>,
 ) -> Result<ReviewRecord, CommandError> {
-    let observation = repository.latest_observation(
-        &request.project_id,
-        request.fingerprint_version,
-        &request.fingerprint,
-    )?;
+    save_local_review_core(repository, request, now, || {})
+}
+
+fn save_local_review_core<F>(
+    repository: &FindingsRepository,
+    request: &ReviewRequest,
+    now: DateTime<Utc>,
+    after_observation: F,
+) -> Result<ReviewRecord, CommandError>
+where
+    F: FnOnce(),
+{
     if request.origin != ReviewOrigin::Local {
         return Err(CommandError::review_invalid());
     }
-    validate_review_at(request, &observation.category, now)?;
-    repository.save_review_event(&record_from_request(request, None, now))
+    repository.save_local_review_for_latest_observation(
+        &request.project_id,
+        request.fingerprint_version,
+        &request.fingerprint,
+        |observation| {
+            after_observation();
+            validate_review_at(request, &observation.category, now)?;
+            Ok(record_from_request(request, None, now))
+        },
+    )
+}
+
+#[cfg(test)]
+fn save_local_review_with_hook(
+    repository: &FindingsRepository,
+    request: &ReviewRequest,
+    now: DateTime<Utc>,
+    after_observation: impl FnOnce(),
+) -> Result<ReviewRecord, CommandError> {
+    save_local_review_core(repository, request, now, after_observation)
 }
 
 pub fn save_project_policy_review(
     repository: &FindingsRepository,
-    project_root: impl AsRef<Path>,
     request: &ReviewRequest,
     now: DateTime<Utc>,
 ) -> Result<ReviewRecord, CommandError> {
+    let project = repository.project_context(&request.project_id)?;
     save_project_policy_review_with_reconcile(
         repository,
-        project_root.as_ref(),
+        Path::new(&project.canonical_path),
         request,
         now,
-        |repository, review| {
-            let (stored, inserted) = repository.reconcile_project_policy_event(review)?;
-            if !inserted && review.state == ReviewState::Candidate && stored.id == review.id {
-                repository.save_review_event(review)
-            } else {
-                Ok(stored)
-            }
+        |repository, projection| {
+            repository
+                .reconcile_project_policy_projection(
+                    &projection.reviews,
+                    Some((
+                        projection.selected_fingerprint_version,
+                        &projection.selected_fingerprint,
+                    )),
+                )
+                .map(|(stored, _)| stored)
         },
     )
+}
+
+struct ProjectPolicyProjection {
+    reviews: Vec<ReviewRecord>,
+    selected_fingerprint_version: u16,
+    selected_fingerprint: String,
 }
 
 fn save_project_policy_review_with_reconcile<F>(
@@ -191,7 +226,10 @@ fn save_project_policy_review_with_reconcile<F>(
     reconcile: F,
 ) -> Result<ReviewRecord, CommandError>
 where
-    F: FnOnce(&FindingsRepository, &ReviewRecord) -> Result<ReviewRecord, CommandError>,
+    F: FnOnce(
+        &FindingsRepository,
+        &ProjectPolicyProjection,
+    ) -> Result<Vec<ReviewRecord>, CommandError>,
 {
     let observation = repository.latest_observation(
         &request.project_id,
@@ -205,36 +243,57 @@ where
 
     update_policy_decision(project_root, &observation, request, now)?;
     let loaded = load_policy(project_root)?;
-    let authoritative = apply_policy(
-        &loaded,
-        &request.project_id,
-        observation.fingerprint_version,
-        &observation.fingerprint,
-        &observation.category,
-        &observation.rule_id,
-        &observation.file_path,
-        None,
-        now,
-    )?;
-    reconcile(repository, &authoritative).map_err(|_| CommandError::policy_write_failed())
+    let projection = ProjectPolicyProjection {
+        reviews: build_project_policy_projection(repository, &loaded, &request.project_id, now)
+            .map_err(|_| CommandError::policy_write_failed())?,
+        selected_fingerprint_version: observation.fingerprint_version,
+        selected_fingerprint: observation.fingerprint,
+    };
+    reconcile(repository, &projection)
+        .map_err(|_| CommandError::policy_write_failed())?
+        .into_iter()
+        .find(|review| {
+            review.fingerprint_version == projection.selected_fingerprint_version
+                && review.fingerprint == projection.selected_fingerprint
+        })
+        .ok_or_else(CommandError::policy_write_failed)
 }
 
 pub fn reconcile_project_policy_reviews(
     repository: &FindingsRepository,
-    project_root: impl AsRef<Path>,
     project_id: &str,
     now: DateTime<Utc>,
 ) -> Result<usize, CommandError> {
-    let loaded = load_policy(project_root)?;
+    let project = repository.project_context(project_id)?;
+    let loaded = load_policy(&project.canonical_path)?;
     if matches!(loaded.status(), super::domain::PolicyStatus::Invalid { .. }) {
         return Err(CommandError::policy_invalid());
     }
-    let reviews = repository
-        .latest_project_observations(project_id)?
+    let reviews = build_project_policy_projection(repository, &loaded, project_id, now)?;
+    repository.reconcile_project_policy_events(&reviews)
+}
+
+fn build_project_policy_projection(
+    repository: &FindingsRepository,
+    loaded: &super::policy::LoadedPolicy,
+    project_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<ReviewRecord>, CommandError> {
+    let observations = repository.latest_project_observations(project_id)?;
+    let observed_identities = observations
+        .iter()
+        .map(|observation| {
+            (
+                observation.fingerprint_version,
+                observation.fingerprint.clone(),
+            )
+        })
+        .collect::<HashSet<_>>();
+    let mut reviews = observations
         .into_iter()
         .map(|observation| {
             apply_policy(
-                &loaded,
+                loaded,
                 project_id,
                 observation.fingerprint_version,
                 &observation.fingerprint,
@@ -246,7 +305,16 @@ pub fn reconcile_project_policy_reviews(
             )
         })
         .collect::<Result<Vec<_>, CommandError>>()?;
-    repository.reconcile_project_policy_events(&reviews)
+    for current in repository.current_project_policy_reviews(project_id)? {
+        if !observed_identities
+            .contains(&(current.fingerprint_version, current.fingerprint.clone()))
+        {
+            reviews.push(reproject_or_clear_orphaned_policy_review(
+                loaded, &current, now,
+            )?);
+        }
+    }
+    Ok(reviews)
 }
 
 fn record_from_request(
@@ -288,8 +356,8 @@ mod tests {
         findings::{
             coverage::CoverageManifest,
             domain::{
-                FindingScope, PolicyStatus, ReviewOrigin, ReviewRequest, ReviewState,
-                RunPersistence, RunStatus, ScanRunDetail, FINGERPRINT_VERSION,
+                FindingScope, PolicyStatus, RetentionPolicy, ReviewOrigin, ReviewRequest,
+                ReviewState, RunPersistence, RunStatus, ScanRunDetail, FINGERPRINT_VERSION,
             },
             error::ErrorCode,
             repository::FindingsRepository,
@@ -520,10 +588,14 @@ mod tests {
     }
 
     fn prepare_repository(repository: &FindingsRepository, category: &str) {
+        prepare_repository_at(repository, category, "/project");
+    }
+
+    fn prepare_repository_at(repository: &FindingsRepository, category: &str, project_path: &str) {
         repository
             .upsert_project(
                 "project-1",
-                "/project",
+                project_path,
                 "Project",
                 "2026-08-21T11:00:00Z",
                 Some(&ScanOptions::default()),
@@ -575,6 +647,68 @@ mod tests {
             .unwrap();
     }
 
+    fn complete_followup_run(
+        repository: &FindingsRepository,
+        run_id: &str,
+        completed_at: &str,
+        findings: Vec<Finding>,
+    ) {
+        let started_at = DateTime::parse_from_rfc3339(completed_at)
+            .unwrap()
+            .checked_sub_signed(chrono::Duration::seconds(1))
+            .unwrap()
+            .to_rfc3339();
+        let summary = ScanSummary {
+            path: "/project".into(),
+            files_scanned: findings.len(),
+            files_skipped: 0,
+            bytes_scanned: 10,
+            duration_ms: 1,
+            secrets_found: findings
+                .iter()
+                .filter(|finding| finding.category == "secret")
+                .count(),
+            vulnerabilities_found: findings
+                .iter()
+                .filter(|finding| finding.category == "vulnerability")
+                .count(),
+            total_findings: findings.len(),
+            critical: 0,
+            high: findings.len(),
+            medium: 0,
+            low: 0,
+            info: 0,
+            rules_fired: BTreeMap::from([("rule-1".into(), findings.len())]),
+        };
+        let running = ScanRunDetail {
+            project_id: "project-1".into(),
+            run_id: run_id.into(),
+            baseline_run_id: None,
+            status: RunStatus::Running,
+            persistence: RunPersistence::Saved,
+            policy: PolicyStatus::Missing,
+            started_at: started_at.clone(),
+            completed_at: None,
+            summary: summary.clone(),
+            findings: Vec::new(),
+            maintenance_warning: None,
+        };
+        repository
+            .start_run(&running, "scanner-1", &ScanOptions::default())
+            .unwrap();
+        repository
+            .complete_run(
+                &ScanRunDetail {
+                    status: RunStatus::Completed,
+                    completed_at: Some(completed_at.into()),
+                    findings,
+                    ..running
+                },
+                &CoverageManifest::from_entries([("src", ["vulnerability", "secret"])]),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn save_rejects_unknown_or_category_mismatched_observations_before_write() {
         let repository = FindingsRepository::open_in_memory().unwrap();
@@ -591,6 +725,45 @@ mod tests {
 
         let loaded = repository.load_run("run-1").unwrap();
         assert!(loaded.findings[0].review_history.is_empty());
+    }
+
+    #[test]
+    fn project_policy_save_resolves_the_persisted_root_after_restart() {
+        let temporary = tempfile::tempdir().unwrap();
+        let project_a = temporary.path().join("project-a");
+        let project_b = temporary.path().join("project-b");
+        std::fs::create_dir(&project_a).unwrap();
+        std::fs::create_dir(&project_b).unwrap();
+        let database = temporary.path().join("state/findings.sqlite3");
+        let repository = FindingsRepository::open(&database).unwrap();
+        prepare_repository_at(&repository, "vulnerability", project_a.to_str().unwrap());
+        repository
+            .upsert_project(
+                "project-2",
+                project_b.to_str().unwrap(),
+                "Project B",
+                "2026-08-21T11:00:00Z",
+                Some(&ScanOptions::default()),
+            )
+            .unwrap();
+        drop(repository);
+
+        let reopened = FindingsRepository::open(&database).unwrap();
+        save_project_policy_review(
+            &reopened,
+            &valid_false_positive(ReviewOrigin::ProjectPolicy),
+            now(),
+        )
+        .expect("restart save uses project A's persisted root");
+        assert!(project_a.join(".oxaudit/policy.json").is_file());
+        assert!(!project_b.join(".oxaudit/policy.json").exists());
+
+        let mut unknown = valid_false_positive(ReviewOrigin::ProjectPolicy);
+        unknown.project_id = "missing-project".into();
+        let error = save_project_policy_review(&reopened, &unknown, now())
+            .expect_err("unknown project cannot choose a filesystem target");
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert!(!project_b.join(".oxaudit").exists());
     }
 
     #[test]
@@ -638,7 +811,7 @@ mod tests {
     fn project_policy_is_file_first_idempotent_and_reconciliation_heals_database() {
         let root = tempfile::tempdir().unwrap();
         let repository = FindingsRepository::open_in_memory().unwrap();
-        prepare_repository(&repository, "vulnerability");
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
         let policy_request = valid_false_positive(ReviewOrigin::ProjectPolicy);
 
         let failed = save_project_policy_review_with_reconcile(
@@ -661,8 +834,7 @@ mod tests {
             .review_history
             .is_empty());
 
-        let inserted =
-            reconcile_project_policy_reviews(&repository, root.path(), "project-1", now()).unwrap();
+        let inserted = reconcile_project_policy_reviews(&repository, "project-1", now()).unwrap();
         assert_eq!(inserted, 1);
         let first = repository.load_run("run-1").unwrap();
         assert_eq!(
@@ -674,7 +846,7 @@ mod tests {
             ReviewOrigin::ProjectPolicy
         );
         assert_eq!(
-            reconcile_project_policy_reviews(&repository, root.path(), "project-1", now()).unwrap(),
+            reconcile_project_policy_reviews(&repository, "project-1", now()).unwrap(),
             0
         );
         assert_eq!(
@@ -708,18 +880,328 @@ mod tests {
             "vulnerability",
             ReviewOrigin::ProjectPolicy,
         );
-        save_project_policy_review(
-            &repository,
-            root.path(),
-            &clear,
-            now() + chrono::Duration::seconds(2),
-        )
-        .unwrap();
+        save_project_policy_review(&repository, &clear, now() + chrono::Duration::seconds(2))
+            .unwrap();
         let loaded = repository.load_run("run-1").unwrap();
         let history = &loaded.findings[0].review_history;
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].state, ReviewState::Candidate);
         assert_eq!(history[0].origin, ReviewOrigin::ProjectPolicy);
+    }
+
+    #[test]
+    fn later_project_save_reconciles_every_file_committed_decision() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
+        let mut finding_a = finding("vulnerability");
+        finding_a.id = "observation-followup-a".into();
+        finding_a.observation_run_id = "run-2".into();
+        let mut finding_b = finding("vulnerability");
+        finding_b.id = "observation-followup-b".into();
+        finding_b.observation_run_id = "run-2".into();
+        finding_b.fingerprint = "fedcba9876543210".into();
+        finding_b.file_path = "src/other.rs".into();
+        complete_followup_run(
+            &repository,
+            "run-2",
+            "2026-08-21T11:03:00Z",
+            vec![finding_a, finding_b],
+        );
+
+        let request_a = valid_false_positive(ReviewOrigin::ProjectPolicy);
+        let failed = save_project_policy_review_with_reconcile(
+            &repository,
+            root.path(),
+            &request_a,
+            now(),
+            |_, _| Err(crate::findings::error::CommandError::persistence_unavailable()),
+        )
+        .expect_err("A commits to the file before the injected DB failure");
+        assert_eq!(failed.code, ErrorCode::PolicyWriteFailed);
+
+        let mut request_b = valid_false_positive(ReviewOrigin::ProjectPolicy);
+        request_b.fingerprint = "fedcba9876543210".into();
+        let selected = save_project_policy_review(
+            &repository,
+            &request_b,
+            now() + chrono::Duration::seconds(1),
+        )
+        .expect("B succeeds only after reconciling complete policy state");
+        assert_eq!(selected.fingerprint, request_b.fingerprint);
+
+        let loaded = repository.load_run("run-2").unwrap();
+        for fingerprint in [&request_a.fingerprint, &request_b.fingerprint] {
+            let reviewed = loaded
+                .findings
+                .iter()
+                .find(|finding| &finding.fingerprint == fingerprint)
+                .unwrap();
+            assert_eq!(
+                reviewed.review.as_ref().map(|review| review.state),
+                Some(ReviewState::FalsePositive),
+                "missing file-committed decision for {fingerprint}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_removal_clears_an_orphaned_review_before_observation_reappears() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
+        let request = valid_false_positive(ReviewOrigin::ProjectPolicy);
+        save_project_policy_review(&repository, &request, now()).unwrap();
+
+        assert_eq!(
+            repository
+                .apply_retention(
+                    now() + chrono::Duration::days(1),
+                    RetentionPolicy {
+                        max_completed_runs_per_project: 0,
+                        max_age_days: 90,
+                    },
+                )
+                .unwrap(),
+            1
+        );
+        std::fs::write(
+            root.path().join(".oxaudit/policy.json"),
+            b"{\"version\":1,\"entries\":[]}\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            reconcile_project_policy_reviews(&repository, "project-1", now()).unwrap(),
+            1,
+            "the retained stale project-policy event must be explicitly cleared"
+        );
+
+        let mut reappeared = finding("vulnerability");
+        reappeared.id = "observation-reappeared".into();
+        reappeared.observation_run_id = "run-reappeared".into();
+        complete_followup_run(
+            &repository,
+            "run-reappeared",
+            "2026-08-22T11:03:00Z",
+            vec![reappeared],
+        );
+        let loaded = repository.load_run("run-reappeared").unwrap();
+        assert_eq!(loaded.findings[0].review, None);
+        assert_eq!(loaded.findings[0].review_history.len(), 2);
+        assert_eq!(
+            loaded.findings[0].review_history[0].state,
+            ReviewState::Candidate
+        );
+    }
+
+    #[test]
+    fn unchanged_or_exactly_rederivable_orphaned_policy_review_is_preserved_auditably() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
+        let request = valid_false_positive(ReviewOrigin::ProjectPolicy);
+        let original = save_project_policy_review(&repository, &request, now()).unwrap();
+        repository
+            .apply_retention(
+                now() + chrono::Duration::days(1),
+                RetentionPolicy {
+                    max_completed_runs_per_project: 0,
+                    max_age_days: 90,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            reconcile_project_policy_reviews(&repository, "project-1", now()).unwrap(),
+            0,
+            "an unchanged authoritative hash keeps the retained event exactly"
+        );
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let mut policy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
+        policy["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "kind": "finding",
+                "fingerprintVersion": 1,
+                "fingerprint": "fedcba9876543210",
+                "category": "secret",
+                "state": "acceptedRisk",
+                "reason": "Unrelated portable decision"
+            }));
+        std::fs::write(&policy_path, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
+        assert_eq!(
+            reconcile_project_policy_reviews(&repository, "project-1", now()).unwrap(),
+            1,
+            "the retained exact A entry is rederived under the new policy hash"
+        );
+
+        let mut reappeared = finding("vulnerability");
+        reappeared.id = "observation-rederived".into();
+        reappeared.observation_run_id = "run-rederived".into();
+        complete_followup_run(
+            &repository,
+            "run-rederived",
+            "2026-08-22T11:03:00Z",
+            vec![reappeared],
+        );
+        let loaded = repository.load_run("run-rederived").unwrap();
+        assert_eq!(
+            loaded.findings[0]
+                .review
+                .as_ref()
+                .map(|review| review.state),
+            Some(ReviewState::FalsePositive)
+        );
+        assert_eq!(loaded.findings[0].review_history.len(), 2);
+        assert_ne!(
+            loaded.findings[0].review_history[0].policy_hash,
+            original.policy_hash
+        );
+    }
+
+    #[test]
+    fn changed_hash_clears_orphaned_suppression_until_observation_reappears() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
+        std::fs::create_dir(root.path().join(".oxaudit")).unwrap();
+        let policy_path = root.path().join(".oxaudit/policy.json");
+        let mut policy = serde_json::json!({"version":1,"entries":[{
+            "kind":"suppression","ruleId":"rule-1","pathPattern":"src/**",
+            "state":"suppressed","reason":"Generated compatibility route"
+        }]});
+        std::fs::write(&policy_path, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
+        assert_eq!(
+            reconcile_project_policy_reviews(&repository, "project-1", now()).unwrap(),
+            1
+        );
+        assert_eq!(
+            repository.load_run("run-1").unwrap().findings[0]
+                .review
+                .as_ref()
+                .map(|review| review.state),
+            Some(ReviewState::Suppressed)
+        );
+        repository
+            .apply_retention(
+                now() + chrono::Duration::days(1),
+                RetentionPolicy {
+                    max_completed_runs_per_project: 0,
+                    max_age_days: 90,
+                },
+            )
+            .unwrap();
+
+        policy["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "kind":"finding","fingerprintVersion":1,
+                "fingerprint":"fedcba9876543210","category":"secret",
+                "state":"acceptedRisk","reason":"Unrelated portable decision"
+            }));
+        std::fs::write(&policy_path, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
+        assert_eq!(
+            reconcile_project_policy_reviews(&repository, "project-1", now()).unwrap(),
+            1,
+            "a changed suppression cannot be re-evaluated without observation evidence"
+        );
+
+        let mut reappeared = finding("vulnerability");
+        reappeared.id = "observation-suppression-reappeared".into();
+        reappeared.observation_run_id = "run-suppression-reappeared".into();
+        complete_followup_run(
+            &repository,
+            "run-suppression-reappeared",
+            "2026-08-22T11:03:00Z",
+            vec![reappeared],
+        );
+        let before_reconcile = repository.load_run("run-suppression-reappeared").unwrap();
+        assert_eq!(before_reconcile.findings[0].review, None);
+        assert_eq!(before_reconcile.findings[0].review_history.len(), 2);
+        assert_eq!(
+            before_reconcile.findings[0].review_history[0].state,
+            ReviewState::Candidate
+        );
+
+        assert_eq!(
+            reconcile_project_policy_reviews(&repository, "project-1", now()).unwrap(),
+            1
+        );
+        let reapplied = repository.load_run("run-suppression-reappeared").unwrap();
+        assert_eq!(
+            reapplied.findings[0]
+                .review
+                .as_ref()
+                .map(|review| review.state),
+            Some(ReviewState::Suppressed)
+        );
+        assert_eq!(reapplied.findings[0].review_history.len(), 3);
+    }
+
+    #[test]
+    fn external_unknown_gate_policy_never_reconciles_to_sqlite() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
+        std::fs::create_dir(root.path().join(".oxaudit")).unwrap();
+        std::fs::write(
+            root.path().join(".oxaudit/policy.json"),
+            serde_json::to_vec(&serde_json::json!({"version":1,"entries":[{
+                "kind":"finding","fingerprintVersion":1,
+                "fingerprint":"abcdef0123456789","category":"vulnerability",
+                "state":"falsePositive","reason":"Unreachable",
+                "gates":[
+                    {"gate":"intended","verdict":"unknown","evidence":"Not evaluated"},
+                    {"gate":"reachable","verdict":"eliminates","evidence":"Excluded"}
+                ],"decidingGate":"reachable"
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = reconcile_project_policy_reviews(&repository, "project-1", now())
+            .expect_err("invalid external proof cannot close a finding");
+        assert_eq!(error.code, ErrorCode::PolicyInvalid);
+        assert!(repository.load_run("run-1").unwrap().findings[0]
+            .review_history
+            .is_empty());
+    }
+
+    #[test]
+    fn post_file_batch_failure_rolls_back_and_returns_retryable_fixed_error() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
+        let error = save_project_policy_review_with_reconcile(
+            &repository,
+            root.path(),
+            &valid_false_positive(ReviewOrigin::ProjectPolicy),
+            now(),
+            |repository, projection| {
+                let mut invalid_batch = projection.reviews.clone();
+                let mut invalid = invalid_batch[0].clone();
+                invalid.project_id = "missing-project".into();
+                invalid.fingerprint = "fedcba9876543210".into();
+                invalid_batch.push(invalid);
+                repository
+                    .reconcile_project_policy_projection(&invalid_batch, None)
+                    .map(|(stored, _)| stored)
+            },
+        )
+        .expect_err("the valid first insert must roll back with the invalid second insert");
+        assert_eq!(error.code, ErrorCode::PolicyWriteFailed);
+        assert!(error.retryable);
+        assert!(repository.load_run("run-1").unwrap().findings[0]
+            .review_history
+            .is_empty());
+        assert!(matches!(
+            load_policy(root.path()).unwrap().status(),
+            PolicyStatus::Valid { .. }
+        ));
     }
 
     #[test]
@@ -749,11 +1231,10 @@ mod tests {
         let invalid_bytes = br#"{"version":999,"entries":[],"private":"preserve"}"#;
         std::fs::write(root.path().join(".oxaudit/policy.json"), invalid_bytes).unwrap();
         let repository = FindingsRepository::open_in_memory().unwrap();
-        prepare_repository(&repository, "vulnerability");
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
 
         let error = save_project_policy_review(
             &repository,
-            root.path(),
             &valid_false_positive(ReviewOrigin::ProjectPolicy),
             now(),
         )
@@ -836,13 +1317,67 @@ mod tests {
     }
 
     #[test]
+    fn local_review_holds_one_repository_boundary_from_observation_through_insert() {
+        let repository = std::sync::Arc::new(FindingsRepository::open_in_memory().unwrap());
+        prepare_repository(&repository, "vulnerability");
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let worker_repository = std::sync::Arc::clone(&repository);
+        let worker_entered = std::sync::Arc::clone(&entered);
+        let worker_release = std::sync::Arc::clone(&release);
+        let worker = std::thread::spawn(move || {
+            save_local_review_with_hook(&worker_repository, &valid_confirmation(), now(), || {
+                worker_entered.wait();
+                worker_release.wait();
+            })
+        });
+
+        entered.wait();
+        assert!(
+            !repository.test_connection_is_available(),
+            "a conflicting observation writer must not enter between lookup and review insert"
+        );
+        release.wait();
+        let stored = worker.join().unwrap().unwrap();
+        assert_eq!(stored.state, ReviewState::Confirmed);
+    }
+
+    #[test]
+    fn concurrent_newer_category_commit_cannot_receive_stale_local_gate_review() {
+        let temporary = tempfile::tempdir().unwrap();
+        let project = temporary.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let database = temporary.path().join("state/findings.sqlite3");
+        let reviewer = FindingsRepository::open(&database).unwrap();
+        prepare_repository_at(&reviewer, "vulnerability", project.to_str().unwrap());
+        let scanner = FindingsRepository::open(&database).unwrap();
+        let mut newer = finding("secret");
+        newer.id = "observation-concurrent-secret".into();
+        newer.observation_run_id = "run-concurrent-secret".into();
+
+        let error = save_local_review_with_hook(&reviewer, &valid_confirmation(), now(), || {
+            complete_followup_run(
+                &scanner,
+                "run-concurrent-secret",
+                "2026-08-21T11:03:00Z",
+                vec![newer],
+            );
+        })
+        .expect_err("the stale read transaction must not append vulnerability gates");
+        assert_eq!(error.code, ErrorCode::PersistenceUnavailable);
+
+        let loaded = scanner.load_run("run-concurrent-secret").unwrap();
+        assert_eq!(loaded.findings[0].category, "secret");
+        assert!(loaded.findings[0].review_history.is_empty());
+    }
+
+    #[test]
     fn expired_local_event_exposes_current_project_policy_event() {
         let root = tempfile::tempdir().unwrap();
         let repository = FindingsRepository::open_in_memory().unwrap();
-        prepare_repository(&repository, "vulnerability");
+        prepare_repository_at(&repository, "vulnerability", root.path().to_str().unwrap());
         let policy = save_project_policy_review(
             &repository,
-            root.path(),
             &valid_false_positive(ReviewOrigin::ProjectPolicy),
             now(),
         )
