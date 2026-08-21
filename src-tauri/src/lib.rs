@@ -21,6 +21,21 @@ use findings::{
     service::{FindingsService, FindingsState},
 };
 
+pub(crate) fn initialize_findings_state(
+    data_dir: &std::path::Path,
+    recovered_at: chrono::DateTime<chrono::Utc>,
+) -> FindingsState {
+    let initialized = (|| {
+        let repository = FindingsRepository::open(data_dir.join("findings.sqlite3"))?;
+        repository.recover_interrupted_runs(recovered_at)?;
+        Ok::<_, findings::error::CommandError>(FindingsService::new(repository))
+    })();
+    match initialized {
+        Ok(service) => FindingsState::available(service),
+        Err(error) => FindingsState::unavailable(error),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = AppState::new();
@@ -32,19 +47,13 @@ pub fn run() {
         .manage(state)
         .manage(cve_state)
         .setup(|app| {
-            let findings_state = (|| {
-                let data_dir = app
-                    .path()
-                    .app_data_dir()
-                    .map_err(|_| findings::error::CommandError::persistence_unavailable())?;
-                let repository = FindingsRepository::open(data_dir.join("findings.sqlite3"))?;
-                repository.recover_interrupted_runs(chrono::Utc::now())?;
-                Ok::<_, findings::error::CommandError>(FindingsService::new(repository))
-            })();
-            app.manage(match findings_state {
-                Ok(service) => FindingsState::available(service),
-                Err(error) => FindingsState::unavailable(error),
-            });
+            let findings_state = match app.path().app_data_dir() {
+                Ok(data_dir) => initialize_findings_state(&data_dir, chrono::Utc::now()),
+                Err(_) => FindingsState::unavailable(
+                    findings::error::CommandError::persistence_unavailable(),
+                ),
+            };
+            app.manage(findings_state);
             // Load persisted settings, apply NVD key
             let settings = settings::load(app.handle());
             if let Some(app_state) = app.try_state::<AppState>() {
@@ -61,6 +70,13 @@ pub fn run() {
             commands::scan_project,
             commands::cancel_scan,
             commands::open_scan_finding,
+            commands::inspect_source_project,
+            commands::list_source_projects,
+            commands::list_source_runs,
+            commands::load_source_run,
+            commands::retry_source_run_save,
+            commands::save_finding_review,
+            commands::delete_finding_review,
             commands::scan_dependencies,
             commands::find_lockfiles,
             commands::search_cves,
