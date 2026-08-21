@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { CheckCircle2, ChevronDown, Clock3, Wrench, XCircle } from "lucide-react";
+import { Check, ChevronRight, Clock3, Wrench, X } from "lucide-react";
 import type { ToolRecord } from "../../lib/types";
 import { fmtDuration } from "../../lib/format";
 
@@ -8,7 +8,13 @@ import { fmtDuration } from "../../lib/format";
  * the arguments and a preview of the result. Updates in place by toolCallId.
  * Modeled on y-gui's ToolCallCard / DefaultRenderer.
  */
-export function ToolCallCard({ record }: { record: ToolRecord }) {
+export function ToolCallCard({
+  record,
+  fill = false,
+}: {
+  record: ToolRecord;
+  fill?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const running = record.status === "running";
   const detailsId = useId();
@@ -21,28 +27,28 @@ export function ToolCallCard({ record }: { record: ToolRecord }) {
 
   const statusIcon =
     record.status === "error" ? (
-      <XCircle size={14} aria-hidden="true" className="text-error" />
+      <X size={12} aria-hidden="true" className="text-error" />
     ) : running ? (
-      <Clock3 size={14} aria-hidden="true" className="animate-pulse text-accent" />
+      <Clock3 size={12} aria-hidden="true" className="animate-pulse text-accent" />
     ) : (
-      <CheckCircle2 size={14} aria-hidden="true" className="text-success" />
+      <Check size={12} aria-hidden="true" className="text-success" />
     );
 
   return (
-    <div className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+    <div className={fill ? "w-full" : "max-w-full"}>
       <button
         type="button"
         aria-expanded={open}
         aria-controls={detailsId}
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        className={`flex max-w-full items-center gap-1.5 rounded-sm border border-border bg-surface-code px-2.5 py-1.5 text-left transition-colors hover:border-border-strong hover:bg-surface-tertiary ${fill ? "w-full" : ""}`}
       >
-        <Wrench size={13} aria-hidden="true" className="shrink-0 text-text-muted" />
-        <span className="shrink-0 font-mono text-[12px] font-semibold text-text-primary">
+        <Wrench size={12} aria-hidden="true" className="shrink-0 text-text-muted" />
+        <span className="min-w-0 truncate font-mono text-[12px] font-medium text-text-primary">
           {record.name}
         </span>
         {statusIcon}
-        <span aria-live="polite" className="text-[11px] text-text-secondary">
+        <span aria-live="polite" className="shrink-0 text-[10px] text-text-muted">
           {statusLabel}
         </span>
         {record.durationMs !== null && (
@@ -55,30 +61,30 @@ export function ToolCallCard({ record }: { record: ToolRecord }) {
             {record.resultPreview?.slice(0, 60) ?? "failed"}
           </span>
         )}
-        <ChevronDown
+        <ChevronRight
           size={12}
           aria-hidden="true"
-          className={`ml-auto shrink-0 text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
+          className={`ml-0.5 shrink-0 text-text-muted transition-transform ${open ? "rotate-90" : ""}`}
         />
       </button>
       {open && (
-        <div id={detailsId} className="selectable space-y-1.5 border-t border-border px-3 py-2">
+        <div id={detailsId} className="selectable mt-1 space-y-2 rounded-md bg-surface-secondary px-3 py-2.5">
           {record.arguments && (
             <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
                 Arguments
               </div>
-              <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded-sm bg-surface-primary px-2 py-1 font-mono text-[13px] leading-relaxed text-text-secondary">
+              <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded-sm bg-surface-code px-2.5 py-2 font-mono text-[12px] leading-relaxed text-text-secondary">
                 {record.arguments}
               </pre>
             </div>
           )}
           {record.resultPreview && (
             <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
                 Result
               </div>
-              <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-all rounded-sm bg-surface-primary px-2 py-1 font-mono text-[13px] leading-relaxed text-text-secondary">
+              <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-all rounded-sm bg-surface-code px-2.5 py-2 font-mono text-[12px] leading-relaxed text-text-secondary">
                 {record.resultPreview}
               </pre>
             </div>

@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Ban,
-  Bot,
   ClipboardPaste,
   CornerDownLeft,
   FolderOpen,
   History,
   Loader2,
+  PanelRightClose,
+  PanelRightOpen,
   Send,
   Settings2,
   Sparkles,
@@ -15,7 +16,8 @@ import {
   X,
 } from "lucide-react";
 import Markdown from "react-markdown";
-import { AgentTodoPanel } from "../components/chat/AgentTodoPanel";
+import { BrandMark } from "../components/brand/BrandMark";
+import { AssistantActivityPanel } from "../components/chat/AssistantActivityPanel";
 import { ApprovalModal } from "../components/chat/ApprovalModal";
 import { AskUserModal } from "../components/chat/AskUserModal";
 import { SessionSidebar } from "../components/chat/SessionSidebar";
@@ -147,6 +149,7 @@ export function AssistantPage() {
   const [contextAttaching, setContextAttaching] = useState(false);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [askUser, setAskUser] = useState<AskPrompt | null>(null);
+  const [activityOpen, setActivityOpen] = useState(true);
 
   const conversationId = useRef<string>(crypto.randomUUID());
   const streamHandleRef = useRef<StreamHandle | null>(null);
@@ -790,6 +793,14 @@ export function AssistantPage() {
 
   const showThinking =
     streaming.thinking || streaming.reasoning.trim().length > 0;
+  const activityTools = useMemo(() => {
+    const toolsById = new Map<string, ToolRecord>();
+    for (const message of messages) {
+      for (const tool of message.tools ?? []) toolsById.set(tool.toolCallId, tool);
+    }
+    for (const tool of toolRecords) toolsById.set(tool.toolCallId, tool);
+    return Array.from(toolsById.values());
+  }, [messages, toolRecords]);
   const availabilityLabel = {
     loading: "AI settings loading",
     checking: "AI endpoint checking",
@@ -861,18 +872,19 @@ export function AssistantPage() {
           }}
         />
 
-        <section
-          ref={assistantFallbackRef}
-          tabIndex={-1}
-          aria-label="Assistant conversation"
-          className="flex min-w-0 flex-1 flex-col"
-        >
-        <header className="flex min-h-[52px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-surface-secondary px-4 py-2">
-          <div className="min-w-0">
-            <p className="text-[13px] font-semibold text-text-primary">
-              Conversation
-            </p>
-            <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-text-muted">
+        <div className="flex min-w-0 flex-1">
+          <section
+            ref={assistantFallbackRef}
+            tabIndex={-1}
+            aria-label="Assistant conversation"
+            className="flex min-w-0 flex-1 flex-col"
+          >
+        <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-border px-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate font-display text-[15px] font-normal italic text-text-primary">
+              {activeSession?.title || "New security conversation"}
+            </h2>
+            <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-muted">
               <span
                 aria-hidden="true"
                 className={`h-1.5 w-1.5 rounded-full ${ aiReady ? "bg-success" : aiReadiness.status === "offline" ? "bg-error" : aiReadiness.status === "checking" ? "bg-accent" : "bg-text-muted" }`}
@@ -881,11 +893,11 @@ export function AssistantPage() {
             </p>
           </div>
 
-          <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+          <div className="flex min-w-0 items-center justify-end gap-1">
             {activeUnavailableProject ? (
               <span
                 title={activeUnavailableProject.path}
-                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-sm border border-warning-border bg-warning-subtle px-2 py-1 text-[11px] text-warning"
+                className="inline-flex max-w-[min(22rem,30vw)] items-center gap-1.5 rounded-sm border border-warning-border bg-warning-subtle px-2 py-1 text-[10px] text-warning"
               >
                 <FolderOpen size={11} aria-hidden="true" className="shrink-0" />
                 <span className="shrink-0 font-medium">Project unavailable</span>
@@ -896,7 +908,7 @@ export function AssistantPage() {
             ) : activeSession?.projectPath ? (
               <span
                 title={activeSession.projectPath}
-                className="inline-flex max-w-[min(32rem,42vw)] items-center gap-1.5 rounded-sm border border-accent-glow bg-accent-subtle px-2 py-1 text-[11px] text-accent"
+                className="inline-flex max-w-[min(22rem,30vw)] items-center gap-1.5 rounded-sm border border-accent-glow bg-accent-subtle px-2 py-1 text-[10px] text-accent"
               >
                 <FolderOpen size={11} aria-hidden="true" className="shrink-0" />
                 <span className="shrink-0 font-medium">Project context</span>
@@ -904,34 +916,31 @@ export function AssistantPage() {
                   {activeSession.projectPath}
                 </code>
               </span>
-            ) : (
-              <span className="rounded-sm border border-border bg-surface-secondary px-2 py-1 text-[11px] text-text-muted">
-                Standalone · no project context
-              </span>
-            )}
-            {model && (
-              <span className="rounded-sm border border-border bg-surface-secondary px-2 py-1 font-mono text-[11px] text-text-muted">
-                {model}
-              </span>
-            )}
-            <Button
+            ) : null}
+            <button
               type="button"
-              onClick={openManualContext}
-              disabled={busy || sessionActivating}
-              variant="ghost"
-              size="md"
+              onClick={() => setActivityOpen((open) => !open)}
+              aria-expanded={activityOpen}
+              aria-controls="assistant-activity-panel"
+              title={activityOpen ? "Hide activity" : "Show activity"}
+              className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary max-[1180px]:hidden"
             >
-              <ClipboardPaste size={12} aria-hidden="true" />
-              Attach context
-            </Button>
+              {activityOpen ? (
+                <PanelRightClose size={14} aria-hidden="true" />
+              ) : (
+                <PanelRightOpen size={14} aria-hidden="true" />
+              )}
+              <span className="sr-only">{activityOpen ? "Hide" : "Show"} assistant activity</span>
+            </button>
             <button
               type="button"
               onClick={() => void clearConversation()}
               disabled={busy || sessionActivating || messages.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-secondary px-2.5 py-1.5 text-[12px] text-text-secondary hover:border-error hover:text-error disabled:opacity-40"
+              title="Clear conversation"
+              aria-label="Clear conversation"
+              className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-error-subtle hover:text-error disabled:opacity-30"
             >
-              <Trash2 size={12} aria-hidden="true" />
-              Clear
+              <Trash2 size={13} aria-hidden="true" />
             </button>
           </div>
         </header>
@@ -955,15 +964,15 @@ export function AssistantPage() {
                 ? "alert"
                 : "status"
             }
-            className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-warning-subtle px-4 py-2"
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-warning-border bg-warning-subtle px-4 py-1.5"
           >
-            <p className="text-[12px] text-warning">
+            <p className="truncate text-[11px] text-warning">
               {unavailableMessage}
             </p>
             <button
               type="button"
               onClick={() => setPage("settings")}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-sm border border-warning-border bg-transparent px-2.5 py-1 text-[12px] font-medium text-warning hover:bg-warning-subtle"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] font-medium text-warning hover:bg-surface-hover"
             >
               <Settings2 size={11} aria-hidden="true" />
               Open Settings
@@ -975,23 +984,22 @@ export function AssistantPage() {
           aria-busy={busy}
           className="min-h-0 flex-1 overflow-y-auto"
         >
-          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 py-4 sm:px-6">
+          <div className="mx-auto flex min-h-full w-full max-w-[780px] flex-col px-4 py-4 sm:px-6">
             {messages.length === 0 && !busy && (
-              <div className="flex flex-1 flex-col items-center justify-center gap-4 py-8">
-                <div className="flex h-10 w-10 items-center justify-center rounded-sm border border-accent-glow bg-accent-subtle">
-                  <Bot size={19} aria-hidden="true" className="text-accent" />
+              <div className="flex flex-1 flex-col items-center justify-center gap-5 py-10">
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-surface-tertiary text-accent">
+                  <BrandMark className="h-[17px] w-[25px]" />
                 </div>
                 <div className="text-center">
-                  <h2 className="text-[14px] font-semibold text-text-primary">
-                    Start a standalone security conversation
+                  <h2 className="font-display text-[18px] font-normal text-text-primary">
+                    What would you like to audit?
                   </h2>
-                  <p className="mx-auto mt-1 max-w-md text-[13px] leading-relaxed text-text-secondary">
-                    Ask a security question or explicitly attach source material.
-                    A project is available only when this conversation shows a
-                    project context chip above.
+                  <p className="mx-auto mt-1.5 max-w-md text-[13px] leading-relaxed text-text-muted">
+                    Ask a security question, investigate a finding, or attach source
+                    context for a focused review.
                   </p>
                 </div>
-                <div className="grid w-full max-w-xl gap-1.5 sm:grid-cols-2">
+                <div className="grid w-full max-w-[620px] gap-1.5 sm:grid-cols-2">
                   {SUGGESTIONS.map((suggestion) => (
                     <button
                       key={suggestion}
@@ -1003,25 +1011,25 @@ export function AssistantPage() {
                         !aiReady ||
                         !activeSessionId
                       }
-                      className="rounded-sm border border-border bg-surface-secondary px-3 py-2.5 text-left text-[13px] leading-relaxed text-text-secondary transition-colors hover:border-accent hover:text-text-primary disabled:opacity-40"
+                      className="group/suggestion flex items-start gap-2 rounded-md border border-border bg-surface-secondary px-3 py-2.5 text-left text-[12px] leading-relaxed text-text-secondary transition-colors hover:border-border-strong hover:bg-surface-tertiary hover:text-text-primary disabled:opacity-40"
                     >
                       <Sparkles
-                        size={11}
+                        size={12}
                         aria-hidden="true"
-                        className="mr-1.5 inline text-accent"
+                        className="mt-0.5 shrink-0 text-accent opacity-70"
                       />
-                      {suggestion}
+                      <span>{suggestion}</span>
                     </button>
                   ))}
                 </div>
               </div>
             )}
 
-            <div className="space-y-4">
+            <div className="space-y-1">
               {messages.map((message) => (
                 <div
                   key={message.id}
-                  className={`group flex gap-2.5 ${ message.role === "user" ? "justify-end" : "" }`}
+                  className={`group flex gap-3 rounded-sm px-2 py-3 transition-colors hover:bg-surface-hover ${ message.role === "user" ? "justify-end" : "" }`}
                 >
                   {message.role === "user" && !busy && (
                     <button
@@ -1029,30 +1037,31 @@ export function AssistantPage() {
                       onClick={() => void rewindTo(message.id)}
                       title="Discard this and everything after it, and put the text back in the composer"
                       aria-label="Rewind the conversation to this message"
-                      className="mt-1 h-7 w-7 shrink-0 items-center justify-center self-start rounded-sm border border-transparent text-text-muted opacity-0 transition-opacity hover:border-border hover:bg-surface-hover hover:text-text-primary focus-visible:opacity-100 group-hover:opacity-100 flex"
+                      className="mt-5 flex h-7 w-7 shrink-0 items-center justify-center self-start rounded-sm text-text-muted opacity-0 transition-opacity hover:bg-surface-tertiary hover:text-text-primary focus-visible:opacity-100 group-hover:opacity-100"
                     >
                       <History size={13} aria-hidden="true" />
                     </button>
                   )}
                   {message.role !== "user" && (
-                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-accent-glow bg-accent-subtle">
-                      <Bot
-                        size={13}
-                        aria-hidden="true"
-                        className="text-accent"
-                      />
+                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-accent">
+                      <BrandMark className="h-[11px] w-[17px]" />
                     </div>
                   )}
-                  <div className="min-w-0 max-w-[88%] flex-1">
+                  <div className={`min-w-0 ${message.role === "user" ? "max-w-[76%]" : "max-w-[720px] flex-1"}`}>
+                    <div className={`mb-1 text-[11px] font-medium text-text-muted ${message.role === "user" ? "text-right" : ""}`}>
+                      {message.role === "user" ? "You" : "Assistant"}
+                    </div>
                     {message.tools && message.tools.length > 0 && (
-                      <div className="mb-1.5 space-y-1">
+                      <div className="mb-2 flex flex-wrap gap-1.5">
                         {message.tools.map((tool) => (
                           <ToolCallCard key={tool.toolCallId} record={tool} />
                         ))}
                       </div>
                     )}
                     <div
-                      className={`rounded-sm px-4 py-3 text-[13px] leading-relaxed ${ message.role === "user" ? "selectable ml-auto rounded-tr-sm border border-accent-glow bg-accent-subtle text-text-primary" : "selectable md-body rounded-tl-sm border border-border bg-surface-secondary text-text-secondary" }`}
+                      className={message.role === "user"
+                        ? "selectable ml-auto inline-block rounded-md rounded-tr-sm border border-border bg-surface-tertiary px-3.5 py-2.5 text-[14px] leading-relaxed text-text-primary"
+                        : "selectable md-body text-[14px] leading-[1.72] text-text-primary"}
                     >
                       {message.role === "user" ? (
                         <div className="whitespace-pre-wrap break-words">
@@ -1070,11 +1079,11 @@ export function AssistantPage() {
                     </div>
                   </div>
                   {message.role === "user" && (
-                    <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-border bg-surface-tertiary">
+                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-subtle">
                       <User
                         size={13}
                         aria-hidden="true"
-                        className="text-text-muted"
+                        className="text-accent"
                       />
                     </div>
                   )}
@@ -1082,17 +1091,16 @@ export function AssistantPage() {
               ))}
 
               {busy && (
-                <div className="flex gap-2.5">
-                  <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-accent-glow bg-accent-subtle">
-                    <Bot
-                      size={13}
-                      aria-hidden="true"
-                      className="text-accent"
-                    />
+                <div className="flex gap-3 rounded-sm px-2 py-3">
+                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-accent">
+                    <BrandMark className="h-[11px] w-[17px]" />
                   </div>
-                  <div className="min-w-0 max-w-[88%] flex-1">
+                  <div className="min-w-0 max-w-[720px] flex-1">
+                    <div className="mb-1 text-[11px] font-medium text-text-muted">
+                      Assistant
+                    </div>
                     {toolRecords.length > 0 && (
-                      <div className="mb-1.5 space-y-1">
+                      <div className="mb-2 flex flex-wrap gap-1.5">
                         {toolRecords.map((tool) => (
                           <ToolCallCard key={tool.toolCallId} record={tool} />
                         ))}
@@ -1105,7 +1113,7 @@ export function AssistantPage() {
                       />
                     )}
                     {streaming.text && (
-                      <div className="selectable md-body rounded-sm rounded-tl-sm border border-border bg-surface-secondary px-4 py-3 text-[13px] text-text-secondary">
+                      <div className="selectable md-body text-[14px] leading-[1.72] text-text-primary">
                         <Markdown>{streaming.text}</Markdown>
                         <span
                           aria-hidden="true"
@@ -1114,7 +1122,7 @@ export function AssistantPage() {
                       </div>
                     )}
                     {!streaming.text && toolRecords.length === 0 && (
-                      <div className="flex items-center gap-2 rounded-sm border border-border bg-surface-secondary px-4 py-3 text-[12px] text-text-secondary">
+                      <div className="flex items-center gap-2 py-1 text-[12px] text-text-muted">
                         <Loader2
                           size={13}
                           aria-hidden="true"
@@ -1131,19 +1139,14 @@ export function AssistantPage() {
           </div>
         </div>
 
-        <div className="shrink-0 border-t border-border bg-surface-secondary px-4 py-3 backdrop-blur sm:px-6">
+        <div className="shrink-0 bg-surface-primary px-4 pb-3 pt-2 sm:px-6">
           <form
-            className="mx-auto w-full max-w-4xl"
+            className="mx-auto w-full max-w-[780px]"
             onSubmit={(event) => {
               event.preventDefault();
               void submit();
             }}
           >
-            {todos.length > 0 && (
-              <div className="mb-2">
-                <AgentTodoPanel items={todos} />
-              </div>
-            )}
             {pendingSteers.length > 0 && (
               <ul
                 aria-label="Queued messages"
@@ -1164,7 +1167,7 @@ export function AssistantPage() {
             <label htmlFor="assistant-composer" className="sr-only">
               Message the AI Assistant
             </label>
-            <div className="flex items-end gap-2">
+            <div className="overflow-hidden rounded-md border border-border bg-surface-secondary shadow-sm transition-[border-color,box-shadow] focus-within:border-border-focus focus-within:shadow-md">
               <textarea
                 id="assistant-composer"
                 value={input}
@@ -1179,63 +1182,81 @@ export function AssistantPage() {
                 aria-describedby="assistant-composer-help"
                 disabled={!aiReady || sessionActivating}
                 placeholder={busy ? "Steer the run — your message is folded in at the next step…" : composerPlaceholder}
-                className="selectable min-h-11 flex-1 resize-none rounded-sm border border-border bg-surface-primary px-3.5 py-2.5 text-[13px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+                className="selectable block min-h-[58px] w-full resize-none border-0 bg-transparent px-4 py-3 text-[14px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-60"
               />
-              {busy ? (
-                <>
-                  <Button
-                    type="submit"
-                    disabled={!input.trim()}
-                    variant="accent"
-                    size="md"
-                    className="h-11 px-3.5"
-                  >
-                    <CornerDownLeft size={14} aria-hidden="true" />
-                    Steer
-                  </Button>
-                  <button
-                    type="button"
-                    onClick={() => void cancel()}
-                    className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-sm border border-error-border bg-transparent px-3 text-[12px] font-medium text-error hover:bg-error-subtle"
-                  >
-                    <Ban size={14} aria-hidden="true" />
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <Button
-                  type="submit"
-                  disabled={
-                    !input.trim() ||
-                    sessionActivating ||
-                    !aiReady ||
-                    !activeSessionId
-                  }
-                  variant="primary"
-                  size="md"
-                  className="h-11 px-3.5"
+              <div className="flex min-h-10 items-center gap-1 border-t border-border px-2 py-1.5">
+                <button
+                  type="button"
+                  onClick={openManualContext}
+                  disabled={busy || sessionActivating}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-[11px] text-text-muted transition-colors hover:bg-surface-tertiary hover:text-text-primary disabled:opacity-35"
                 >
-                  <Send size={14} aria-hidden="true" />
-                  Send
-                </Button>
-              )}
+                  <ClipboardPaste size={12} aria-hidden="true" />
+                  Context
+                </button>
+                <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
+                <span className="inline-flex min-w-0 items-center gap-1.5 px-1 text-[10px] text-text-muted">
+                  <span
+                    aria-hidden="true"
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${aiReady ? "bg-success" : aiReadiness.status === "offline" ? "bg-error" : "bg-text-muted"}`}
+                  />
+                  <span className="truncate">{aiReady ? model ?? "AI ready" : availabilityLabel}</span>
+                </span>
+                <span className="flex-1" />
+                {convUsage && (
+                  <span className="hidden shrink-0 font-mono text-[10px] tabular-nums text-text-muted sm:inline">
+                    {(convUsage.totalTokens / 1000).toFixed(1)}k · ${convUsage.costUsd.toFixed(4)}
+                  </span>
+                )}
+                {busy ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void cancel()}
+                      title="Cancel the running turn"
+                      aria-label="Cancel the running turn"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-error transition-colors hover:bg-error-subtle"
+                    >
+                      <Ban size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!input.trim()}
+                      title="Steer the running turn"
+                      aria-label="Steer the running turn"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-accent text-accent-contrast transition-transform hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-25"
+                    >
+                      <CornerDownLeft size={14} aria-hidden="true" />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={
+                      !input.trim() ||
+                      sessionActivating ||
+                      !aiReady ||
+                      !activeSessionId
+                    }
+                    title="Send message"
+                    aria-label="Send message"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-accent text-accent-contrast transition-transform hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-25"
+                  >
+                    <Send size={14} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
             </div>
             <div
               id="assistant-composer-help"
-              className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted"
+              className="mt-1.5 flex items-center justify-between gap-2 px-1 text-[10px] text-text-muted"
             >
               <span>
                 {busy
                   ? "Enter to steer the running turn · Shift+Enter for a new line"
-                  : "Enter to send · Shift+Enter for a new line · tools require approval"}
+                  : "Enter to send · Shift+Enter for a new line"}
               </span>
-              {convUsage && (
-                <span className="font-mono tabular-nums">
-                  {model ? `${model} · ` : ""}
-                  {(convUsage.totalTokens / 1000).toFixed(1)}k tokens · $
-                  {convUsage.costUsd.toFixed(4)}
-                </span>
-              )}
+              <span className="shrink-0">Tools require approval</span>
             </div>
           </form>
           <p className="sr-only" aria-live="polite">
@@ -1246,7 +1267,17 @@ export function AssistantPage() {
               : "The Assistant is idle."}
           </p>
         </div>
-        </section>
+          </section>
+          {activityOpen && (
+            <AssistantActivityPanel
+              busy={busy}
+              model={model}
+              tools={activityTools}
+              todos={todos}
+              usage={convUsage}
+            />
+          )}
+        </div>
       </div>
 
       {permission && (

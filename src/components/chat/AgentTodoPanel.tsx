@@ -7,7 +7,13 @@ import type { TodoItem } from "../../lib/types";
  * `todo` tool. Collapsible because a long plan would otherwise crowd out the
  * transcript, and collapsed it still shows the done/total count.
  */
-export function AgentTodoPanel({ items }: { items: TodoItem[] }): JSX.Element | null {
+export function AgentTodoPanel({
+  items,
+  compact = false,
+}: {
+  items: TodoItem[];
+  compact?: boolean;
+}): JSX.Element | null {
   const [open, setOpen] = useState(true);
 
   if (items.length === 0) return null;
@@ -18,21 +24,25 @@ export function AgentTodoPanel({ items }: { items: TodoItem[] }): JSX.Element | 
   return (
     <section
       aria-label="Agent plan"
-      className="rounded-sm border border-border bg-surface-secondary"
+      className={
+        compact
+          ? "overflow-hidden rounded-sm bg-surface-primary"
+          : "rounded-sm border border-border bg-surface-secondary"
+      }
     >
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        className={`flex w-full items-center gap-2 text-left ${compact ? "px-2.5 py-1.5" : "px-3 py-2"}`}
       >
         <ListChecks
           size={13}
           aria-hidden="true"
           className={complete ? "text-success" : "text-accent"}
         />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-          Plan
+        <span className="text-[11px] font-medium text-text-secondary">
+          {complete ? "Plan completed" : "Active plan"}
         </span>
         <span className="ml-auto font-mono text-[11px] tabular-nums text-text-muted">
           {done}/{items.length}
@@ -40,7 +50,7 @@ export function AgentTodoPanel({ items }: { items: TodoItem[] }): JSX.Element | 
       </button>
 
       {open && (
-        <ul className="space-y-1 border-t border-border px-3 py-2">
+        <ul className={`space-y-1 border-t border-border ${compact ? "px-2.5 py-2" : "px-3 py-2"}`}>
           {items.map((item) => {
             const finished = item.status === "done";
             return (
