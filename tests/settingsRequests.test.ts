@@ -38,6 +38,7 @@ function settings(baseUrl: string, enabled = true): AppSettings {
       temperature: 0.2,
       timeoutSecs: 120,
       maxTokens: 2048,
+      contextWindow: 128000,
       systemPrompt: "prompt",
     },
     scan: {

@@ -12,10 +12,12 @@ import { useEffect, useMemo, useState, type JSX } from "react";
 import { FolderPicker } from "../components/FolderPicker";
 import { Button, Input, Select, Textarea } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
+import { PanelCollapseButton } from "../components/workbench/PanelCollapseButton";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { READINESS_OPTIONS, readinessClass, readinessLabel } from "../features/compliance/model";
 import { api } from "../lib/api";
 import { useAppStore, useToastStore } from "../lib/stores";
+import { usePanelCollapsed } from "../lib/usePanelCollapsed";
 import type {
   ComplianceAssessment,
   ComplianceAssessmentView,
@@ -160,6 +162,7 @@ export function ComplianceCenterPage(): JSX.Element {
   const [running, setRunning] = useState(false);
   const [loadingView, setLoadingView] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyCollapsed, toggleHistoryCollapsed] = usePanelCollapsed("compliance-history");
 
   useEffect(() => {
     let disposed = false;
@@ -263,9 +266,10 @@ export function ComplianceCenterPage(): JSX.Element {
 
       {error ? <InlineState tone="error" title="Compliance workflow unavailable" description={error} /> : null}
 
-      <div className="grid gap-5 min-[1000px]:grid-cols-[17rem_minmax(0,1fr)]">
+      <div className={`grid transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${historyCollapsed ? "gap-3 min-[1000px]:grid-cols-[44px_minmax(0,1fr)]" : "gap-5 min-[1000px]:grid-cols-[17rem_minmax(0,1fr)]"}`}>
         <section className="min-w-0 rounded-sm border border-border bg-surface-secondary">
-          <header className="border-b border-border px-3 py-3"><h2 className="flex items-center gap-2 text-[12px] font-semibold text-text-primary"><History size={13} aria-hidden="true" />Assessment history</h2></header>
+          <header className={`flex min-h-10 items-center justify-between border-b border-border px-3 py-2 ${historyCollapsed ? "min-[1000px]:justify-center min-[1000px]:px-1 min-[1000px]:py-0" : ""}`}><h2 className={`flex items-center gap-2 text-[12px] font-semibold text-text-primary ${historyCollapsed ? "min-[1000px]:hidden" : ""}`}><History size={13} aria-hidden="true" />Assessment history</h2><PanelCollapseButton controls="compliance-history-content" expanded={!historyCollapsed} label="assessment history" onToggle={toggleHistoryCollapsed} className="hidden min-[1000px]:inline-flex" /></header>
+          <div id="compliance-history-content" className={historyCollapsed ? "min-[1000px]:hidden" : undefined}>
           {!history ? <div className="p-3"><InlineState compact tone="running" title="Loading history" /></div> : null}
           {history?.length === 0 ? <div className="p-3"><InlineState compact tone="empty" title="No assessments yet" /></div> : null}
           <div className="max-h-[42rem] overflow-y-auto">
@@ -274,6 +278,7 @@ export function ComplianceCenterPage(): JSX.Element {
                 <p className="truncate text-[11px] font-semibold text-text-primary">{assessment.profileName}</p><p className="mt-1 truncate font-mono text-[9px] text-text-muted">{assessment.targetLabel}</p><div className="mt-2 flex items-center justify-between text-[10px] text-text-muted"><span>{new Date(assessment.createdAtMs).toLocaleDateString()}</span><span>{assessment.summary.evidenceCoveragePercent}% coverage</span></div>
               </button>
             ))}
+          </div>
           </div>
         </section>
 

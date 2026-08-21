@@ -17,11 +17,12 @@ import {
 } from "lucide-react";
 import { Field } from "../components/workbench/Field";
 import { InlineState } from "../components/workbench/InlineState";
-import { Input, Switch, Textarea } from "../components/ui";
+import { Button, Input, Switch, Textarea } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import { normalizeThemePreference, THEME_PREFERENCES, type ThemePreference } from "../lib/theme";
 import { DEFAULT_SYSTEM_PROMPT } from "../lib/defaults";
+import { requestReadinessWizard } from "../lib/readinessWizard";
 import { LatestRequestQueue } from "../lib/latestRequest";
 import {
   loadingAiReadiness,
@@ -43,6 +44,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     temperature: 0.2,
     timeoutSecs: 120,
     maxTokens: 2048,
+    contextWindow: 128000,
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
   },
   scan: {
@@ -453,6 +455,24 @@ export function SettingsPage() {
                 onChange={(event) => updateAi({ maxTokens: Number(event.target.value) || 2048 })}
               />
             </Field>
+            <Field
+              label="Context window"
+              htmlFor="ai-context-window"
+              hint="Model input + output capacity. Used for local preflight; check your provider's model documentation."
+            >
+              <Input
+                id="ai-context-window"
+                aria-describedby="ai-context-window-hint"
+                type="number"
+                value={form.ai.contextWindow}
+                min={4096}
+                max={2000000}
+                step={1024}
+                onChange={(event) =>
+                  updateAi({ contextWindow: Number(event.target.value) || 128000 })
+                }
+              />
+            </Field>
           </div>
 
           <div className="mt-3">
@@ -535,6 +555,15 @@ export function SettingsPage() {
                 </button>
               );
             })}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+            <p className="text-[11px] leading-relaxed text-text-muted">
+              Recheck scanner, data-source, and optional AI readiness at any time.
+            </p>
+            <Button variant="outline" onClick={requestReadinessWizard}>
+              <ShieldCheck size={13} aria-hidden="true" />
+              Run readiness setup
+            </Button>
           </div>
         </section>
 

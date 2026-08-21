@@ -430,6 +430,7 @@ export function DepsScanPage() {
           />
           {filteredVulns.length > 0 ? (
             <SplitWorkspace
+              panelId="dependency-vulnerabilities"
               listLabel="Vulnerable packages"
               detailLabel="Advisory detail"
               hasSelection={hasExplicitSelection}
