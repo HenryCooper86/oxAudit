@@ -22,7 +22,10 @@ use super::{
     fingerprint::assign_fingerprints,
     policy::{apply_policy, load_policy},
     repository::FindingsRepository,
-    review::{reconcile_project_policy_reviews, save_local_review, save_project_policy_review},
+    review::{
+        authoritative_project_policy_projection, reconcile_project_policy_reviews,
+        save_local_review, save_project_policy_review,
+    },
 };
 use crate::{
     cve::CveState,
@@ -64,11 +67,17 @@ pub struct FindingsService {
     #[cfg(test)]
     policy_refresh_pause: Mutex<Option<ScanPause>>,
     #[cfg(test)]
+    policy_projection_pause: Mutex<Option<ScanPause>>,
+    #[cfg(test)]
+    retry_reservation_pause: Mutex<Option<ScanPause>>,
+    #[cfg(test)]
     scanner_failures: Mutex<HashSet<String>>,
     #[cfg(test)]
     mark_incomplete_failures: AtomicUsize,
     #[cfg(test)]
     retention_maintenance_failures: AtomicUsize,
+    #[cfg(test)]
+    delete_attempt_before_completion: AtomicBool,
     #[cfg(test)]
     started_run_ids: Mutex<Vec<String>>,
 }
@@ -113,6 +122,7 @@ pub struct PendingSave {
     started_at: String,
     completed_at: String,
     retry_token: String,
+    in_flight: bool,
 }
 
 struct ProjectScanGuard<'a> {
@@ -124,6 +134,44 @@ struct RunAttemptGuard<'a> {
     service: &'a FindingsService,
     run_id: String,
     armed: bool,
+}
+
+struct PendingSaveReservation<'a> {
+    pending_saves: &'a Mutex<VecDeque<PendingSave>>,
+    retry_token: String,
+    finished: bool,
+}
+
+impl PendingSaveReservation<'_> {
+    fn remove(mut self) -> Result<(), CommandError> {
+        let mut pending_saves = self
+            .pending_saves
+            .lock()
+            .map_err(|_| CommandError::persistence_unavailable())?;
+        let index = pending_saves
+            .iter()
+            .position(|pending| pending.retry_token == self.retry_token)
+            .ok_or_else(CommandError::not_found)?;
+        pending_saves.remove(index);
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for PendingSaveReservation<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        if let Ok(mut pending_saves) = self.pending_saves.lock() {
+            if let Some(pending) = pending_saves
+                .iter_mut()
+                .find(|pending| pending.retry_token == self.retry_token)
+            {
+                pending.in_flight = false;
+            }
+        }
+    }
 }
 
 impl RunAttemptGuard<'_> {
@@ -174,11 +222,17 @@ impl FindingsService {
             #[cfg(test)]
             policy_refresh_pause: Mutex::new(None),
             #[cfg(test)]
+            policy_projection_pause: Mutex::new(None),
+            #[cfg(test)]
+            retry_reservation_pause: Mutex::new(None),
+            #[cfg(test)]
             scanner_failures: Mutex::new(HashSet::new()),
             #[cfg(test)]
             mark_incomplete_failures: AtomicUsize::new(0),
             #[cfg(test)]
             retention_maintenance_failures: AtomicUsize::new(0),
+            #[cfg(test)]
+            delete_attempt_before_completion: AtomicBool::new(false),
             #[cfg(test)]
             started_run_ids: Mutex::new(Vec::new()),
         }
@@ -200,31 +254,38 @@ impl FindingsService {
             .unwrap_or(&canonical_path)
             .to_owned();
         let now = timestamp(Utc::now());
-        let mut context = self.repository.upsert_project(
+        let context = self.repository.upsert_project(
             &Uuid::new_v4().to_string(),
             &canonical_path,
             &display_name,
             &now,
             None,
         )?;
-        let loaded = load_policy(&canonical)?;
-        context.policy = loaded.status().clone();
-        if !matches!(context.policy, PolicyStatus::Invalid { .. }) {
-            reconcile_project_policy_reviews(&self.repository, &context.project_id, Utc::now())?;
-        }
+        self.run_test_policy_projection_seam(&canonical_path);
+        let (policy, mut context) = authoritative_project_policy_projection(
+            &self.repository,
+            &context.project_id,
+            Utc::now(),
+            || Ok(()),
+            |repository| repository.project_context(&context.project_id),
+        )?;
+        context.policy = policy;
         Ok(context)
     }
 
     pub fn load_run(&self, run_id: &str) -> Result<ScanRunDetail, CommandError> {
         let initial = self.repository.load_run(run_id)?;
         let project = self.repository.project_context(&initial.project_id)?;
-        let policy = load_policy(&project.canonical_path)?;
-        if !matches!(policy.status(), PolicyStatus::Invalid { .. }) {
-            reconcile_project_policy_reviews(&self.repository, &initial.project_id, Utc::now())?;
-        }
-        let mut loaded = self.repository.load_run(run_id)?;
-        loaded.policy = policy.status().clone();
-        if matches!(policy.status(), PolicyStatus::Invalid { .. }) {
+        self.run_test_policy_projection_seam(&project.canonical_path);
+        let (policy, mut loaded) = authoritative_project_policy_projection(
+            &self.repository,
+            &initial.project_id,
+            Utc::now(),
+            || Ok(()),
+            |repository| repository.load_run(run_id),
+        )?;
+        loaded.policy = policy.clone();
+        if matches!(policy, PolicyStatus::Invalid { .. }) {
             strip_project_policy_reviews(&mut loaded.findings, Utc::now());
         }
         Ok(loaded)
@@ -480,6 +541,7 @@ impl FindingsService {
             if cancel.load(Ordering::SeqCst) {
                 return Err(CommandError::scan_cancelled());
             }
+            self.run_test_completion_seam(&run_id)?;
             let completion = if self.should_fail_completion() {
                 Err(CommandError::persistence_unavailable())
             } else {
@@ -497,9 +559,10 @@ impl FindingsService {
             };
             let stored = match completion {
                 Ok(stored) => stored,
-                Err(_) => {
-                    return Ok(self.retain_pending(completed, coverage, advisory_baseline.as_ref()))
+                Err(error) if is_retryable_completion_failure(&error) => {
+                    return self.retain_pending(completed, coverage, advisory_baseline.as_ref())
                 }
+                Err(error) => return Err(error),
             };
             let stored = match self.refresh_saved_policy(stored, &project.project_id) {
                 Ok(stored) => stored,
@@ -529,14 +592,8 @@ impl FindingsService {
     }
 
     pub fn retry_save(&self, retry_token: &str) -> Result<ScanRunDetail, CommandError> {
-        let pending = self
-            .pending_saves
-            .lock()
-            .map_err(|_| CommandError::persistence_unavailable())?
-            .iter()
-            .find(|pending| pending.retry_token == retry_token)
-            .cloned()
-            .ok_or_else(CommandError::not_found)?;
+        let (pending, reservation) = self.reserve_pending(retry_token)?;
+        self.run_test_reserved_retry_seam(retry_token);
         let detail = pending.detail();
         let stored = self.repository.complete_run_with_maintenance(
             &detail,
@@ -548,17 +605,37 @@ impl FindingsService {
             Ok(stored) => stored,
             Err((_, error)) => return Err(error),
         };
-        let mut pending_saves = self
-            .pending_saves
-            .lock()
-            .map_err(|_| CommandError::persistence_unavailable())?;
-        if let Some(index) = pending_saves
-            .iter()
-            .position(|pending| pending.retry_token == retry_token)
-        {
-            pending_saves.remove(index);
-        }
+        reservation.remove()?;
         Ok(stored)
+    }
+
+    fn reserve_pending(
+        &self,
+        retry_token: &str,
+    ) -> Result<(PendingSave, PendingSaveReservation<'_>), CommandError> {
+        let pending = {
+            let mut pending_saves = self
+                .pending_saves
+                .lock()
+                .map_err(|_| CommandError::persistence_unavailable())?;
+            let pending = pending_saves
+                .iter_mut()
+                .find(|pending| pending.retry_token == retry_token)
+                .ok_or_else(CommandError::not_found)?;
+            if pending.in_flight {
+                return Err(CommandError::scan_already_running());
+            }
+            pending.in_flight = true;
+            pending.clone()
+        };
+        Ok((
+            pending,
+            PendingSaveReservation {
+                pending_saves: &self.pending_saves,
+                retry_token: retry_token.to_owned(),
+                finished: false,
+            },
+        ))
     }
 
     fn refresh_saved_policy(
@@ -573,61 +650,33 @@ impl FindingsService {
                 return Err((Box::new(stored), error));
             }
         };
-        let loaded = match load_policy(&project.canonical_path) {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                strip_project_policy_reviews(&mut stored.findings, Utc::now());
-                return Err((Box::new(stored), error));
-            }
-        };
-        stored.policy = loaded.status().clone();
-        if matches!(loaded.status(), PolicyStatus::Invalid { .. }) {
-            strip_project_policy_reviews(&mut stored.findings, Utc::now());
-            return Ok(stored);
-        }
-        self.run_test_policy_refresh_seam(&project.canonical_path);
-        if self.should_fail_post_completion_policy_refresh() {
-            return self.failed_policy_refresh(
-                stored,
-                &project.canonical_path,
-                CommandError::policy_write_failed(),
-            );
-        }
-        if let Err(error) =
-            reconcile_project_policy_reviews(&self.repository, project_id, Utc::now())
-        {
-            return self.failed_policy_refresh(stored, &project.canonical_path, error);
-        }
-        let mut reloaded = match self.repository.load_run(&stored.run_id) {
-            Ok(reloaded) => reloaded,
+        let maintenance_warning = stored.maintenance_warning.clone();
+        let projection = authoritative_project_policy_projection(
+            &self.repository,
+            project_id,
+            Utc::now(),
+            || {
+                self.run_test_policy_refresh_seam(&project.canonical_path);
+                if self.should_fail_post_completion_policy_refresh() {
+                    Err(CommandError::policy_write_failed())
+                } else {
+                    Ok(())
+                }
+            },
+            |repository| repository.load_run(&stored.run_id),
+        );
+        let (policy, mut reloaded) = match projection {
+            Ok(projection) => projection,
             Err(error) => {
                 return self.failed_policy_refresh(stored, &project.canonical_path, error);
             }
         };
-        if let Some(warning) = stored.maintenance_warning {
-            merge_maintenance_warning(&mut reloaded, &warning);
-        }
-        let current = match load_policy(&project.canonical_path) {
-            Ok(current) => current,
-            Err(error) => {
-                return self.failed_policy_refresh(reloaded, &project.canonical_path, error);
-            }
-        };
-        reloaded.policy = current.status().clone();
-        let projection_matches_current = current.status() == loaded.status()
-            && reloaded.findings.iter().all(|finding| {
-                finding.review.as_ref().is_none_or(|review| {
-                    review.origin != ReviewOrigin::ProjectPolicy
-                        || matches!(
-                            current.status(),
-                            PolicyStatus::Valid { hash }
-                                if review.policy_hash.as_deref() == Some(hash.as_str())
-                        )
-                })
-            });
-        if !projection_matches_current {
+        reloaded.policy = policy.clone();
+        if matches!(policy, PolicyStatus::Invalid { .. }) {
             strip_project_policy_reviews(&mut reloaded.findings, Utc::now());
-            return Err((Box::new(reloaded), CommandError::policy_write_failed()));
+        }
+        if let Some(warning) = maintenance_warning {
+            merge_maintenance_warning(&mut reloaded, &warning);
         }
         Ok(reloaded)
     }
@@ -681,7 +730,7 @@ impl FindingsService {
         mut detail: ScanRunDetail,
         coverage: CoverageManifest,
         baseline: Option<&ScanRunDetail>,
-    ) -> ScanRunDetail {
+    ) -> Result<ScanRunDetail, CommandError> {
         let retry_token = Uuid::new_v4().to_string();
         let completed_at = detail.completed_at.clone().unwrap_or_default();
         let pending = PendingSave {
@@ -697,14 +746,24 @@ impl FindingsService {
             started_at: detail.started_at.clone(),
             completed_at,
             retry_token: retry_token.clone(),
+            in_flight: false,
         };
         detail.persistence = RunPersistence::NotSaved { retry_token };
         apply_advisory_comparison(&mut detail, baseline, &pending.coverage);
         let mut evicted = Vec::new();
-        if let Ok(mut queue) = self.pending_saves.lock() {
+        {
+            let mut queue = self
+                .pending_saves
+                .lock()
+                .map_err(|_| CommandError::persistence_unavailable())?;
             while queue.len() >= 3 {
-                if let Some(pending) = queue.pop_front() {
+                if let Some(index) = queue.iter().position(|pending| !pending.in_flight) {
+                    let pending = queue
+                        .remove(index)
+                        .expect("selected pending save must still exist");
                     evicted.push(pending.run_id);
+                } else {
+                    return Err(CommandError::persistence_unavailable());
                 }
             }
             queue.push_back(pending);
@@ -716,7 +775,7 @@ impl FindingsService {
                 "pending_save_evicted",
             );
         }
-        detail
+        Ok(detail)
     }
 
     #[cfg(test)]
@@ -803,6 +862,26 @@ impl FindingsService {
     }
 
     #[cfg(test)]
+    fn pause_policy_projection_after_read_for_test(
+        &self,
+        canonical_path: String,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) {
+        *self.policy_projection_pause.lock().unwrap() = Some((canonical_path, entered, release));
+    }
+
+    #[cfg(test)]
+    fn pause_reserved_retry_for_test(
+        &self,
+        retry_token: String,
+        entered: std::sync::Arc<std::sync::Barrier>,
+        release: std::sync::Arc<std::sync::Barrier>,
+    ) {
+        *self.retry_reservation_pause.lock().unwrap() = Some((retry_token, entered, release));
+    }
+
+    #[cfg(test)]
     fn fail_next_mark_incomplete_for_test(&self) {
         self.mark_incomplete_failures.store(1, Ordering::SeqCst);
     }
@@ -825,6 +904,17 @@ impl FindingsService {
     fn fail_next_retention_maintenance_for_test(&self) {
         self.retention_maintenance_failures
             .store(1, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn fail_next_post_maintenance_reload_for_test(&self) {
+        self.repository.fail_next_post_maintenance_reload_for_test();
+    }
+
+    #[cfg(test)]
+    fn delete_next_attempt_before_completion_for_test(&self) {
+        self.delete_attempt_before_completion
+            .store(true, Ordering::SeqCst);
     }
 
     #[cfg(test)]
@@ -926,6 +1016,66 @@ impl FindingsService {
 
     #[cfg(not(test))]
     fn run_test_policy_refresh_seam(&self, _canonical_path: &str) {}
+
+    #[cfg(test)]
+    fn run_test_policy_projection_seam(&self, canonical_path: &str) {
+        let pause = {
+            let mut pause = self.policy_projection_pause.lock().unwrap();
+            if pause
+                .as_ref()
+                .is_some_and(|(path, _, _)| path == canonical_path)
+            {
+                pause.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, entered, release)) = pause {
+            entered.wait();
+            release.wait();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn run_test_policy_projection_seam(&self, _canonical_path: &str) {}
+
+    #[cfg(test)]
+    fn run_test_reserved_retry_seam(&self, retry_token: &str) {
+        let pause = {
+            let mut pause = self.retry_reservation_pause.lock().unwrap();
+            if pause
+                .as_ref()
+                .is_some_and(|(token, _, _)| token == retry_token)
+            {
+                pause.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, entered, release)) = pause {
+            entered.wait();
+            release.wait();
+        }
+    }
+
+    #[cfg(not(test))]
+    fn run_test_reserved_retry_seam(&self, _retry_token: &str) {}
+
+    #[cfg(test)]
+    fn run_test_completion_seam(&self, run_id: &str) -> Result<(), CommandError> {
+        if self
+            .delete_attempt_before_completion
+            .swap(false, Ordering::SeqCst)
+        {
+            self.repository.delete_run_for_test(run_id)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    fn run_test_completion_seam(&self, _run_id: &str) -> Result<(), CommandError> {
+        Ok(())
+    }
 }
 
 impl PendingSave {
@@ -958,6 +1108,10 @@ fn terminal_error_code(error: &CommandError) -> &'static str {
         super::error::ErrorCode::ScanFailed => "scan_failed",
         _ => "scan_failed",
     }
+}
+
+fn is_retryable_completion_failure(error: &CommandError) -> bool {
+    error.code == super::error::ErrorCode::PersistenceUnavailable && error.retryable
 }
 
 fn merge_maintenance_warning(detail: &mut ScanRunDetail, warning: &str) {
@@ -1158,6 +1312,24 @@ mod tests {
         state
     }
 
+    fn write_valid_policy(project: &std::path::Path, reason: &str) {
+        std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+        std::fs::write(
+            project.join(".oxaudit/policy.json"),
+            format!(
+                r#"{{"version":1,"entries":[{{"kind":"suppression","ruleId":"js-eval","pathPattern":"app.js","state":"suppressed","reason":"{reason}"}}]}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn remove_policy(project: &std::path::Path) {
+        let path = project.join(".oxaudit/policy.json");
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
     fn seed_aged_baseline(
         service: &FindingsService,
         project: &std::path::Path,
@@ -1240,6 +1412,155 @@ mod tests {
             service.list_runs("unknown-project", 10).unwrap_err().code,
             crate::findings::error::ErrorCode::NotFound
         );
+    }
+
+    #[test]
+    fn inspect_project_returns_the_policy_loaded_under_current_authority() {
+        for transition in [
+            ("valid-valid", "valid", "valid"),
+            ("valid-missing", "valid", "missing"),
+            ("missing-valid", "missing", "valid"),
+            ("invalid-valid", "invalid", "valid"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let project = directory.path().join(transition.0);
+            std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+            match transition.1 {
+                "valid" => write_valid_policy(&project, "initial authority"),
+                "invalid" => {
+                    std::fs::write(project.join(".oxaudit/policy.json"), b"{ invalid initial }")
+                        .unwrap()
+                }
+                "missing" => remove_policy(&project),
+                _ => unreachable!(),
+            }
+            let service = Arc::new(FindingsService::new(
+                crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+            ));
+            let canonical = project
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let entered = Arc::new(Barrier::new(2));
+            let release = Arc::new(Barrier::new(2));
+            service.pause_policy_projection_after_read_for_test(
+                canonical,
+                entered.clone(),
+                release.clone(),
+            );
+            let operation = {
+                let service = service.clone();
+                let project = project.clone();
+                std::thread::spawn(move || service.inspect_project(project))
+            };
+            entered.wait();
+            match transition.2 {
+                "valid" => write_valid_policy(&project, "current authority"),
+                "missing" => remove_policy(&project),
+                _ => unreachable!(),
+            }
+            release.wait();
+            let context = operation.join().unwrap().unwrap();
+            let current = crate::findings::policy::load_policy(&project).unwrap();
+            assert_eq!(
+                context.policy,
+                current.status().clone(),
+                "{} must return current policy authority",
+                transition.0
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn load_run_returns_one_current_policy_and_review_projection() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let service = Arc::new(FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        ));
+        let saved = service
+            .scan(
+                ScanOptions {
+                    path: project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+
+        for transition in [
+            ("valid-valid", "valid", "valid"),
+            ("valid-missing", "valid", "missing"),
+            ("missing-valid", "missing", "valid"),
+            ("invalid-valid", "invalid", "valid"),
+        ] {
+            match transition.1 {
+                "valid" => write_valid_policy(&project, "initial authority"),
+                "invalid" => {
+                    std::fs::write(project.join(".oxaudit/policy.json"), b"{ invalid initial }")
+                        .unwrap()
+                }
+                "missing" => remove_policy(&project),
+                _ => unreachable!(),
+            }
+            service.load_run(&saved.run_id).unwrap();
+            let canonical = project
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let entered = Arc::new(Barrier::new(2));
+            let release = Arc::new(Barrier::new(2));
+            service.pause_policy_projection_after_read_for_test(
+                canonical,
+                entered.clone(),
+                release.clone(),
+            );
+            let operation = {
+                let service = service.clone();
+                let run_id = saved.run_id.clone();
+                std::thread::spawn(move || service.load_run(&run_id))
+            };
+            entered.wait();
+            match transition.2 {
+                "valid" => write_valid_policy(&project, "current authority"),
+                "missing" => remove_policy(&project),
+                _ => unreachable!(),
+            }
+            release.wait();
+            let loaded = operation.join().unwrap().unwrap();
+            let current = crate::findings::policy::load_policy(&project).unwrap();
+            assert_eq!(loaded.policy, current.status().clone(), "{}", transition.0);
+            let mut saw_project_policy = false;
+            for finding in &loaded.findings {
+                if let Some(review) = finding.review.as_ref().filter(|review| {
+                    review.origin == crate::findings::domain::ReviewOrigin::ProjectPolicy
+                }) {
+                    saw_project_policy = true;
+                    let crate::findings::domain::PolicyStatus::Valid { hash } = current.status()
+                    else {
+                        panic!("{} exposed a stale project-policy closure", transition.0)
+                    };
+                    assert_eq!(review.policy_hash.as_deref(), Some(hash.as_str()));
+                }
+            }
+            assert_eq!(
+                saw_project_policy,
+                matches!(
+                    current.status(),
+                    crate::findings::domain::PolicyStatus::Valid { .. }
+                ),
+                "{} must reconcile the active closure with the returned authority",
+                transition.0
+            );
+        }
     }
 
     #[tokio::test]
@@ -1474,6 +1795,91 @@ mod tests {
         assert_eq!(
             service.repository.load_run(&newest_run).unwrap().run_id,
             newest_run
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn in_flight_retry_is_reserved_from_fourth_pending_eviction() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = Arc::new(FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        ));
+        service.fail_next_completions_for_test(3);
+        let mut tokens = Vec::new();
+        let mut run_ids = Vec::new();
+        for index in 0..3 {
+            let project = directory.path().join(format!("project-{index}"));
+            std::fs::create_dir(&project).unwrap();
+            std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+            let pending = service
+                .scan(
+                    ScanOptions {
+                        path: project.to_string_lossy().into_owned(),
+                        scan_secrets: false,
+                        ..ScanOptions::default()
+                    },
+                    &cached_cve_state(),
+                    &AtomicBool::new(false),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .unwrap();
+            run_ids.push(pending.run_id.clone());
+            let RunPersistence::NotSaved { retry_token } = pending.persistence else {
+                panic!("fixture completion must be pending")
+            };
+            tokens.push(retry_token);
+        }
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        service.pause_reserved_retry_for_test(tokens[0].clone(), entered.clone(), release.clone());
+        let retry = {
+            let service = service.clone();
+            let token = tokens[0].clone();
+            std::thread::spawn(move || service.retry_save(&token))
+        };
+        entered.wait();
+
+        service.fail_next_completions_for_test(1);
+        let fourth_project = directory.path().join("project-3");
+        std::fs::create_dir(&fourth_project).unwrap();
+        std::fs::write(fourth_project.join("app.js"), "eval(input);\n").unwrap();
+        let fourth = service
+            .scan(
+                ScanOptions {
+                    path: fourth_project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            fourth.persistence,
+            RunPersistence::NotSaved { .. }
+        ));
+        {
+            let queue = service.pending_saves.lock().unwrap();
+            assert_eq!(queue.len(), 3);
+            assert!(queue.iter().any(|pending| pending.retry_token == tokens[0]));
+            assert!(!queue.iter().any(|pending| pending.retry_token == tokens[1]));
+        }
+        assert_eq!(
+            service.repository.load_run(&run_ids[1]).unwrap().status,
+            RunStatus::Incomplete
+        );
+
+        release.wait();
+        let saved = retry.join().unwrap().unwrap();
+        assert_eq!(saved.run_id, run_ids[0]);
+        assert_eq!(saved.persistence, RunPersistence::Saved);
+        assert_eq!(
+            service.retry_save(&tokens[0]).unwrap_err().code,
+            crate::findings::error::ErrorCode::NotFound
         );
     }
 
@@ -1976,6 +2382,117 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn missing_attempt_at_completion_is_terminal_and_never_offers_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        service.delete_next_attempt_before_completion_for_test();
+
+        let error = service
+            .scan(
+                ScanOptions {
+                    path: project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, crate::findings::error::ErrorCode::NotFound);
+        assert!(service.pending_saves.lock().unwrap().is_empty());
+        let run_id = service
+            .started_run_ids
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            service.repository.load_run(&run_id).unwrap_err().code,
+            crate::findings::error::ErrorCode::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn post_maintenance_reload_failure_is_pending_and_retry_keeps_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        let normal_project = directory.path().join("normal");
+        std::fs::create_dir(&normal_project).unwrap();
+        std::fs::write(normal_project.join("app.js"), "eval(input);\n").unwrap();
+        service.fail_next_post_maintenance_reload_for_test();
+        let pending = service
+            .scan(
+                ScanOptions {
+                    path: normal_project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+        let RunPersistence::NotSaved { retry_token } = pending.persistence else {
+            panic!("lost post-maintenance reload acknowledgement must be retryable")
+        };
+        assert_eq!(
+            service.repository.load_run(&pending.run_id).unwrap().status,
+            RunStatus::Completed
+        );
+        assert_eq!(
+            service.retry_save(&retry_token).unwrap().run_id,
+            pending.run_id
+        );
+
+        let retry_project = directory.path().join("retry");
+        std::fs::create_dir(&retry_project).unwrap();
+        std::fs::write(retry_project.join("app.js"), "eval(input);\n").unwrap();
+        service.fail_next_completions_for_test(1);
+        let pending = service
+            .scan(
+                ScanOptions {
+                    path: retry_project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+        let RunPersistence::NotSaved { retry_token } = pending.persistence else {
+            panic!("injected completion failure must be retryable")
+        };
+        service.fail_next_post_maintenance_reload_for_test();
+        let error = service.retry_save(&retry_token).unwrap_err();
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(
+            service.repository.load_run(&pending.run_id).unwrap().status,
+            RunStatus::Completed
+        );
+        assert_eq!(
+            service.retry_save(&retry_token).unwrap().run_id,
+            pending.run_id
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn cancellation_is_reset_only_when_the_service_was_idle() {
         let directory = tempfile::tempdir().unwrap();
@@ -2304,6 +2821,77 @@ mod tests {
         );
         assert!(current.review_history.iter().any(|review| {
             review.origin == crate::findings::domain::ReviewOrigin::ProjectPolicy
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_to_valid_mutation_during_saved_refresh_is_current_and_conservative() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let policy_path = project.join(".oxaudit/policy.json");
+        std::fs::write(&policy_path, b"{ invalid initial policy }").unwrap();
+        let service = Arc::new(FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        ));
+        let canonical = project
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        service.pause_policy_refresh_after_load_for_test(
+            canonical.clone(),
+            entered.clone(),
+            release.clone(),
+        );
+        let task = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .scan(
+                        ScanOptions {
+                            path: canonical,
+                            scan_secrets: false,
+                            ignore_invalid_policy: true,
+                            ..ScanOptions::default()
+                        },
+                        &cached_cve_state(),
+                        &AtomicBool::new(false),
+                        &RecordingEvents::default(),
+                    )
+                    .await
+            })
+        };
+        entered.wait();
+        write_valid_policy(&project, "current valid authority");
+        release.wait();
+
+        let saved = task.await.unwrap().unwrap();
+        let current = crate::findings::policy::load_policy(&project).unwrap();
+        assert_eq!(saved.persistence, RunPersistence::Saved);
+        assert_eq!(saved.policy, current.status().clone());
+        assert_eq!(
+            saved.maintenance_warning.as_deref(),
+            Some(POLICY_REFRESH_WARNING)
+        );
+        assert!(saved.findings.iter().all(|finding| {
+            finding.review.as_ref().is_none_or(|review| {
+                review.origin != crate::findings::domain::ReviewOrigin::ProjectPolicy
+            })
+        }));
+
+        let healed = service.load_run(&saved.run_id).unwrap();
+        let crate::findings::domain::PolicyStatus::Valid { hash } = current.status() else {
+            panic!("fixture must now be valid")
+        };
+        assert!(healed.findings.iter().any(|finding| {
+            finding.review.as_ref().is_some_and(|review| {
+                review.origin == crate::findings::domain::ReviewOrigin::ProjectPolicy
+                    && review.policy_hash.as_deref() == Some(hash.as_str())
+            })
         }));
     }
 
