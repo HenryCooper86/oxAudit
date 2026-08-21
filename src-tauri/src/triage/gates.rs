@@ -131,6 +131,8 @@ pub enum TriageError {
         finding_id: String,
         unanswered: Vec<Gate>,
     },
+    /// A confirmation contains contradictory, duplicate, or unsupported proof.
+    UnsupportedConfirmation { finding_id: String, reason: String },
 }
 
 impl std::fmt::Display for TriageError {
@@ -152,6 +154,9 @@ impl std::fmt::Display for TriageError {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            TriageError::UnsupportedConfirmation { finding_id, reason } => {
+                write!(f, "{finding_id}: confirmation is unsupported — {reason}")
+            }
         }
     }
 }
@@ -201,6 +206,21 @@ impl Triage {
         }
 
         if disposition == Disposition::Confirmed {
+            let mut seen = std::collections::HashSet::new();
+            for note in &gates {
+                if !seen.insert(note.gate) {
+                    return Err(TriageError::UnsupportedConfirmation {
+                        finding_id,
+                        reason: format!("duplicate note for gate {}", note.gate.slug()),
+                    });
+                }
+                if note.evidence.trim().is_empty() {
+                    return Err(TriageError::UnsupportedConfirmation {
+                        finding_id,
+                        reason: format!("gate {} gives no evidence", note.gate.slug()),
+                    });
+                }
+            }
             let unanswered: Vec<Gate> = ALL_GATES
                 .iter()
                 .copied()
@@ -214,6 +234,15 @@ impl Triage {
                 return Err(TriageError::IncompleteConfirmation {
                     finding_id,
                     unanswered,
+                });
+            }
+            if let Some(note) = gates
+                .iter()
+                .find(|note| note.verdict == GateVerdict::Eliminates)
+            {
+                return Err(TriageError::UnsupportedConfirmation {
+                    finding_id,
+                    reason: format!("gate {} eliminates it", note.gate.slug()),
                 });
             }
         }
@@ -287,6 +316,39 @@ mod tests {
             }
             other => panic!("wrong error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn confirmation_rejects_duplicate_gate_answers() {
+        let mut gates = all_surviving();
+        gates.push(note(Gate::Reachable, GateVerdict::Survives));
+
+        let error = Triage::new("F-duplicate", Disposition::Confirmed, gates, "2026-08-20")
+            .expect_err("duplicate gate evidence must not confirm");
+
+        assert!(matches!(error, TriageError::UnsupportedConfirmation { .. }));
+    }
+
+    #[test]
+    fn confirmation_rejects_an_eliminating_gate() {
+        let mut gates = all_surviving();
+        gates[2] = note(Gate::AttackerControlled, GateVerdict::Eliminates);
+
+        let error = Triage::new("F-eliminates", Disposition::Confirmed, gates, "2026-08-20")
+            .expect_err("an eliminated candidate cannot be confirmed");
+
+        assert!(matches!(error, TriageError::UnsupportedConfirmation { .. }));
+    }
+
+    #[test]
+    fn confirmation_rejects_blank_gate_evidence() {
+        let mut gates = all_surviving();
+        gates[4].evidence = "   ".into();
+
+        let error = Triage::new("F-blank", Disposition::Confirmed, gates, "2026-08-20")
+            .expect_err("blank evidence cannot confirm");
+
+        assert!(matches!(error, TriageError::UnsupportedConfirmation { .. }));
     }
 
     #[test]

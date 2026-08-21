@@ -1,4 +1,4 @@
-use std::{collections::HashSet, io::Write, path::Path, sync::Mutex};
+use std::{collections::HashSet, io::Write, ops::Range, path::Path, sync::Mutex};
 #[cfg(windows)]
 use std::{fs, path::PathBuf};
 #[cfg(unix)]
@@ -852,6 +852,37 @@ fn validate_update_input(
     )
 }
 
+pub(crate) fn validate_portable_review_fields(
+    request: &ReviewRequest,
+    now: &DateTime<Utc>,
+) -> bool {
+    if request.origin != ReviewOrigin::ProjectPolicy {
+        return false;
+    }
+    if request.state == ReviewState::Candidate {
+        return request.reason.trim().is_empty()
+            && request.evidence.is_none()
+            && request.entry_point.is_none()
+            && request.data_flow.is_none()
+            && request.gates.is_empty()
+            && request.deciding_gate.is_none()
+            && request.expires_at.is_none();
+    }
+    validate_finding_decision(
+        &request.category,
+        request.state,
+        &request.reason,
+        request.evidence.as_deref(),
+        request.entry_point.as_deref(),
+        request.data_flow.as_deref(),
+        &request.gates,
+        request.deciding_gate,
+        request.expires_at.as_deref(),
+        ValidationMode::NewDecision(now),
+    )
+    .is_ok()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn validate_finding_decision(
     category: &str,
@@ -976,72 +1007,96 @@ fn safe_required_text(value: &str) -> bool {
 }
 
 fn safe_optional_text(value: &str) -> bool {
+    let scan = scan_portable_text(value);
+    let _ = scan.operations;
     !value.contains('\\')
         && !value.chars().any(char::is_control)
         && !value.contains("[REDACTED]")
-        && !contains_absolute_or_traversal(value)
-        && !credential_shaped(value)
+        && !scan.unsafe_path
+        && !credential_shaped(value, &scan.safe_url_ranges)
 }
 
-fn contains_absolute_or_traversal(value: &str) -> bool {
-    value.split_whitespace().any(token_has_unsafe_path)
+#[derive(Debug)]
+struct PortableTextScan {
+    unsafe_path: bool,
+    safe_url_ranges: Vec<Range<usize>>,
+    operations: usize,
 }
 
-fn token_has_unsafe_path(token: &str) -> bool {
-    let mut safe_url_end = 0;
-    for start in lexical_candidate_starts(token) {
-        if start < safe_url_end {
-            continue;
-        }
-        let tail = &token[start..];
-        if let Some(url) = http_url_candidate(tail) {
-            if !safe_http_url(url) {
-                return true;
+fn scan_portable_text(value: &str) -> PortableTextScan {
+    let bytes = value.as_bytes();
+    let mut safe_url_ranges = Vec::new();
+    let mut operations = 0usize;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        operations = operations.saturating_add(1);
+        if starts_http_scheme(bytes, index) {
+            match validate_http_url_at(bytes, index, &mut operations) {
+                Ok(end) => {
+                    safe_url_ranges.push(index..end);
+                    index = end;
+                    continue;
+                }
+                Err(()) => {
+                    return PortableTextScan {
+                        unsafe_path: true,
+                        safe_url_ranges,
+                        operations,
+                    };
+                }
             }
-            safe_url_end = start + url.len();
-            continue;
         }
 
-        let candidate_end = tail
-            .char_indices()
-            .find(|(_, character)| !path_candidate_character(*character))
-            .map_or(tail.len(), |(index, _)| index);
-        if unsafe_path_token(tail) || unsafe_path_token(&tail[..candidate_end]) {
-            return true;
+        if path_candidate_byte(bytes[index]) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && path_candidate_byte(bytes[index]) {
+                operations = operations.saturating_add(1);
+                index += 1;
+            }
+            let candidate = &value[start..index];
+            if unsafe_path_candidate(candidate)
+                || (candidate.len() == 1
+                    && candidate.as_bytes()[0].is_ascii_alphabetic()
+                    && bytes.get(index) == Some(&b':'))
+            {
+                return PortableTextScan {
+                    unsafe_path: true,
+                    safe_url_ranges,
+                    operations,
+                };
+            }
+        } else {
+            index += 1;
         }
     }
-    false
-}
 
-fn lexical_candidate_starts(token: &str) -> impl Iterator<Item = usize> + '_ {
-    std::iter::once(0).chain(
-        token
-            .char_indices()
-            .filter(|(_, character)| !path_candidate_character(*character))
-            .map(|(index, character)| index + character.len_utf8()),
-    )
-}
-
-fn path_candidate_character(character: char) -> bool {
-    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | '/')
-}
-
-fn http_url_candidate(value: &str) -> Option<&str> {
-    if !value.starts_with("http://") && !value.starts_with("https://") {
-        return None;
+    PortableTextScan {
+        unsafe_path: false,
+        safe_url_ranges,
+        operations,
     }
-    let end = value
-        .char_indices()
-        .find(|(_, character)| !url_candidate_character(*character))
-        .map_or(value.len(), |(index, _)| index);
-    Some(&value[..end])
 }
 
-fn url_candidate_character(character: char) -> bool {
-    path_candidate_character(character)
+#[cfg(test)]
+fn portable_text_validation_work(value: &str) -> usize {
+    scan_portable_text(value).operations
+}
+
+fn path_candidate_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/')
+}
+
+fn starts_http_scheme(bytes: &[u8], start: usize) -> bool {
+    bytes[start..].starts_with(b"http://") || bytes[start..].starts_with(b"https://")
+}
+
+fn url_candidate_byte(byte: u8) -> bool {
+    path_candidate_byte(byte)
         || matches!(
-            character,
-            '~' | ':' | '%' | '@' | '?' | '#' | '=' | '&' | '+'
+            byte,
+            b'~' | b':' | b'%' | b'@' | b'?' | b'#' | b'=' | b'&' | b'+'
         )
 }
 
@@ -1056,48 +1111,121 @@ fn conventional_prose_delimiter(character: char) -> bool {
     )
 }
 
-fn unsafe_path_token(token: &str) -> bool {
-    if token.is_empty() {
-        return false;
-    }
-    let lower = token.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        return !safe_http_url(token);
-    }
-    lower.starts_with("file://")
-        || token.starts_with('/')
-        || has_drive_prefix(token)
-        || token == ".."
-        || token.starts_with("../")
-        || token.ends_with("/..")
-        || token.contains("/../")
+fn unsafe_path_candidate(candidate: &str) -> bool {
+    candidate.starts_with('/')
+        || has_drive_prefix(candidate)
+        || candidate.split('/').any(|segment| segment == "..")
 }
 
-fn safe_http_url(token: &str) -> bool {
-    let rest = token
-        .strip_prefix("https://")
-        .or_else(|| token.strip_prefix("http://"));
-    let Some(rest) = rest else {
-        return false;
+fn validate_http_url_at(bytes: &[u8], start: usize, operations: &mut usize) -> Result<usize, ()> {
+    let authority_start = if bytes[start..].starts_with(b"https://") {
+        start + b"https://".len()
+    } else if bytes[start..].starts_with(b"http://") {
+        start + b"http://".len()
+    } else {
+        return Err(());
     };
-    if rest.is_empty()
-        || rest
-            .chars()
-            .any(|character| matches!(character, '@' | '?' | '#' | '\\'))
-    {
-        return false;
+    let mut end = authority_start;
+    while end < bytes.len() && url_candidate_byte(bytes[end]) {
+        *operations = operations.saturating_add(1);
+        end += 1;
     }
-    let (authority, path) = rest
-        .split_once('/')
-        .map_or((rest, None), |(host, path)| (host, Some(path)));
-    !authority.is_empty()
-        && authority.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | ':')
-        })
-        && path.is_none_or(|path| !path.split('/').any(|segment| matches!(segment, "." | "..")))
+    let url = &bytes[authority_start..end];
+    if url.iter().any(|byte| matches!(byte, b'@' | b'?' | b'#')) {
+        return Err(());
+    }
+    let path_start = url.iter().position(|byte| *byte == b'/');
+    let authority = &url[..path_start.unwrap_or(url.len())];
+    if authority.is_empty()
+        || authority
+            .iter()
+            .any(|byte| matches!(byte, b'@' | b'?' | b'#' | b'\\' | b'%'))
+    {
+        return Err(());
+    }
+    let colon_count = authority.iter().filter(|byte| **byte == b':').count();
+    if colon_count > 1 {
+        return Err(());
+    }
+    let (host, port) = authority
+        .iter()
+        .position(|byte| *byte == b':')
+        .map_or((authority, None), |colon| {
+            (&authority[..colon], Some(&authority[colon + 1..]))
+        });
+    if !valid_url_host(host)
+        || port.is_some_and(|port| port.is_empty() || !port.iter().all(u8::is_ascii_digit))
+    {
+        return Err(());
+    }
+
+    if let Some(path_start) = path_start {
+        validate_url_path(&url[path_start + 1..], operations)?;
+    }
+    Ok(end)
 }
 
-fn credential_shaped(value: &str) -> bool {
+fn valid_url_host(host: &[u8]) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split(|byte| *byte == b'.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.first().is_some_and(u8::is_ascii_alphanumeric)
+                && label.last().is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .iter()
+                    .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+        })
+}
+
+fn validate_url_path(path: &[u8], operations: &mut usize) -> Result<(), ()> {
+    let mut index = 0usize;
+    let mut segment_len = 0usize;
+    let mut segment_all_dots = true;
+    while index <= path.len() {
+        *operations = operations.saturating_add(1);
+        if index == path.len() || path[index] == b'/' {
+            if segment_all_dots && matches!(segment_len, 1 | 2) {
+                return Err(());
+            }
+            segment_len = 0;
+            segment_all_dots = true;
+            index += 1;
+            continue;
+        }
+        let decoded = if path[index] == b'%' {
+            let high = *path.get(index + 1).ok_or(())?;
+            let low = *path.get(index + 2).ok_or(())?;
+            let decoded = decode_hex(high).and_then(|high| {
+                decode_hex(low).map(|low| high.saturating_mul(16).saturating_add(low))
+            });
+            index += 3;
+            decoded.ok_or(())?
+        } else {
+            let decoded = path[index];
+            index += 1;
+            decoded
+        };
+        if matches!(decoded, b'/' | b'\\') {
+            return Err(());
+        }
+        segment_len = segment_len.saturating_add(1);
+        segment_all_dots &= decoded == b'.';
+    }
+    Ok(())
+}
+
+fn decode_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn credential_shaped(value: &str, safe_url_ranges: &[Range<usize>]) -> bool {
     let lower = value.to_ascii_lowercase();
     if lower.contains("-----begin ")
         || (lower.contains("://") && lower.contains('@'))
@@ -1108,29 +1236,31 @@ fn credential_shaped(value: &str) -> bool {
         return true;
     }
     let mut previous = None;
+    let mut search_from = 0usize;
+    let mut safe_url_index = 0usize;
     for raw in value.split_whitespace() {
+        let raw_start = search_from
+            + value[search_from..]
+                .find(raw)
+                .expect("split token remains inside source text");
+        search_from = raw_start + raw.len();
         let token = unwrap_token(raw);
+        let token_start = raw_start + raw.find(token).unwrap_or(0);
         if contextual_hash_assignment(token) {
             previous = Some(token);
             continue;
         }
-        let safe_url_ranges = lexical_candidate_starts(token)
-            .filter_map(|start| {
-                let url = http_url_candidate(&token[start..])?;
-                safe_http_url(url).then_some((start, start + url.len()))
-            })
-            .collect::<Vec<_>>();
-        let mut safe_url_index = 0;
         let rejected = TOKEN_CANDIDATE.find_iter(token).any(|candidate| {
             while safe_url_ranges
                 .get(safe_url_index)
-                .is_some_and(|(_, end)| *end <= candidate.start())
+                .is_some_and(|range| range.end <= token_start + candidate.start())
             {
                 safe_url_index += 1;
             }
-            let inside_safe_url = safe_url_ranges
-                .get(safe_url_index)
-                .is_some_and(|(start, end)| *start <= candidate.start() && candidate.end() <= *end);
+            let inside_safe_url = safe_url_ranges.get(safe_url_index).is_some_and(|range| {
+                range.start <= token_start + candidate.start()
+                    && token_start + candidate.end() <= range.end
+            });
             !inside_safe_url && high_entropy_standalone_token(token, candidate, previous)
         });
         if rejected {
@@ -1139,6 +1269,11 @@ fn credential_shaped(value: &str) -> bool {
         previous = Some(token);
     }
     false
+}
+
+pub(crate) fn contains_credential_material(value: &str) -> bool {
+    let scan = scan_portable_text(value);
+    credential_shaped(value, &scan.safe_url_ranges)
 }
 
 fn contextual_hash_assignment(token: &str) -> bool {
@@ -1189,7 +1324,6 @@ fn high_entropy_standalone_token(
 
 fn contextual_hash(container: &str, candidate_start: usize) -> bool {
     let label = container[..candidate_start]
-        .trim_end()
         .split_whitespace()
         .next_back()
         .map(|value| value.trim_matches(|character: char| !character.is_ascii_alphanumeric()))
@@ -3980,6 +4114,139 @@ mod tests {
                 load_policy(update_root.path()).unwrap().status(),
                 PolicyStatus::Valid { .. }
             ));
+        }
+    }
+
+    #[test]
+    fn public_policy_validation_is_linear_for_punctuation_heavy_near_cap_text() {
+        let empty = serde_json::to_vec(&serde_json::json!({"version": 1, "entries": [{
+            "kind": "finding",
+            "fingerprintVersion": 1,
+            "fingerprint": "abcdef0123456789",
+            "category": "secret",
+            "state": "acceptedRisk",
+            "reason": "",
+        }]}))
+        .unwrap();
+        let reason_len = MAX_POLICY_BYTES as usize - empty.len() - 1;
+        let reason = "a!".repeat(reason_len / 2)
+            + if reason_len.is_multiple_of(2) {
+                ""
+            } else {
+                "a"
+            };
+        let work = portable_text_validation_work(&reason);
+        assert!(
+            work <= reason.len().saturating_mul(8).saturating_add(64),
+            "validation performed {work} operations for {} bytes",
+            reason.len()
+        );
+
+        let load_root = tempfile::tempdir().unwrap();
+        let policy = serde_json::to_vec(&serde_json::json!({"version": 1, "entries": [{
+            "kind": "finding",
+            "fingerprintVersion": 1,
+            "fingerprint": "abcdef0123456789",
+            "category": "secret",
+            "state": "acceptedRisk",
+            "reason": reason,
+        }]}))
+        .unwrap();
+        assert!(policy.len() <= MAX_POLICY_BYTES as usize);
+        write_policy(load_root.path(), &policy);
+        assert!(matches!(
+            load_policy(load_root.path()).unwrap().status(),
+            PolicyStatus::Valid { .. }
+        ));
+
+        let update_root = tempfile::tempdir().unwrap();
+        let mut update = request(ReviewState::AcceptedRisk, "secret");
+        update.reason = "a!".repeat((MAX_POLICY_BYTES as usize - 512) / 2);
+        let saved = update_policy_decision(update_root.path(), &finding("secret"), &update, now())
+            .expect("near-cap punctuation-heavy update remains responsive and valid");
+        assert_eq!(saved.state, ReviewState::AcceptedRisk);
+    }
+
+    #[test]
+    fn malformed_or_encoded_urls_are_rejected_at_public_policy_boundaries() {
+        let unsafe_urls = [
+            "See(https://:/etc/passwd)",
+            "See(https://docs.example.com/%2e%2e/etc/passwd)",
+            "See(https://docs.example.com/%2E%2e/etc/passwd)",
+            "See(https://docs.example.com/security%2fprivate)",
+            "See(https://docs.example.com/security%2Fprivate)",
+            "See(https://docs.example.com/security%5cprivate)",
+            "See(https://docs.example.com/security%5Cprivate)",
+            "See(https://docs.example.com/security%)",
+            "See(https://docs.example.com/security%2)",
+            "See(https://docs.example.com:abc/security)",
+            "See(https://docs.example.com:/security)",
+            "See(https://./security)",
+            "See(https://docs..example.com/security)",
+            "See(https://-docs.example.com/security)",
+            "See(https://docs-.example.com/security)",
+            "See(https://user@docs.example.com/security)",
+            "See(https://docs.example.com/security?mode=review)",
+            "See(https://docs.example.com/security#review)",
+        ];
+
+        for reason in unsafe_urls {
+            let load_root = tempfile::tempdir().unwrap();
+            let loaded = load_json(
+                load_root.path(),
+                serde_json::json!({"version": 1, "entries": [{
+                    "kind": "finding",
+                    "fingerprintVersion": 1,
+                    "fingerprint": "abcdef0123456789",
+                    "category": "secret",
+                    "state": "acceptedRisk",
+                    "reason": reason,
+                }]}),
+            );
+            assert!(
+                matches!(loaded.status(), PolicyStatus::Invalid { .. }),
+                "load accepted unsafe URL {reason:?}"
+            );
+
+            let update_root = tempfile::tempdir().unwrap();
+            let mut update = request(ReviewState::AcceptedRisk, "secret");
+            update.reason = reason.into();
+            let error =
+                update_policy_decision(update_root.path(), &finding("secret"), &update, now())
+                    .expect_err("unsafe URL must not be persisted");
+            assert_eq!(error.code, crate::findings::error::ErrorCode::ReviewInvalid);
+            assert_eq!(error.message, "The review request is invalid.");
+            assert_eq!(error.detail, None);
+        }
+    }
+
+    #[test]
+    fn exact_valid_url_spans_preserve_safe_portable_text() {
+        let digest = "a9f73c6d14e82b05f7c9134da6e28b40c17f5892";
+        for reason in [
+            "See(https://docs.example.com/security%20review)".to_owned(),
+            "See(https://docs.example.com:8443/security)".to_owned(),
+            "See!https://docs.example.com/security then src/security/policy.rs".to_owned(),
+            "See(https://docs.example.com/security) and production-feature-manifest".to_owned(),
+            "See(https://docs.example.com/security) threshold < limit".to_owned(),
+            format!("See(https://docs.example.com/security) commit={digest}"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let loaded = load_json(
+                root.path(),
+                serde_json::json!({"version": 1, "entries": [{
+                    "kind": "finding",
+                    "fingerprintVersion": 1,
+                    "fingerprint": "abcdef0123456789",
+                    "category": "secret",
+                    "state": "acceptedRisk",
+                    "reason": reason,
+                }]}),
+            );
+            assert!(
+                matches!(loaded.status(), PolicyStatus::Valid { .. }),
+                "load rejected safe URL text {reason:?}"
+            );
         }
     }
 

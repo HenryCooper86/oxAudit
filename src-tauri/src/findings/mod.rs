@@ -5,3 +5,4 @@ pub mod fingerprint;
 pub mod policy;
 pub mod redaction;
 pub mod repository;
+pub mod review;
