@@ -27,7 +27,7 @@ Status: Passed
 | `npm run build` | 0 | Production build completed; Vite transformed 1,798 modules. |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` | 0 | No formatting differences. |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 0 | 492 passed, 0 failed, 1 ignored. The ignored live OSV test is the established compiled-binary outbound-network fixture. |
-| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets` | 0 | Established advisory baseline only: 21 library warnings and 35 library-test warnings, including 21 duplicates; no warning points to the Task 11 test. |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets` | 0 | 20 library warnings and 32 library-test warnings, including 20 duplicates. No warning remains in `findings`, scope/manifest, or modified Source Scan command code. The unchanged cast warning in `scanners/mod.rs` predates the foundation base. |
 | `git diff --check` | 0 | No whitespace errors. |
 
 ## Restart, schema, fingerprint, and redaction evidence
@@ -64,7 +64,7 @@ Additional focused evidence:
 
 ## Known limitations
 
-- Clippy is not warning-free. The established baseline remains 21 library warnings and 35 library-test warnings, including 21 duplicates. One existing warning is in `findings/repository.rs`; none is on the Task 11 test or a Task 11-modified production line.
+- Clippy is not warning-free. It reports 20 library warnings and 32 library-test warnings, including 20 duplicates, outside the foundation-owned gate. No warning remains in `findings`, `triage/scope.rs`, `triage/manifest.rs`, or modified Source Scan command code. The sole warning in another explicitly checked file, an unnecessary cast in `scanners/mod.rs`, is unchanged from the pre-foundation root commit.
 - Native Windows policy/database runtime behavior was not executed on this macOS host. Cross-platform Rust code compiled for the current target, and prior isolated Windows compile evidence remains documented in the task reports, but this QA pass does not claim Windows runtime verification.
 - The one intentionally ignored live OSV test was not converted into an offline assertion; the foundation's deterministic tests do not depend on it.
 
