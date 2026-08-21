@@ -984,33 +984,65 @@ fn safe_optional_text(value: &str) -> bool {
 }
 
 fn contains_absolute_or_traversal(value: &str) -> bool {
-    value.split_whitespace().any(|raw| {
-        let token = unwrap_token(raw);
-        if safe_http_url(token) {
-            return false;
-        }
-        if unsafe_path_token(token) {
-            return true;
-        }
-        if delimiter_attached_unsafe_path(token) {
-            return true;
-        }
-        token
-            .split_once('=')
-            .is_some_and(|(_, assigned)| unsafe_path_token(unwrap_token(assigned)))
-            || token.split_once(':').is_some_and(|(label, assigned)| {
-                !label.eq_ignore_ascii_case("http")
-                    && !label.eq_ignore_ascii_case("https")
-                    && unsafe_path_token(unwrap_token(assigned))
-            })
-    })
+    value.split_whitespace().any(token_has_unsafe_path)
 }
 
-fn delimiter_attached_unsafe_path(token: &str) -> bool {
-    token.char_indices().any(|(index, character)| {
-        conventional_prose_delimiter(character)
-            && unsafe_path_token(unwrap_token(&token[index + character.len_utf8()..]))
-    })
+fn token_has_unsafe_path(token: &str) -> bool {
+    let mut safe_url_end = 0;
+    for start in lexical_candidate_starts(token) {
+        if start < safe_url_end {
+            continue;
+        }
+        let tail = &token[start..];
+        if let Some(url) = http_url_candidate(tail) {
+            if !safe_http_url(url) {
+                return true;
+            }
+            safe_url_end = start + url.len();
+            continue;
+        }
+
+        let candidate_end = tail
+            .char_indices()
+            .find(|(_, character)| !path_candidate_character(*character))
+            .map_or(tail.len(), |(index, _)| index);
+        if unsafe_path_token(tail) || unsafe_path_token(&tail[..candidate_end]) {
+            return true;
+        }
+    }
+    false
+}
+
+fn lexical_candidate_starts(token: &str) -> impl Iterator<Item = usize> + '_ {
+    std::iter::once(0).chain(
+        token
+            .char_indices()
+            .filter(|(_, character)| !path_candidate_character(*character))
+            .map(|(index, character)| index + character.len_utf8()),
+    )
+}
+
+fn path_candidate_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | '/')
+}
+
+fn http_url_candidate(value: &str) -> Option<&str> {
+    if !value.starts_with("http://") && !value.starts_with("https://") {
+        return None;
+    }
+    let end = value
+        .char_indices()
+        .find(|(_, character)| !url_candidate_character(*character))
+        .map_or(value.len(), |(index, _)| index);
+    Some(&value[..end])
+}
+
+fn url_candidate_character(character: char) -> bool {
+    path_candidate_character(character)
+        || matches!(
+            character,
+            '~' | ':' | '%' | '@' | '?' | '#' | '=' | '&' | '+'
+        )
 }
 
 fn unwrap_token(value: &str) -> &str {
@@ -1082,10 +1114,25 @@ fn credential_shaped(value: &str) -> bool {
             previous = Some(token);
             continue;
         }
-        let rejected = !safe_http_url(token)
-            && TOKEN_CANDIDATE
-                .find_iter(token)
-                .any(|candidate| high_entropy_standalone_token(token, candidate, previous));
+        let safe_url_ranges = lexical_candidate_starts(token)
+            .filter_map(|start| {
+                let url = http_url_candidate(&token[start..])?;
+                safe_http_url(url).then_some((start, start + url.len()))
+            })
+            .collect::<Vec<_>>();
+        let mut safe_url_index = 0;
+        let rejected = TOKEN_CANDIDATE.find_iter(token).any(|candidate| {
+            while safe_url_ranges
+                .get(safe_url_index)
+                .is_some_and(|(_, end)| *end <= candidate.start())
+            {
+                safe_url_index += 1;
+            }
+            let inside_safe_url = safe_url_ranges
+                .get(safe_url_index)
+                .is_some_and(|(start, end)| *start <= candidate.start() && candidate.end() <= *end);
+            !inside_safe_url && high_entropy_standalone_token(token, candidate, previous)
+        });
         if rejected {
             return true;
         }
@@ -3796,9 +3843,29 @@ mod tests {
     }
 
     #[test]
-    fn delimiter_attached_machine_paths_are_rejected_at_public_policy_boundaries() {
+    fn lexical_candidate_boundaries_reject_unsafe_paths_at_public_policy_boundaries() {
         let digest = "a9f73c6d14e82b05f7c9134da6e28b40c17f5892";
         let reasons = [
+            "checked!/etc/passwd".to_owned(),
+            "checked?/etc/passwd".to_owned(),
+            format!("commit=<{digest}>=/etc/passwd"),
+            "checked!!/etc/passwd".to_owned(),
+            "checked::/etc/passwd".to_owned(),
+            "checked@@/etc/passwd".to_owned(),
+            "checked||/etc/passwd".to_owned(),
+            "checked=:/etc/passwd".to_owned(),
+            "checked><!/etc/passwd".to_owned(),
+            "safe=src/security/policy.rs|/etc/passwd".to_owned(),
+            "checked!file:///Users/alice/private.rs".to_owned(),
+            "checked?//server/share".to_owned(),
+            "checked|C:/Users/alice/private.rs".to_owned(),
+            "checked@../private.rs".to_owned(),
+            "See(https://docs.example.com/../private)".to_owned(),
+            "See(https://user@docs.example.com/security)".to_owned(),
+            "See(https://docs.example.com/security?token=value)".to_owned(),
+            "See(https://docs.example.com/security#fragment)".to_owned(),
+            "See(https://docs.example.com/security)|/etc/passwd".to_owned(),
+            "token=abc".to_owned(),
             "checked(/etc/passwd)".to_owned(),
             "path[/etc/passwd]".to_owned(),
             "note{/etc/passwd}".to_owned(),
@@ -3856,9 +3923,18 @@ mod tests {
     }
 
     #[test]
-    fn delimiter_scan_preserves_safe_public_policy_reasons() {
+    fn lexical_candidate_scan_preserves_safe_public_policy_reasons() {
         let digest = "a9f73c6d14e82b05f7c9134da6e28b40c17f5892";
         for reason in [
+            "See(https://docs.example.com/security)".to_owned(),
+            "See[https://docs.example.com/security]".to_owned(),
+            "See<https://docs.example.com/security>".to_owned(),
+            "See{https://docs.example.com/security}".to_owned(),
+            "See'https://docs.example.com/security'".to_owned(),
+            "See\"https://docs.example.com/security\"".to_owned(),
+            "See`https://docs.example.com/security`".to_owned(),
+            "See!?https://docs.example.com/security".to_owned(),
+            "See(https://docs.example.com:8443/security)".to_owned(),
             format!("commit={digest}"),
             format!("commit=<{digest}>"),
             "See https://docs.example.com/security/production-feature-manifest".to_owned(),
@@ -3887,6 +3963,23 @@ mod tests {
                 matches!(loaded.status(), PolicyStatus::Valid { .. }),
                 "load rejected safe reason {reason:?}"
             );
+
+            let update_root = tempfile::tempdir().unwrap();
+            let mut safe_request = request(ReviewState::AcceptedRisk, "secret");
+            safe_request.reason = reason.clone();
+            let review = update_policy_decision(
+                update_root.path(),
+                &finding("secret"),
+                &safe_request,
+                now(),
+            )
+            .unwrap_or_else(|error| panic!("update rejected safe reason {reason:?}: {error:?}"));
+            assert_eq!(review.state, ReviewState::AcceptedRisk);
+            assert_eq!(review.reason, reason);
+            assert!(matches!(
+                load_policy(update_root.path()).unwrap().status(),
+                PolicyStatus::Valid { .. }
+            ));
         }
     }
 
