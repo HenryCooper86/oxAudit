@@ -163,11 +163,11 @@ static KNOWN_CREDENTIAL_PREFIX: Lazy<Regex> = Lazy::new(|| {
 static TOKEN_CANDIDATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z0-9_+/=.-]{24,}").unwrap());
 static POLICY_UPDATE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-pub(crate) struct PolicyAuthority<'a> {
+pub(in crate::findings) struct PolicyAuthority<'a> {
     _guard: MutexGuard<'a, ()>,
 }
 
-pub(crate) fn with_policy_authority<T>(
+pub(in crate::findings) fn with_policy_authority<T>(
     operation: impl FnOnce(&PolicyAuthority<'_>) -> Result<T, CommandError>,
 ) -> Result<T, CommandError> {
     let guard = POLICY_UPDATE_LOCK
@@ -527,7 +527,7 @@ fn update_policy_decision_core(
     })
 }
 
-pub(crate) fn update_policy_decision_under_authority(
+pub(in crate::findings) fn update_policy_decision_under_authority(
     authority: &PolicyAuthority<'_>,
     project_root: &Path,
     finding: &Finding,
@@ -615,14 +615,14 @@ fn update_policy_decision_under_authority_with_hook(
     Ok(reloaded)
 }
 
-pub(crate) fn load_policy_under_authority(
+pub(in crate::findings) fn load_policy_under_authority(
     _authority: &PolicyAuthority<'_>,
     project_root: &Path,
 ) -> Result<LoadedPolicy, CommandError> {
     load_policy(project_root)
 }
 
-pub(crate) fn policy_authority_still_matches(
+pub(in crate::findings) fn policy_authority_still_matches(
     authority: &PolicyAuthority<'_>,
     project_root: &Path,
     expected: &LoadedPolicy,
