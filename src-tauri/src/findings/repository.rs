@@ -8,6 +8,7 @@ use std::{
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{
     coverage::CoverageManifest,
@@ -623,6 +624,79 @@ impl FindingsRepository {
     ) -> Result<Vec<Finding>, CommandError> {
         let connection = self.connection.lock().map_err(persistence_error)?;
         compare_runs_from_connection(&connection, current_run_id, baseline_run_id)
+    }
+
+    /// Returns the authoritative newest completed observation for an exact
+    /// project finding identity. Stored RFC3339 values are parsed as instants;
+    /// their textual representation never controls recency.
+    pub fn latest_observation(
+        &self,
+        project_id: &str,
+        fingerprint_version: u16,
+        fingerprint: &str,
+    ) -> Result<Finding, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        latest_observation_from_connection(
+            &connection,
+            project_id,
+            fingerprint_version,
+            fingerprint,
+        )?
+        .ok_or_else(CommandError::not_found)
+    }
+
+    /// Returns one authoritative newest completed observation per stable
+    /// identity for policy reconciliation on project load.
+    pub fn latest_project_observations(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<Finding>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        latest_project_observations_from_connection(&connection, project_id)
+    }
+
+    /// Appends an analyst event and supersedes only the current event from the
+    /// same origin in one transaction. Persistence owns the UUID event key.
+    pub fn save_review_event(&self, review: &ReviewRecord) -> Result<ReviewRecord, CommandError> {
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+        let stored = append_review_event(&transaction, review)?;
+        transaction.commit().map_err(persistence_error)?;
+        Ok(stored)
+    }
+
+    /// Reconciles a policy-derived projection without duplicating an exact
+    /// active event. A Candidate is persisted only when it clears an existing
+    /// project-policy event.
+    pub fn reconcile_project_policy_event(
+        &self,
+        review: &ReviewRecord,
+    ) -> Result<(ReviewRecord, bool), CommandError> {
+        if review.origin != ReviewOrigin::ProjectPolicy {
+            return Err(CommandError::persistence_unavailable());
+        }
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+        let result = reconcile_project_policy_event_in_transaction(&transaction, review)?;
+        transaction.commit().map_err(persistence_error)?;
+        Ok(result)
+    }
+
+    /// Reconciles a complete project-policy projection atomically. Either all
+    /// changed identities are appended or none are.
+    pub fn reconcile_project_policy_events(
+        &self,
+        reviews: &[ReviewRecord],
+    ) -> Result<usize, CommandError> {
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+        let mut inserted = 0usize;
+        for review in reviews {
+            inserted +=
+                usize::from(reconcile_project_policy_event_in_transaction(&transaction, review)?.1);
+        }
+        transaction.commit().map_err(persistence_error)?;
+        Ok(inserted)
     }
 
     pub fn list_recent_projects(&self, limit: usize) -> Result<Vec<RecentProject>, CommandError> {
@@ -1392,6 +1466,204 @@ fn latest_completed_run_from_connection(
         .map(Option::flatten)
 }
 
+fn latest_observation_from_connection(
+    connection: &Connection,
+    project_id: &str,
+    fingerprint_version: u16,
+    fingerprint: &str,
+) -> Result<Option<Finding>, CommandError> {
+    let candidates = {
+        let mut statement = connection
+            .prepare(
+                r#"SELECT f.run_id, r.completed_at
+                   FROM findings f
+                   JOIN scan_runs r ON r.id = f.run_id
+                   WHERE r.project_id = ?1
+                     AND r.status = 'completed'
+                     AND f.fingerprint_version = ?2
+                     AND f.fingerprint = ?3"#,
+            )
+            .map_err(persistence_error)?;
+        let rows = statement
+            .query_map(
+                params![project_id, fingerprint_version, fingerprint],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .map_err(persistence_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(persistence_error)?;
+        rows
+    };
+    let mut newest = None::<(DateTime<Utc>, String)>;
+    for (run_id, completed_at) in candidates {
+        let completed_at = completed_at
+            .as_deref()
+            .ok_or_else(CommandError::persistence_unavailable)
+            .and_then(parse_utc_timestamp)?;
+        let replace = newest.as_ref().is_none_or(|(newest_at, newest_run)| {
+            completed_at > *newest_at || (completed_at == *newest_at && run_id > *newest_run)
+        });
+        if replace {
+            newest = Some((completed_at, run_id));
+        }
+    }
+    let Some((_, run_id)) = newest else {
+        return Ok(None);
+    };
+    let observation = load_findings(connection, &run_id, project_id)?
+        .into_iter()
+        .find(|finding| {
+            finding.fingerprint_version == fingerprint_version && finding.fingerprint == fingerprint
+        })
+        .ok_or_else(CommandError::persistence_unavailable)?;
+    Ok(Some(observation))
+}
+
+fn latest_project_observations_from_connection(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<Finding>, CommandError> {
+    let identities = {
+        let mut statement = connection
+            .prepare(
+                r#"SELECT DISTINCT f.fingerprint_version, f.fingerprint
+                   FROM findings f
+                   JOIN scan_runs r ON r.id = f.run_id
+                   WHERE r.project_id = ?1 AND r.status = 'completed'"#,
+            )
+            .map_err(persistence_error)?;
+        let rows = statement
+            .query_map([project_id], |row| {
+                Ok((row.get::<_, u16>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(persistence_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(persistence_error)?;
+        rows
+    };
+    let mut observations = identities
+        .into_iter()
+        .map(|(version, fingerprint)| {
+            latest_observation_from_connection(connection, project_id, version, &fingerprint)?
+                .ok_or_else(CommandError::persistence_unavailable)
+        })
+        .collect::<Result<Vec<_>, CommandError>>()?;
+    observations.sort_by(|left, right| {
+        left.fingerprint_version
+            .cmp(&right.fingerprint_version)
+            .then_with(|| left.fingerprint.cmp(&right.fingerprint))
+    });
+    Ok(observations)
+}
+
+fn append_review_event(
+    transaction: &rusqlite::Transaction<'_>,
+    review: &ReviewRecord,
+) -> Result<ReviewRecord, CommandError> {
+    let current = load_reviews(
+        transaction,
+        &review.project_id,
+        review.fingerprint_version,
+        &review.fingerprint,
+    )?
+    .into_iter()
+    .find(|stored| stored.origin == review.origin && stored.superseded_at.is_none());
+    if let Some(current) = current {
+        let changed = transaction
+            .execute(
+                "UPDATE reviews SET superseded_at = ?2 WHERE id = ?1 AND superseded_at IS NULL",
+                params![current.id, review.updated_at],
+            )
+            .map_err(persistence_error)?;
+        if changed != 1 {
+            return Err(CommandError::persistence_unavailable());
+        }
+    }
+
+    let mut stored = review.clone();
+    stored.id = Uuid::new_v4().to_string();
+    stored.superseded_at = None;
+    transaction
+        .execute(
+            r#"INSERT INTO reviews(
+                 id, project_id, fingerprint_version, fingerprint, state, reason, evidence,
+                 entry_point, data_flow, gates_json, deciding_gate, expires_at, origin,
+                 policy_hash, updated_at, superseded_at
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL)"#,
+            params![
+                stored.id,
+                stored.project_id,
+                stored.fingerprint_version,
+                stored.fingerprint,
+                json_enum_name(stored.state)?,
+                stored.reason,
+                stored.evidence,
+                stored.entry_point,
+                stored.data_flow,
+                to_json(&stored.gates)?,
+                stored.deciding_gate.map(json_enum_name).transpose()?,
+                stored.expires_at,
+                json_enum_name(stored.origin)?,
+                stored.policy_hash,
+                stored.updated_at,
+            ],
+        )
+        .map_err(persistence_error)?;
+    Ok(stored)
+}
+
+fn reconcile_project_policy_event_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    review: &ReviewRecord,
+) -> Result<(ReviewRecord, bool), CommandError> {
+    if review.origin != ReviewOrigin::ProjectPolicy {
+        return Err(CommandError::persistence_unavailable());
+    }
+    let current = load_reviews(
+        transaction,
+        &review.project_id,
+        review.fingerprint_version,
+        &review.fingerprint,
+    )?
+    .into_iter()
+    .find(|stored| stored.origin == ReviewOrigin::ProjectPolicy && stored.superseded_at.is_none());
+
+    if let Some(current) = current.as_ref() {
+        if same_reconciled_policy_state(current, review) {
+            return Ok((current.clone(), false));
+        }
+    } else if review.state == ReviewState::Candidate {
+        return Ok((review.clone(), false));
+    }
+
+    append_review_event(transaction, review).map(|stored| (stored, true))
+}
+
+fn same_reconciled_policy_state(left: &ReviewRecord, right: &ReviewRecord) -> bool {
+    left.project_id == right.project_id
+        && left.fingerprint_version == right.fingerprint_version
+        && left.fingerprint == right.fingerprint
+        && left.state == right.state
+        && left.reason == right.reason
+        && left.evidence == right.evidence
+        && left.entry_point == right.entry_point
+        && left.data_flow == right.data_flow
+        && left.gates == right.gates
+        && left.deciding_gate == right.deciding_gate
+        && left.expires_at == right.expires_at
+        && left.origin == right.origin
+        && left.policy_hash == right.policy_hash
+}
+
+fn json_enum_name(value: impl Serialize) -> Result<String, CommandError> {
+    let encoded = to_json(&value)?;
+    encoded
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .map(str::to_owned)
+        .ok_or_else(CommandError::persistence_unavailable)
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredFindingPayload {
@@ -1630,10 +1902,7 @@ fn load_findings(
                 observation.fingerprint_version,
                 &observation.fingerprint,
             )?;
-            let review = review_history
-                .iter()
-                .find(|review| review_is_active(review))
-                .cloned();
+            let review = select_active_review(&review_history, Utc::now());
             Ok(Finding {
                 id: observation.id,
                 category: observation.category,
@@ -1668,16 +1937,22 @@ fn load_findings(
         .collect()
 }
 
-fn review_is_active(review: &ReviewRecord) -> bool {
-    if review.superseded_at.is_some() {
-        return false;
-    }
-    match review.expires_at.as_deref() {
-        None => true,
-        Some(expires_at) => {
-            DateTime::parse_from_rfc3339(expires_at).is_ok_and(|expires_at| expires_at > Utc::now())
-        }
-    }
+fn select_active_review(history: &[ReviewRecord], now: DateTime<Utc>) -> Option<ReviewRecord> {
+    [ReviewOrigin::Local, ReviewOrigin::ProjectPolicy]
+        .into_iter()
+        .filter_map(|origin| {
+            history
+                .iter()
+                .find(|review| review.origin == origin && review.superseded_at.is_none())
+        })
+        .find(|review| {
+            review.state != ReviewState::Candidate
+                && review.expires_at.as_deref().is_none_or(|expires_at| {
+                    DateTime::parse_from_rfc3339(expires_at)
+                        .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
+                })
+        })
+        .cloned()
 }
 
 fn load_reviews(
@@ -1688,11 +1963,11 @@ fn load_reviews(
 ) -> Result<Vec<ReviewRecord>, CommandError> {
     let mut statement = connection
         .prepare(
-            r#"SELECT id, state, reason, evidence, entry_point, data_flow, gates_json, deciding_gate,
+            r#"SELECT rowid, id, state, reason, evidence, entry_point, data_flow, gates_json, deciding_gate,
                       expires_at, origin, policy_hash, updated_at, superseded_at
                FROM reviews
                WHERE project_id = ?1 AND fingerprint_version = ?2 AND fingerprint = ?3
-               ORDER BY updated_at DESC, id DESC"#,
+               "#,
         )
         .map_err(persistence_error)?;
     let rows = statement
@@ -1700,28 +1975,31 @@ fn load_reviews(
             params![project_id, fingerprint_version, fingerprint],
             |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
                     row.get::<_, Option<String>>(8)?,
-                    row.get::<_, String>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             },
         )
         .map_err(persistence_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(persistence_error)?;
-    rows.into_iter()
+    let mut parsed = rows
+        .into_iter()
         .map(|row| {
             let (
+                rowid,
                 id,
                 state,
                 reason,
@@ -1736,29 +2014,36 @@ fn load_reviews(
                 updated_at,
                 superseded_at,
             ) = row;
-            Ok(ReviewRecord {
-                id,
-                project_id: project_id.to_owned(),
-                fingerprint_version,
-                fingerprint: fingerprint.to_owned(),
-                state: parse_json_enum::<ReviewState>(&state)?,
-                reason,
-                evidence,
-                entry_point,
-                data_flow,
-                gates: from_json::<Vec<GateNote>>(&gates_json)?,
-                deciding_gate: deciding_gate
-                    .as_deref()
-                    .map(parse_json_enum::<Gate>)
-                    .transpose()?,
-                expires_at,
-                origin: parse_json_enum::<ReviewOrigin>(&origin)?,
-                policy_hash,
-                updated_at,
-                superseded_at,
-            })
+            let updated_instant = parse_utc_timestamp(&updated_at)?;
+            Ok((
+                rowid,
+                updated_instant,
+                ReviewRecord {
+                    id,
+                    project_id: project_id.to_owned(),
+                    fingerprint_version,
+                    fingerprint: fingerprint.to_owned(),
+                    state: parse_json_enum::<ReviewState>(&state)?,
+                    reason,
+                    evidence,
+                    entry_point,
+                    data_flow,
+                    gates: from_json::<Vec<GateNote>>(&gates_json)?,
+                    deciding_gate: deciding_gate
+                        .as_deref()
+                        .map(parse_json_enum::<Gate>)
+                        .transpose()?,
+                    expires_at,
+                    origin: parse_json_enum::<ReviewOrigin>(&origin)?,
+                    policy_hash,
+                    updated_at,
+                    superseded_at,
+                },
+            ))
         })
-        .collect()
+        .collect::<Result<Vec<_>, CommandError>>()?;
+    parsed.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+    Ok(parsed.into_iter().map(|(_, _, review)| review).collect())
 }
 
 fn to_json(value: &impl Serialize) -> Result<String, CommandError> {
