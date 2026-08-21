@@ -347,12 +347,11 @@ mod tests {
             .map(|f| f.rule_id.as_str())
             .collect();
 
-        for expected in ["github-token"] {
-            assert!(
-                secret_ids.contains(&expected),
-                "expected secret rule {expected}, got: {secret_ids:?}"
-            );
-        }
+        let expected = "github-token";
+        assert!(
+            secret_ids.contains(&expected),
+            "expected secret rule {expected}, got: {secret_ids:?}"
+        );
         for expected in [
             "js-eval",
             "js-exec-concat",

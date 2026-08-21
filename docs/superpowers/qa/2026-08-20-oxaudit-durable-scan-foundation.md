@@ -6,8 +6,9 @@ Status: Passed
 
 ## Candidate and environment
 
-- Tested base commit: `73c900d113bd3ce1c32afb5b2f0000ddfc45fe31`.
-- Tested candidate: that commit plus the Task 11 restart/canary integration test and this verification record.
+- Foundation implementation baseline: `501e6fd8d27f5184907a1236a0be673bb400c91a`.
+- Task 11 execution base: `73c900d113bd3ce1c32afb5b2f0000ddfc45fe31`.
+- Tested candidate: committed foundation verification and first lint correction through `d8a982d3e92718ccdf7e000dc1d03dab12400ec6`, plus the direct fixture-assertion correction and QA update committed with this record.
 - Host: macOS 26.6.1, Apple silicon (`Darwin arm64`).
 - Rust: `rustc 1.97.1`, `cargo 1.97.1`.
 - Frontend runtime: Node.js `v22.22.2`, npm `12.0.1`.
@@ -27,7 +28,7 @@ Status: Passed
 | `npm run build` | 0 | Production build completed; Vite transformed 1,798 modules. |
 | `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` | 0 | No formatting differences. |
 | `cargo test --manifest-path src-tauri/Cargo.toml` | 0 | 492 passed, 0 failed, 1 ignored. The ignored live OSV test is the established compiled-binary outbound-network fixture. |
-| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets` | 0 | 20 library warnings and 32 library-test warnings, including 20 duplicates. No warning remains in `findings`, scope/manifest, or modified Source Scan command code. The unchanged cast warning in `scanners/mod.rs` predates the foundation base. |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets` | 0 | 20 library warnings and 31 library-test warnings, including 20 duplicates. Every remaining warning line was checked with `git blame`, and every blamed commit is an ancestor of the pre-implementation foundation baseline. No foundation-introduced warning remains. |
 | `git diff --check` | 0 | No whitespace errors. |
 
 ## Restart, schema, fingerprint, and redaction evidence
@@ -64,7 +65,7 @@ Additional focused evidence:
 
 ## Known limitations
 
-- Clippy is not warning-free. It reports 20 library warnings and 32 library-test warnings, including 20 duplicates, outside the foundation-owned gate. No warning remains in `findings`, `triage/scope.rs`, `triage/manifest.rs`, or modified Source Scan command code. The sole warning in another explicitly checked file, an unnecessary cast in `scanners/mod.rs`, is unchanged from the pre-foundation root commit.
+- Clippy is not warning-free. It reports 20 library warnings and 31 library-test warnings, including 20 duplicates. All 31 distinct reported warning lines were audited with `git blame` and commit-ancestry checks; each predates the foundation implementation baseline, and none was introduced by the foundation range. This includes the unchanged cast warning in `scanners/mod.rs` and the remaining test-only warning in `lib.rs`.
 - Native Windows policy/database runtime behavior was not executed on this macOS host. Cross-platform Rust code compiled for the current target, and prior isolated Windows compile evidence remains documented in the task reports, but this QA pass does not claim Windows runtime verification.
 - The one intentionally ignored live OSV test was not converted into an offline assertion; the foundation's deterministic tests do not depend on it.
 
