@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oxaudit.dev/schemas/benchmark-suite-v1.json",
+  "title": "oxAudit benchmark suite",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "version", "description", "provenance", "targets"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "targets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/target" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ruleId", "artifactPath"],
+      "properties": {
+        "ruleId": { "type": "string", "minLength": 1 },
+        "artifactPath": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authors", "source", "license", "creationMethod", "contentSha256"],
+      "properties": {
+        "authors": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "source": { "type": "string", "minLength": 1 },
+        "license": { "type": "string", "minLength": 1 },
+        "creationMethod": { "enum": ["independently_derived", "authored", "generated_from_public_specification", "imported_external_receipt"] },
+        "contentSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "count", "evidenceKind"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/identity" },
+        "count": { "type": "integer", "minimum": 1 },
+        "evidenceKind": { "type": "string", "minLength": 1 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "inputPath", "inputSha256", "platform", "architecture", "expected"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "inputPath": { "type": "string", "minLength": 1 },
+        "inputSha256": { "$ref": "#/$defs/sha256" },
+        "platform": { "type": "string", "minLength": 1 },
+        "architecture": { "type": "string", "minLength": 1 },
+        "expected": { "type": "array", "items": { "$ref": "#/$defs/expected" } },
+        "expectedAbsent": { "type": "array", "items": { "$ref": "#/$defs/identity" } },
+        "allowedVariants": { "type": "array" }
+      }
+    }
+  }
+}

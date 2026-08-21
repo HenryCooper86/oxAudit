@@ -77,7 +77,7 @@ pub fn scan_file_with_relative_path(
     scan_secrets: bool,
     scan_vulnerabilities: bool,
 ) -> ScanFileOutcome {
-    let max_bytes = (max_file_size_kb as u64).saturating_mul(1024);
+    let max_bytes = max_file_size_kb.saturating_mul(1024);
     let content = match fs_utils::read_text_file(path, max_bytes) {
         Some(c) => c,
         None => return ScanFileOutcome::skipped(),

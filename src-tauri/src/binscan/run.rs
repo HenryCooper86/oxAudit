@@ -39,6 +39,9 @@ pub struct BinaryScanRequest {
     /// How aggressively to refresh the CVE database.
     #[serde(default)]
     pub update: Option<String>,
+    /// Optional bounded object-symbol and relocation call analysis.
+    #[serde(default)]
+    pub deep_analysis: bool,
 }
 
 /// Build the argument list.

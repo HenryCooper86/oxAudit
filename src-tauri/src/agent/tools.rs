@@ -289,11 +289,11 @@ pub fn builtins() -> Vec<Tool> {
                 let start = (offset.max(1) as usize - 1).min(lines.len());
                 let end = (start + limit as usize).min(lines.len());
                 let mut out = String::new();
-                for i in start..end {
+                for (i, line) in lines.iter().enumerate().take(end).skip(start) {
                     if include_numbers {
-                        out.push_str(&format!("{:>6} │ {}\n", i + 1, lines[i]));
+                        out.push_str(&format!("{:>6} │ {}\n", i + 1, line));
                     } else {
-                        out.push_str(lines[i]);
+                        out.push_str(line);
                         out.push('\n');
                     }
                 }
@@ -335,7 +335,6 @@ pub fn builtins() -> Vec<Tool> {
                 };
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().scan.clone();
-                drop(st);
                 grep_project_files(
                     &proj,
                     &root,
@@ -371,7 +370,6 @@ pub fn builtins() -> Vec<Tool> {
                 };
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().scan.clone();
-                drop(st);
                 glob_project_files(&proj, &root, &settings, &pattern, max_results)
             }
         ),
@@ -397,7 +395,6 @@ pub fn builtins() -> Vec<Tool> {
                 let started = Instant::now();
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().clone();
-                drop(st);
 
                 if scan_type == "dependencies" || scan_type == "deps" {
                     let lockfiles = collect_agent_lockfiles(&proj, &root, &settings.scan);
@@ -412,7 +409,6 @@ pub fn builtins() -> Vec<Tool> {
                     let deps = crate::deps::lockfiles::dedupe_dependencies(deps);
                     let st = ctx.state().ok_or("app state unavailable")?;
                     let vuln_map = st.osv.query_batch(&deps).await.unwrap_or_default();
-                    drop(st);
                     let mut vulns: Vec<Vulnerability> = Vec::new();
                     for dep in &deps {
                         let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
@@ -486,7 +482,7 @@ pub fn builtins() -> Vec<Tool> {
             |ctx, args| {
                 let cve_id = arg_str(&args, "cve_id")?;
                 let cve = ctx.app.state::<crate::cve::CveState>();
-                let detail = crate::cve::cve_detail(&cve, &cve_id).await.map_err(|e| e)?;
+                let detail = crate::cve::cve_detail(&cve, &cve_id).await?;
                 let item = detail.item;
                 Ok(json!({
                     "id": item.id, "severity": item.severity, "cvss": item.cvss_score,
@@ -518,14 +514,14 @@ pub fn builtins() -> Vec<Tool> {
                 let name = arg_str(&args, "name")?;
                 let cve = ctx.app.state::<crate::cve::CveState>();
                 if let Some(version) = arg_str_opt(&args, "version") {
-                    let vulns = cve.osv.query_package(&ecosystem, &name, &version).await.map_err(|e| e)?;
+                    let vulns = cve.osv.query_package(&ecosystem, &name, &version).await?;
                     let items: Vec<Value> = vulns.iter().map(|v| json!({
                         "id": v.id, "severity": v.severity, "cvss": v.cvss_score,
                         "summary": truncate(&v.summary, 200), "fixed": v.fixed_versions,
                     })).collect();
                     Ok(json!({ "package": name, "version": version, "vulnerabilities": items }))
                 } else {
-                    let raw = crate::cve::osv_package_vulns(&cve, &ecosystem, &name).await.map_err(|e| e)?;
+                    let raw = crate::cve::osv_package_vulns(&cve, &ecosystem, &name).await?;
                     let items: Vec<Value> = raw.iter().take(25).map(|v| json!({
                         "id": v.get("id").and_then(|x| x.as_str()).unwrap_or(""),
                         "summary": truncate(v.get("summary").and_then(|x| x.as_str()).unwrap_or(""), 200),
@@ -557,7 +553,6 @@ pub fn builtins() -> Vec<Tool> {
                 let max_bytes = arg_u64_default(&args, "max_bytes", 262144).min(262144) as usize;
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let http = st.http.clone();
-                drop(st);
                 let resp = http
                     .get(parsed)
                     .timeout(std::time::Duration::from_secs(20))
@@ -658,7 +653,6 @@ pub fn builtins() -> Vec<Tool> {
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().clone();
                 let cancel = st.cancel_binary_scan.clone();
-                drop(st);
                 cancel.store(false, std::sync::atomic::Ordering::Relaxed);
 
                 let scratch_dir = ctx
@@ -691,6 +685,7 @@ pub fn builtins() -> Vec<Tool> {
                     severity: arg_str_opt(&args, "severity"),
                     offline: args.get("offline").and_then(|v| v.as_bool()).unwrap_or(false),
                     update: None,
+                    deep_analysis: false,
                 };
 
                 // cve-bin-tool's per-line progress is dropped on this path: the
@@ -787,7 +782,7 @@ pub fn builtins() -> Vec<Tool> {
                             return Err(format!("no todo with id {id}"));
                         }
                     }
-                    "list" | _ => {}
+                    _ => {}
                 }
                 let snapshot = json!(list.clone());
                 // Drop the state lock before emitting: the UI callback runs
@@ -877,8 +872,10 @@ mod tests {
 
     fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
         let canonical_root = root.canonicalize().unwrap();
-        let mut settings = ScanSettings::default();
-        settings.include_git = include_git;
+        let mut settings = ScanSettings {
+            include_git,
+            ..ScanSettings::default()
+        };
         settings.ignored_dirs.clear();
         let (files, _, _) = collect_agent_files(root, root, &settings);
         files
@@ -968,7 +965,7 @@ mod tests {
         let included = collect_agent_lockfiles(root.path(), root.path(), &settings);
 
         let lockfile = root.path().join("Cargo.lock").canonicalize().unwrap();
-        assert_eq!(excluded, [lockfile.clone()]);
+        assert_eq!(excluded.as_slice(), std::slice::from_ref(&lockfile));
         assert_eq!(included, [lockfile]);
     }
 
@@ -981,9 +978,11 @@ mod tests {
         fs::create_dir(root.path().join("ordinary")).unwrap();
         fs::write(root.path().join("ordinary/config"), "ordinary\n").unwrap();
         symlink(root.path().join("ordinary"), root.path().join(".git")).unwrap();
-        let mut settings = ScanSettings::default();
-        settings.follow_symlinks = true;
-        settings.include_git = false;
+        let mut settings = ScanSettings {
+            follow_symlinks: true,
+            include_git: false,
+            ..ScanSettings::default()
+        };
         settings.ignored_dirs.clear();
 
         let requested = resolve_collection_root(root.path(), ".git/config").unwrap();
@@ -1022,8 +1021,10 @@ mod tests {
         fs::write(root.path().join(".gitignore"), "alias\n").unwrap();
         let alias = root.path().join("alias");
         symlink(root.path().join("shared"), &alias).unwrap();
-        let mut settings = ScanSettings::default();
-        settings.follow_symlinks = true;
+        let mut settings = ScanSettings {
+            follow_symlinks: true,
+            ..ScanSettings::default()
+        };
         settings.ignored_dirs.clear();
 
         let grep =
@@ -1052,8 +1053,10 @@ mod tests {
         .unwrap();
         let alias = root.path().join("alias");
         symlink(root.path().join("shared"), &alias).unwrap();
-        let mut settings = ScanSettings::default();
-        settings.follow_symlinks = true;
+        let mut settings = ScanSettings {
+            follow_symlinks: true,
+            ..ScanSettings::default()
+        };
         settings.ignored_dirs.clear();
 
         let grep = grep_project_files(

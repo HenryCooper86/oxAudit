@@ -19,6 +19,9 @@ with the help of an AI assistant.
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
 | **AI assistant** | Chat with any **OpenAI-compatible** endpoint (OpenAI, Ollama, LM Studio, vLLM, Groq, OpenRouter…). **Streaming responses** with live reasoning display, typed error handling with automatic retry, **per-conversation token & cost tracking**, cancellable turns, and an **agentic tool loop**: the AI can read files, grep/glob the scanned project, run scans, search NVD, query OSV, and fetch web pages — every tool call rendered live with a status card, gated by an allow/ask/deny permission pipeline with HITL approval, a loop guard, and dual iteration/call budgets. One-click "Ask AI" on every finding and "Generate research briefing" on every CVE |
 | **Binary scanning** | Detects vulnerable components bundled inside compiled binaries and firmware images (statically linked OpenSSL, zlib, zstd, sqlite, …) with oxAudit's **own scanner** — no database to download, no external tool required — then looks each component up in NVD and OSV, and ranks every finding by CISA KEV (actively exploited?) and EPSS (exploitation probability). Optionally also runs [cve-bin-tool](https://github.com/ossf/cve-bin-tool) or [grype](https://github.com/anchore/grype) if you have them installed; neither is bundled |
+| **Durable evidence and inventory** | Source, Dependency, Binary, and imported SBOM runs use one persisted Artifact → Component → Observation → Evidence → Finding graph. Runs survive restart, unflagged components remain visible, provider/rule snapshots preserve historical meaning, and every scan family shares the same lifecycle timeline |
+| **Rules, data, and quality** | A GUI Rule Library exposes provenance and fixture health and safely validates bounded declarative packs; Data Sources exposes immutable advisory snapshots and offline readiness; Quality Lab runs committed ground truth and reports precision, recall, misses, runtime, corpus size, and regression honestly |
+| **Standards and verification** | Preview and export oxAudit JSON, SARIF 2.1.0, CycloneDX 1.6, SPDX 2.3, OpenVEX, and CycloneDX VEX. Preview bounded imports with conflict/unmapped records and import SBOM inventory as a separate immutable run. Independent verification records bind a separate verifier to an immutable input hash |
 | **Dashboard** | At-a-glance stats, quick actions, recent scan history |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
 
@@ -28,6 +31,12 @@ with the help of an AI assistant.
 - **Source Scan** — folder picker, scan options, live progress, filterable findings grouped by file, JSON report export
 - **Dependencies** — lockfile discovery, OSV check, vulnerable-package table with fixed versions and reference links
 - **Binary Scan** — file/folder target, cve-bin-tool detection with a first-class "not installed" state, live progress, components grouped with their CVEs
+- **Inventory** — all normalized components, versions, aliases, purl/CPE identities, source artifacts, confidence, and advisory matches—including components with no match
+- **Rule Library** — built-in provenance/fixture health plus safe validation of external declarative TOML packs without installation or script execution
+- **Quality Lab** — reproducible ground-truth metrics, misses, false positives, limitations, history, and regression state
+- **Data Sources** — provider source/terms, immutable snapshot hashes, refresh state, and honest offline readiness
+- **Export Center** — validated JSON/SARIF/SBOM/VEX preview/export plus bounded import and conflict preview
+- **Verification** — producer-independent human verification bound to immutable finding evidence
 - **CVE Research** — NVD search + OSV package lookup + detail view with AI briefing
 - **AI Assistant** — chat with code/context attachment
 - **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key
@@ -37,27 +46,48 @@ with the help of an AI assistant.
 ```
 src/                  React + TypeScript + Tailwind v4 frontend
   pages/              one file per screen
-  components/         shared UI (finding cards, badges, progress…)
+  features/           domain-focused GUI workflows and pure view models
+  components/         shared workbench UI (findings, badges, progress…)
   lib/                typed invoke() wrappers, zustand stores, formatting
 src-tauri/            Rust backend (Tauri v2)
+  crates/             compiler-enforced domain, application, scanner, and benchmark cores
+    oxaudit-domain/       stable records, identities, evidence and state invariants
+    oxaudit-application/  ports, run coordinator, manifests and sequenced events
+    oxaudit-scanners/     bounded declarative rules and optional object analysis
+    oxaudit-benchmark/    resumable ground-truth contracts and metrics
+  src/adapters/       SQLite, scanner mapping, providers and standards reporting
+  src/presentation/   canonical Tauri event projection
   src/models.rs       shared serde models (camelCase ⇄ TypeScript types)
   src/scanners/       secrets.rs (rules + entropy engine), patterns.rs (source rules)
   src/deps/           lockfiles.rs (parsers), osv.rs (OSV client + CVSS math)
-  src/binscan/        detect.rs (find cve-bin-tool), run.rs (spawn), report.rs (json2)
+  src/binscan/        native binary scanner plus optional external-tool adapters
+  src/findings/       durable runs, evidence, review, policy, diff and SQLite storage
+  src/triage/         scope, falsification gates and silent-drop manifest
+  src/agent/          bounded read-only tool loop and permission guardrails
   src/cve.rs          NVD client with rate limiting + caching, OSV enrichment
-  src/ai.rs           OpenAI-compatible chat client + prompt builders
-  src/commands.rs     Tauri commands (scan, deps, cve, ai, settings)
+  src/ai/             OpenAI-compatible chat client + prompt builders
+  src/commands.rs     Tauri presentation commands
 ```
 
 All *oxAudit* scanning is local. oxAudit itself contacts only NVD, OSV, CISA KEV,
 FIRST.org EPSS, and the AI endpoint you configure — all free and key-less except
 the optional NVD API key.
 
-**Binary scanning is the exception**, because it runs a separate program. When you use
-it, [cve-bin-tool](https://github.com/ossf/cve-bin-tool) makes its own network calls —
-to its mirror at `cveb.in` and the advisory feeds it aggregates (NVD, OSV, GitLab
-Advisory Database, Red Hat, curl) — unless you tick **Offline**, which restricts it to
-its already-downloaded database. The feature is inert until you install cve-bin-tool.
+The default **native binary scanner is local and needs no external tool or advisory
+database bootstrap**. If you explicitly select cve-bin-tool, that separate program
+makes its own network calls—to its mirror at `cveb.in` and the advisory feeds it
+aggregates—unless you tick **Offline**. The optional external adapter is inert until
+you install cve-bin-tool; the native scanner is not.
+
+The application now has a compiler-enforced domain/application core and one durable
+run/evidence pipeline for source, dependency, binary, and inventory-import workflows.
+The full
+[upstream architecture study](docs/architecture/2026-08-21-upstream-architecture-study.md),
+[GUI-first target architecture](docs/architecture/2026-08-21-gui-first-target-architecture.md),
+the [implementation plan](docs/superpowers/plans/2026-08-21-oxaudit-architecture-strengthening.md),
+and the [implementation status](docs/architecture/2026-08-21-implementation-status.md)
+record what is being adopted from cve-bin-tool, VulHunt, and VulnHunter, what is
+deliberately rejected, and how licence-safe provenance is preserved.
 
 ## Development
 
@@ -69,7 +99,7 @@ webkit2gtk on Linux — see [Tauri docs](https://v2.tauri.app/start/prerequisite
 npm install
 npm run tauri dev        # run the app with hot reload
 npm run build            # type-check + build the frontend
-cd src-tauri && cargo test   # run the scanner test-suite
+cd src-tauri && cargo test --workspace --all-features  # run every Rust package
 npm run tauri build      # produce a distributable bundle
 ```
 
@@ -139,12 +169,19 @@ parses ten lockfile formats natively and queries OSV directly.
 - Live verification of secrets (calling AWS/GitHub to check tokens) is intentionally
   **not** performed; treat findings as candidates.
 
-## Roadmap ideas
+## Measured next steps
 
-- Git history / commit-grep scanning
-- Semgrep-style rule packs + custom rules
-- SARIF export, SBOM (CycloneDX/SPDX) generation
-- Streamed AI responses, offline CVE mirror
+- Expand deterministic source, secret, dependency, binary, and cross-platform
+  corpora before making representative recall claims.
+- Add an explicit trust/mapping workflow before SARIF or VEX imports can affect
+  local findings or review state.
+- Migrate built-in source/secret snapshots into the declarative pack format only
+  as each rule gains positive/negative fixture provenance.
+- Consider CFG/data-flow work only if the bounded object tier demonstrates
+  benchmark value; it is intentionally not a decompiler today.
+
+See the [implementation status](docs/architecture/2026-08-21-implementation-status.md)
+for shipped evidence and deliberate limits.
 
 ## Licence
 

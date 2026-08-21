@@ -88,6 +88,8 @@ pub struct BinaryScanResult {
     /// Scanners that contributed, in the order they ran.
     #[serde(default)]
     pub scanners: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_analysis: Option<oxaudit_scanners::SemanticAnalysisReport>,
 }
 
 // --- the wire shape, exactly as cve-bin-tool writes it ---------------------
@@ -281,6 +283,7 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
         database_last_updated: report.database_info.and_then(|info| info.last_updated),
         duration_ms,
         scanners: vec![CVE_BIN_TOOL.to_string()],
+        semantic_analysis: None,
     })
 }
 
@@ -387,6 +390,7 @@ pub fn merge_results(results: Vec<BinaryScanResult>) -> BinaryScanResult {
         database_last_updated,
         duration_ms,
         scanners,
+        semantic_analysis: None,
     }
 }
 
@@ -653,6 +657,7 @@ mod tests {
             database_last_updated: None,
             duration_ms: 100,
             scanners: vec![scanner.to_string()],
+            semantic_analysis: None,
         }
     }
 

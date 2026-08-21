@@ -1499,7 +1499,7 @@ fn valid_fingerprint(value: &str) -> bool {
         && digest
             .chars()
             .all(|character| character.is_ascii_hexdigit())
-        && occurrence.is_none_or(|occurrence| {
+        && occurrence.map_or(true, |occurrence| {
             !occurrence.is_empty()
                 && occurrence
                     .chars()

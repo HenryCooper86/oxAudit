@@ -1,3 +1,13 @@
+[workspace]
+members = [
+  ".",
+  "crates/oxaudit-domain",
+  "crates/oxaudit-application",
+  "crates/oxaudit-benchmark",
+  "crates/oxaudit-scanners",
+]
+resolver = "2"
+
 [package]
 name = "vulncompanion"
 version = "0.1.0"
@@ -5,6 +15,7 @@ description = "VulnCompanion — AI-assisted vulnerability research companion"
 authors = ["Henry Cooper"]
 license = "Apache-2.0"
 edition = "2021"
+rust-version = "1.77"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,10 +29,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-[dev-dependencies]
-tempfile = "3"
-
 [dependencies]
+tempfile = "3"
+oxaudit-domain = { path = "crates/oxaudit-domain" }
+oxaudit-application = { path = "crates/oxaudit-application" }
+oxaudit-benchmark = { path = "crates/oxaudit-benchmark" }
+oxaudit-scanners = { path = "crates/oxaudit-scanners" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"

@@ -274,7 +274,7 @@ test("Assistant, Source, and Dependency pages route every runtime mutation throu
 
   for (const [name, page, expectedCalls] of [
     ["Assistant", assistant, 1],
-    ["Source", source, 2],
+    ["Source", source, 3],
     ["Dependency", dependency, 3],
   ] as const) {
     assert.match(
@@ -289,7 +289,11 @@ test("Assistant, Source, and Dependency pages route every runtime mutation throu
 test("Source and Dependency dependent work awaits coordinator settlement before native work", () => {
   const source = pageSource("../src/pages/SourceScan.tsx");
   const dependency = pageSource("../src/pages/DepsScan.tsx");
-  const sourceRun = functionBody(source, "const run = async () =>", "const cancel = async");
+  const sourceRun = functionBody(
+    source,
+    "const runScan = async (ignoreInvalidPolicy = false) =>",
+    "const cancel = async",
+  );
   const dependencyDiscovery = functionBody(
     dependency,
     "const findLockfiles = async () =>",

@@ -268,6 +268,7 @@ pub fn scan(
             database_last_updated: None,
             duration_ms: started.elapsed().as_millis() as u64,
             scanners: vec![NATIVE.to_string()],
+            semantic_analysis: None,
         },
     })
 }

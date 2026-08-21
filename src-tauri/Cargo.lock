@@ -2554,6 +2554,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.36.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2584,6 +2593,53 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "oxaudit-application"
+version = "0.1.0"
+dependencies = [
+ "oxaudit-domain",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "toml 0.8.2",
+]
+
+[[package]]
+name = "oxaudit-benchmark"
+version = "0.1.0"
+dependencies = [
+ "oxaudit-domain",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "oxaudit-domain"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "oxaudit-scanners"
+version = "0.1.0"
+dependencies = [
+ "object",
+ "oxaudit-application",
+ "oxaudit-domain",
+ "regex",
+ "serde",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml 0.8.2",
 ]
 
 [[package]]
@@ -4745,6 +4801,10 @@ dependencies = [
  "libc",
  "log",
  "once_cell",
+ "oxaudit-application",
+ "oxaudit-benchmark",
+ "oxaudit-domain",
+ "oxaudit-scanners",
  "percent-encoding",
  "quick-xml 0.37.5",
  "rayon",

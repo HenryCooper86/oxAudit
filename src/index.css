@@ -32,7 +32,7 @@
   /* Text hierarchy */
   --text-primary: #e8e6e1;
   --text-secondary: #8a8680;
-  --text-muted: #555250;
+  --text-muted: #87837d;
 
   /* Accent — warm gold, used sparingly */
   --accent: #c8b560;
@@ -107,7 +107,7 @@
 
   --text-primary: #1a1917;
   --text-secondary: #6b6560;
-  --text-muted: #9c9894;
+  --text-muted: #6f6964;
 
   --accent: #9a7c2a;
   --accent-hover: #7e6420;

@@ -1,0 +1,16 @@
+[package]
+name = "oxaudit-benchmark"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+license = "Apache-2.0"
+description = "Resumable deterministic ground-truth benchmark contracts for oxAudit"
+
+[dependencies]
+oxaudit-domain = { path = "../oxaudit-domain" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"

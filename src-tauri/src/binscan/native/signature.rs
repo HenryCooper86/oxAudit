@@ -20,6 +20,7 @@
 use once_cell::sync::Lazy;
 use regex::{Regex, RegexSet};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use super::bytes::{BytePattern, Encoding, VersionFormula};
 
@@ -132,6 +133,54 @@ fn default_true() -> bool {
 struct SignatureFile {
     #[serde(default)]
     signature: Vec<SignatureSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SignatureProvenanceFile {
+    pack: SignaturePackProvenance,
+    fixtures: SignatureFixtureCoverage,
+}
+
+#[derive(Debug, Deserialize)]
+struct SignaturePackProvenance {
+    schema_version: u32,
+    id: String,
+    version: String,
+    authors: Vec<String>,
+    source: String,
+    license: String,
+    creation_method: String,
+    signatures_sha256: String,
+    architectures: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SignatureFixtureCoverage {
+    positive_suites: Vec<String>,
+    negative_suites: Vec<String>,
+    verified_products: Vec<String>,
+    unverified_products: Vec<String>,
+    unverified_reason: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureProvenanceStatus {
+    pub pack_id: String,
+    pub version: String,
+    pub authors: Vec<String>,
+    pub source: String,
+    pub license: String,
+    pub creation_method: String,
+    pub content_sha256: String,
+    pub architectures: Vec<String>,
+    pub signature_count: usize,
+    pub verified_fixture_count: usize,
+    pub verified_products: Vec<String>,
+    pub unverified_products: Vec<String>,
+    pub unverified_reason: String,
+    pub positive_suites: Vec<String>,
+    pub negative_suites: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -482,14 +531,129 @@ identify it by",
 /// `docs/binary-signatures.md`. They are deliberately *not* transcribed from
 /// cve-bin-tool, whose checkers are GPL-3.0-or-later.
 pub static SIGNATURES_TOML: &str = include_str!("signatures.toml");
+pub static SIGNATURES_PROVENANCE_TOML: &str = include_str!("signatures.provenance.toml");
+
+pub fn signature_provenance_status() -> Result<SignatureProvenanceStatus, String> {
+    validate_signature_provenance(SIGNATURES_TOML, SIGNATURES_PROVENANCE_TOML)
+}
+
+fn validate_signature_provenance(
+    signatures_toml: &str,
+    provenance_toml: &str,
+) -> Result<SignatureProvenanceStatus, String> {
+    let signatures: SignatureFile =
+        toml::from_str(signatures_toml).map_err(|error| error.to_string())?;
+    let provenance: SignatureProvenanceFile =
+        toml::from_str(provenance_toml).map_err(|error| error.to_string())?;
+    let pack = provenance.pack;
+    let fixtures = provenance.fixtures;
+    if pack.schema_version != 1 {
+        return Err(format!(
+            "unsupported signature provenance schema {}",
+            pack.schema_version
+        ));
+    }
+    for (field, value) in [
+        ("pack id", pack.id.as_str()),
+        ("version", pack.version.as_str()),
+        ("source", pack.source.as_str()),
+        ("license", pack.license.as_str()),
+        ("creation method", pack.creation_method.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("signature provenance {field} is empty"));
+        }
+    }
+    if pack.authors.is_empty()
+        || pack.authors.iter().any(|author| author.trim().is_empty())
+        || pack.architectures.is_empty()
+    {
+        return Err("signature provenance authors and architectures are required".into());
+    }
+    if pack.license != "Apache-2.0" || pack.creation_method != "independently-derived" {
+        return Err(
+            "signature provenance must preserve the Apache-2.0 independently-derived boundary"
+                .into(),
+        );
+    }
+    let actual_hash = format!("{:x}", Sha256::digest(signatures_toml.as_bytes()));
+    if actual_hash != pack.signatures_sha256.to_ascii_lowercase() {
+        return Err("signature data changed without a provenance hash update".into());
+    }
+    if fixtures.positive_suites.is_empty()
+        || fixtures.negative_suites.is_empty()
+        || fixtures.unverified_reason.trim().is_empty()
+    {
+        return Err("signature fixture suites and unverified rationale are required".into());
+    }
+
+    let products: std::collections::BTreeSet<String> = signatures
+        .signature
+        .iter()
+        .map(|signature| signature.product.clone())
+        .collect();
+    if products.len() != signatures.signature.len() {
+        return Err("signature products must be unique for provenance accounting".into());
+    }
+    let verified: std::collections::BTreeSet<String> =
+        fixtures.verified_products.iter().cloned().collect();
+    let unverified: std::collections::BTreeSet<String> =
+        fixtures.unverified_products.iter().cloned().collect();
+    if verified.len() != fixtures.verified_products.len()
+        || unverified.len() != fixtures.unverified_products.len()
+        || !verified.is_disjoint(&unverified)
+    {
+        return Err("fixture coverage contains duplicate product declarations".into());
+    }
+    let declared: std::collections::BTreeSet<String> =
+        verified.union(&unverified).cloned().collect();
+    if declared != products {
+        let missing: Vec<_> = products.difference(&declared).cloned().collect();
+        let invented: Vec<_> = declared.difference(&products).cloned().collect();
+        return Err(format!(
+            "fixture coverage does not account for every signature; missing={missing:?}, invented={invented:?}"
+        ));
+    }
+
+    Ok(SignatureProvenanceStatus {
+        pack_id: pack.id,
+        version: pack.version,
+        authors: pack.authors,
+        source: pack.source,
+        license: pack.license,
+        creation_method: pack.creation_method,
+        content_sha256: actual_hash,
+        architectures: pack.architectures,
+        signature_count: products.len(),
+        verified_fixture_count: verified.len(),
+        verified_products: verified.into_iter().collect(),
+        unverified_products: unverified.into_iter().collect(),
+        unverified_reason: fixtures.unverified_reason,
+        positive_suites: fixtures.positive_suites,
+        negative_suites: fixtures.negative_suites,
+    })
+}
 
 pub static SIGNATURES: Lazy<SignatureSet> = Lazy::new(|| {
+    signature_provenance_status().expect("bundled signature provenance must validate");
     SignatureSet::parse_toml(SIGNATURES_TOML).expect("bundled signatures must compile")
 });
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_signature_provenance_accounts_for_verified_and_unverified_health() {
+        let status = signature_provenance_status().unwrap();
+        assert_eq!(status.signature_count, 71);
+        assert_eq!(status.verified_fixture_count, 47);
+        assert_eq!(status.unverified_products.len(), 24);
+        assert_eq!(
+            status.signature_count,
+            status.verified_fixture_count + status.unverified_products.len()
+        );
+    }
 
     fn spec(
         product: &str,

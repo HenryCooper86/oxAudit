@@ -8,11 +8,29 @@ import type {
   CveDetail,
   CveItem,
   CveSearchResult,
+  CanonicalRun,
+  CanonicalRunKind,
+  RuleLibraryPackStatus,
+  RulePackValidationPreview,
+  QualityStatus,
+  DataSourceStatus,
+  ExportFormat,
+  ExportPreview,
+  InventoryView,
+  ImportPreview,
+  CanonicalFinding,
+  VerificationRecord,
+  VerificationResult,
   DependencyScanResult,
   Finding,
   LockfileInfo,
   ScanOptions,
-  ScanResult,
+  ScanRunDetail,
+  ScanRunSummary,
+  ProjectContext,
+  RecentProject,
+  ReviewRecord,
+  ReviewRequest,
   SessionInfo,
   StoredMessage,
   BinaryScanRequest,
@@ -25,8 +43,55 @@ import type {
 
 export const api = {
   scanProject: (options: ScanOptions) =>
-    invoke<ScanResult>("scan_project", { options }),
+    invoke<ScanRunDetail>("scan_project", { options }),
   cancelScan: () => invoke<void>("cancel_scan"),
+  inspectSourceProject: (path: string) =>
+    invoke<ProjectContext>("inspect_source_project", { path }),
+  listSourceProjects: (limit = 12) =>
+    invoke<RecentProject[]>("list_source_projects", { limit }),
+  listSourceRuns: (projectId: string, limit = 50) =>
+    invoke<ScanRunSummary[]>("list_source_runs", { projectId, limit }),
+  loadSourceRun: (runId: string) =>
+    invoke<ScanRunDetail>("load_source_run", { runId }),
+  retrySourceRunSave: (retryToken: string) =>
+    invoke<ScanRunDetail>("retry_source_run_save", { retryToken }),
+  listCanonicalRuns: (kind?: CanonicalRunKind, limit = 50) =>
+    invoke<CanonicalRun[]>("list_canonical_runs", {
+      kind: kind ?? null,
+      limit,
+    }),
+  loadCanonicalProjection: <T>(runId: string) =>
+    invoke<T>("load_canonical_projection", { runId }),
+  ruleLibraryStatus: () =>
+    invoke<RuleLibraryPackStatus[]>("rule_library_status"),
+  validateRulePack: (path: string) =>
+    invoke<RulePackValidationPreview>("validate_rule_pack", { path }),
+  qualityStatus: () => invoke<QualityStatus>("quality_status"),
+  listDataSources: () => invoke<DataSourceStatus[]>("list_data_sources"),
+  refreshDataSource: (providerId: string) =>
+    invoke<DataSourceStatus>("refresh_data_source", { providerId }),
+  loadInventory: (runId: string) =>
+    invoke<InventoryView>("load_inventory", { runId }),
+  previewReportImport: (path: string) =>
+    invoke<ImportPreview>("preview_report_import", { path }),
+  importInventoryReport: (path: string, expectedSha256: string) =>
+    invoke<CanonicalRun>("import_inventory_report", { path, expectedSha256 }),
+  previewRunExport: (runId: string, format: ExportFormat) =>
+    invoke<ExportPreview>("preview_run_export", { runId, format }),
+  writeRunExport: (runId: string, format: ExportFormat, outputPath: string) =>
+    invoke<void>("write_run_export", { runId, format, outputPath }),
+  listVerificationClaims: (runId?: string) =>
+    invoke<CanonicalFinding[]>("list_verification_claims", { runId: runId ?? null }),
+  listVerifications: (findingId?: string) =>
+    invoke<VerificationRecord[]>("list_verifications", { findingId: findingId ?? null }),
+  verifyFinding: (
+    findingId: string,
+    verifierId: string,
+    result: VerificationResult,
+    limitation: string,
+  ) => invoke<VerificationRecord>("verify_finding", { findingId, verifierId, result, limitation }),
+  saveFindingReview: (request: ReviewRequest) =>
+    invoke<ReviewRecord>("save_finding_review", { request }),
   /** Whether a usable cve-bin-tool is installed, and which copy we would run. */
   binaryToolStatus: () => invoke<BinaryScannersStatus>("binary_tool_status"),
   scanBinaries: (request: BinaryScanRequest, useGrype: boolean) =>
@@ -36,8 +101,9 @@ export const api = {
   refreshBinaryDatabase: () => invoke<void>("refresh_binary_database"),
   openScanFinding: (root: string, relativePath: string) =>
     invoke<void>("open_scan_finding", { root, relativePath }),
-  scanDependencies: (path: string) =>
-    invoke<DependencyScanResult>("scan_dependencies", { path }),
+  scanDependencies: (path: string, offline = false) =>
+    invoke<DependencyScanResult>("scan_dependencies", { path, offline }),
+  cancelDependencyScan: () => invoke<void>("cancel_dependency_scan"),
   findLockfiles: (path: string) =>
     invoke<LockfileInfo[]>("find_lockfiles", { path }),
   searchCves: (

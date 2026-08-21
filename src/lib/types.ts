@@ -2,6 +2,275 @@
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
+export type FindingScope =
+  | "production"
+  | "infrastructure"
+  | "test"
+  | "fixture"
+  | "generated"
+  | "vendored"
+  | "documentation"
+  | "unknown";
+
+export type ReviewState =
+  | "candidate"
+  | "confirmed"
+  | "falsePositive"
+  | "acceptedRisk"
+  | "suppressed";
+
+export type DiffStatus = "new" | "unchanged" | "resolved" | "notEvaluated";
+export type RunStatus = "running" | "completed" | "incomplete";
+export type CanonicalRunKind =
+  | "source"
+  | "secrets"
+  | "dependencies"
+  | "binary"
+  | "firmware"
+  | "import"
+  | "verification";
+export type CanonicalRunState =
+  | "queued"
+  | "discovering"
+  | "detecting"
+  | "normalizing"
+  | "enriching"
+  | "assessing"
+  | "persisting"
+  | "completed"
+  | "cancelling"
+  | "cancelled"
+  | "incomplete"
+  | "failed"
+  | "verifying";
+
+export interface CanonicalRun {
+  id: string;
+  kind: CanonicalRunKind;
+  targetLabel: string;
+  state: CanonicalRunState;
+  attempt: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+  engineIds: string[];
+  rulePackIds: string[];
+  providerSnapshotIds: string[];
+  warnings: Array<{ code: string; message: string }>;
+}
+
+export interface RuleLibraryRuleStatus {
+  id: string;
+  title: string;
+  severity: string;
+  scope: string[];
+  fixtureHealth: "verified" | "unitTested" | "coverageNeeded";
+  provenance: string;
+}
+
+export interface RuleLibraryPackStatus {
+  id: string;
+  name: string;
+  version: string;
+  engine: string;
+  enabled: boolean;
+  license: string;
+  source: string;
+  creationMethod: string;
+  contentSha256: string;
+  validation: string;
+  fixtureSummary: string;
+  rules: RuleLibraryRuleStatus[];
+}
+
+export interface RulePackValidationPreview {
+  id: string;
+  name: string;
+  version: string;
+  contentSha256: string;
+  ruleCount: number;
+  engines: string[];
+  fixtureCount: number;
+  license: string;
+  source: string;
+  validation: string;
+}
+
+export interface QualityStatus {
+  schemaVersion: number;
+  suiteId: string;
+  suiteVersion: string;
+  description: string;
+  corpusTargets: number;
+  passedTargets: number;
+  truePositives: number;
+  falsePositives: number;
+  falseNegatives: number;
+  precision: number | null;
+  recall: number | null;
+  runtimeMs: number;
+  misses: string[];
+  unexpected: string[];
+  limitation: string;
+  previousPrecision: number | null;
+  previousRecall: number | null;
+  regression: boolean;
+}
+
+export interface DataSourceStatus {
+  id: string;
+  name: string;
+  sourceUrl: string;
+  termsUrl: string;
+  license: string;
+  state: "notRefreshed" | "onlineCached" | "offlineReady" | "failed";
+  supportsOffline: boolean;
+  activeSnapshotId: string | null;
+  fetchedAtMs: number | null;
+  contentSha256: string | null;
+  recordCount: number | null;
+  validation: string;
+  limitation: string;
+}
+
+export type ExportFormat =
+  | "oxaudit-json"
+  | "sarif"
+  | "cyclonedx"
+  | "spdx"
+  | "openvex"
+  | "cyclonedx-vex";
+
+export interface ExportPreview {
+  format: ExportFormat;
+  mediaType: string;
+  suggestedFileName: string;
+  valid: boolean;
+  warnings: string[];
+  artifacts: number;
+  components: number;
+  observations: number;
+  content: string;
+  truncated: boolean;
+}
+
+export interface ImportPreview {
+  format: ExportFormat;
+  mediaType: string;
+  fileName: string;
+  contentSha256: string;
+  componentRecords: number;
+  findingRecords: number;
+  reviewRecords: number;
+  conflictCount: number;
+  conflicts: string[];
+  unmappedCount: number;
+  unmappedRecords: string[];
+  warnings: string[];
+  canImportInventory: boolean;
+}
+
+export interface InventoryIdentityView {
+  method: string;
+  value: string;
+  confidence: number;
+  artifactId: string;
+  artifactPath: string;
+}
+
+export interface InventoryComponentView {
+  id: string;
+  name: string;
+  version: string | null;
+  supplier: string | null;
+  ecosystem: string | null;
+  purl: string | null;
+  cpes: string[];
+  aliases: string[];
+  identities: InventoryIdentityView[];
+  advisoryIds: string[];
+}
+
+export interface InventoryView {
+  runId: string;
+  targetLabel: string;
+  runKind: CanonicalRunKind;
+  updatedAtMs: number;
+  providerSnapshotCount: number;
+  components: InventoryComponentView[];
+}
+
+export interface CanonicalFinding {
+  id: string;
+  runId: string;
+  fingerprint: string;
+  fingerprintVersion: number;
+  title: string;
+  severity: Severity;
+  state: "candidate" | "confirmed" | "false_positive" | "accepted_risk" | "suppressed";
+  classifications: string[];
+  observationIds: string[];
+  evidenceIds: string[];
+}
+
+export type VerificationResult = "supported" | "refuted" | "inconclusive";
+
+export interface VerificationRecord {
+  id: string;
+  findingId: string;
+  producerId: string;
+  verifier: { kind: string; id: string; version: string };
+  inputSnapshotSha256: string;
+  result: VerificationResult;
+  evidenceDelta: string[];
+  limitations: string[];
+  verifiedAtMs: number;
+}
+export type ReviewOrigin = "local" | "projectPolicy";
+export type Gate =
+  | "intended"
+  | "reachable"
+  | "attackerControlled"
+  | "sanitized"
+  | "newCapability";
+export type GateVerdict = "survives" | "eliminates" | "unknown";
+
+export interface GateNote {
+  gate: Gate;
+  verdict: GateVerdict;
+  evidence: string;
+}
+
+export type PolicyStatus =
+  | { status: "missing" }
+  | { status: "valid"; hash: string }
+  | { status: "invalid"; message: string };
+
+export type RunPersistence =
+  | { status: "saved" }
+  | { status: "notSaved"; retryToken: string };
+
+export type ErrorCode =
+  | "invalidTarget"
+  | "scanCancelled"
+  | "scanFailed"
+  | "scanAlreadyRunning"
+  | "persistenceUnavailable"
+  | "policyInvalid"
+  | "policyWriteFailed"
+  | "reviewInvalid"
+  | "notFound"
+  | "credentialUnavailable"
+  | "credentialRollbackFailed"
+  | "migrationFailed"
+  | "dataOperationFailed";
+
+export interface CommandError {
+  code: ErrorCode;
+  message: string;
+  detail: string | null;
+  retryable: boolean;
+}
+
 export interface ScanOptions {
   path: string;
   includeGit: boolean;
@@ -10,6 +279,7 @@ export interface ScanOptions {
   scanSecrets: boolean;
   scanVulnerabilities: boolean;
   extraIgnoredDirs: string[];
+  ignoreInvalidPolicy: boolean;
 }
 
 export interface ScanSummary {
@@ -52,11 +322,101 @@ export interface Finding {
   recommendation: string;
   entropy: number | null;
   verified: boolean | null;
+  observationRunId: string;
+  resolvedByRunId: string | null;
+  fingerprintVersion: number;
+  fingerprint: string;
+  scope: FindingScope | null;
+  scopeReason: string | null;
+  review: ReviewRecord | null;
+  reviewHistory: ReviewRecord[];
+  diffStatus: DiffStatus | null;
 }
 
 export interface ScanResult {
   summary: ScanSummary;
   findings: Finding[];
+}
+
+export interface ReviewRecord {
+  id: string;
+  projectId: string;
+  fingerprintVersion: number;
+  fingerprint: string;
+  state: ReviewState;
+  reason: string;
+  evidence: string | null;
+  entryPoint: string | null;
+  dataFlow: string | null;
+  gates: GateNote[];
+  decidingGate: Gate | null;
+  expiresAt: string | null;
+  origin: ReviewOrigin;
+  policyHash: string | null;
+  updatedAt: string;
+  supersededAt: string | null;
+}
+
+export interface ScanRunDetail {
+  projectId: string;
+  runId: string;
+  baselineRunId: string | null;
+  status: RunStatus;
+  persistence: RunPersistence;
+  policy: PolicyStatus;
+  startedAt: string;
+  completedAt: string | null;
+  summary: ScanSummary;
+  findings: Finding[];
+  maintenanceWarning: string | null;
+}
+
+export interface ProjectContext {
+  projectId: string;
+  canonicalPath: string;
+  displayName: string;
+  policy: PolicyStatus;
+  lastCompletedRunId: string | null;
+  lastOptions: ScanOptions | null;
+}
+
+export interface RecentProject {
+  projectId: string;
+  canonicalPath: string;
+  displayName: string;
+  lastOpenedAt: string;
+  lastCompletedRunId: string | null;
+  lastCompletedAt: string | null;
+  openFindings: number;
+  critical: number;
+  high: number;
+}
+
+export interface ScanRunSummary {
+  runId: string;
+  projectId: string;
+  status: RunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  totalFindings: number;
+  newFindings: number;
+  resolvedFindings: number;
+}
+
+export interface ReviewRequest {
+  projectId: string;
+  fingerprintVersion: number;
+  fingerprint: string;
+  category: Finding["category"];
+  state: ReviewState;
+  reason: string;
+  evidence: string | null;
+  entryPoint: string | null;
+  dataFlow: string | null;
+  gates: GateNote[];
+  decidingGate: Gate | null;
+  expiresAt: string | null;
+  origin: ReviewOrigin;
 }
 
 export interface ScanProgress {
@@ -247,6 +607,22 @@ export interface BinaryScanResult {
   durationMs: number;
   /** Scanners that contributed to this result. */
   scanners: string[];
+  semanticAnalysis?: SemanticAnalysisReport;
+}
+
+export interface SemanticAnalysisReport {
+  architecture: string;
+  functionsAnalyzed: number;
+  callEdges: number;
+  unresolvedEdges: number;
+  findings: Array<{
+    ruleId: string;
+    functionAddress: number;
+    confidence: number;
+    evidence: unknown[];
+    limitations: string[];
+  }>;
+  limitations: string[];
 }
 
 export interface BinaryScannersStatus {
@@ -265,6 +641,7 @@ export interface BinaryScanRequest {
   severity?: string | null;
   offline?: boolean;
   update?: string | null;
+  deepAnalysis?: boolean;
 }
 
 export interface ChatMessage {

@@ -1,34 +1,91 @@
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Ban, Clipboard, FileCode2, KeyRound, Play, Search } from "lucide-react";
+import { Clipboard, RotateCcw, Search } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+} from "react";
 import { FindingDetail } from "../components/FindingDetail";
-import { FolderPicker } from "../components/FolderPicker";
-import { ProgressBar } from "../components/ProgressBar";
-import { SeverityBadge } from "../components/SeverityBadge";
+import { Button, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
-import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
+import { FindingList } from "../features/source-scan/FindingList";
+import { SourceProjectLoader } from "../features/source-scan/projectLoader";
+import { ResultViewTabs } from "../features/source-scan/ResultViewTabs";
+import {
+  countViews,
+  filterFindings,
+  nextSelection,
+  sanitizeExport,
+} from "../features/source-scan/resultsModel";
+import { RunHistory } from "../features/source-scan/RunHistory";
+import { RunTimeline } from "../features/runs/RunTimeline";
+import { SourceTargetPanel } from "../features/source-scan/SourceTargetPanel";
+import type { ResultsQuery } from "../features/source-scan/types";
 import { api } from "../lib/api";
 import { resolveRuntimeProject } from "../lib/assistantSessions";
+import { normalizeCommandError } from "../lib/commandError";
 import { fmtBytes, fmtDuration } from "../lib/format";
 import {
   buildSourceScanRequest,
   createSourceScanOptions,
   editSourceScanOption,
   hydrateSourceScanOptions,
+  hydrateSourceScanOptionsFromProject,
   resolveSourceScanOptionsUnavailable,
   type SourceScanOptionKey,
   type SourceScanOptionValues,
 } from "../lib/sourceScanOptions";
 import { useAppStore, useToastStore } from "../lib/stores";
-import type { Finding, ScanProgress, ScanResult, Severity } from "../lib/types";
-import { Button, Select, Switch } from "../components/ui";
+import type {
+  CommandError,
+  Finding,
+  FindingScope,
+  ProjectContext,
+  RecentProject,
+  ReviewRequest,
+  ScanProgress,
+  ScanRunDetail,
+  ScanRunSummary,
+  Severity,
+} from "../lib/types";
 
-const SEVERITIES: (Severity | "all")[] = ["all", "critical", "high", "medium", "low", "info"];
+const SEVERITIES: Array<Severity | "all"> = [
+  "all",
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "info",
+];
 
-export function SourceScanPage() {
+const SCOPES: Array<FindingScope | "all"> = [
+  "all",
+  "production",
+  "infrastructure",
+  "test",
+  "fixture",
+  "generated",
+  "vendored",
+  "documentation",
+  "unknown",
+];
+
+const DEFAULT_QUERY: ResultsQuery = {
+  view: "open",
+  category: "all",
+  severity: "all",
+  scope: "all",
+  language: "all",
+  search: "",
+};
+
+export function SourceScanPage(): JSX.Element {
   const settings = useAppStore((state) => state.settings);
   const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const addRecentScan = useAppStore((state) => state.addRecentScan);
@@ -41,51 +98,67 @@ export function SourceScanPage() {
   const [scanOptions, setScanOptions] = useState(() =>
     createSourceScanOptions(settings?.scan ?? null),
   );
-  const {
-    scanSecrets,
-    scanVulnerabilities: scanVulns,
-    includeGit,
-    followSymlinks,
-    maxFileSizeKb: maxSizeKb,
-  } = scanOptions.values;
-
+  const [project, setProject] = useState<ProjectContext | null>(null);
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
+  const [runs, setRuns] = useState<ScanRunSummary[]>([]);
+  const [run, setRun] = useState<ScanRunDetail | null>(null);
+  const [targetLoading, setTargetLoading] = useState(false);
+  const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
-  const [result, setResult] = useState<ScanResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [targetError, setTargetError] = useState<CommandError | null>(null);
+  const [operationError, setOperationError] = useState<CommandError | null>(null);
+  const [operationRetry, setOperationRetry] = useState<
+    | { kind: "scan" }
+    | { kind: "save" }
+    | { kind: "loadRun"; runId: string }
+    | null
+  >(null);
   const [cancelled, setCancelled] = useState(false);
-  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
-
-  const [tab, setTab] = useState<"all" | "secret" | "vulnerability">("all");
-  const [sevFilter, setSevFilter] = useState<string>("all");
-  const [langFilter, setLangFilter] = useState<string>("all");
-  const [search, setSearch] = useState("");
+  const [retryingSave, setRetryingSave] = useState(false);
+  const [savingReview, setSavingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<CommandError | null>(null);
+  const [reviewAnnouncement, setReviewAnnouncement] = useState("");
+  const [selectedFingerprint, setSelectedFingerprint] = useState<string | null>(null);
+  const [query, setQuery] = useState<ResultsQuery>(DEFAULT_QUERY);
+  const [recentUnavailable, setRecentUnavailable] = useState(false);
+  const [loadVersion, setLoadVersion] = useState(0);
 
   const cancellingRef = useRef(false);
-  const pathRequestRef = useRef(0);
+  const runLoadGenerationRef = useRef(0);
+  const loaderRef = useRef(new SourceProjectLoader(api));
 
   useEffect(() => {
     if (settings) {
-      setScanOptions((current) =>
-        hydrateSourceScanOptions(current, settings.scan),
-      );
+      setScanOptions((current) => hydrateSourceScanOptions(current, settings.scan));
     } else if (settingsLoadError) {
       setScanOptions(resolveSourceScanOptionsUnavailable);
     }
   }, [settings, settingsLoadError]);
 
-  const updateScanOption = <K extends SourceScanOptionKey>(
-    key: K,
-    value: SourceScanOptionValues[K],
-  ) => {
-    setScanOptions((current) => editSourceScanOption(current, key, value));
-  };
+  useEffect(() => {
+    let disposed = false;
+    void api
+      .listSourceProjects(12)
+      .then((projects) => {
+        if (!disposed) {
+          setRecentProjects(projects);
+          setRecentUnavailable(false);
+        }
+      })
+      .catch(() => {
+        if (!disposed) setRecentUnavailable(true);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
     const unlisteners: UnlistenFn[] = [];
-    const releaseListeners = () => {
+    const release = () => {
       for (const unlisten of unlisteners.splice(0)) unlisten();
     };
     const register = async () => {
@@ -100,7 +173,9 @@ export function SourceScanPage() {
         unlisteners.push(progressUnlisten);
 
         const doneUnlisten = await listen<ScanProgress>("scan://done", (event) => {
-          if (!disposed) setProgress((current) => ({ ...current, ...event.payload }));
+          if (!disposed) {
+            setProgress((current) => ({ ...current, ...event.payload }));
+          }
         });
         if (disposed) {
           doneUnlisten();
@@ -108,145 +183,195 @@ export function SourceScanPage() {
         }
         unlisteners.push(doneUnlisten);
       } catch {
-        releaseListeners();
-        // The event bridge is unavailable when the UI is exercised in a browser.
+        release();
+        // The event bridge is unavailable in browser-only checks.
       }
     };
-
     void register();
     return () => {
       disposed = true;
-      releaseListeners();
+      release();
     };
   }, []);
 
   useEffect(() => {
     if (!running) return;
-    setPageStatus("source-scan", { label: "Scanning", tone: "running", detail: progress?.file });
+    setPageStatus("source-scan", {
+      label: "Scanning",
+      tone: "running",
+      detail: progress?.file,
+    });
   }, [progress?.file, running, setPageStatus]);
 
-  const filtered = useMemo(() => {
-    if (!result) return [];
-    const query = search.trim().toLowerCase();
-    return result.findings.filter((finding) => {
-      if (tab !== "all" && finding.category !== tab) return false;
-      if (sevFilter !== "all" && finding.severity !== sevFilter) return false;
-      if (langFilter !== "all" && finding.language !== langFilter) return false;
-      if (
-        query &&
-        !`${finding.ruleName} ${finding.filePath} ${finding.matchText}`.toLowerCase().includes(query)
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }, [langFilter, result, search, sevFilter, tab]);
-
-  const selectedFinding = filtered.find((finding) => finding.id === selectedFindingId) ?? filtered[0] ?? null;
-  const hasExplicitSelection =
-    selectedFindingId !== null && selectedFinding?.id === selectedFindingId;
-
-  const languages = useMemo(() => {
-    if (!result) return [];
-    const found = new Set<string>();
-    for (const finding of result.findings) {
-      if (finding.language) found.add(finding.language);
+  useEffect(() => {
+    const candidate = path.trim();
+    if (!candidate) {
+      setTargetLoading(false);
+      void resolveRuntimeProject(null, api.setActiveProject).then((outcome) => {
+        setActiveProjectStore(outcome.runtimePath);
+      });
+      return;
     }
-    return ["all", ...Array.from(found).sort()];
-  }, [result]);
 
-  const resetResultState = () => {
-    setResult(null);
-    setError(null);
-    setCancelled(false);
-    setTab("all");
-    setSevFilter("all");
-    setLangFilter("all");
-    setSearch("");
-    setSelectedFindingId(null);
-    clearPageStatus("source-scan");
+    let disposed = false;
+    const timer = window.setTimeout(() => {
+      setTargetLoading(true);
+      setTargetError(null);
+      void loaderRef.current
+        .load(candidate)
+        .then(async (loaded) => {
+          if (disposed || !loaded) return;
+          setProject(loaded.context);
+          setRuns(loaded.runs);
+          setRun(loaded.run);
+          setScanOptions((current) =>
+            hydrateSourceScanOptionsFromProject(current, loaded.context.lastOptions),
+          );
+
+          const outcome = await resolveRuntimeProject(
+            loaded.context.canonicalPath,
+            api.setActiveProject,
+          );
+          if (disposed) return;
+          setActiveProjectStore(outcome.runtimePath);
+          if (outcome.warning) push("error", outcome.warning);
+        })
+        .catch((error) => {
+          if (!disposed) setTargetError(normalizeCommandError(error));
+        })
+        .finally(() => {
+          if (!disposed) setTargetLoading(false);
+        });
+    }, 350);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [loadVersion, path, push, setActiveProjectStore]);
+
+  useEffect(() => () => loaderRef.current.invalidate(), []);
+
+  useEffect(() => {
+    setReviewError(null);
+  }, [selectedFingerprint]);
+
+  const updateScanOption = <K extends SourceScanOptionKey>(
+    key: K,
+    value: SourceScanOptionValues[K],
+  ) => {
+    setScanOptions((current) => editSourceScanOption(current, key, value));
   };
 
-  const changePath = (nextPath: string) => {
-    if (nextPath === path) return;
-    const requestId = ++pathRequestRef.current;
-    setPath(nextPath);
-    resetResultState();
-    void resolveRuntimeProject(nextPath || null, api.setActiveProject).then((outcome) => {
-      setActiveProjectStore(outcome.runtimePath);
-      if (
-        requestId === pathRequestRef.current &&
-        outcome.unavailablePath === nextPath &&
-        outcome.warning
-      ) {
-        push("error", outcome.warning);
-      }
-    });
-  };
+  const changePath = useCallback(
+    (nextPath: string) => {
+      if (nextPath === path) return;
+      loaderRef.current.invalidate();
+      runLoadGenerationRef.current += 1;
+      setPath(nextPath);
+      setProject(null);
+      setRuns([]);
+      setRun(null);
+      setTargetError(null);
+      setOperationError(null);
+      setOperationRetry(null);
+      setCancelled(false);
+      setSelectedFingerprint(null);
+      setQuery(DEFAULT_QUERY);
+      clearPageStatus("source-scan");
+    },
+    [clearPageStatus, path],
+  );
 
-  const run = async () => {
+  const refreshMetadata = useCallback(async (projectId: string) => {
+    const [context, nextRuns, nextRecent] = await Promise.all([
+      api.inspectSourceProject(project?.canonicalPath ?? path),
+      api.listSourceRuns(projectId, 50),
+      api.listSourceProjects(12),
+    ]);
+    setProject(context);
+    setRuns(nextRuns);
+    setRecentProjects(nextRecent);
+    setRecentUnavailable(false);
+  }, [path, project?.canonicalPath]);
+
+  const runScan = async (ignoreInvalidPolicy = false) => {
+    const target = project?.canonicalPath ?? path.trim();
+    const values = scanOptions.values;
     if (
-      !path ||
+      !project ||
+      !target ||
       running ||
       !scanOptions.resolved ||
-      (!scanSecrets && !scanVulns)
+      (!values.scanSecrets && !values.scanVulnerabilities) ||
+      (project.policy.status === "invalid" && !ignoreInvalidPolicy)
     ) {
       return;
     }
+
     setRunning(true);
     cancellingRef.current = false;
     setCancelling(false);
-    setError(null);
+    setOperationError(null);
+    setOperationRetry(null);
     setCancelled(false);
     setProgress({ phase: "walking" });
-    const requestId = ++pathRequestRef.current;
-    const requestedPath = path;
     try {
-      const runtime = await resolveRuntimeProject(
-        requestedPath,
-        api.setActiveProject,
-      );
+      const runtime = await resolveRuntimeProject(target, api.setActiveProject);
       setActiveProjectStore(runtime.runtimePath);
-      if (
-        requestId !== pathRequestRef.current ||
-        runtime.runtimePath !== requestedPath
-      ) {
-        return;
+      if (runtime.runtimePath !== target) {
+        throw new Error(runtime.warning ?? "The selected project is unavailable.");
       }
-      const res = await api.scanProject(
-        buildSourceScanRequest(requestedPath, scanOptions),
+
+      const result = await api.scanProject(
+        buildSourceScanRequest(target, scanOptions, ignoreInvalidPolicy),
       );
-      setResult(res);
-      setSelectedFindingId(null);
+      setRun(result);
+      setSelectedFingerprint((current) =>
+        current && result.findings.some((finding) => finding.fingerprint === current)
+          ? current
+          : null,
+      );
       setPageStatus("source-scan", {
-        label: "Scan complete",
-        tone: "success",
-        detail: `${res.summary.totalFindings} findings`,
+        label: result.persistence.status === "saved" ? "Scan complete" : "Scan complete, not saved",
+        tone: result.persistence.status === "saved" ? "success" : "error",
+        detail: `${result.summary.totalFindings} findings`,
       });
-      addRecentScan({
-        id: `${Date.now()}`,
-        kind: "source",
-        path,
-        at: new Date().toISOString(),
-        findings: res.summary.totalFindings,
-        critical: res.summary.critical,
-        high: res.summary.high,
-      });
+
+      if (result.status === "completed" && result.persistence.status === "saved") {
+        addRecentScan({
+          id: result.runId,
+          kind: "source",
+          path: target,
+          at: result.completedAt ?? new Date().toISOString(),
+          findings: result.summary.totalFindings,
+          critical: result.summary.critical,
+          high: result.summary.high,
+        });
+      }
       push(
-        "success",
-        `Scan complete — ${res.summary.totalFindings} findings in ${fmtDuration(res.summary.durationMs)}`,
+        result.persistence.status === "saved" ? "success" : "info",
+        result.persistence.status === "saved"
+          ? `Scan complete — ${result.summary.totalFindings} findings in ${fmtDuration(result.summary.durationMs)}`
+          : `Scan complete — ${result.summary.totalFindings} findings are available, but the run was not saved.`,
       );
-    } catch (scanError) {
-      const detail = String(scanError);
-      if (detail.toLowerCase().includes("scan cancelled")) {
-        setError(null);
+
+      try {
+        await refreshMetadata(result.projectId);
+      } catch {
+        push("info", "The scan completed, but project history could not be refreshed.");
+      }
+    } catch (error) {
+      const normalized = normalizeCommandError(error);
+      if (normalized.code === "scanCancelled") {
         setCancelled(true);
         setPageStatus("source-scan", { label: "Scan cancelled", tone: "neutral" });
         push("info", "Scan cancelled");
       } else {
-        setError(detail);
+        setOperationError(normalized);
+        setOperationRetry(normalized.retryable ? { kind: "scan" } : null);
         setPageStatus("source-scan", { label: "Scan failed", tone: "error" });
-        push("error", "The selected folder could not be scanned");
+        push("error", normalized.message);
       }
     } finally {
       setRunning(false);
@@ -266,402 +391,359 @@ export function SourceScanPage() {
     } catch {
       cancellingRef.current = false;
       setCancelling(false);
-      push("error", "The scan could not be cancelled");
+      push("error", "The scan could not be cancelled.");
     }
   };
 
+  const loadRun = async (runId: string) => {
+    if (runId === run?.runId) return;
+    const generation = ++runLoadGenerationRef.current;
+    setLoadingRunId(runId);
+    setOperationError(null);
+    setOperationRetry(null);
+    try {
+      const loaded = await api.loadSourceRun(runId);
+      if (generation !== runLoadGenerationRef.current) return;
+      setRun(loaded);
+      setSelectedFingerprint((current) =>
+        current && loaded.findings.some((finding) => finding.fingerprint === current)
+          ? current
+          : null,
+      );
+    } catch (error) {
+      if (generation === runLoadGenerationRef.current) {
+        const normalized = normalizeCommandError(error);
+        setOperationError(normalized);
+        setOperationRetry(normalized.retryable ? { kind: "loadRun", runId } : null);
+      }
+    } finally {
+      if (generation === runLoadGenerationRef.current) setLoadingRunId(null);
+    }
+  };
+
+  const retrySave = async () => {
+    if (!run || run.persistence.status !== "notSaved" || retryingSave) return;
+    setRetryingSave(true);
+    setOperationError(null);
+    setOperationRetry(null);
+    try {
+      const saved = await api.retrySourceRunSave(run.persistence.retryToken);
+      setRun(saved);
+      push("success", "The scan run was saved to project history.");
+      try {
+        await refreshMetadata(saved.projectId);
+      } catch {
+        push("info", "The run was saved, but project history could not be refreshed.");
+      }
+    } catch (error) {
+      const normalized = normalizeCommandError(error);
+      setOperationError(normalized);
+      setOperationRetry(normalized.retryable ? { kind: "save" } : null);
+    } finally {
+      setRetryingSave(false);
+    }
+  };
+
+  const saveReview = async (request: ReviewRequest) => {
+    if (!run || savingReview) return;
+    setSavingReview(true);
+    setReviewError(null);
+    setOperationError(null);
+    setOperationRetry(null);
+    try {
+      await api.saveFindingReview(request);
+      push("success", "Review saved.");
+      let refreshed: ScanRunDetail;
+      try {
+        refreshed = await api.loadSourceRun(run.runId);
+      } catch (error) {
+        const normalized = normalizeCommandError(error);
+        setOperationError({
+          ...normalized,
+          message: "The review was saved, but refreshed results could not be loaded.",
+        });
+        setOperationRetry(
+          normalized.retryable ? { kind: "loadRun", runId: run.runId } : null,
+        );
+        setReviewAnnouncement("Review saved, but refreshed results could not be loaded.");
+        return;
+      }
+
+      setRun(refreshed);
+      setSelectedFingerprint(request.fingerprint);
+      setReviewAnnouncement("Review saved and finding views refreshed.");
+      try {
+        await refreshMetadata(refreshed.projectId);
+      } catch {
+        push("info", "The review was saved, but project totals could not be refreshed.");
+      }
+    } catch (error) {
+      setReviewError(normalizeCommandError(error));
+    } finally {
+      setSavingReview(false);
+    }
+  };
+
+  const findings = run?.findings ?? [];
+  const counts = useMemo(() => countViews(findings), [findings]);
+  const filtered = useMemo(
+    () => filterFindings(findings, query),
+    [findings, query],
+  );
+  const effectiveSelection = nextSelection(filtered, selectedFingerprint);
+  const selectedFinding =
+    filtered.find((finding) => finding.fingerprint === effectiveSelection) ?? null;
+  const hasExplicitSelection =
+    selectedFingerprint !== null && selectedFingerprint === effectiveSelection;
+  const languages = useMemo(() => {
+    const values = new Set<string>();
+    for (const finding of findings) {
+      if (finding.language) values.add(finding.language);
+    }
+    return Array.from(values).sort();
+  }, [findings]);
+
   const copyJson = async () => {
-    if (!result) return;
+    if (!run) return;
     const report = {
       tool: "oxAudit",
-      version: "0.1.0",
       exportedAt: new Date().toISOString(),
-      summary: result.summary,
-      findings: result.findings,
+      projectId: run.projectId,
+      runId: run.runId,
+      baselineRunId: run.baselineRunId,
+      status: run.status,
+      summary: run.summary,
+      findings: sanitizeExport(run.findings),
     };
     try {
       if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
       await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
-      push("success", "Scan report copied to clipboard (JSON)");
+      push("success", "Redacted scan report copied to clipboard.");
     } catch {
-      push("error", "Clipboard unavailable");
+      push("error", "Clipboard unavailable.");
     }
   };
 
   const copyFinding = async (finding: Finding) => {
     try {
       if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
-      await navigator.clipboard.writeText(JSON.stringify(finding, null, 2));
-      push("success", "Finding copied to clipboard");
+      await navigator.clipboard.writeText(
+        JSON.stringify(sanitizeExport([finding])[0], null, 2),
+      );
+      push("success", "Redacted finding copied to clipboard.");
     } catch {
-      push("error", "Clipboard unavailable");
+      push("error", "Clipboard unavailable.");
     }
   };
 
   const openFile = (finding: Finding) => {
-    if (!result) return;
-    void api
-      .openScanFinding(result.summary.path, finding.filePath)
-      .catch((openError) => {
-        push("error", `The finding file could not be opened: ${String(openError)}`);
-      });
+    if (!run) return;
+    void api.openScanFinding(run.summary.path, finding.filePath).catch(() => {
+      push("error", "The finding file could not be opened.");
+    });
   };
 
-  const scanUnavailable = !scanSecrets && !scanVulns;
-  const progressLabel =
-    progress?.phase === "walking"
-      ? "Walking directory tree…"
-      : "Scanning files for secrets and vulnerable patterns…";
+  const clearFilters = () => {
+    setQuery((current) => ({ ...DEFAULT_QUERY, view: current.view }));
+    setSelectedFingerprint(null);
+  };
+
+  const scanUnavailable =
+    !scanOptions.values.scanSecrets && !scanOptions.values.scanVulnerabilities;
 
   return (
     <ToolPage
       title="Source Scan"
-      description="Scan a local project for exposed secrets and vulnerable source patterns."
+      description="Scan a local project, compare durable runs, and record review decisions without exposing secret material."
+      context={project ? <span className="font-mono text-[10px] text-text-muted">{project.displayName}</span> : undefined}
     >
-      <TargetBar
-        primary={
-          <>
-            {running && (
-              <Button
-                type="button"
-                onClick={cancel}
-                disabled={cancelling}
-                variant="danger"
-                size="md"
-              >
-                <Ban size={13} aria-hidden="true" />
-                {cancelling ? "Cancelling…" : "Cancel"}
-              </Button>
-            )}
-            <Button
-              type="button"
-              onClick={run}
-              disabled={!path || running || !scanOptions.resolved || scanUnavailable}
-              variant="primary"
-              size="md"
-            >
-              <Play size={13} aria-hidden="true" />
-              {running ? "Scanning…" : "Run scan"}
-            </Button>
-          </>
-        }
-        secondary={
-          <>
-            <details>
-              <summary className="w-fit cursor-pointer text-[12px] font-medium text-text-secondary hover:text-text-primary">
-                Advanced scan settings
-              </summary>
-              <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3">
-                <Switch
-                  checked={scanSecrets}
-                  onChange={(checked) => updateScanOption("scanSecrets", checked)}
-                  label="Secrets"
-                  disabled={running}
-                />
-                <Switch
-                  checked={scanVulns}
-                  onChange={(checked) =>
-                    updateScanOption("scanVulnerabilities", checked)
-                  }
-                  label="Vulnerabilities"
-                  disabled={running}
-                />
-                <Switch
-                  checked={includeGit}
-                  onChange={(checked) => updateScanOption("includeGit", checked)}
-                  label="Include .git"
-                  disabled={running}
-                />
-                <Switch
-                  checked={followSymlinks}
-                  onChange={(checked) =>
-                    updateScanOption("followSymlinks", checked)
-                  }
-                  label="Follow symlinks"
-                  disabled={running}
-                />
-                <label className="flex items-center gap-2 text-[12px] text-text-muted">
-                  Max file size
-                  <input
-                    type="number"
-                    value={maxSizeKb}
-                    min={1}
-                    max={10240}
-                    onChange={(event) =>
-                      updateScanOption(
-                        "maxFileSizeKb",
-                        Number(event.target.value) || 1024,
-                      )
-                    }
-                    disabled={running}
-                    className="w-20 rounded-sm border border-border bg-surface-secondary px-2 py-1 font-mono text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                  KB
-                </label>
-              </div>
-            </details>
-            {!scanOptions.resolved && (
-              <InlineState
-                tone="running"
-                compact
-                title="Loading scan defaults"
-                description="Run scan becomes available after the local settings attempt finishes."
-              />
-            )}
-            {settingsLoadError && settings === null && scanOptions.resolved && (
-              <InlineState
-                tone="unavailable"
-                compact
-                title="Using fallback scan defaults"
-                description="Local settings could not be loaded. The displayed controls are the exact options that will be submitted."
-              />
-            )}
-            {running && progress && (
-              <InlineState
-                tone="running"
-                compact
-                title="Scanning project"
-                description={progress.file}
-                progress={
-                  <ProgressBar
-                    indeterminate={!progress.total}
-                    value={progress.done ?? 0}
-                    max={progress.total ?? 0}
-                    label={progressLabel}
-                  />
-                }
-                action={
-                  result ? (
-                    <span className="text-[11px] text-text-muted">Previous results remain available below.</span>
-                  ) : undefined
-                }
-              />
-            )}
-            {cancelled && result && !running && (
-              <div className="mt-3">
-                <ScanCancelled hasPreviousResults />
-              </div>
-            )}
-            {scanUnavailable && !running && (
-              <div className="mt-3">
-                <InlineState
-                  tone="unavailable"
-                  compact
-                  title="No scan categories selected"
-                  description="Enable secrets or vulnerabilities to run a source scan."
-                />
-              </div>
-            )}
-            {error && result && !running && (
-              <div className="mt-3">
-                <ScanError detail={error} onRetry={run} />
-              </div>
-            )}
-          </>
-        }
-      >
-        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-          Project folder
-        </label>
-        <FolderPicker
-          value={path}
-          onChange={changePath}
-          disabled={running}
-          inputLabel="Project folder path"
-          buttonLabel="Browse…"
-        />
-      </TargetBar>
+      <SourceTargetPanel
+        path={path}
+        recentProjects={recentProjects}
+        project={project}
+        options={scanOptions}
+        running={running}
+        cancelling={cancelling}
+        dropping={false}
+        progress={progress}
+        onPathChange={changePath}
+        onOptionChange={updateScanOption}
+        onRun={(ignoreInvalidPolicy) => void runScan(ignoreInvalidPolicy)}
+        onCancel={() => void cancel()}
+      />
+      <RunTimeline
+        active={!running && run ? "completed" : !running ? "discovering" : progress?.phase === "walking" ? "discovering" : progress?.phase === "scanning" ? "detecting" : "persisting"}
+        running={running}
+        hasCompletedResult={Boolean(run)}
+      />
 
-      {result && (
-        <section aria-label="Scan summary" className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[700px]:grid-cols-5">
-          <SummaryMetric label="Files" value={result.summary.filesScanned.toLocaleString()} />
-          <SummaryMetric label="Secrets" value={result.summary.secretsFound.toLocaleString()} />
-          <SummaryMetric label="Vulnerabilities" value={result.summary.vulnerabilitiesFound.toLocaleString()} />
-          <SummaryMetric label="Critical / High" value={`${result.summary.critical} / ${result.summary.high}`} />
-          <SummaryMetric label="Scanned" value={`${fmtBytes(result.summary.bytesScanned)} · ${fmtDuration(result.summary.durationMs)}`} />
-        </section>
+      {!scanOptions.resolved && (
+        <InlineState tone="running" compact title="Loading scan defaults" description="Run scan becomes available after local settings finish loading." />
+      )}
+      {settingsLoadError && settings === null && scanOptions.resolved && (
+        <InlineState tone="unavailable" compact title="Using fallback scan defaults" description="Local settings could not be loaded. The displayed controls are the exact options that will be submitted." />
+      )}
+      {recentUnavailable && (
+        <InlineState tone="unavailable" compact title="Recent targets are unavailable" description="You can still inspect a folder and run a scan." />
+      )}
+      {targetLoading && (
+        <InlineState tone="running" compact title="Inspecting project" description="Loading policy status, saved options, and the latest completed run." />
+      )}
+      {targetError && !targetLoading && (
+        <OperationError
+          error={targetError}
+          title="The project could not be inspected"
+          onRetry={targetError.retryable ? () => setLoadVersion((value) => value + 1) : undefined}
+        />
+      )}
+      {operationError && !running && (
+        <OperationError
+          error={operationError}
+          title="The operation could not be completed"
+          onRetry={operationRetry ? () => {
+            if (operationRetry.kind === "scan") void runScan(false);
+            if (operationRetry.kind === "save") void retrySave();
+            if (operationRetry.kind === "loadRun") void loadRun(operationRetry.runId);
+          } : undefined}
+        />
+      )}
+      {cancelled && !running && <ScanCancelled hasPreviousResults={Boolean(run)} />}
+
+      {project && (
+        <div className="grid items-start gap-4 min-[980px]:grid-cols-[minmax(0,1fr)_20rem]">
+          {run ? (
+            <section aria-label="Scan summary" className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[700px]:grid-cols-5">
+              <SummaryMetric label="Files" value={run.summary.filesScanned.toLocaleString()} />
+              <SummaryMetric label="Secrets" value={run.summary.secretsFound.toLocaleString()} />
+              <SummaryMetric label="Vulnerabilities" value={run.summary.vulnerabilitiesFound.toLocaleString()} />
+              <SummaryMetric label="Critical / High" value={`${run.summary.critical} / ${run.summary.high}`} />
+              <SummaryMetric label="Scanned" value={`${fmtBytes(run.summary.bytesScanned)} · ${fmtDuration(run.summary.durationMs)}`} />
+            </section>
+          ) : (
+            <InlineState tone="idle" title="Project ready" description="No completed source scan has been saved for this project yet." />
+          )}
+          <RunHistory
+            runs={runs}
+            selectedRunId={run?.runId ?? null}
+            loadingRunId={loadingRunId}
+            onSelect={(runId) => void loadRun(runId)}
+          />
+        </div>
       )}
 
-      {result && result.findings.length > 0 && (
+      {run?.persistence.status === "notSaved" && (
+        <InlineState
+          tone="unavailable"
+          title="Scan complete, but history was not saved"
+          description="The results remain available in this window. Retry before closing oxAudit if you want this run in project history."
+          action={
+            <Button type="button" onClick={() => void retrySave()} variant="primary" size="md" disabled={retryingSave}>
+              <RotateCcw size={13} aria-hidden="true" />
+              {retryingSave ? "Saving…" : "Retry save"}
+            </Button>
+          }
+        />
+      )}
+
+      {run?.maintenanceWarning && (
+        <InlineState tone="unavailable" compact title="History maintenance needs attention" description={run.maintenanceWarning} />
+      )}
+
+      {run && run.findings.length > 0 && (
         <section aria-label="Source scan results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+          <ResultViewTabs
+            value={query.view}
+            counts={counts}
+            onChange={(view) => {
+              setQuery((current) => ({ ...current, view }));
+              setSelectedFingerprint(null);
+            }}
+          />
           <ResultsToolbar
-            countLabel={`${filtered.length} of ${result.findings.length} findings`}
+            countLabel={`${filtered.length} in this view · ${run.findings.length} total`}
             filters={
               <>
-                <Select
-                  aria-label="Finding category"
-                  value={tab}
-                  onChange={(event) => {
-                    setTab(event.target.value as typeof tab);
-                  }}
-                  variant="compact"
-                >
+                <Select aria-label="Finding category" value={query.category} onChange={(event) => setQuery((current) => ({ ...current, category: event.target.value as ResultsQuery["category"] }))} variant="compact">
                   <option value="all">All categories</option>
-                  <option value="secret">Secrets ({result.summary.secretsFound})</option>
-                  <option value="vulnerability">Vulnerabilities ({result.summary.vulnerabilitiesFound})</option>
+                  <option value="secret">Secrets</option>
+                  <option value="vulnerability">Vulnerabilities</option>
                 </Select>
-                <Select
-                  aria-label="Finding severity"
-                  value={sevFilter}
-                  onChange={(event) => {
-                    setSevFilter(event.target.value);
-                  }}
-                  variant="compact"
-                >
-                  {SEVERITIES.map((severity) => (
-                    <option key={severity} value={severity}>
-                      {severity === "all" ? "All severities" : severity}
-                    </option>
-                  ))}
+                <Select aria-label="Finding severity" value={query.severity} onChange={(event) => setQuery((current) => ({ ...current, severity: event.target.value as ResultsQuery["severity"] }))} variant="compact">
+                  {SEVERITIES.map((severity) => <option key={severity} value={severity}>{severity === "all" ? "All severities" : severity}</option>)}
                 </Select>
-                <Select
-                  aria-label="Finding language"
-                  value={langFilter}
-                  onChange={(event) => {
-                    setLangFilter(event.target.value);
-                  }}
-                  variant="compact"
-                >
-                  {languages.map((language) => (
-                    <option key={language} value={language}>
-                      {language === "all" ? "All languages" : language}
-                    </option>
-                  ))}
+                <Select aria-label="Finding scope" value={query.scope} onChange={(event) => setQuery((current) => ({ ...current, scope: event.target.value as ResultsQuery["scope"] }))} variant="compact">
+                  {SCOPES.map((scope) => <option key={scope} value={scope}>{scope === "all" ? "All scopes" : scope}</option>)}
+                </Select>
+                <Select aria-label="Finding language" value={query.language} onChange={(event) => setQuery((current) => ({ ...current, language: event.target.value }))} variant="compact">
+                  <option value="all">All languages</option>
+                  {languages.map((language) => <option key={language} value={language}>{language}</option>)}
                 </Select>
               </>
             }
             search={
               <label className="relative min-w-0">
                 <span className="sr-only">Search findings</span>
-                <Search
-                  size={13}
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-                />
-                <input
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value);
-                  }}
-                  placeholder="Search findings…"
-                  className="w-44 rounded-sm border border-border bg-surface-secondary py-1.5 pl-8 pr-2 text-[12px] text-text-primary placeholder:text-text-muted"
-                />
+                <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
+                <input value={query.search} onChange={(event) => setQuery((current) => ({ ...current, search: event.target.value }))} placeholder="Search findings…" className="w-44 rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[12px] text-text-primary placeholder:text-text-muted" />
               </label>
             }
             actions={
-              <Button
-                type="button"
-                onClick={copyJson}
-                variant="outline"
-                size="md"
-              >
+              <Button type="button" onClick={() => void copyJson()} variant="outline" size="md">
                 <Clipboard size={13} aria-hidden="true" />
                 Copy JSON
               </Button>
             }
           />
 
-          {filtered.length > 0 ? (
-            <SplitWorkspace
-              listLabel="Findings"
-              detailLabel="Finding detail"
-              hasSelection={hasExplicitSelection}
-              onBackToList={() => setSelectedFindingId(null)}
-              list={
-                <div className="max-h-[39rem] overflow-y-auto divide-y divide-border">
-                  {filtered.map((finding) => {
-                    const Icon = finding.category === "secret" ? KeyRound : FileCode2;
-                    const current = selectedFinding?.id === finding.id;
-                    return (
-                      <button
-                        key={finding.id}
-                        type="button"
-                        aria-current={current}
-                        onClick={() => setSelectedFindingId(finding.id)}
-                        className={`flex w-full items-start gap-3 border-l-2 px-3 py-3 text-left transition-colors ${ current ? "border-accent-glow bg-accent-subtle" : "border-transparent hover:bg-surface-hover" }`}
-                      >
-                        <Icon size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-text-muted" />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex flex-wrap items-center gap-1.5">
-                            <span className="truncate text-[12px] font-medium text-text-primary">{finding.ruleName}</span>
-                            <SeverityBadge severity={finding.severity} />
-                          </span>
-                          <span className="mt-1 block truncate font-mono text-[11px] text-text-muted">
-                            {finding.filePath}:{finding.line}
-                          </span>
-                          <span className="mt-1 block truncate text-[11px] text-text-muted">{finding.matchText}</span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              }
-              detail={
-                selectedFinding ? (
-                  <FindingDetail finding={selectedFinding} onCopy={copyFinding} onOpenFile={openFile} />
-                ) : (
-                  <InlineState tone="empty" title="Select a finding" compact />
-                )
-              }
-            />
-          ) : (
-            <InlineState
-              tone="empty"
-              title="No findings match the current filters"
-              description="Widen the category, severity, or language filters, or clear the search."
-              action={
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTab("all");
-                    setSevFilter("all");
-                    setLangFilter("all");
-                    setSearch("");
-                  }}
-                  className="rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active"
-                >
-                  Clear filters
-                </button>
-              }
-            />
-          )}
+          <div id="source-results-panel" role="tabpanel" aria-labelledby={`source-results-tab-${query.view}`}>
+            {filtered.length > 0 ? (
+              <SplitWorkspace
+                listLabel="Findings"
+                detailLabel="Finding detail"
+                hasSelection={hasExplicitSelection}
+                onBackToList={() => setSelectedFingerprint(null)}
+                list={<FindingList findings={filtered} selectedFingerprint={effectiveSelection} onSelect={setSelectedFingerprint} />}
+                detail={selectedFinding ? (
+                  <FindingDetail
+                    projectId={run.projectId}
+                    finding={selectedFinding}
+                    savingReview={savingReview}
+                    reviewError={reviewError}
+                    onSaveReview={saveReview}
+                    onCopy={(finding) => void copyFinding(finding)}
+                    onOpenFile={openFile}
+                  />
+                ) : <InlineState tone="empty" title="Select a finding" compact />}
+              />
+            ) : (
+              <InlineState
+                tone="empty"
+                title="No findings match this view and its filters"
+                description="Widen the category, severity, scope, or language filters, or clear the search."
+                action={<Button type="button" onClick={clearFilters} variant="outline" size="md">Clear filters</Button>}
+              />
+            )}
+          </div>
         </section>
       )}
 
-      {result && result.findings.length === 0 && (
+      {run && run.findings.length === 0 && (
         <InlineState
           tone="empty"
           title="No findings detected"
-          description="The scan completed without finding exposed secrets or vulnerable source patterns."
-          action={
-            <Button
-              type="button"
-              onClick={copyJson}
-              variant="outline"
-              size="md"
-            >
-              <Clipboard size={13} aria-hidden="true" />
-              Copy JSON
-            </Button>
-          }
+          description="The completed run found no exposed secrets or vulnerable source patterns."
+          action={<Button type="button" onClick={() => void copyJson()} variant="outline" size="md"><Clipboard size={13} aria-hidden="true" />Copy JSON</Button>}
         />
       )}
 
-      {!result && error && !running && <ScanError detail={error} onRetry={run} />}
-
-      {!result && cancelled && !running && <ScanCancelled />}
-
-      {!result && !error && !cancelled && !running && !scanUnavailable && (
-        <InlineState
-          tone="idle"
-          title="Ready to scan"
-          description="Choose a project folder, review optional advanced settings, and run the scan."
-        />
+      {!run && !project && !targetLoading && !targetError && !scanUnavailable && (
+        <InlineState tone="idle" title="Choose a project to begin" description="Browse, paste a path, or drop a project folder. oxAudit will restore its latest completed run automatically." />
       )}
-
-      {!result && running && !progress && (
+      {!run && running && !progress && (
         <InlineState tone="running" title="Starting source scan" description="Preparing the selected project." />
       )}
+
+      <p className="sr-only" aria-live="polite">{reviewAnnouncement}</p>
     </ToolPage>
   );
 }
@@ -670,53 +752,48 @@ function SummaryMetric({ label, value }: { label: string; value: string }): JSX.
   return (
     <div className="min-w-0 border-b border-r border-border px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
       <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">{label}</p>
-      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-text-primary" title={value}>
-        {value}
-      </p>
+      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-text-primary" title={value}>{value}</p>
     </div>
   );
 }
 
-function ScanError({ detail, onRetry }: { detail: string; onRetry: () => void }): JSX.Element {
+function OperationError({
+  error,
+  title,
+  onRetry,
+}: {
+  error: CommandError;
+  title: string;
+  onRetry?: () => void;
+}): JSX.Element {
   return (
     <InlineState
       tone="error"
       compact
-      title="The selected folder could not be scanned"
-      description="Correct the folder path or scan settings, then try again."
+      title={title}
+      description={error.message}
       action={
         <>
-          <Button
-            type="button"
-            onClick={onRetry}
-            variant="danger"
-            size="md"
-          >
-            Retry scan
-          </Button>
-          <details className="text-[11px] text-text-muted">
-            <summary className="cursor-pointer hover:text-text-primary">Details</summary>
-            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-sm border border-border bg-surface-primary p-2 font-mono text-[11px] text-text-muted">
-              {detail}
-            </pre>
-          </details>
+          {onRetry && <Button type="button" onClick={onRetry} variant="danger" size="md">Retry</Button>}
+          {error.detail && (
+            <details className="text-[11px] text-text-muted">
+              <summary className="cursor-pointer hover:text-text-primary">Details</summary>
+              <p className="selectable mt-2 max-w-prose whitespace-pre-wrap rounded-sm border border-border bg-surface-primary p-2 font-mono text-[11px] text-text-muted">{error.detail}</p>
+            </details>
+          )}
         </>
       }
     />
   );
 }
 
-function ScanCancelled({ hasPreviousResults = false }: { hasPreviousResults?: boolean }): JSX.Element {
+function ScanCancelled({ hasPreviousResults }: { hasPreviousResults: boolean }): JSX.Element {
   return (
     <InlineState
       tone="idle"
       compact
       title="Scan cancelled"
-      description={
-        hasPreviousResults
-          ? "The previous completed results are still available."
-          : "No results were changed. You can run the scan again when ready."
-      }
+      description={hasPreviousResults ? "The previous completed results are still available." : "No results were changed. You can run the scan again when ready."}
     />
   );
 }
