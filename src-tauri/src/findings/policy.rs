@@ -117,6 +117,13 @@ enum WriteFailure {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolicyWriteTerminal {
+    CandidateDurablyCommitted,
+    PriorOrNewerAuthoritative,
+    Indeterminate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IoStage {
     BeforePolicyOpen,
     AfterPolicyOpen,
@@ -126,6 +133,7 @@ enum IoStage {
     AfterPolicyPreflight,
     AfterReplace,
     BeforeRollbackExchange,
+    AfterRollbackRecheckBeforeUndo,
 }
 
 #[derive(Debug)]
@@ -495,13 +503,16 @@ fn update_policy_decision_core(
     let mut bytes =
         serde_json::to_vec_pretty(&policy).map_err(|_| CommandError::policy_write_failed())?;
     bytes.push(b'\n');
-    atomic_write_policy(
+    let terminal = atomic_write_policy(
         &mut capability,
         &bytes,
         initial_bytes.as_deref(),
         failure,
         &mut hook,
     )?;
+    if terminal != PolicyWriteTerminal::CandidateDurablyCommitted {
+        return Err(CommandError::policy_write_failed());
+    }
 
     let reloaded = load_policy_for_update(&mut capability, &mut |_| {})?;
     if !matches!(reloaded.status(), PolicyStatus::Valid { .. }) {
@@ -996,7 +1007,7 @@ fn unwrap_token(value: &str) -> &str {
     value.trim_matches(|character: char| {
         matches!(
             character,
-            '`' | '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+            '`' | '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';'
         )
     })
 }
@@ -1055,6 +1066,10 @@ fn credential_shaped(value: &str) -> bool {
     let mut previous = None;
     for raw in value.split_whitespace() {
         let token = unwrap_token(raw);
+        if contextual_hash_assignment(token) {
+            previous = Some(token);
+            continue;
+        }
         let rejected = !safe_http_url(token)
             && TOKEN_CANDIDATE
                 .find_iter(token)
@@ -1065,6 +1080,17 @@ fn credential_shaped(value: &str) -> bool {
         previous = Some(token);
     }
     false
+}
+
+fn contextual_hash_assignment(token: &str) -> bool {
+    token.split_once('=').is_some_and(|(label, digest)| {
+        let digest = unwrap_token(digest);
+        contextual_hash_label(label)
+            && !digest.is_empty()
+            && digest
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+    })
 }
 
 fn high_entropy_standalone_token(
@@ -1462,10 +1488,22 @@ fn unix_named_state(directory: &File, name: &str) -> std::io::Result<UnixNamedSt
 }
 
 #[cfg(unix)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum UnixExchangeOutcome {
     Applied,
-    Undone,
+    Undone {
+        authoritative_second: UnixNamedState,
+    },
+    Reconciled {
+        authoritative_second: UnixNamedState,
+    },
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnixUndoHookPoint {
+    BeforeRecheck,
+    AfterRecheck,
 }
 
 /// Exchanges two names and validates the state produced by the exchange. If
@@ -1479,7 +1517,7 @@ fn unix_exchange_or_undo(
     second: &str,
     expected_first_after: &UnixNamedState,
     expected_second_after: &UnixNamedState,
-    mut before_undo: impl FnMut(),
+    mut undo_hook: impl FnMut(UnixUndoHookPoint),
 ) -> std::io::Result<UnixExchangeOutcome> {
     unix_fs::exchange_at(directory, first, second)?;
     let observed_first = unix_named_state(directory, first)?;
@@ -1488,18 +1526,39 @@ fn unix_exchange_or_undo(
         return Ok(UnixExchangeOutcome::Applied);
     }
 
-    before_undo();
+    undo_hook(UnixUndoHookPoint::BeforeRecheck);
     if unix_named_state(directory, first)? != observed_first
         || unix_named_state(directory, second)? != observed_second
     {
         return Err(std::io::Error::from_raw_os_error(libc::EIO));
     }
+    undo_hook(UnixUndoHookPoint::AfterRecheck);
     unix_fs::exchange_at(directory, first, second)?;
-    if unix_named_state(directory, first)? == observed_second
-        && unix_named_state(directory, second)? == observed_first
-    {
+    let after_undo_first = unix_named_state(directory, first)?;
+    let after_undo_second = unix_named_state(directory, second)?;
+    if after_undo_first == observed_second && after_undo_second == observed_first {
         directory.sync_all()?;
-        Ok(UnixExchangeOutcome::Undone)
+        return Ok(UnixExchangeOutcome::Undone {
+            authoritative_second: after_undo_second,
+        });
+    }
+
+    // A final-name edit in the recheck-to-exchange window moves to `first`.
+    // Atomically compensate so that newest observed authoritative object is
+    // placed back at `second`; preserve both names if either state moves again.
+    if unix_named_state(directory, first)? != after_undo_first
+        || unix_named_state(directory, second)? != after_undo_second
+    {
+        return Err(std::io::Error::from_raw_os_error(libc::EIO));
+    }
+    unix_fs::exchange_at(directory, first, second)?;
+    let reconciled_first = unix_named_state(directory, first)?;
+    let reconciled_second = unix_named_state(directory, second)?;
+    if reconciled_first == after_undo_second && reconciled_second == after_undo_first {
+        directory.sync_all()?;
+        Ok(UnixExchangeOutcome::Reconciled {
+            authoritative_second: reconciled_second,
+        })
     } else {
         Err(std::io::Error::from_raw_os_error(libc::EIO))
     }
@@ -1565,13 +1624,83 @@ fn unix_named_valid_candidate(
 }
 
 #[cfg(unix)]
+fn unix_terminal_for_authoritative(
+    directory: &File,
+    authoritative: &UnixNamedState,
+    candidate: &UnixNamedState,
+) -> PolicyWriteTerminal {
+    if directory.sync_all().is_err() {
+        return PolicyWriteTerminal::Indeterminate;
+    }
+    let Ok(final_state) = unix_named_state(directory, "policy.json") else {
+        return PolicyWriteTerminal::Indeterminate;
+    };
+    if &final_state != authoritative {
+        return PolicyWriteTerminal::Indeterminate;
+    }
+    if &final_state == candidate
+        && final_state
+            .bytes
+            .as_deref()
+            .is_some_and(|bytes| parse_and_validate(bytes, ValidationMode::Load).is_ok())
+    {
+        PolicyWriteTerminal::CandidateDurablyCommitted
+    } else {
+        PolicyWriteTerminal::PriorOrNewerAuthoritative
+    }
+}
+
+#[cfg(unix)]
+fn unix_finish_rollback(
+    directory: &File,
+    temp_name: &str,
+    recovery: &mut unix_fs::OwnedName<'_>,
+    candidate: &UnixNamedState,
+    requested_authoritative: &UnixNamedState,
+    outcome: std::io::Result<UnixExchangeOutcome>,
+) -> PolicyWriteTerminal {
+    match outcome {
+        Ok(UnixExchangeOutcome::Applied) => {
+            let terminal =
+                unix_terminal_for_authoritative(directory, requested_authoritative, candidate);
+            recovery.disarm();
+            let mut candidate_cleanup =
+                unix_fs::OwnedName::new(directory, temp_name.to_owned(), candidate.identity);
+            if terminal != PolicyWriteTerminal::Indeterminate
+                && candidate.bytes.as_deref().is_some_and(|bytes| {
+                    unix_named_bytes_equal(directory, temp_name, candidate.identity, bytes)
+                })
+            {
+                let _ = candidate_cleanup.remove();
+            } else {
+                candidate_cleanup.disarm();
+            }
+            terminal
+        }
+        Ok(UnixExchangeOutcome::Undone {
+            authoritative_second,
+        })
+        | Ok(UnixExchangeOutcome::Reconciled {
+            authoritative_second,
+        }) => {
+            recovery.disarm();
+            unix_terminal_for_authoritative(directory, &authoritative_second, candidate)
+        }
+        Err(_) => {
+            recovery.disarm();
+            PolicyWriteTerminal::Indeterminate
+        }
+    }
+}
+
+#[cfg(unix)]
 fn atomic_write_policy(
     capability: &mut PolicyUpdateCapability,
     bytes: &[u8],
     expected_bytes: Option<&[u8]>,
     failure: WriteFailure,
     hook: &mut impl FnMut(IoStage),
-) -> Result<(), CommandError> {
+) -> Result<PolicyWriteTerminal, CommandError> {
     hook(IoStage::BeforeTempCreate);
     if !capability.requested_path_is_pinned() {
         return Err(CommandError::policy_write_failed());
@@ -1633,6 +1762,11 @@ fn atomic_write_policy(
         return Err(CommandError::policy_write_failed());
     }
 
+    let candidate_state = UnixNamedState {
+        identity: temp_identity,
+        bytes: Some(bytes.to_vec()),
+    };
+
     let Some(expected) = expected_bytes else {
         unix_fs::link_at(&capability.policy_dir, &temp_name, "policy.json")
             .map_err(|_| CommandError::policy_write_failed())?;
@@ -1642,31 +1776,96 @@ fn atomic_write_policy(
             unix_named_bytes_equal(&capability.policy_dir, "policy.json", temp_identity, bytes)
                 && unix_named_bytes_equal(&capability.policy_dir, &temp_name, temp_identity, bytes);
         if failure == WriteFailure::AfterReplaceBeforeDirectorySync || !candidate_is_untouched {
-            if candidate_is_untouched {
+            let terminal = if candidate_is_untouched {
                 hook(IoStage::BeforeRollbackExchange);
-                let _ = unix_restore_absence(&capability.policy_dir, temp_identity, bytes);
+                match unix_restore_absence(&capability.policy_dir, temp_identity, bytes) {
+                    Ok(_) => PolicyWriteTerminal::PriorOrNewerAuthoritative,
+                    Err(_) => unix_named_state(&capability.policy_dir, "policy.json").map_or(
+                        PolicyWriteTerminal::Indeterminate,
+                        |state| {
+                            unix_terminal_for_authoritative(
+                                &capability.policy_dir,
+                                &state,
+                                &candidate_state,
+                            )
+                        },
+                    ),
+                }
             } else {
                 temp_cleanup.disarm();
-            }
-            return Err(CommandError::policy_write_failed());
+                unix_named_state(&capability.policy_dir, "policy.json").map_or(
+                    PolicyWriteTerminal::Indeterminate,
+                    |state| {
+                        unix_terminal_for_authoritative(
+                            &capability.policy_dir,
+                            &state,
+                            &candidate_state,
+                        )
+                    },
+                )
+            };
+            return Ok(terminal);
         }
         if capability.policy_dir.sync_all().is_err() {
             hook(IoStage::BeforeRollbackExchange);
-            if unix_named_bytes_equal(&capability.policy_dir, "policy.json", temp_identity, bytes)
-                && unix_named_bytes_equal(&capability.policy_dir, &temp_name, temp_identity, bytes)
-            {
-                let _ = unix_restore_absence(&capability.policy_dir, temp_identity, bytes);
-            }
-            return Err(CommandError::policy_write_failed());
+            let terminal = if unix_named_bytes_equal(
+                &capability.policy_dir,
+                "policy.json",
+                temp_identity,
+                bytes,
+            ) && unix_named_bytes_equal(
+                &capability.policy_dir,
+                &temp_name,
+                temp_identity,
+                bytes,
+            ) {
+                match unix_restore_absence(&capability.policy_dir, temp_identity, bytes) {
+                    Ok(_) => PolicyWriteTerminal::PriorOrNewerAuthoritative,
+                    Err(_) => unix_named_state(&capability.policy_dir, "policy.json").map_or(
+                        PolicyWriteTerminal::Indeterminate,
+                        |state| {
+                            unix_terminal_for_authoritative(
+                                &capability.policy_dir,
+                                &state,
+                                &candidate_state,
+                            )
+                        },
+                    ),
+                }
+            } else {
+                unix_named_state(&capability.policy_dir, "policy.json").map_or(
+                    PolicyWriteTerminal::Indeterminate,
+                    |state| {
+                        unix_terminal_for_authoritative(
+                            &capability.policy_dir,
+                            &state,
+                            &candidate_state,
+                        )
+                    },
+                )
+            };
+            return Ok(terminal);
         }
         if !unix_named_valid_candidate(&capability.policy_dir, "policy.json", temp_identity, bytes)
         {
-            return Err(CommandError::policy_write_failed());
+            temp_cleanup.disarm();
+            return Ok(
+                unix_named_state(&capability.policy_dir, "policy.json").map_or(
+                    PolicyWriteTerminal::Indeterminate,
+                    |state| {
+                        unix_terminal_for_authoritative(
+                            &capability.policy_dir,
+                            &state,
+                            &candidate_state,
+                        )
+                    },
+                ),
+            );
         }
         let _ = temp_cleanup
             .remove()
             .and_then(|_| capability.policy_dir.sync_all());
-        return Ok(());
+        return Ok(PolicyWriteTerminal::CandidateDurablyCommitted);
     };
 
     let Some((_, current_identity)) = current else {
@@ -1676,29 +1875,43 @@ fn atomic_write_policy(
         identity: current_identity,
         bytes: Some(expected.to_vec()),
     };
-    let candidate_state = UnixNamedState {
-        identity: temp_identity,
-        bytes: Some(bytes.to_vec()),
-    };
     let publication = unix_exchange_or_undo(
         &capability.policy_dir,
         &temp_name,
         "policy.json",
         &old_state,
         &candidate_state,
-        || hook(IoStage::BeforeRollbackExchange),
+        |point| match point {
+            UnixUndoHookPoint::BeforeRecheck => hook(IoStage::BeforeRollbackExchange),
+            UnixUndoHookPoint::AfterRecheck => hook(IoStage::AfterRollbackRecheckBeforeUndo),
+        },
     );
     match publication {
         Ok(UnixExchangeOutcome::Applied) => {}
-        Ok(UnixExchangeOutcome::Undone) => {
-            let _ = capability.policy_dir.sync_all();
-            return Err(CommandError::policy_write_failed());
+        Ok(UnixExchangeOutcome::Undone {
+            authoritative_second,
+        }) => {
+            return Ok(unix_terminal_for_authoritative(
+                &capability.policy_dir,
+                &authoritative_second,
+                &candidate_state,
+            ));
+        }
+        Ok(UnixExchangeOutcome::Reconciled {
+            authoritative_second,
+        }) => {
+            temp_cleanup.disarm();
+            return Ok(unix_terminal_for_authoritative(
+                &capability.policy_dir,
+                &authoritative_second,
+                &candidate_state,
+            ));
         }
         Err(_) => {
             // The exchange state is indeterminate. Cleanup must not remove a
             // name that may now contain externally supplied bytes.
             temp_cleanup.disarm();
-            return Err(CommandError::policy_write_failed());
+            return Ok(PolicyWriteTerminal::Indeterminate);
         }
     }
     temp_cleanup.disarm();
@@ -1723,22 +1936,20 @@ fn atomic_write_policy(
             "policy.json",
             &candidate_state,
             &old_state,
-            || {},
+            |point| {
+                if point == UnixUndoHookPoint::AfterRecheck {
+                    hook(IoStage::AfterRollbackRecheckBeforeUndo);
+                }
+            },
         );
-        if !matches!(rollback, Ok(UnixExchangeOutcome::Applied)) {
-            recovery.disarm();
-        } else {
-            recovery.disarm();
-            let mut candidate_cleanup =
-                unix_fs::OwnedName::new(&capability.policy_dir, temp_name.clone(), temp_identity);
-            if unix_named_bytes_equal(&capability.policy_dir, &temp_name, temp_identity, bytes) {
-                let _ = candidate_cleanup.remove();
-            } else {
-                candidate_cleanup.disarm();
-            }
-            let _ = capability.policy_dir.sync_all();
-        }
-        return Err(CommandError::policy_write_failed());
+        return Ok(unix_finish_rollback(
+            &capability.policy_dir,
+            &temp_name,
+            &mut recovery,
+            &candidate_state,
+            &old_state,
+            rollback,
+        ));
     }
 
     if capability.policy_dir.sync_all().is_err() {
@@ -1749,31 +1960,46 @@ fn atomic_write_policy(
             "policy.json",
             &candidate_state,
             &old_state,
-            || {},
+            |point| {
+                if point == UnixUndoHookPoint::AfterRecheck {
+                    hook(IoStage::AfterRollbackRecheckBeforeUndo);
+                }
+            },
         );
-        if !matches!(rollback, Ok(UnixExchangeOutcome::Applied)) {
-            recovery.disarm();
-        } else {
-            recovery.disarm();
-            let mut candidate_cleanup =
-                unix_fs::OwnedName::new(&capability.policy_dir, temp_name.clone(), temp_identity);
-            if unix_named_bytes_equal(&capability.policy_dir, &temp_name, temp_identity, bytes) {
-                let _ = candidate_cleanup.remove();
-            } else {
-                candidate_cleanup.disarm();
-            }
-            let _ = capability.policy_dir.sync_all();
-        }
-        return Err(CommandError::policy_write_failed());
+        return Ok(unix_finish_rollback(
+            &capability.policy_dir,
+            &temp_name,
+            &mut recovery,
+            &candidate_state,
+            &old_state,
+            rollback,
+        ));
     }
     if !unix_named_valid_candidate(&capability.policy_dir, "policy.json", temp_identity, bytes) {
         recovery.disarm();
-        return Err(CommandError::policy_write_failed());
+        return Ok(
+            unix_named_state(&capability.policy_dir, "policy.json").map_or(
+                PolicyWriteTerminal::Indeterminate,
+                |state| {
+                    unix_terminal_for_authoritative(
+                        &capability.policy_dir,
+                        &state,
+                        &candidate_state,
+                    )
+                },
+            ),
+        );
     }
-    let _ = recovery
-        .remove()
-        .and_then(|_| capability.policy_dir.sync_all());
-    Ok(())
+    let terminal =
+        unix_terminal_for_authoritative(&capability.policy_dir, &candidate_state, &candidate_state);
+    if terminal == PolicyWriteTerminal::CandidateDurablyCommitted {
+        let _ = recovery
+            .remove()
+            .and_then(|_| capability.policy_dir.sync_all());
+    } else {
+        recovery.disarm();
+    }
+    Ok(terminal)
 }
 
 #[cfg(windows)]
@@ -1897,7 +2123,13 @@ fn windows_named_state(path: &Path) -> std::io::Result<WindowsNamedState> {
 #[cfg(windows)]
 enum WindowsRestoreOutcome {
     Applied(WindowsOwnedPath),
-    Undone,
+    Undone {
+        authoritative_target: WindowsNamedState,
+        preserved_recovery: WindowsOwnedPath,
+    },
+    Reconciled {
+        authoritative_target: WindowsNamedState,
+    },
 }
 
 /// Atomically installs `recovery` while capturing the displaced target. The
@@ -1909,6 +2141,7 @@ fn windows_restore_or_undo(
     recovery: &mut WindowsOwnedPath,
     expected_recovery: &WindowsNamedState,
     expected_target: &WindowsNamedState,
+    hook: &mut impl FnMut(IoStage),
 ) -> std::io::Result<WindowsRestoreOutcome> {
     if !recovery.armed || !windows_fs::path_has_object_identity(&recovery.path, recovery.identity) {
         return Err(std::io::Error::from_raw_os_error(5));
@@ -1944,17 +2177,36 @@ fn windows_restore_or_undo(
     {
         return Err(std::io::Error::from_raw_os_error(5));
     }
+    hook(IoStage::AfterRollbackRecheckBeforeUndo);
     let undo_backup = directory.join(format!(".policy.json.{}.rollback-old", Uuid::new_v4()));
     windows_fs::durable_replace(target, &displaced_path, true, Some(&undo_backup))?;
     let restored_target = windows_named_state(target)?;
     let preserved_old = windows_named_state(&undo_backup)?;
     if restored_target == observed_displaced && preserved_old == observed_target {
         windows_fs::open_regular_read_write(target)?.sync_all()?;
-        if let Some(old_bytes) = preserved_old.bytes.as_deref() {
-            let mut old_cleanup = WindowsOwnedPath::new(undo_backup, preserved_old.identity);
-            let _ = old_cleanup.remove_if_exact(old_bytes);
-        }
-        Ok(WindowsRestoreOutcome::Undone)
+        return Ok(WindowsRestoreOutcome::Undone {
+            authoritative_target: restored_target,
+            preserved_recovery: WindowsOwnedPath::new(undo_backup, preserved_old.identity),
+        });
+    }
+
+    if windows_named_state(target)? != restored_target
+        || windows_named_state(&undo_backup)? != preserved_old
+    {
+        return Err(std::io::Error::from_raw_os_error(5));
+    }
+    let compensation = directory.join(format!(
+        ".policy.json.{}.rollback-compensation",
+        Uuid::new_v4()
+    ));
+    windows_fs::durable_replace(target, &undo_backup, true, Some(&compensation))?;
+    let reconciled_target = windows_named_state(target)?;
+    let preserved_displaced = windows_named_state(&compensation)?;
+    if reconciled_target == preserved_old && preserved_displaced == restored_target {
+        windows_fs::open_regular_read_write(target)?.sync_all()?;
+        Ok(WindowsRestoreOutcome::Reconciled {
+            authoritative_target: reconciled_target,
+        })
     } else {
         Err(std::io::Error::from_raw_os_error(5))
     }
@@ -2000,13 +2252,114 @@ fn windows_named_bytes_equal(path: &Path, identity: windows_fs::Identity, expect
 }
 
 #[cfg(windows)]
+fn windows_terminal_for_authoritative(
+    policy_path: &Path,
+    authoritative: &WindowsNamedState,
+    candidate: &WindowsNamedState,
+) -> PolicyWriteTerminal {
+    let Ok(current) = windows_named_state(policy_path) else {
+        return PolicyWriteTerminal::Indeterminate;
+    };
+    if &current != authoritative {
+        return PolicyWriteTerminal::Indeterminate;
+    }
+    if &current == candidate {
+        if windows_fs::open_regular_read_write(policy_path)
+            .and_then(|file| file.sync_all())
+            .is_err()
+            || !windows_named_state(policy_path).is_ok_and(|state| state == current)
+        {
+            PolicyWriteTerminal::Indeterminate
+        } else {
+            PolicyWriteTerminal::CandidateDurablyCommitted
+        }
+    } else {
+        PolicyWriteTerminal::PriorOrNewerAuthoritative
+    }
+}
+
+#[cfg(windows)]
+fn windows_terminal_for_missing_or_current(
+    policy_path: &Path,
+    candidate: &WindowsNamedState,
+) -> PolicyWriteTerminal {
+    match windows_named_state(policy_path) {
+        Ok(state) => windows_terminal_for_authoritative(policy_path, &state, candidate),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            PolicyWriteTerminal::PriorOrNewerAuthoritative
+        }
+        Err(_) => PolicyWriteTerminal::Indeterminate,
+    }
+}
+
+#[cfg(windows)]
+fn windows_finish_restore(
+    policy_path: &Path,
+    backup: &mut WindowsOwnedPath,
+    candidate: &WindowsNamedState,
+    requested_authoritative: &WindowsNamedState,
+    outcome: std::io::Result<WindowsRestoreOutcome>,
+) -> PolicyWriteTerminal {
+    match outcome {
+        Ok(WindowsRestoreOutcome::Applied(mut displaced)) => {
+            backup.disarm();
+            let terminal =
+                windows_terminal_for_authoritative(policy_path, requested_authoritative, candidate);
+            if terminal != PolicyWriteTerminal::Indeterminate {
+                if let Some(bytes) = candidate.bytes.as_deref() {
+                    let _ = displaced.remove_if_exact(bytes);
+                } else {
+                    displaced.disarm();
+                }
+            } else {
+                displaced.disarm();
+            }
+            terminal
+        }
+        Ok(WindowsRestoreOutcome::Undone {
+            authoritative_target,
+            mut preserved_recovery,
+        }) => {
+            backup.disarm();
+            let terminal =
+                windows_terminal_for_authoritative(policy_path, &authoritative_target, candidate);
+            if terminal == PolicyWriteTerminal::PriorOrNewerAuthoritative {
+                if let Some(bytes) = windows_named_state(&preserved_recovery.path)
+                    .ok()
+                    .and_then(|state| state.bytes)
+                {
+                    let _ = preserved_recovery.remove_if_exact(&bytes);
+                } else {
+                    preserved_recovery.disarm();
+                }
+            } else {
+                // A rollback that was undone to the exact candidate is a
+                // committed success; retain the changed recovery witness.
+                preserved_recovery.disarm();
+            }
+            terminal
+        }
+        Ok(WindowsRestoreOutcome::Reconciled {
+            authoritative_target,
+        }) => {
+            backup.disarm();
+            windows_terminal_for_authoritative(policy_path, &authoritative_target, candidate)
+        }
+        Err(_) => {
+            backup.disarm();
+            PolicyWriteTerminal::Indeterminate
+        }
+    }
+}
+
+#[cfg(windows)]
 fn atomic_write_policy(
     capability: &mut PolicyUpdateCapability,
     bytes: &[u8],
     expected_bytes: Option<&[u8]>,
     failure: WriteFailure,
     hook: &mut impl FnMut(IoStage),
-) -> Result<(), CommandError> {
+) -> Result<PolicyWriteTerminal, CommandError> {
     hook(IoStage::BeforeTempCreate);
     if !capability.requested_path_is_pinned() {
         return Err(CommandError::policy_write_failed());
@@ -2036,6 +2389,9 @@ fn atomic_write_policy(
     if persisted != bytes || parse_and_validate(&persisted, ValidationMode::Load).is_err() {
         return Err(CommandError::policy_write_failed());
     }
+    // ReplaceFileW and MoveFileExW operate on the temp pathname. Keep this
+    // close explicit: Rust's lexical scope is not the Win32 sharing contract.
+    drop(temp);
 
     hook(IoStage::BeforeReplace);
     let policy_path = capability.policy_dir_path.join("policy.json");
@@ -2065,13 +2421,22 @@ fn atomic_write_policy(
         identity: temp_identity,
         bytes: Some(bytes.to_vec()),
     };
-    windows_fs::durable_replace(
+    if windows_fs::durable_replace(
         &policy_path,
         &temp_path,
         had_policy,
         had_policy.then_some(backup_path.as_path()),
     )
-    .map_err(|_| CommandError::policy_write_failed())?;
+    .is_err()
+    {
+        // A failed Win32 namespace operation is treated conservatively: do
+        // not clean either pathname until the named terminal state is known.
+        cleanup.disarm();
+        return Ok(windows_terminal_for_missing_or_current(
+            &policy_path,
+            &candidate_state,
+        ));
+    }
     cleanup.disarm();
     if !had_policy {
         let installed = windows_fs::open_regular_read_write(&policy_path)
@@ -2084,32 +2449,55 @@ fn atomic_write_policy(
             || !installed
             || !still_installed
         {
-            if windows_named_bytes_equal(&policy_path, temp_identity, bytes) {
+            let terminal = if windows_named_bytes_equal(&policy_path, temp_identity, bytes) {
                 hook(IoStage::BeforeRollbackExchange);
                 if windows_named_bytes_equal(&policy_path, temp_identity, bytes) {
-                    let _ = windows_restore_absence(&policy_path, temp_identity, bytes);
+                    match windows_restore_absence(&policy_path, temp_identity, bytes) {
+                        Ok(_) => PolicyWriteTerminal::PriorOrNewerAuthoritative,
+                        Err(_) => {
+                            windows_terminal_for_missing_or_current(&policy_path, &candidate_state)
+                        }
+                    }
+                } else {
+                    windows_terminal_for_missing_or_current(&policy_path, &candidate_state)
                 }
-            }
-            return Err(CommandError::policy_write_failed());
+            } else {
+                windows_terminal_for_missing_or_current(&policy_path, &candidate_state)
+            };
+            return Ok(terminal);
         }
-        return Ok(());
+        return Ok(windows_terminal_for_authoritative(
+            &policy_path,
+            &candidate_state,
+            &candidate_state,
+        ));
     }
 
-    let backup_state =
-        windows_named_state(&backup_path).map_err(|_| CommandError::policy_write_failed())?;
+    let backup_state = match windows_named_state(&backup_path) {
+        Ok(state) => state,
+        Err(_) => return Ok(PolicyWriteTerminal::Indeterminate),
+    };
     let mut backup = WindowsOwnedPath::new(backup_path.clone(), backup_state.identity);
-    let expected_old = current
-        .as_ref()
-        .ok_or_else(CommandError::policy_write_failed)?;
+    let Some(expected_old) = current.as_ref() else {
+        backup.disarm();
+        return Ok(PolicyWriteTerminal::Indeterminate);
+    };
     if backup_state != *expected_old {
         hook(IoStage::BeforeRollbackExchange);
-        match windows_restore_or_undo(&policy_path, &mut backup, &backup_state, &candidate_state) {
-            Ok(WindowsRestoreOutcome::Applied(mut displaced)) => {
-                let _ = displaced.remove_if_exact(bytes);
-            }
-            Ok(WindowsRestoreOutcome::Undone) | Err(_) => backup.disarm(),
-        }
-        return Err(CommandError::policy_write_failed());
+        let restored = windows_restore_or_undo(
+            &policy_path,
+            &mut backup,
+            &backup_state,
+            &candidate_state,
+            hook,
+        );
+        return Ok(windows_finish_restore(
+            &policy_path,
+            &mut backup,
+            &candidate_state,
+            &backup_state,
+            restored,
+        ));
     }
     let installed = windows_fs::open_regular_read_write(&policy_path)
         .and_then(|file| file.sync_all())
@@ -2126,26 +2514,46 @@ fn atomic_write_policy(
         )
     {
         hook(IoStage::BeforeRollbackExchange);
-        match windows_restore_or_undo(&policy_path, &mut backup, expected_old, &candidate_state) {
-            Ok(WindowsRestoreOutcome::Applied(mut displaced)) => {
-                let _ = displaced.remove_if_exact(bytes);
-            }
-            Ok(WindowsRestoreOutcome::Undone) | Err(_) => backup.disarm(),
-        }
-        return Err(CommandError::policy_write_failed());
+        let restored = windows_restore_or_undo(
+            &policy_path,
+            &mut backup,
+            expected_old,
+            &candidate_state,
+            hook,
+        );
+        return Ok(windows_finish_restore(
+            &policy_path,
+            &mut backup,
+            &candidate_state,
+            expected_old,
+            restored,
+        ));
     }
     if parse_and_validate(bytes, ValidationMode::Load).is_err() {
         hook(IoStage::BeforeRollbackExchange);
-        match windows_restore_or_undo(&policy_path, &mut backup, expected_old, &candidate_state) {
-            Ok(WindowsRestoreOutcome::Applied(mut displaced)) => {
-                let _ = displaced.remove_if_exact(bytes);
-            }
-            Ok(WindowsRestoreOutcome::Undone) | Err(_) => backup.disarm(),
-        }
-        return Err(CommandError::policy_write_failed());
+        let restored = windows_restore_or_undo(
+            &policy_path,
+            &mut backup,
+            expected_old,
+            &candidate_state,
+            hook,
+        );
+        return Ok(windows_finish_restore(
+            &policy_path,
+            &mut backup,
+            &candidate_state,
+            expected_old,
+            restored,
+        ));
     }
-    let _ = backup.remove_if_exact(expected_bytes.unwrap_or_default());
-    Ok(())
+    let terminal =
+        windows_terminal_for_authoritative(&policy_path, &candidate_state, &candidate_state);
+    if terminal == PolicyWriteTerminal::CandidateDurablyCommitted {
+        let _ = backup.remove_if_exact(expected_bytes.unwrap_or_default());
+    } else {
+        backup.disarm();
+    }
+    Ok(terminal)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2178,7 +2586,7 @@ fn atomic_write_policy(
     expected_bytes: Option<&[u8]>,
     failure: WriteFailure,
     hook: &mut impl FnMut(IoStage),
-) -> Result<(), CommandError> {
+) -> Result<PolicyWriteTerminal, CommandError> {
     let project_root = &capability.project_root;
     let policy_dir = project_root.join(".oxaudit");
     ensure_real_policy_directory(&policy_dir)?;
@@ -2219,9 +2627,9 @@ fn atomic_write_policy(
     cleanup.committed = true;
     hook(IoStage::AfterReplace);
     if failure == WriteFailure::AfterReplaceBeforeDirectorySync {
-        return Err(CommandError::policy_write_failed());
+        return Ok(PolicyWriteTerminal::Indeterminate);
     }
-    Ok(())
+    Ok(PolicyWriteTerminal::CandidateDurablyCommitted)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -3359,6 +3767,55 @@ mod tests {
     }
 
     #[test]
+    fn angle_wrapped_unsafe_paths_are_rejected_without_rejecting_relational_prose() {
+        for value in [
+            "checked </etc/passwd>",
+            "checked <../private.rs>",
+            "checked <//server/share>",
+            "checked <file:///Users/alice/private.rs>",
+            "checked <C:/Users/alice/private.rs>",
+            "path=</etc/passwd>",
+        ] {
+            assert!(!safe_required_text(value), "accepted fixture {value:?}");
+        }
+        for value in ["threshold < limit", "version >= minimum"] {
+            assert!(safe_required_text(value), "rejected fixture {value:?}");
+        }
+    }
+
+    #[test]
+    fn contextual_hash_assignments_are_allowed_before_generic_entropy_checks() {
+        let digest = "a9f73c6d14e82b05f7c9134da6e28b40c17f5892";
+        for label in ["commit", "sha256", "hash", "digest", "fingerprint"] {
+            for value in [format!("{label}={digest}"), format!("{label}=<{digest}>")] {
+                assert!(safe_required_text(&value), "rejected fixture {value:?}");
+            }
+        }
+        assert!(!safe_required_text(digest));
+    }
+
+    #[test]
+    fn windows_temp_handle_is_explicitly_closed_before_path_publication() {
+        let source = include_str!("policy.rs");
+        let windows_write = source
+            .split("#[cfg(windows)]\nfn atomic_write_policy(")
+            .nth(1)
+            .expect("Windows policy writer remains present");
+        let validation = windows_write
+            .find("parse_and_validate(&persisted")
+            .expect("the temp bytes are validated before publication");
+        let close = windows_write
+            .find("drop(temp);")
+            .expect("the Windows temp handle has an explicit lifetime boundary");
+        let publication = windows_write
+            .find("windows_fs::durable_replace(")
+            .expect("the Windows writer publishes through the durable helper");
+
+        assert!(validation < close);
+        assert!(close < publication);
+    }
+
+    #[test]
     fn safe_urls_and_conventional_kebab_identifiers_are_allowed() {
         for value in [
             "See https://docs.example.com/security/production-feature-manifest",
@@ -3936,14 +4393,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn rollback_never_removes_an_in_place_modified_recovery_entry() {
+    fn recovery_tamper_with_exact_candidate_restored_reports_committed_success() {
         let root = tempfile::tempdir().unwrap();
         write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
         let external = br#"{ "version": 1, "entries": [] }
 "#;
         let mut modified_recovery = None;
+        let mut candidate_bytes = None;
 
-        let error = update_policy_decision_with_test_hook(
+        let result = update_policy_decision_with_test_hook(
             root.path(),
             &finding("secret"),
             &request(ReviewState::FalsePositive, "secret"),
@@ -3951,6 +4409,8 @@ mod tests {
             WriteFailure::AfterReplaceBeforeDirectorySync,
             |stage| {
                 if stage == IoStage::AfterReplace {
+                    candidate_bytes =
+                        Some(fs::read(root.path().join(".oxaudit/policy.json")).unwrap());
                     let recovery = fs::read_dir(root.path().join(".oxaudit"))
                         .unwrap()
                         .filter_map(Result::ok)
@@ -3967,14 +4427,21 @@ mod tests {
                     modified_recovery = Some(recovery);
                 }
             },
-        )
-        .unwrap_err();
+        );
 
         assert_eq!(
-            error.code,
-            crate::findings::error::ErrorCode::PolicyWriteFailed
+            fs::read(root.path().join(".oxaudit/policy.json")).unwrap(),
+            candidate_bytes.unwrap()
         );
         assert_eq!(fs::read(modified_recovery.unwrap()).unwrap(), external);
+        let review = result.unwrap_or_else(|error| {
+            panic!("verified committed candidate was reported as failure: {error:?}")
+        });
+        assert_eq!(review.state, ReviewState::FalsePositive);
+        assert!(matches!(
+            load_policy(root.path()).unwrap().status(),
+            PolicyStatus::Valid { .. }
+        ));
     }
 
     #[cfg(unix)]
@@ -4240,7 +4707,8 @@ mod tests {
     fn rollback_never_overwrites_in_place_or_replaced_external_final_bytes() {
         for replace_inode in [false, true] {
             let root = tempfile::tempdir().unwrap();
-            write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+            let original = br#"{"version":1,"entries":[]}"#;
+            write_policy(root.path(), original);
             let policy_path = root.path().join(".oxaudit/policy.json");
             let displaced = root.path().join(".oxaudit/attempt-displaced");
             let external = br#"{ "version": 1, "entries": [] }
@@ -4268,16 +4736,18 @@ mod tests {
                 crate::findings::error::ErrorCode::PolicyWriteFailed
             );
             assert_eq!(fs::read(&policy_path).unwrap(), external);
-            assert!(fs::read_dir(root.path().join(".oxaudit"))
+            let recovery = fs::read_dir(root.path().join(".oxaudit"))
                 .unwrap()
                 .filter_map(Result::ok)
-                .any(|entry| {
+                .find(|entry| {
                     entry
                         .file_name()
                         .to_string_lossy()
                         .starts_with(".policy.json.")
                         && entry.path().extension().is_some_and(|value| value == "tmp")
-                }));
+                })
+                .unwrap();
+            assert_eq!(fs::read(recovery.path()).unwrap(), original);
         }
     }
 
@@ -4285,7 +4755,8 @@ mod tests {
     #[test]
     fn late_in_place_edit_immediately_before_rollback_exchange_wins() {
         let root = tempfile::tempdir().unwrap();
-        write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+        let original = br#"{"version":1,"entries":[]}"#;
+        write_policy(root.path(), original);
         let policy_path = root.path().join(".oxaudit/policy.json");
         let external = br#"{ "version": 1, "entries": [] }
 "#;
@@ -4309,6 +4780,86 @@ mod tests {
             crate::findings::error::ErrorCode::PolicyWriteFailed
         );
         assert_eq!(fs::read(policy_path).unwrap(), external);
+        let recovery = fs::read_dir(root.path().join(".oxaudit"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".policy.json.")
+                    && entry.path().extension().is_some_and(|value| value == "tmp")
+            })
+            .unwrap();
+        assert_eq!(fs::read(recovery.path()).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn late_edit_after_undo_recheck_is_compensated_back_to_policy() {
+        for replace_inode in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            write_policy(root.path(), br#"{"version":1,"entries":[]}"#);
+            let policy_path = root.path().join(".oxaudit/policy.json");
+            let held_late_policy = root.path().join(".oxaudit/late-policy-held");
+            let recovery_tamper = br#"{ "version": 1, "entries": [] }
+"#;
+            let latest = br#"{"version":999,"latest":"authoritative"}"#;
+            let mut candidate = None;
+            let mut recovery_path = None;
+
+            let result = update_policy_decision_with_test_hook(
+                root.path(),
+                &finding("secret"),
+                &request(ReviewState::FalsePositive, "secret"),
+                now(),
+                WriteFailure::AfterReplaceBeforeDirectorySync,
+                |stage| match stage {
+                    IoStage::AfterReplace => {
+                        candidate = Some(fs::read(&policy_path).unwrap());
+                        let recovery = fs::read_dir(root.path().join(".oxaudit"))
+                            .unwrap()
+                            .filter_map(Result::ok)
+                            .map(|entry| entry.path())
+                            .find(|path| {
+                                path.file_name()
+                                    .unwrap()
+                                    .to_string_lossy()
+                                    .starts_with(".policy.json.")
+                                    && path.extension().is_some_and(|value| value == "tmp")
+                            })
+                            .unwrap();
+                        fs::write(&recovery, recovery_tamper).unwrap();
+                        recovery_path = Some(recovery);
+                    }
+                    IoStage::AfterRollbackRecheckBeforeUndo => {
+                        if replace_inode {
+                            fs::rename(&policy_path, &held_late_policy).unwrap();
+                        }
+                        fs::write(&policy_path, latest).unwrap();
+                    }
+                    _ => {}
+                },
+            );
+
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.code,
+                crate::findings::error::ErrorCode::PolicyWriteFailed
+            );
+            assert_eq!(fs::read(&policy_path).unwrap(), latest);
+            assert_eq!(
+                fs::read(recovery_path.unwrap()).unwrap(),
+                candidate.unwrap()
+            );
+            if replace_inode {
+                assert_eq!(fs::read(&held_late_policy).unwrap(), recovery_tamper);
+            }
+            assert!(matches!(
+                load_policy(root.path()).unwrap().status(),
+                PolicyStatus::Invalid { .. }
+            ));
+        }
     }
 
     #[cfg(unix)]
@@ -4470,6 +5021,7 @@ mod tests {
         for had_policy in [true, false] {
             let root = tempfile::tempdir().unwrap();
             let original = br#"{"version":1,"entries":[]}"#;
+            let mut recovery_before_rollback = None;
             if had_policy {
                 write_policy(root.path(), original);
             }
@@ -4480,7 +5032,21 @@ mod tests {
                 &request(ReviewState::FalsePositive, "secret"),
                 now(),
                 WriteFailure::AfterReplaceBeforeDirectorySync,
-                |_| {},
+                |stage| {
+                    if had_policy && stage == IoStage::AfterReplace {
+                        recovery_before_rollback = fs::read_dir(root.path().join(".oxaudit"))
+                            .unwrap()
+                            .filter_map(Result::ok)
+                            .find(|entry| {
+                                entry
+                                    .file_name()
+                                    .to_string_lossy()
+                                    .starts_with(".policy.json.")
+                                    && entry.path().extension().is_some_and(|value| value == "tmp")
+                            })
+                            .map(|entry| fs::read(entry.path()).unwrap());
+                    }
+                },
             )
             .unwrap_err();
             assert_eq!(
@@ -4491,9 +5057,25 @@ mod tests {
             let policy_path = root.path().join(".oxaudit/policy.json");
             if had_policy {
                 assert_eq!(fs::read(policy_path).unwrap(), original);
+                assert_eq!(recovery_before_rollback.unwrap(), original);
+                assert!(matches!(
+                    load_policy(root.path()).unwrap().status(),
+                    PolicyStatus::Valid { .. }
+                ));
             } else {
                 assert!(!policy_path.exists());
+                assert_eq!(
+                    load_policy(root.path()).unwrap().status(),
+                    &PolicyStatus::Missing
+                );
             }
+            assert!(!fs::read_dir(root.path().join(".oxaudit"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".policy.json.")));
         }
     }
 
