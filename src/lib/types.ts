@@ -225,6 +225,157 @@ export interface VerificationRecord {
   limitations: string[];
   verifiedAtMs: number;
 }
+
+export type ComplianceAssurance = "automatedEvidence" | "humanAttestation" | "mixed";
+export type ComplianceReadinessStatus =
+  | "supported"
+  | "partial"
+  | "gap"
+  | "manualReview"
+  | "notApplicable";
+
+export interface ComplianceCheckSpec {
+  fileGroups: string[][];
+  runKinds: CanonicalRunKind[];
+  manual: boolean;
+}
+
+export interface ComplianceControlProfile {
+  id: string;
+  reference: string;
+  title: string;
+  objective: string;
+  assurance: ComplianceAssurance;
+  check: ComplianceCheckSpec;
+}
+
+export interface ComplianceProfile {
+  schemaVersion: number;
+  id: string;
+  name: string;
+  version: string;
+  domain: string;
+  jurisdiction: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  copyrightNotice: string;
+  disclaimer: string;
+  controls: ComplianceControlProfile[];
+}
+
+export interface ComplianceEvidenceReference {
+  kind: string;
+  label: string;
+  locator: string;
+  contentSha256: string | null;
+}
+
+export interface ComplianceControlAssessment {
+  controlId: string;
+  reference: string;
+  title: string;
+  objective: string;
+  assurance: ComplianceAssurance;
+  automatedStatus: ComplianceReadinessStatus;
+  rationale: string;
+  evidence: ComplianceEvidenceReference[];
+}
+
+export interface ComplianceAssessmentSummary {
+  total: number;
+  supported: number;
+  partial: number;
+  gap: number;
+  manualReview: number;
+  notApplicable: number;
+  evidenceCoveragePercent: number;
+}
+
+export interface ComplianceAssessment {
+  schemaVersion: number;
+  id: string;
+  profileId: string;
+  profileName: string;
+  profileVersion: string;
+  domain: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  disclaimer: string;
+  metadata: {
+    title: string;
+    organization: string;
+    assessor: string;
+    scope: string;
+  };
+  targetLabel: string;
+  createdAtMs: number;
+  controls: ComplianceControlAssessment[];
+  summary: ComplianceAssessmentSummary;
+  collectionLimits: string[];
+}
+
+export interface ComplianceReview {
+  id: string;
+  assessmentId: string;
+  controlId: string;
+  status: ComplianceReadinessStatus;
+  note: string;
+  author: string;
+  reviewedAtMs: number;
+}
+
+export interface ComplianceAssessmentView {
+  assessment: ComplianceAssessment;
+  reviews: ComplianceReview[];
+}
+
+export interface RunComplianceRequest {
+  targetPath: string;
+  profileIds: string[];
+  title: string;
+  organization: string;
+  assessor: string;
+  scope: string;
+}
+
+export type ComplianceReportFormat = "json" | "csv" | "markdown" | "html" | "pdf";
+
+export interface ComplianceReportMetadata {
+  title: string;
+  organization: string;
+  assessor: string;
+  classification: string;
+  executiveSummary: string;
+  includeEvidence: boolean;
+  includeReviews: boolean;
+  includeReferences: boolean;
+}
+
+export interface ComplianceReportRequest {
+  assessmentId: string;
+  format: ComplianceReportFormat;
+  metadata: ComplianceReportMetadata;
+}
+
+export interface ComplianceReportPreview {
+  format: ComplianceReportFormat;
+  mediaType: string;
+  suggestedFileName: string;
+  content: string;
+  truncated: boolean;
+  bytes: number;
+  warnings: string[];
+}
+
+export interface ComplianceReportReceipt {
+  id: string;
+  assessmentId: string;
+  format: ComplianceReportFormat;
+  outputPath: string;
+  contentSha256: string;
+  createdAtMs: number;
+  metadata: ComplianceReportMetadata;
+}
 export type ReviewOrigin = "local" | "projectPolicy";
 export type Gate =
   | "intended"

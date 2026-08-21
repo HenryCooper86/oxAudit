@@ -11,6 +11,8 @@ import {
   Database,
   FileOutput,
   BadgeCheck,
+  ClipboardCheck,
+  FileText,
   Settings,
   X,
 } from "lucide-react";
@@ -54,6 +56,8 @@ const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
       { page: "data-sources", label: "Data Sources", icon: Database },
       { page: "export-center", label: "Export Center", icon: FileOutput },
       { page: "verification", label: "Verification", icon: BadgeCheck },
+      { page: "compliance-center", label: "Compliance Center", icon: ClipboardCheck },
+      { page: "report-studio", label: "Report Studio", icon: FileText },
     ],
   },
 ];

@@ -1,0 +1,165 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "iso-26262-2018",
+    "name": "ISO 26262 functional safety",
+    "version": "2018",
+    "domain": "Automotive functional safety",
+    "jurisdiction": "International",
+    "sourceLabel": "ISO 26262:2018 overview and parts catalogue",
+    "sourceUrl": "https://www.iso.org/publication/PUB200262.html",
+    "copyrightNotice": "ISO standard text is copyrighted and is not bundled. Obtain the official standard for authoritative requirements.",
+    "disclaimer": "This original readiness profile is not the ISO standard, legal advice, certification, or a determination of conformity. Evidence matches require qualified functional-safety review.",
+    "controls": [
+      { "id": "fs-governance", "reference": "Safety lifecycle governance", "title": "Safety plan and responsibilities", "objective": "Maintain an approved safety plan, lifecycle responsibilities, independence, and escalation routes.", "assurance": "mixed", "check": { "fileGroups": [["*safety*plan*", "*functional-safety*management*", "*safety*governance*"]], "manual": true } },
+      { "id": "fs-item-hara", "reference": "Concept phase", "title": "Item definition and hazard analysis", "objective": "Define the item and retain reviewable hazard analysis and risk classification evidence.", "assurance": "mixed", "check": { "fileGroups": [["*item*definition*"], ["*hara*", "*hazard*analysis*", "*risk*assessment*"]], "manual": true } },
+      { "id": "fs-requirements", "reference": "Safety requirements", "title": "Safety goals and traceable requirements", "objective": "Trace safety goals through functional, technical, hardware, and software requirements.", "assurance": "mixed", "check": { "fileGroups": [["*safety*goal*", "*safety*requirements*"], ["*traceability*", "*requirements*matrix*"]], "manual": true } },
+      { "id": "fs-verification", "reference": "Product development", "title": "Verification and validation evidence", "objective": "Retain review, test, integration, validation, and coverage evidence tied to safety requirements.", "assurance": "mixed", "check": { "fileGroups": [["*verification*plan*", "*validation*plan*", "*test*plan*"], ["*test*report*", "*validation*report*", "*coverage*"]], "runKinds": ["source", "dependencies", "binary"], "manual": true } },
+      { "id": "fs-change", "reference": "Supporting processes", "title": "Configuration and change control", "objective": "Control baselines, safety-impacting changes, problem resolution, and tool confidence evidence.", "assurance": "mixed", "check": { "fileGroups": [["*configuration*management*", "*change*management*", "*change*control*"], ["*tool*qualification*", "*tool*confidence*"]], "manual": true } },
+      { "id": "fs-confirmation", "reference": "Confirmation measures", "title": "Independent confirmation and safety case", "objective": "Record independent reviews, audits, assessments, and the integrated safety case.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "iso-sae-21434-2021",
+    "name": "ISO/SAE 21434 automotive cybersecurity",
+    "version": "2021",
+    "domain": "Automotive cybersecurity engineering",
+    "jurisdiction": "International",
+    "sourceLabel": "ISO/SAE 21434:2021 official overview",
+    "sourceUrl": "https://www.iso.org/standard/70918.html",
+    "copyrightNotice": "ISO/SAE standard text is copyrighted and is not bundled. Obtain the official standard for authoritative requirements.",
+    "disclaimer": "This original readiness profile is not the ISO/SAE standard, legal advice, certification, or a determination of conformity. Evidence matches require qualified cybersecurity review.",
+    "controls": [
+      { "id": "cs-governance", "reference": "Cybersecurity management", "title": "Cybersecurity governance", "objective": "Define policy, responsibilities, competence, quality management, and cybersecurity planning.", "assurance": "mixed", "check": { "fileGroups": [["*cybersecurity*policy*", "*security*policy*"], ["*cybersecurity*plan*", "*security*plan*"]], "manual": true } },
+      { "id": "cs-tara", "reference": "Concept phase", "title": "Assets, threats, and risk analysis", "objective": "Maintain item definition, asset inventory, threat scenarios, attack paths, risk decisions, and cybersecurity goals.", "assurance": "mixed", "check": { "fileGroups": [["*item*definition*", "*asset*inventory*"], ["*tara*", "*threat*model*", "*attack*path*"], ["*cybersecurity*goal*", "*security*requirements*"]], "manual": true } },
+      { "id": "cs-development", "reference": "Product development", "title": "Secure development and verification", "objective": "Retain secure design, implementation, review, testing, and vulnerability analysis evidence.", "assurance": "mixed", "check": { "fileGroups": [["*secure*design*", "*security*architecture*"], ["*penetration*test*", "*security*test*", "*verification*"]], "runKinds": ["source", "dependencies", "binary", "firmware"], "manual": true } },
+      { "id": "cs-supply-chain", "reference": "Distributed activities", "title": "Supplier and interface controls", "objective": "Document cybersecurity interfaces, supplier expectations, dependencies, and software inventory.", "assurance": "mixed", "check": { "fileGroups": [["*supplier*security*", "*interface*agreement*", "*cybersecurity*interface*"], ["*sbom*", "*cyclonedx*", "*spdx*"]], "runKinds": ["dependencies", "binary"], "manual": true } },
+      { "id": "cs-operations", "reference": "Post-development", "title": "Monitoring, incident, and update lifecycle", "objective": "Operate vulnerability monitoring, incident response, field action, and secure update processes.", "assurance": "mixed", "check": { "fileGroups": [["*vulnerability*management*", "*monitoring*plan*"], ["*incident*response*"], ["*software*update*", "*secure*update*"]], "manual": true } },
+      { "id": "cs-case", "reference": "Cybersecurity case", "title": "Cybersecurity case and release judgment", "objective": "Integrate claims, evidence, residual risk acceptance, and release approval into a reviewable cybersecurity case.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "unece-r155",
+    "name": "UNECE Regulation No. 155",
+    "version": "Current consolidated publication",
+    "domain": "Vehicle cybersecurity and CSMS",
+    "jurisdiction": "UNECE contracting parties",
+    "sourceLabel": "UNECE UN Regulation No. 155",
+    "sourceUrl": "https://unece.org/transport/documents/2021/03/standards/un-regulation-no-155-cyber-security-and-cyber-security",
+    "copyrightNotice": "Use the official UNECE regulation and applicable type-approval guidance as the authoritative source.",
+    "disclaimer": "This readiness profile is not type approval, legal advice, certification, or a determination of regulatory conformity. Applicability and evidence require competent legal and type-approval review.",
+    "controls": [
+      { "id": "r155-csms", "reference": "CSMS", "title": "Cybersecurity management system", "objective": "Maintain governed, auditable cybersecurity processes across development, production, and post-production.", "assurance": "mixed", "check": { "fileGroups": [["*csms*", "*cybersecurity*management*system*"], ["*cybersecurity*policy*"]], "manual": true } },
+      { "id": "r155-risk", "reference": "Vehicle risk management", "title": "Vehicle threats, risks, and mitigations", "objective": "Identify vehicle threats and attack paths, assess risks, select mitigations, and verify effectiveness.", "assurance": "mixed", "check": { "fileGroups": [["*tara*", "*vehicle*threat*", "*attack*path*"], ["*risk*treatment*", "*mitigation*"]], "manual": true } },
+      { "id": "r155-testing", "reference": "Verification", "title": "Security testing and evidence", "objective": "Retain vehicle and component testing evidence for implemented cybersecurity measures.", "assurance": "mixed", "check": { "fileGroups": [["*penetration*test*", "*cybersecurity*test*", "*security*validation*"]], "runKinds": ["source", "dependencies", "binary", "firmware"], "manual": true } },
+      { "id": "r155-monitoring", "reference": "Monitoring and response", "title": "Detection, monitoring, and incident response", "objective": "Monitor relevant threats and vulnerabilities and maintain response, reporting, and remediation processes.", "assurance": "mixed", "check": { "fileGroups": [["*vulnerability*monitoring*", "*threat*monitoring*"], ["*incident*response*", "*incident*management*"]], "manual": true } },
+      { "id": "r155-supply", "reference": "Supply chain", "title": "Supplier cybersecurity dependencies", "objective": "Manage supplier, service-provider, and component cybersecurity dependencies with traceable agreements.", "assurance": "mixed", "check": { "fileGroups": [["*supplier*security*", "*supplier*cybersecurity*", "*interface*agreement*"], ["*sbom*", "*cyclonedx*", "*spdx*"]], "manual": true } },
+      { "id": "r155-approval", "reference": "Type approval evidence", "title": "Approval scope and representative evidence", "objective": "Confirm vehicle-type scope, authority expectations, declarations, and representative evidence through qualified review.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "unece-r156",
+    "name": "UNECE Regulation No. 156",
+    "version": "Current consolidated publication",
+    "domain": "Vehicle software update management",
+    "jurisdiction": "UNECE contracting parties",
+    "sourceLabel": "UNECE UN Regulation No. 156",
+    "sourceUrl": "https://unece.org/transport/documents/2021/03/standards/un-regulation-no-156-software-update-and-software-update",
+    "copyrightNotice": "Use the official UNECE regulation and applicable type-approval guidance as the authoritative source.",
+    "disclaimer": "This readiness profile is not type approval, legal advice, certification, or a determination of regulatory conformity. Applicability and evidence require competent legal and type-approval review.",
+    "controls": [
+      { "id": "r156-sums", "reference": "SUMS", "title": "Software update management system", "objective": "Govern software update responsibilities, processes, records, and continual improvement.", "assurance": "mixed", "check": { "fileGroups": [["*sums*", "*software*update*management*system*"], ["*software*update*policy*"]], "manual": true } },
+      { "id": "r156-inventory", "reference": "Software identification", "title": "Vehicle software inventory and versions", "objective": "Maintain traceable software, configuration, dependency, vehicle-type, and version information.", "assurance": "mixed", "check": { "fileGroups": [["*software*inventory*", "*version*inventory*", "*configuration*baseline*"], ["*sbom*", "*cyclonedx*", "*spdx*"]], "runKinds": ["dependencies", "binary", "firmware"], "manual": true } },
+      { "id": "r156-integrity", "reference": "Update protection", "title": "Update authenticity and integrity", "objective": "Protect update packages, delivery, authorization, installation, and associated cryptographic keys.", "assurance": "mixed", "check": { "fileGroups": [["*update*signing*", "*code*signing*", "*update*integrity*"], ["*key*management*", "*certificate*management*"]], "manual": true } },
+      { "id": "r156-safety", "reference": "Safe execution", "title": "Compatibility, recovery, and safe installation", "objective": "Assess compatibility, prerequisites, safe state, recovery, rollback, and user information before release.", "assurance": "mixed", "check": { "fileGroups": [["*update*compatibility*", "*update*validation*"], ["*rollback*", "*recovery*plan*"]], "manual": true } },
+      { "id": "r156-audit", "reference": "Update records", "title": "Release approval and audit trail", "objective": "Retain approvals, distribution records, installation outcomes, failures, and field monitoring evidence.", "assurance": "mixed", "check": { "fileGroups": [["*release*approval*", "*release*record*"], ["*update*audit*", "*installation*log*", "*update*monitoring*"]], "manual": true } },
+      { "id": "r156-approval", "reference": "Type approval evidence", "title": "Approval scope and authority evidence", "objective": "Confirm applicable vehicle-type and update scope with the relevant approval authority.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "gdpr",
+    "name": "EU General Data Protection Regulation",
+    "version": "Regulation (EU) 2016/679",
+    "domain": "Data protection and privacy",
+    "jurisdiction": "European Union and applicable extraterritorial processing",
+    "sourceLabel": "Official GDPR text on EUR-Lex",
+    "sourceUrl": "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679",
+    "copyrightNotice": "Use EUR-Lex and competent supervisory-authority guidance as authoritative legal sources.",
+    "disclaimer": "This technical readiness profile is not legal advice and does not determine GDPR applicability or compliance. Legal basis, proportionality, risk, and accountability require qualified privacy review.",
+    "controls": [
+      { "id": "gdpr-inventory", "reference": "Accountability and records", "title": "Processing inventory and ownership", "objective": "Document processing activities, data categories, purposes, systems, recipients, owners, and transfers.", "assurance": "mixed", "check": { "fileGroups": [["*data*inventory*", "*processing*inventory*", "*ropa*"], ["*data*flow*", "*processing*register*"]], "manual": true } },
+      { "id": "gdpr-lawfulness", "reference": "Principles and lawfulness", "title": "Purpose, lawful basis, notices, and consent", "objective": "Document purpose limitation, lawful bases, transparent notices, and consent where relied upon.", "assurance": "mixed", "check": { "fileGroups": [["*lawful*basis*", "*legal*basis*"], ["*privacy*notice*", "*privacy*policy*"], ["*consent*record*", "*consent*management*"]], "manual": true } },
+      { "id": "gdpr-rights", "reference": "Data subject rights", "title": "Rights request operations", "objective": "Operate authenticated, timely access, correction, deletion, restriction, portability, and objection workflows.", "assurance": "mixed", "check": { "fileGroups": [["*dsar*", "*data*subject*request*", "*privacy*rights*"], ["*deletion*procedure*", "*erasure*workflow*"]], "manual": true } },
+      { "id": "gdpr-design", "reference": "Privacy by design and DPIA", "title": "Minimization, privacy engineering, and risk assessment", "objective": "Apply minimization and privacy by design and perform DPIAs where processing risk requires them.", "assurance": "mixed", "check": { "fileGroups": [["*data*minimization*", "*privacy*by*design*"], ["*dpia*", "*privacy*impact*assessment*"]], "manual": true } },
+      { "id": "gdpr-security", "reference": "Security and breach response", "title": "Security, retention, deletion, and incidents", "objective": "Protect personal data, test safeguards, enforce retention/deletion, and operate breach assessment and notification.", "assurance": "mixed", "check": { "fileGroups": [["*retention*schedule*", "*data*retention*"], ["*breach*response*", "*incident*response*"]], "runKinds": ["source", "dependencies", "binary"], "manual": true } },
+      { "id": "gdpr-third-parties", "reference": "Processors and transfers", "title": "Processor and transfer governance", "objective": "Inventory processors, execute required terms, assess international transfers, and oversee safeguards.", "assurance": "mixed", "check": { "fileGroups": [["*processor*register*", "*vendor*privacy*", "*data*processing*agreement*"], ["*transfer*impact*assessment*", "*international*transfer*"]], "manual": true } },
+      { "id": "gdpr-applicability", "reference": "Scope and governance", "title": "Applicability, roles, and supervisory obligations", "objective": "Have qualified reviewers confirm territorial/material scope, controller/processor roles, DPO duties, and authority obligations.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "ccpa-cpra-2026",
+    "name": "California CCPA/CPRA readiness",
+    "version": "Regulations effective January 1, 2026",
+    "domain": "Consumer privacy",
+    "jurisdiction": "California, United States",
+    "sourceLabel": "California Privacy Protection Agency regulations",
+    "sourceUrl": "https://cppa.ca.gov/regulations/",
+    "copyrightNotice": "Use current California statutes, regulations, agency guidance, and counsel as authoritative sources.",
+    "disclaimer": "This technical readiness profile is not legal advice and does not determine CCPA/CPRA applicability or compliance. Thresholds, exceptions, notices, and operational duties require qualified legal review.",
+    "controls": [
+      { "id": "ca-inventory", "reference": "Collection and use", "title": "Personal information inventory and purpose controls", "objective": "Inventory personal and sensitive personal information, sources, purposes, disclosures, sales, and sharing.", "assurance": "mixed", "check": { "fileGroups": [["*personal*information*inventory*", "*data*inventory*"], ["*data*flow*", "*processing*inventory*"]], "manual": true } },
+      { "id": "ca-notices", "reference": "Consumer notices", "title": "Notices and privacy disclosures", "objective": "Maintain notices at collection and a complete, accessible privacy policy aligned with actual processing.", "assurance": "mixed", "check": { "fileGroups": [["*notice*at*collection*", "*collection*notice*"], ["*privacy*policy*", "*california*privacy*"]], "manual": true } },
+      { "id": "ca-rights", "reference": "Consumer requests", "title": "Consumer rights operations", "objective": "Operate verifiable request intake and fulfillment for access, correction, deletion, portability, and related rights.", "assurance": "mixed", "check": { "fileGroups": [["*consumer*request*", "*privacy*rights*", "*dsar*"], ["*request*verification*", "*identity*verification*"]], "manual": true } },
+      { "id": "ca-choice", "reference": "Sale, sharing, and sensitive PI", "title": "Choice signals and sensitive information", "objective": "Honor applicable opt-out, preference, and limit-use signals, including documented Global Privacy Control handling.", "assurance": "mixed", "check": { "fileGroups": [["*global*privacy*control*", "*gpc*"], ["*do*not*sell*", "*opt*out*sale*", "*limit*use*sensitive*"]], "manual": true } },
+      { "id": "ca-contracts", "reference": "Service providers and contractors", "title": "Third-party contracts and oversight", "objective": "Classify recipients and maintain required contractual restrictions, due diligence, and monitoring.", "assurance": "mixed", "check": { "fileGroups": [["*service*provider*contract*", "*contractor*privacy*", "*vendor*privacy*"]], "manual": true } },
+      { "id": "ca-risk", "reference": "Security and risk governance", "title": "Security, risk assessments, audits, and ADMT", "objective": "Maintain reasonable security and assess current statutory and regulatory duties for risk assessments, cybersecurity audits, and automated decisionmaking technology.", "assurance": "mixed", "check": { "fileGroups": [["*privacy*risk*assessment*", "*cybersecurity*audit*"], ["*admt*", "*automated*decision*making*"]], "runKinds": ["source", "dependencies", "binary"], "manual": true } },
+      { "id": "ca-applicability", "reference": "Applicability and exceptions", "title": "Thresholds, roles, minors, and exceptions", "objective": "Have qualified counsel confirm business thresholds, roles, exceptions, minors' data duties, and enforcement exposure.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "nist-privacy-framework-1.0",
+    "name": "NIST Privacy Framework",
+    "version": "1.0",
+    "domain": "Privacy risk management",
+    "jurisdiction": "Voluntary framework",
+    "sourceLabel": "NIST Privacy Framework 1.0",
+    "sourceUrl": "https://www.nist.gov/privacy-framework/privacy-framework",
+    "copyrightNotice": "This profile is an original high-level mapping. Use NIST's official publication for framework outcomes and implementation guidance.",
+    "disclaimer": "This starter profile does not reproduce the full NIST Privacy Framework and is not certification, legal advice, or proof that privacy risk is acceptable. Tailoring and stakeholder review are required.",
+    "controls": [
+      { "id": "pf-identify", "reference": "Identify-P", "title": "Data processing understanding", "objective": "Understand systems, products, services, data actions, individuals, roles, and privacy risks.", "assurance": "mixed", "check": { "fileGroups": [["*data*inventory*", "*processing*inventory*"], ["*data*flow*", "*privacy*risk*assessment*"]], "manual": true } },
+      { "id": "pf-govern", "reference": "Govern-P", "title": "Privacy governance", "objective": "Establish policies, roles, risk tolerance, legal context, training, and oversight.", "assurance": "mixed", "check": { "fileGroups": [["*privacy*policy*", "*privacy*governance*"], ["*privacy*training*", "*privacy*roles*"]], "manual": true } },
+      { "id": "pf-control", "reference": "Control-P", "title": "Granular processing control", "objective": "Enable appropriate policies, preferences, permissions, minimization, deletion, and individual participation.", "assurance": "mixed", "check": { "fileGroups": [["*consent*management*", "*preference*management*"], ["*data*minimization*", "*retention*schedule*", "*deletion*procedure*"]], "manual": true } },
+      { "id": "pf-communicate", "reference": "Communicate-P", "title": "Transparency and data-processing communication", "objective": "Communicate processing practices, purposes, risks, choices, and responsibilities to individuals and partners.", "assurance": "mixed", "check": { "fileGroups": [["*privacy*notice*", "*transparency*notice*"], ["*vendor*privacy*", "*data*processing*agreement*"]], "manual": true } },
+      { "id": "pf-protect", "reference": "Protect-P", "title": "Data safeguards", "objective": "Apply access, data, platform, resilience, maintenance, and security controls proportionate to privacy risk.", "assurance": "mixed", "check": { "fileGroups": [["*access*control*", "*data*security*"], ["*incident*response*", "*business*continuity*"]], "runKinds": ["source", "dependencies", "binary"], "manual": true } },
+      { "id": "pf-profile", "reference": "Profiles and implementation tiers", "title": "Tailored target profile and improvement plan", "objective": "Document current and target profiles, prioritization, resource decisions, and improvement ownership.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "iso-iec-27001-2022",
+    "name": "ISO/IEC 27001 information security management",
+    "version": "2022",
+    "domain": "Information security management",
+    "jurisdiction": "International",
+    "sourceLabel": "ISO/IEC 27001:2022 official overview",
+    "sourceUrl": "https://www.iso.org/standard/27001",
+    "copyrightNotice": "ISO standard text is copyrighted and is not bundled. Obtain the official standard for authoritative requirements and controls.",
+    "disclaimer": "This original readiness profile is not the ISO standard, legal advice, accreditation, certification, or a determination of conformity. ISMS scope and effectiveness require competent independent review.",
+    "controls": [
+      { "id": "isms-context", "reference": "ISMS context and scope", "title": "Context, interested parties, and scope", "objective": "Define organizational context, interested parties, interfaces, dependencies, and a defensible ISMS scope.", "assurance": "mixed", "check": { "fileGroups": [["*isms*scope*", "*information*security*scope*"], ["*interested*parties*", "*organizational*context*"]], "manual": true } },
+      { "id": "isms-leadership", "reference": "Leadership and support", "title": "Policy, roles, competence, and communication", "objective": "Establish leadership commitment, policy, roles, resources, competence, awareness, communication, and document control.", "assurance": "mixed", "check": { "fileGroups": [["*information*security*policy*", "*security*policy*"], ["*security*roles*", "*security*training*"]], "manual": true } },
+      { "id": "isms-risk", "reference": "Planning and operation", "title": "Risk assessment and treatment", "objective": "Operate repeatable information-security risk assessment, treatment, acceptance, objectives, and change planning.", "assurance": "mixed", "check": { "fileGroups": [["*security*risk*assessment*", "*risk*register*"], ["*risk*treatment*plan*", "*risk*acceptance*"]], "manual": true } },
+      { "id": "isms-soa", "reference": "Statement of Applicability", "title": "Control applicability and implementation evidence", "objective": "Maintain a versioned Statement of Applicability with reasons, owners, implementation state, and linked evidence.", "assurance": "mixed", "check": { "fileGroups": [["*statement*of*applicability*", "*soa*"], ["*control*evidence*", "*control*matrix*"]], "manual": true } },
+      { "id": "isms-assurance", "reference": "Performance evaluation", "title": "Monitoring, internal audit, and management review", "objective": "Measure ISMS performance and retain internal audit, management review, findings, and corrective-action evidence.", "assurance": "mixed", "check": { "fileGroups": [["*internal*audit*"], ["*management*review*"], ["*corrective*action*", "*nonconformity*"]], "manual": true } },
+      { "id": "isms-technical", "reference": "Operational security evidence", "title": "Technical security verification", "objective": "Link risk treatment and applicable controls to current source, dependency, binary, and verification evidence.", "assurance": "mixed", "check": { "fileGroups": [["*security*test*", "*penetration*test*", "*vulnerability*management*"]], "runKinds": ["source", "dependencies", "binary", "verification"], "manual": true } },
+      { "id": "isms-certification", "reference": "Certification boundary", "title": "Independent audit and certification decisions", "objective": "Keep certification scope, audit competence, nonconformity decisions, and accreditation claims under authorized independent control.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
+  }
+]

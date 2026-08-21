@@ -182,6 +182,44 @@ CREATE INDEX benchmark_results_suite_idx
   ON benchmark_results(suite_id, recorded_at_ms DESC);
 "#;
 
+const MIGRATION_V5: &str = r#"
+CREATE TABLE compliance_assessments (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+);
+CREATE INDEX compliance_assessments_created_idx
+  ON compliance_assessments(created_at_ms DESC, id DESC);
+CREATE INDEX compliance_assessments_profile_idx
+  ON compliance_assessments(profile_id, created_at_ms DESC);
+
+CREATE TABLE compliance_control_reviews (
+  id TEXT PRIMARY KEY,
+  assessment_id TEXT NOT NULL REFERENCES compliance_assessments(id) ON DELETE CASCADE,
+  control_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('supported','partial','gap','manualReview','notApplicable')),
+  note TEXT NOT NULL,
+  author TEXT NOT NULL,
+  reviewed_at_ms INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+);
+CREATE INDEX compliance_reviews_assessment_idx
+  ON compliance_control_reviews(assessment_id, reviewed_at_ms DESC, id DESC);
+
+CREATE TABLE compliance_reports (
+  id TEXT PRIMARY KEY,
+  assessment_id TEXT NOT NULL REFERENCES compliance_assessments(id) ON DELETE CASCADE,
+  format TEXT NOT NULL,
+  output_path TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  metadata_json TEXT NOT NULL
+);
+CREATE INDEX compliance_reports_assessment_idx
+  ON compliance_reports(assessment_id, created_at_ms DESC, id DESC);
+"#;
+
 const RETENTION_MAINTENANCE_WARNING: &str =
     "Run saved, but old scan history could not be cleaned up.";
 
@@ -671,6 +709,114 @@ impl FindingsRepository {
             .execute(
                 "INSERT INTO benchmark_results(id, suite_id, suite_version, recorded_at_ms, payload_json) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![id, suite_id, suite_version, recorded_at_ms, payload],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn compliance_save_assessment(
+        &self,
+        assessment: &oxaudit_compliance::ComplianceAssessment,
+    ) -> Result<(), CommandError> {
+        let created_at_ms = i64::try_from(assessment.created_at_ms).map_err(persistence_error)?;
+        let payload = to_json(assessment)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        connection
+            .execute(
+                "INSERT INTO compliance_assessments(id, profile_id, created_at_ms, payload_json) VALUES (?1, ?2, ?3, ?4)",
+                params![assessment.id, assessment.profile_id, created_at_ms, payload],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn compliance_list_assessments(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<oxaudit_compliance::ComplianceAssessment>, CommandError> {
+        let limit = i64::try_from(limit.clamp(1, 100)).map_err(persistence_error)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let mut statement = connection
+            .prepare("SELECT payload_json FROM compliance_assessments ORDER BY created_at_ms DESC, id DESC LIMIT ?1")
+            .map_err(persistence_error)?;
+        let rows = statement
+            .query_map([limit], |row| row.get::<_, String>(0))
+            .map_err(persistence_error)?;
+        rows.map(|row| {
+            let payload = row.map_err(persistence_error)?;
+            serde_json::from_str(&payload).map_err(persistence_error)
+        })
+        .collect()
+    }
+
+    pub(crate) fn compliance_load_assessment(
+        &self,
+        assessment_id: &str,
+    ) -> Result<oxaudit_compliance::ComplianceAssessment, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let payload = connection
+            .query_row(
+                "SELECT payload_json FROM compliance_assessments WHERE id = ?1",
+                [assessment_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?
+            .ok_or_else(CommandError::not_found)?;
+        serde_json::from_str(&payload).map_err(persistence_error)
+    }
+
+    pub(crate) fn compliance_save_review(
+        &self,
+        review: &crate::compliance::ComplianceReview,
+    ) -> Result<(), CommandError> {
+        let reviewed_at_ms = i64::try_from(review.reviewed_at_ms).map_err(persistence_error)?;
+        let status = enum_name(&review.status)?;
+        let payload = to_json(review)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        connection
+            .execute(
+                r#"INSERT INTO compliance_control_reviews(
+                     id, assessment_id, control_id, status, note, author, reviewed_at_ms, payload_json
+                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
+                params![review.id, review.assessment_id, review.control_id, status, review.note, review.author, reviewed_at_ms, payload],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn compliance_list_reviews(
+        &self,
+        assessment_id: &str,
+    ) -> Result<Vec<crate::compliance::ComplianceReview>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let mut statement = connection
+            .prepare("SELECT payload_json FROM compliance_control_reviews WHERE assessment_id = ?1 ORDER BY reviewed_at_ms DESC, id DESC")
+            .map_err(persistence_error)?;
+        let rows = statement
+            .query_map([assessment_id], |row| row.get::<_, String>(0))
+            .map_err(persistence_error)?;
+        rows.map(|row| {
+            let payload = row.map_err(persistence_error)?;
+            serde_json::from_str(&payload).map_err(persistence_error)
+        })
+        .collect()
+    }
+
+    pub(crate) fn compliance_save_report(
+        &self,
+        receipt: &crate::compliance::ComplianceReportReceipt,
+    ) -> Result<(), CommandError> {
+        let created_at_ms = i64::try_from(receipt.created_at_ms).map_err(persistence_error)?;
+        let format = enum_name(&receipt.format)?;
+        let metadata = to_json(&receipt.metadata)?;
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        connection
+            .execute(
+                r#"INSERT INTO compliance_reports(
+                     id, assessment_id, format, output_path, content_sha256, created_at_ms, metadata_json
+                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                params![receipt.id, receipt.assessment_id, format, receipt.output_path, receipt.content_sha256, created_at_ms, metadata],
             )
             .map_err(persistence_error)?;
         Ok(())
@@ -3658,6 +3804,16 @@ fn migrate(connection: &mut Connection, migration_v1: &str) -> Result<(), Comman
     if !version_four_applied {
         apply_migration(connection, 4, MIGRATION_V4)?;
     }
+    let version_five_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(persistence_error)?;
+    if !version_five_applied {
+        apply_migration(connection, 5, MIGRATION_V5)?;
+    }
     Ok(())
 }
 
@@ -4088,6 +4244,9 @@ mod tests {
             "provider_snapshots",
             "verification_records",
             "benchmark_results",
+            "compliance_assessments",
+            "compliance_control_reviews",
+            "compliance_reports",
         ];
 
         for table in tables {
@@ -4111,7 +4270,98 @@ mod tests {
                 row.get(0)
             })
             .expect("query migration version");
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
+    }
+
+    #[test]
+    fn compliance_assessments_reviews_and_report_receipts_are_durable_and_append_only() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        let profile = oxaudit_compliance::builtin_profile("gdpr").expect("profile");
+        let assessment = oxaudit_compliance::assess(
+            &profile,
+            &oxaudit_compliance::EvidenceSnapshot {
+                root_label: "/project".into(),
+                files: vec![],
+                completed_runs: vec![],
+                collection_limits: vec!["bounded".into()],
+            },
+            oxaudit_compliance::AssessmentMetadata {
+                title: "Readiness".into(),
+                organization: "Example".into(),
+                assessor: "Reviewer".into(),
+                scope: "Product".into(),
+            },
+            "assessment-test".into(),
+            100,
+        )
+        .expect("assessment");
+        repository
+            .compliance_save_assessment(&assessment)
+            .expect("save assessment");
+
+        for (id, status, reviewed_at_ms) in [
+            (
+                "review-1",
+                oxaudit_compliance::ReadinessStatus::Partial,
+                101,
+            ),
+            (
+                "review-2",
+                oxaudit_compliance::ReadinessStatus::Supported,
+                102,
+            ),
+        ] {
+            repository
+                .compliance_save_review(&crate::compliance::ComplianceReview {
+                    id: id.into(),
+                    assessment_id: assessment.id.clone(),
+                    control_id: assessment.controls[0].control_id.clone(),
+                    status,
+                    note: "Qualified decision with linked evidence.".into(),
+                    author: "Reviewer".into(),
+                    reviewed_at_ms,
+                })
+                .expect("append review");
+        }
+
+        let reviews = repository
+            .compliance_list_reviews(&assessment.id)
+            .expect("load reviews");
+        assert_eq!(reviews.len(), 2);
+        assert_eq!(reviews[0].id, "review-2");
+        assert_eq!(
+            repository
+                .compliance_list_assessments(10)
+                .expect("list assessments"),
+            vec![assessment.clone()]
+        );
+        assert_eq!(
+            repository
+                .compliance_load_assessment(&assessment.id)
+                .expect("load assessment"),
+            assessment
+        );
+
+        repository
+            .compliance_save_report(&crate::compliance::ComplianceReportReceipt {
+                id: "report-1".into(),
+                assessment_id: "assessment-test".into(),
+                format: crate::compliance::ComplianceReportFormat::Pdf,
+                output_path: "/reports/readiness.pdf".into(),
+                content_sha256: "abc123".into(),
+                created_at_ms: 103,
+                metadata: crate::compliance::ComplianceReportMetadata {
+                    title: "Readiness report".into(),
+                    organization: "Example".into(),
+                    assessor: "Reviewer".into(),
+                    classification: "Confidential".into(),
+                    executive_summary: "Evidence readiness summary.".into(),
+                    include_evidence: true,
+                    include_reviews: true,
+                    include_references: true,
+                },
+            })
+            .expect("save report receipt");
     }
 
     #[test]

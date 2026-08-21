@@ -1,6 +1,7 @@
 use oxaudit_application::ObservationRecord;
 use oxaudit_domain::{Artifact, Component, Evidence, Run};
 
+pub mod compliance;
 pub mod import;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

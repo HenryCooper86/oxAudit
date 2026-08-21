@@ -39,6 +39,15 @@ import type {
   StreamStarted,
   TodoItem,
   UsageSummary,
+  ComplianceProfile,
+  ComplianceAssessment,
+  ComplianceAssessmentView,
+  ComplianceReadinessStatus,
+  ComplianceReview,
+  RunComplianceRequest,
+  ComplianceReportRequest,
+  ComplianceReportPreview,
+  ComplianceReportReceipt,
 } from "./types";
 
 export const api = {
@@ -166,4 +175,23 @@ export const api = {
   saveSettings: (settings: AppSettings) =>
     invoke<void>("save_settings", { settings }),
   getAiSettings: () => invoke<AiSettings>("get_ai_settings"),
+  listComplianceProfiles: () =>
+    invoke<ComplianceProfile[]>("list_compliance_profiles"),
+  runComplianceAssessment: (request: RunComplianceRequest) =>
+    invoke<ComplianceAssessment[]>("run_compliance_assessment", { request }),
+  listComplianceAssessments: (limit = 50) =>
+    invoke<ComplianceAssessment[]>("list_compliance_assessments", { limit }),
+  loadComplianceAssessment: (assessmentId: string) =>
+    invoke<ComplianceAssessmentView>("load_compliance_assessment", { assessmentId }),
+  saveComplianceReview: (
+    assessmentId: string,
+    controlId: string,
+    status: ComplianceReadinessStatus,
+    note: string,
+    author: string,
+  ) => invoke<ComplianceReview>("save_compliance_review", { request: { assessmentId, controlId, status, note, author } }),
+  previewComplianceReport: (request: ComplianceReportRequest) =>
+    invoke<ComplianceReportPreview>("preview_compliance_report", { request }),
+  writeComplianceReport: (request: ComplianceReportRequest, outputPath: string) =>
+    invoke<ComplianceReportReceipt>("write_compliance_report", { request: { ...request, outputPath } }),
 };
