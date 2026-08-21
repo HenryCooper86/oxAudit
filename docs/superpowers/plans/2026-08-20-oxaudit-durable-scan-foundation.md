@@ -1242,7 +1242,8 @@ Resolve:
 ~~~rust
 let data_dir = app.path().app_data_dir()?;
 let initialized = (|| {
-    let repository = FindingsRepository::open(data_dir.join("findings.sqlite3"))?;
+    let database_path = findings::database_path(&data_dir);
+    let repository = FindingsRepository::open(database_path)?;
     repository.recover_interrupted_runs(chrono::Utc::now())?;
     Ok::<_, CommandError>(FindingsService::new(repository))
 })();
@@ -1252,6 +1253,15 @@ let state = match initialized {
 };
 app.manage(state);
 ~~~
+
+`findings::database_path` is the single path authority and resolves to
+`<app-data>/findings/findings.sqlite3`. Before nested initialization, reject any
+entry at the unsupported root-level `<app-data>/findings.sqlite3` path with the
+sanitized unavailable state. Do not create or open the nested database and do
+not mutate either entry when that ambiguity exists. The root-level layout was
+present only in unreleased intermediary foundation commits; this task does not
+silently migrate it. Any future authority transition belongs to the explicit
+identity-migration workflow.
 
 FindingsState owns Option<FindingsService> plus the sanitized initialization CommandError and has service() -> Result<&FindingsService, CommandError>. If initialization fails, keep the app launchable with an unavailable FindingsState so Settings and non-Source tools still work; Source finding commands return the typed error.
 

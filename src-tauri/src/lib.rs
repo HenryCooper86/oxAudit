@@ -26,7 +26,12 @@ pub(crate) fn initialize_findings_state(
     recovered_at: chrono::DateTime<chrono::Utc>,
 ) -> FindingsState {
     let initialized = (|| {
-        let database_path = app_data_root.join("findings").join("findings.sqlite3");
+        match std::fs::symlink_metadata(app_data_root.join("findings.sqlite3")) {
+            Ok(_) => return Err(findings::error::CommandError::persistence_unavailable()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(findings::error::CommandError::persistence_unavailable()),
+        }
+        let database_path = findings::database_path(app_data_root);
         let repository = FindingsRepository::open(database_path)?;
         repository.recover_interrupted_runs(recovered_at)?;
         Ok::<_, findings::error::CommandError>(FindingsService::new(repository))
@@ -140,7 +145,6 @@ mod tests {
             & 0o777
     }
 
-    #[cfg(unix)]
     fn initialization_error(
         state: &crate::findings::service::FindingsState,
     ) -> crate::findings::error::CommandError {
@@ -148,6 +152,47 @@ mod tests {
             Ok(_) => panic!("findings initialization unexpectedly succeeded"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    fn findings_startup_rejects_unsupported_interim_root_database_without_mutation() {
+        let app_data = tempfile::tempdir().expect("shared app-data root");
+        let interim_database = app_data.path().join("findings.sqlite3");
+        let interim_bytes = b"unreleased-interim-database";
+        std::fs::write(&interim_database, interim_bytes).expect("interim database fixture");
+
+        let state = crate::initialize_findings_state(app_data.path(), chrono::Utc::now());
+
+        let error = initialization_error(&state);
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(std::fs::read(&interim_database).unwrap(), interim_bytes);
+        assert!(!app_data.path().join("findings").exists());
+    }
+
+    #[test]
+    fn findings_startup_rejects_ambiguous_root_and_nested_databases() {
+        let app_data = tempfile::tempdir().expect("shared app-data root");
+        let nested_database = crate::findings::database_path(app_data.path());
+        let repository = crate::findings::repository::FindingsRepository::open(&nested_database)
+            .expect("nested database fixture");
+        drop(repository);
+        let nested_bytes = std::fs::read(&nested_database).expect("nested database bytes");
+        let interim_database = app_data.path().join("findings.sqlite3");
+        let interim_bytes = b"ambiguous-interim-database";
+        std::fs::write(&interim_database, interim_bytes).expect("interim database fixture");
+
+        let state = crate::initialize_findings_state(app_data.path(), chrono::Utc::now());
+
+        let error = initialization_error(&state);
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        assert_eq!(std::fs::read(&interim_database).unwrap(), interim_bytes);
+        assert_eq!(std::fs::read(&nested_database).unwrap(), nested_bytes);
     }
 
     #[cfg(unix)]
@@ -178,7 +223,7 @@ mod tests {
         assert_eq!(std::fs::read(&session).unwrap(), session_bytes);
         assert_eq!(mode(&app_data.path().join("findings")), 0o700);
         assert_eq!(
-            mode(&app_data.path().join("findings/findings.sqlite3")),
+            mode(&crate::findings::database_path(app_data.path())),
             0o600
         );
     }

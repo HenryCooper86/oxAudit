@@ -468,7 +468,7 @@ The TempDir fixture contains:
 - legacy settings.json with AI and NVD canary keys;
 - sessions/sessions.json plus two JSONL transcripts;
 - usage.json;
-- app-data/findings.sqlite3 containing one completed run and review;
+- app-data/findings/findings.sqlite3 containing one completed run and review;
 - browser-cache-export-v1.json;
 - a newer oxAudit settings file and one conflicting session ID for conflict tests.
 
@@ -549,7 +549,7 @@ Add api.getMigrationStatus() -> invoke<MigrationReport>("get_migration_status") 
 2. If a validated completed checkpoint has do_not_remigrate true, return Completed without inspecting or copying the retained legacy backup. Otherwise, if no old directory exists, write a completed no-profile checkpoint.
 3. Merge non-secret settings without overwriting newer new values.
 4. Merge session metadata by ID; copy missing transcripts; record conflicts and keep newer target files.
-5. Migrate findings.sqlite3 before the new repository opens.
+5. Migrate findings/findings.sqlite3 before the new repository opens.
 6. Copy the staged browser-cache export if present.
 7. Import legacy AI/NVD keys only when the protected entry is absent.
 8. Read the protected values back into Zeroizing values and compare them exactly without logging either side.
@@ -567,6 +567,16 @@ rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 ~~~
 
 When the target database is absent, open the legacy database before the app service, run schema migration validation, and copy it with rusqlite::backup::Backup into a new target database. This captures committed WAL content without copying -wal/-shm files directly. When both databases exist, merge in one target transaction: copy projects whose canonical_path is absent, then their scan_runs, findings, and append-only reviews; retain target rows on every ID/path conflict and add a sanitized conflict entry. Run foreign_key_check before commit. Never open the findings service until the migrated target passes integrity_check.
+
+Resolve both legacy and target databases through the helper-equivalent
+`<app-data>/findings/findings.sqlite3` layout, with the target using the shared
+`findings::database_path` helper directly. The root-level
+`<app-data>/findings.sqlite3` target layout existed only in unreleased
+intermediary foundation commits. Foundation startup fails closed if that entry
+is present; it must never be silently ignored or merged. This explicit
+identity-migration workflow owns any future supported authority transition and
+must first report and resolve that ambiguity before creating or opening the
+nested target.
 
 - [ ] **Step 6: Make session index writes atomic**
 
@@ -1075,7 +1085,7 @@ At 1440x900, 1180x760, and 900x700:
 
 - [ ] **Step 8: Inspect at-rest files**
 
-Search only the disposable test config/data roots for the AI, NVD, and scanner canaries. Expected: no match after successful migration. Verify directory/file modes on Unix and confirm findings.sqlite3, settings.json, session index/transcripts, checkpoints, and legacy backup are owner-only.
+Search only the disposable test config/data roots for the AI, NVD, and scanner canaries. Expected: no match after successful migration. Verify directory/file modes on Unix and confirm findings/findings.sqlite3, settings.json, session index/transcripts, checkpoints, and legacy backup are owner-only.
 
 - [ ] **Step 9: Record QA evidence and commit**
 
