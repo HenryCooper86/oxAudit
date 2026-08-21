@@ -128,7 +128,7 @@ impl FindingsRepository {
 
         #[cfg(unix)]
         {
-            return open_file_database_unix(path, hook);
+            open_file_database_unix(path, hook)
         }
 
         #[cfg(not(unix))]
@@ -3085,8 +3085,10 @@ mod tests {
     #[test]
     fn reopening_canonical_path_with_fresh_id_returns_stored_project_identity() {
         let repository = FindingsRepository::open_in_memory().expect("open repository");
-        let mut initial_options = ScanOptions::default();
-        initial_options.path = "/project".into();
+        let initial_options = ScanOptions {
+            path: "/project".into(),
+            ..ScanOptions::default()
+        };
 
         let created = repository
             .upsert_project(
@@ -3168,10 +3170,12 @@ mod tests {
     #[test]
     fn reopening_without_options_preserves_last_successful_options() {
         let repository = FindingsRepository::open_in_memory().expect("open repository");
-        let mut options = ScanOptions::default();
-        options.path = "/project".into();
-        options.include_git = true;
-        options.extra_ignored_dirs = vec!["private-cache".into()];
+        let options = ScanOptions {
+            path: "/project".into(),
+            include_git: true,
+            extra_ignored_dirs: vec!["private-cache".into()],
+            ..ScanOptions::default()
+        };
         repository
             .upsert_project(
                 "project-id",
