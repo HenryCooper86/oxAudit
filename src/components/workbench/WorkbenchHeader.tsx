@@ -4,6 +4,7 @@ import { savePersistedThemePreference } from "../../lib/settingsRequests";
 import { useAppStore } from "../../lib/stores";
 import { normalizeThemePreference, type ThemePreference } from "../../lib/theme";
 import { PAGE_META } from "../../lib/workbench";
+import { BrandMark } from "../brand/BrandMark";
 
 const NEXT_PREFERENCE: Record<ThemePreference, ThemePreference> = {
   dark: "light",
@@ -71,8 +72,12 @@ export function WorkbenchHeader({
         <Menu aria-hidden="true" size={17} />
       </button>
 
-      <h1 className="shrink-0 pr-[0.15em] font-display text-[17px] font-normal tracking-[0.01em] text-text-primary italic opacity-90">
-        oxAudit
+      <h1
+        aria-label="oxAudit"
+        className="flex shrink-0 items-center gap-1.5 pr-0.5 font-display text-[17px] font-medium tracking-[-0.02em] text-text-primary"
+      >
+        <BrandMark className="h-[18px] w-[27px] text-accent" />
+        <span aria-hidden="true">Audit</span>
       </h1>
 
       <div className="min-w-0 truncate text-[13px]">
