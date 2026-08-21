@@ -6,3 +6,4 @@ pub mod policy;
 pub mod redaction;
 pub mod repository;
 pub mod review;
+pub mod service;

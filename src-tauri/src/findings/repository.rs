@@ -697,6 +697,37 @@ impl FindingsRepository {
             .map(|(observations, _)| observations)
     }
 
+    /// Enriches a bounded finding slice from one project-level review query.
+    /// This is the service boundary for unsaved observations, which do not yet
+    /// have durable rows from which `load_run` could build their projection.
+    pub fn enrich_findings_with_reviews(
+        &self,
+        project_id: &str,
+        findings: &mut [Finding],
+        include_project_policy: bool,
+        now: DateTime<Utc>,
+    ) -> Result<(), CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let identities = findings
+            .iter()
+            .map(|finding| (finding.fingerprint_version, finding.fingerprint.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut histories =
+            load_project_reviews_for_identities(&connection, project_id, &identities)?;
+        for finding in findings {
+            let history = histories
+                .remove(&(finding.fingerprint_version, finding.fingerprint.clone()))
+                .unwrap_or_default();
+            finding.review = if include_project_policy {
+                select_active_review(&history, now)
+            } else {
+                select_active_local_review(&history, now)
+            };
+            finding.review_history = history;
+        }
+        Ok(())
+    }
+
     pub(crate) fn current_project_policy_reviews(
         &self,
         project_id: &str,
@@ -2195,16 +2226,27 @@ fn load_findings(
         rows
     };
 
+    let identities = observations
+        .iter()
+        .map(|observation| {
+            (
+                observation.fingerprint_version,
+                observation.fingerprint.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let mut histories = load_project_reviews_for_identities(connection, project_id, &identities)?;
+
     observations
         .into_iter()
         .map(|observation| {
             let payload: StoredFindingPayload = from_json(&observation.payload)?;
-            let review_history = load_reviews(
-                connection,
-                project_id,
-                observation.fingerprint_version,
-                &observation.fingerprint,
-            )?;
+            let review_history = histories
+                .remove(&(
+                    observation.fingerprint_version,
+                    observation.fingerprint.clone(),
+                ))
+                .unwrap_or_default();
             let review = select_active_review(&review_history, Utc::now());
             Ok(Finding {
                 id: observation.id,
@@ -2250,6 +2292,24 @@ fn select_active_review(history: &[ReviewRecord], now: DateTime<Utc>) -> Option<
         })
         .find(|review| {
             review.state != ReviewState::Candidate
+                && review.expires_at.as_deref().is_none_or(|expires_at| {
+                    DateTime::parse_from_rfc3339(expires_at)
+                        .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
+                })
+        })
+        .cloned()
+}
+
+fn select_active_local_review(
+    history: &[ReviewRecord],
+    now: DateTime<Utc>,
+) -> Option<ReviewRecord> {
+    history
+        .iter()
+        .find(|review| {
+            review.origin == ReviewOrigin::Local
+                && review.superseded_at.is_none()
+                && review.state != ReviewState::Candidate
                 && review.expires_at.as_deref().is_none_or(|expires_at| {
                     DateTime::parse_from_rfc3339(expires_at)
                         .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
@@ -2347,6 +2407,110 @@ fn load_reviews(
         .collect::<Result<Vec<_>, CommandError>>()?;
     parsed.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
     Ok(parsed.into_iter().map(|(_, _, review)| review).collect())
+}
+
+fn load_project_reviews_for_identities(
+    connection: &Connection,
+    project_id: &str,
+    identities: &BTreeSet<(u16, String)>,
+) -> Result<BTreeMap<(u16, String), Vec<ReviewRecord>>, CommandError> {
+    if identities.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut statement = connection
+        .prepare(
+            r#"SELECT rowid, id, fingerprint_version, fingerprint, state, reason, evidence,
+                      entry_point, data_flow, gates_json, deciding_gate, expires_at, origin,
+                      policy_hash, updated_at, superseded_at
+               FROM reviews WHERE project_id = ?1"#,
+        )
+        .map_err(persistence_error)?;
+    let rows = statement
+        .query_map([project_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u16>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, Option<String>>(15)?,
+            ))
+        })
+        .map_err(persistence_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(persistence_error)?;
+    let mut grouped = BTreeMap::<(u16, String), Vec<(i64, DateTime<Utc>, ReviewRecord)>>::new();
+    for row in rows {
+        let (
+            rowid,
+            id,
+            fingerprint_version,
+            fingerprint,
+            state,
+            reason,
+            evidence,
+            entry_point,
+            data_flow,
+            gates_json,
+            deciding_gate,
+            expires_at,
+            origin,
+            policy_hash,
+            updated_at,
+            superseded_at,
+        ) = row;
+        let identity = (fingerprint_version, fingerprint.clone());
+        if !identities.contains(&identity) {
+            continue;
+        }
+        let origin = parse_json_enum::<ReviewOrigin>(&origin)?;
+        let updated_instant = parse_utc_timestamp(&updated_at)?;
+        grouped.entry(identity).or_default().push((
+            rowid,
+            updated_instant,
+            ReviewRecord {
+                id,
+                project_id: project_id.to_owned(),
+                fingerprint_version,
+                fingerprint,
+                state: parse_json_enum::<ReviewState>(&state)?,
+                reason,
+                evidence,
+                entry_point,
+                data_flow,
+                gates: from_json::<Vec<GateNote>>(&gates_json)?,
+                deciding_gate: deciding_gate
+                    .as_deref()
+                    .map(parse_json_enum::<Gate>)
+                    .transpose()?,
+                expires_at,
+                origin,
+                policy_hash,
+                updated_at,
+                superseded_at,
+            },
+        ));
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(identity, mut reviews)| {
+            reviews.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+            (
+                identity,
+                reviews.into_iter().map(|(_, _, review)| review).collect(),
+            )
+        })
+        .collect())
 }
 
 fn to_json(value: &impl Serialize) -> Result<String, CommandError> {

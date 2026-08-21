@@ -14,6 +14,8 @@ pub struct ScanOptions {
     pub scan_secrets: bool,
     pub scan_vulnerabilities: bool,
     pub extra_ignored_dirs: Vec<String>,
+    #[serde(default)]
+    pub ignore_invalid_policy: bool,
 }
 
 impl Default for ScanOptions {
@@ -26,6 +28,7 @@ impl Default for ScanOptions {
             scan_secrets: true,
             scan_vulnerabilities: true,
             extra_ignored_dirs: Vec::new(),
+            ignore_invalid_policy: false,
         }
     }
 }
