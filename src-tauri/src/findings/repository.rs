@@ -103,6 +103,8 @@ const RETENTION_MAINTENANCE_WARNING: &str =
 
 pub struct FindingsRepository {
     connection: Mutex<Connection>,
+    #[cfg(test)]
+    fail_post_maintenance_reload: std::sync::atomic::AtomicBool,
 }
 
 impl FindingsRepository {
@@ -141,6 +143,8 @@ impl FindingsRepository {
         migrate(&mut connection, MIGRATION_V1)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            #[cfg(test)]
+            fail_post_maintenance_reload: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -558,13 +562,28 @@ impl FindingsRepository {
             stored.maintenance_warning = Some(RETENTION_MAINTENANCE_WARNING.into());
             return Ok(stored);
         }
-        match self.load_run(&stored.run_id) {
-            Ok(reloaded) => Ok(reloaded),
-            Err(_) => {
-                stored.maintenance_warning = Some(RETENTION_MAINTENANCE_WARNING.into());
-                Ok(stored)
-            }
+        if self.should_fail_post_maintenance_reload_for_test() {
+            Err(CommandError::persistence_unavailable())
+        } else {
+            self.load_run(&stored.run_id)
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_post_maintenance_reload_for_test(&self) {
+        self.fail_post_maintenance_reload
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn should_fail_post_maintenance_reload_for_test(&self) -> bool {
+        self.fail_post_maintenance_reload
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(not(test))]
+    fn should_fail_post_maintenance_reload_for_test(&self) -> bool {
+        false
     }
 
     pub fn load_run(&self, run_id: &str) -> Result<ScanRunDetail, CommandError> {
@@ -601,6 +620,16 @@ impl FindingsRepository {
             }
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delete_run_for_test(&self, run_id: &str) -> Result<(), CommandError> {
+        self.connection
+            .lock()
+            .map_err(persistence_error)?
+            .execute("DELETE FROM scan_runs WHERE id = ?1", [run_id])
+            .map(|_| ())
+            .map_err(persistence_error)
     }
 
     pub fn recover_interrupted_runs(
@@ -1271,6 +1300,8 @@ fn open_file_database_unix(
     migrate(&mut connection, MIGRATION_V1)?;
     Ok(FindingsRepository {
         connection: Mutex::new(connection),
+        #[cfg(test)]
+        fail_post_maintenance_reload: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
@@ -1513,6 +1544,8 @@ fn open_file_database_portable(
     migrate(&mut connection, MIGRATION_V1)?;
     Ok(FindingsRepository {
         connection: Mutex::new(connection),
+        #[cfg(test)]
+        fail_post_maintenance_reload: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
@@ -5195,6 +5228,43 @@ mod tests {
         assert_eq!(loaded.status, RunStatus::Completed);
         assert_eq!(loaded.persistence, RunPersistence::Saved);
         assert_eq!(loaded.maintenance_warning, None);
+    }
+
+    #[test]
+    fn successful_maintenance_reload_failure_propagates_without_hiding_durable_run() {
+        let repository = FindingsRepository::open_in_memory().expect("open repository");
+        prepare_run(&repository, "maintenance-reload-failure-run");
+        let completed = run_detail(
+            "maintenance-reload-failure-run",
+            RunStatus::Completed,
+            vec![finding(
+                "maintenance-reload-failure-observation",
+                "maintenance-reload-failure-fingerprint",
+            )],
+        );
+        let coverage = CoverageManifest::from_entries([("src/config.rs", ["secret"])]);
+        repository.fail_next_post_maintenance_reload_for_test();
+
+        let error = repository
+            .complete_run_with_maintenance(
+                &completed,
+                &coverage,
+                RetentionPolicy::default(),
+                DateTime::parse_from_rfc3339("2026-08-20T10:00:08Z")
+                    .expect("parse maintenance time")
+                    .with_timezone(&Utc),
+            )
+            .expect_err("post-maintenance reload failure must propagate");
+
+        assert_eq!(
+            error.code,
+            crate::findings::error::ErrorCode::PersistenceUnavailable
+        );
+        let durable = repository
+            .load_run("maintenance-reload-failure-run")
+            .expect("current run remains durable");
+        assert_eq!(durable.status, RunStatus::Completed);
+        assert_eq!(durable.findings.len(), 1);
     }
 
     #[test]
