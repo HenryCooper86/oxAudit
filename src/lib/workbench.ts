@@ -9,6 +9,8 @@ export type Page =
   | "data-sources"
   | "export-center"
   | "verification"
+  | "compliance-center"
+  | "report-studio"
   | "cve-research"
   | "assistant"
   | "settings";
@@ -44,6 +46,8 @@ export const PAGE_META: Record<Page, PageMeta> = {
   "data-sources": { title: "Data Sources", group: "System" },
   "export-center": { title: "Export Center", group: "System" },
   verification: { title: "Verification", group: "System" },
+  "compliance-center": { title: "Compliance Center", group: "System" },
+  "report-studio": { title: "Report Studio", group: "System" },
   "cve-research": { title: "CVE Research", group: "Research" },
   assistant: { title: "AI Assistant", group: "Research" },
   settings: { title: "Settings", group: "System" },

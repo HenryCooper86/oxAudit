@@ -22,6 +22,7 @@ with the help of an AI assistant.
 | **Durable evidence and inventory** | Source, Dependency, Binary, and imported SBOM runs use one persisted Artifact → Component → Observation → Evidence → Finding graph. Runs survive restart, unflagged components remain visible, provider/rule snapshots preserve historical meaning, and every scan family shares the same lifecycle timeline |
 | **Rules, data, and quality** | A GUI Rule Library exposes provenance and fixture health and safely validates bounded declarative packs; Data Sources exposes immutable advisory snapshots and offline readiness; Quality Lab runs committed ground truth and reports precision, recall, misses, runtime, corpus size, and regression honestly |
 | **Standards and verification** | Preview and export oxAudit JSON, SARIF 2.1.0, CycloneDX 1.6, SPDX 2.3, OpenVEX, and CycloneDX VEX. Preview bounded imports with conflict/unmapped records and import SBOM inventory as a separate immutable run. Independent verification records bind a separate verifier to an immutable input hash |
+| **Compliance readiness and reports** | GUI-first evidence checks for ISO 26262, ISO/SAE 21434, UNECE R155/R156, GDPR, CCPA/CPRA, NIST Privacy Framework, and ISO/IEC 27001; append-only qualified reviews; and professional JSON, CSV, Markdown, self-contained HTML, and paginated PDF reports. Readiness is never presented as certification or legal conformity |
 | **Dashboard** | At-a-glance stats, quick actions, recent scan history |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
 
@@ -37,6 +38,8 @@ with the help of an AI assistant.
 - **Data Sources** — provider source/terms, immutable snapshot hashes, refresh state, and honest offline readiness
 - **Export Center** — validated JSON/SARIF/SBOM/VEX preview/export plus bounded import and conflict preview
 - **Verification** — producer-independent human verification bound to immutable finding evidence
+- **Compliance Center** — framework selection, bounded local evidence collection, durable control matrices, and append-only human decisions
+- **Report Studio** — professional multi-format report metadata, disclosure controls, preview, atomic save, and content receipts
 - **CVE Research** — NVD search + OSV package lookup + detail view with AI briefing
 - **AI Assistant** — chat with code/context attachment
 - **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key
@@ -55,6 +58,7 @@ src-tauri/            Rust backend (Tauri v2)
     oxaudit-application/  ports, run coordinator, manifests and sequenced events
     oxaudit-scanners/     bounded declarative rules and optional object analysis
     oxaudit-benchmark/    resumable ground-truth contracts and metrics
+    oxaudit-compliance/   declarative readiness profiles and evidence evaluation
   src/adapters/       SQLite, scanner mapping, providers and standards reporting
   src/presentation/   canonical Tauri event projection
   src/models.rs       shared serde models (camelCase ⇄ TypeScript types)
@@ -88,6 +92,10 @@ the [implementation plan](docs/superpowers/plans/2026-08-21-oxaudit-architecture
 and the [implementation status](docs/architecture/2026-08-21-implementation-status.md)
 record what is being adopted from cve-bin-tool, VulHunt, and VulnHunter, what is
 deliberately rejected, and how licence-safe provenance is preserved.
+
+The [compliance and reporting architecture](docs/compliance-and-reporting.md)
+documents profile licensing boundaries, status semantics, bounded evidence collection,
+append-only review history, and the shared professional report model.
 
 ## Development
 

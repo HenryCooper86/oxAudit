@@ -23,6 +23,8 @@ const QualityLabPage = lazy(() => import("./pages/QualityLab").then((module) => 
 const DataSourcesPage = lazy(() => import("./pages/DataSources").then((module) => ({ default: module.DataSourcesPage })));
 const ExportCenterPage = lazy(() => import("./pages/ExportCenter").then((module) => ({ default: module.ExportCenterPage })));
 const VerificationPage = lazy(() => import("./pages/Verification").then((module) => ({ default: module.VerificationPage })));
+const ComplianceCenterPage = lazy(() => import("./pages/ComplianceCenter").then((module) => ({ default: module.ComplianceCenterPage })));
+const ReportStudioPage = lazy(() => import("./pages/ReportStudio").then((module) => ({ default: module.ReportStudioPage })));
 
 function Page() {
   const page = useAppStore((s) => s.page);
@@ -47,6 +49,10 @@ function Page() {
       return <ExportCenterPage />;
     case "verification":
       return <VerificationPage />;
+    case "compliance-center":
+      return <ComplianceCenterPage />;
+    case "report-studio":
+      return <ReportStudioPage />;
     case "cve-research":
       return <CveResearchPage />;
     case "assistant":
