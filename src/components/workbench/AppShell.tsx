@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type JSX } from "react";
+import { useAppStore } from "../../lib/stores";
 import { useAppTheme } from "../../lib/useTheme";
 import { Sidebar } from "../Sidebar";
 import { StatusBar } from "./StatusBar";
@@ -6,6 +7,7 @@ import { WorkbenchHeader } from "./WorkbenchHeader";
 
 export function AppShell({ children }: { children: React.ReactNode }): JSX.Element {
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const compactNavigation = useAppStore((state) => state.page === "assistant");
 
   useAppTheme();
 
@@ -63,8 +65,14 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
   }, [closeNavigation, navigationOpen]);
 
   return (
-    <div className="grid h-full grid-cols-[240px_minmax(0,1fr)] overflow-hidden bg-surface-primary max-[900px]:grid-cols-1">
-      <Sidebar open={navigationOpen} onClose={closeNavigation} />
+    <div
+      className={`grid h-full overflow-hidden bg-surface-primary max-[900px]:grid-cols-1 ${compactNavigation ? "grid-cols-[52px_minmax(0,1fr)]" : "grid-cols-[240px_minmax(0,1fr)]"}`}
+    >
+      <Sidebar
+        open={navigationOpen}
+        onClose={closeNavigation}
+        compact={compactNavigation}
+      />
       <section
         inert={navigationOpen}
         className="grid min-w-0 grid-rows-[52px_minmax(0,1fr)_28px] overflow-hidden"
