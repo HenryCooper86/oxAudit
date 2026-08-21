@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, MessageSquare, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { fmtDate } from "../../lib/format";
 import type { SessionInfo } from "../../lib/types";
@@ -28,9 +28,11 @@ export function SessionSidebar({
 }) {
   const controlsDisabled = busy || disabled;
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (renamingId) {
@@ -38,6 +40,10 @@ export function SessionSidebar({
       if (s) setRenameValue(s.title);
     }
   }, [renamingId, sessions]);
+
+  useEffect(() => {
+    if (searchOpen) searchRef.current?.focus();
+  }, [searchOpen]);
 
   const filtered = query.trim()
     ? sessions.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
@@ -53,21 +59,36 @@ export function SessionSidebar({
   return (
     <aside
       aria-label="Chat sessions"
-      className="flex w-60 shrink-0 flex-col border-r border-border bg-surface-secondary"
+      className="flex w-[216px] shrink-0 flex-col border-r border-border bg-surface-secondary max-[1040px]:w-[196px]"
     >
-      <div className="p-3">
+      <div className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border px-2.5">
         <button
           type="button"
           onClick={onCreate}
           disabled={controlsDisabled}
-          className="flex w-full items-center gap-2 rounded-sm border border-transparent px-2.5 py-[7px] text-left text-[13px] leading-tight font-medium text-text-primary transition-colors duration-150 hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-sm border border-transparent px-2 py-[7px] text-left text-[13px] leading-tight font-medium text-text-primary transition-colors duration-150 hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
         >
           <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center text-accent">
             <Plus size={15} aria-hidden="true" />
           </span>
           New chat
         </button>
-        <label className="relative mt-2 block">
+        <button
+          type="button"
+          aria-label={searchOpen ? "Close session search" : "Search chat sessions"}
+          aria-expanded={searchOpen}
+          onClick={() => {
+            setSearchOpen((open) => !open);
+            if (searchOpen) setQuery("");
+          }}
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary ${searchOpen ? "bg-surface-active text-text-primary" : ""}`}
+        >
+          {searchOpen ? <X size={13} aria-hidden="true" /> : <Search size={13} aria-hidden="true" />}
+        </button>
+      </div>
+
+      {searchOpen && (
+        <label className="relative mx-2.5 mt-2 block">
           <span className="sr-only">Search chat sessions</span>
           <Search
             size={12}
@@ -75,18 +96,26 @@ export function SessionSidebar({
             className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
           />
           <input
+            ref={searchRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search sessions…"
-            className="w-full rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[13px] text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
+            className="w-full rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[12px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-focus"
           />
         </label>
+      )}
+
+      <div className="flex items-center px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+        <span>Conversations</span>
+        <span className="ml-auto font-mono font-normal tracking-normal">{filtered.length}</span>
       </div>
 
       <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
         {filtered.length === 0 && (
-          <div className="px-3 py-6 text-center text-[12px] text-text-muted">
-            {sessions.length === 0 ? "No chats yet" : "No matches"}
+          <div className="px-3 py-7 text-center text-[12px] leading-relaxed text-text-muted">
+            {sessions.length === 0
+              ? "Your security conversations will appear here."
+              : "No matching conversations."}
           </div>
         )}
         {filtered.map((s) => {
@@ -94,7 +123,7 @@ export function SessionSidebar({
           return (
             <div
               key={s.id}
-              className={`group relative rounded-sm px-2.5 py-2 transition-colors ${ active ? "bg-surface-active" : "hover:bg-surface-hover" }`}
+              className={`group relative rounded-sm border px-2.5 py-2 transition-colors ${ active ? "border-accent-glow bg-accent-subtle" : "border-transparent hover:bg-surface-hover" }`}
             >
               {renamingId === s.id ? (
                 <div className="flex items-center gap-1">
@@ -162,7 +191,7 @@ export function SessionSidebar({
                   />
                   <span className="min-w-0 flex-1">
                     <span
-                      className={`block truncate text-[12px] font-medium ${ active ? "text-text-primary" : "text-text-muted" }`}
+                      className={`block truncate text-[12px] font-medium ${ active ? "text-text-primary" : "text-text-secondary" }`}
                     >
                       {s.title}
                     </span>

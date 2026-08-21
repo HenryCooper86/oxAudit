@@ -67,7 +67,15 @@ const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
  * rail on `--surface-secondary` with 10px uppercase section headers, 13px
  * items on the 4px control radius, and a pinned footer for Settings.
  */
-export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }): JSX.Element {
+export function Sidebar({
+  open,
+  onClose,
+  compact = false,
+}: {
+  open: boolean;
+  onClose: () => void;
+  compact?: boolean;
+}): JSX.Element {
   const page = useAppStore((state) => state.page);
   const setPage = useAppStore((state) => state.setPage);
 
@@ -82,16 +90,19 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       <button
         key={itemPage}
         type="button"
+        title={compact ? label : undefined}
         aria-current={active ? "page" : undefined}
         onClick={() => selectPage(itemPage)}
-        className={`mb-0.5 flex w-full items-center gap-2 rounded-sm border px-2.5 py-[7px] text-left text-[13px] leading-tight font-medium transition-colors duration-150 ${ active ? "border-border bg-surface-active text-text-primary" : "border-transparent text-text-primary hover:bg-accent-subtle" }`}
+        className={`mb-0.5 flex w-full items-center gap-2 rounded-sm border px-2.5 py-[7px] text-left text-[13px] leading-tight font-medium transition-colors duration-150 ${compact ? "min-[901px]:justify-center min-[901px]:px-1" : ""} ${ active ? "border-border bg-surface-active text-text-primary" : "border-transparent text-text-primary hover:bg-accent-subtle" }`}
       >
         <span
           className={`inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center ${ active ? "text-accent" : "text-text-muted" }`}
         >
           <Icon aria-hidden="true" size={15} />
         </span>
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className={`min-w-0 flex-1 truncate ${compact ? "min-[901px]:sr-only" : ""}`}>
+          {label}
+        </span>
       </button>
     );
   };
@@ -109,7 +120,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       )}
       <aside
         aria-label="Primary navigation"
-        className={`z-40 flex h-full w-60 flex-col border-r border-border bg-surface-secondary transition-transform max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 ${ open ? "max-[900px]:visible max-[900px]:translate-x-0" : "max-[900px]:invisible max-[900px]:-translate-x-full" }`}
+        className={`z-40 flex h-full flex-col border-r border-border bg-surface-secondary transition-[width,transform] max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 max-[900px]:w-60 ${compact ? "w-[52px]" : "w-60"} ${ open ? "max-[900px]:visible max-[900px]:translate-x-0" : "max-[900px]:invisible max-[900px]:-translate-x-full" }`}
       >
         <div className="flex items-center justify-end px-2 pt-1.5 min-[900px]:hidden">
           <button
@@ -124,8 +135,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
 
         <nav className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pt-1.5">
           {NAVIGATION_GROUPS.map((group) => (
-            <div key={group.label}>
-              <div className="px-2.5 pt-2.5 pb-1">
+            <div
+              key={group.label}
+              className={compact ? "min-[901px]:border-b min-[901px]:border-border min-[901px]:py-1" : undefined}
+            >
+              <div className={compact ? "px-2.5 pb-1 pt-2.5 min-[901px]:hidden" : "px-2.5 pb-1 pt-2.5"}>
                 <SectionLabel>{group.label}</SectionLabel>
               </div>
               {group.items.map(navigationButton)}

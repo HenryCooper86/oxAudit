@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { Brain, ChevronDown } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 
 /**
  * Live "Thinking…" block while the model streams reasoning content
@@ -32,13 +32,13 @@ export function ThinkingCard({
   const duration = finishedAt ?? elapsed;
 
   return (
-    <div className="selectable mb-1 overflow-hidden rounded-sm border border-border bg-surface-secondary">
+    <div className="selectable my-1">
       <button
         type="button"
         aria-expanded={hasContent ? open : undefined}
         aria-controls={hasContent ? detailsId : undefined}
         onClick={() => hasContent && setOpen(!open)}
-        className={`flex w-full items-center gap-2 px-3.5 py-2.5 text-left ${ hasContent ? "cursor-pointer hover:bg-surface-hover" : "cursor-default" }`}
+        className={`inline-flex items-center gap-1.5 rounded-sm py-1 pr-1.5 text-left text-text-muted ${ hasContent ? "cursor-pointer hover:text-text-secondary" : "cursor-default" }`}
       >
         <span className="relative flex h-2 w-2">
           {streaming && (
@@ -48,24 +48,21 @@ export function ThinkingCard({
             className={`relative inline-flex h-2 w-2 rounded-full ${ streaming ? "bg-accent" : "bg-text-muted" }`}
           />
         </span>
-        <span className="text-[12px] font-semibold uppercase tracking-wider text-text-secondary">
+        <span className="text-[12px] font-medium text-text-muted">
           {streaming ? "Thinking" : "Thought"}
           {streaming ? `… ${elapsed}s` : duration > 0 ? ` · ${duration}s` : ""}
         </span>
         {hasContent && (
-          <ChevronDown
-            size={13}
+          <ChevronRight
+            size={12}
             aria-hidden="true"
-            className={`ml-auto text-text-muted transition-transform ${open ? "rotate-180" : ""}`}
+            className={`text-text-muted transition-transform ${open ? "rotate-90" : ""}`}
           />
-        )}
-        {!hasContent && streaming && (
-          <Brain size={13} aria-hidden="true" className="ml-auto text-text-muted" />
         )}
       </button>
       {hasContent && open && (
-        <div id={detailsId} className="border-t border-border px-4 py-3">
-          <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-text-secondary">
+        <div id={detailsId} className="mt-1 rounded-md bg-surface-secondary px-3 py-2.5">
+          <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap font-sans text-[13px] leading-relaxed text-text-secondary">
             {text}
           </pre>
         </div>
