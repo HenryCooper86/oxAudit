@@ -3,6 +3,7 @@ mod agent;
 mod ai;
 pub mod binscan;
 mod commands;
+pub mod compliance;
 pub mod cve;
 mod deps;
 pub mod exploit;
@@ -136,6 +137,13 @@ pub fn run() {
             commands::load_settings,
             commands::save_settings,
             commands::get_ai_settings,
+            compliance::list_compliance_profiles,
+            compliance::run_compliance_assessment,
+            compliance::list_compliance_assessments,
+            compliance::load_compliance_assessment,
+            compliance::save_compliance_review,
+            compliance::preview_compliance_report,
+            compliance::write_compliance_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
