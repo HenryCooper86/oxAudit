@@ -13,9 +13,12 @@ use crate::ai::AiClient;
 use crate::cve::CveState;
 use crate::deps::osv::OsvClient;
 use crate::findings::{
-    domain::ScanRunDetail,
+    domain::{
+        ProjectContext, RecentProject, ReviewRecord, ReviewRequest, ReviewState, ScanRunDetail,
+        ScanRunSummary,
+    },
     error::CommandError,
-    service::{FindingsState, ScanEventSink},
+    service::{FindingsService, FindingsState, ScanEventSink},
 };
 use crate::fs_utils;
 use crate::models::{
@@ -335,6 +338,586 @@ pub async fn scan_project(
 pub fn cancel_scan(state: State<'_, AppState>) -> Result<(), String> {
     state.cancel_scan.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+trait FindingsServiceAccess {
+    fn findings_service(&self) -> Result<&FindingsService, CommandError>;
+}
+
+impl FindingsServiceAccess for FindingsService {
+    fn findings_service(&self) -> Result<&FindingsService, CommandError> {
+        Ok(self)
+    }
+}
+
+impl FindingsServiceAccess for FindingsState {
+    fn findings_service(&self) -> Result<&FindingsService, CommandError> {
+        self.service()
+    }
+}
+
+fn inspect_source_project_inner(
+    findings: &impl FindingsServiceAccess,
+    path: impl AsRef<Path>,
+) -> Result<ProjectContext, CommandError> {
+    findings.findings_service()?.inspect_project(path)
+}
+
+fn list_source_projects_inner(
+    findings: &impl FindingsServiceAccess,
+    limit: u32,
+) -> Result<Vec<RecentProject>, CommandError> {
+    findings
+        .findings_service()?
+        .list_recent_projects(limit.clamp(1, 100) as usize)
+}
+
+fn list_source_runs_inner(
+    findings: &impl FindingsServiceAccess,
+    project_id: &str,
+    limit: u32,
+) -> Result<Vec<ScanRunSummary>, CommandError> {
+    findings
+        .findings_service()?
+        .list_runs(project_id, limit.clamp(1, 100) as usize)
+}
+
+fn load_source_run_inner(
+    findings: &impl FindingsServiceAccess,
+    run_id: &str,
+) -> Result<ScanRunDetail, CommandError> {
+    findings.findings_service()?.load_run(run_id)
+}
+
+fn retry_source_run_save_inner(
+    findings: &impl FindingsServiceAccess,
+    retry_token: &str,
+) -> Result<ScanRunDetail, CommandError> {
+    findings.findings_service()?.retry_save(retry_token)
+}
+
+fn save_finding_review_inner(
+    findings: &impl FindingsServiceAccess,
+    request: ReviewRequest,
+) -> Result<ReviewRecord, CommandError> {
+    findings
+        .findings_service()?
+        .save_review(&request, chrono::Utc::now())
+}
+
+fn delete_finding_review_inner(
+    findings: &impl FindingsServiceAccess,
+    request: ReviewRequest,
+) -> Result<ReviewRecord, CommandError> {
+    let service = findings.findings_service()?;
+    if request.state != ReviewState::Candidate {
+        return Err(CommandError::review_invalid());
+    }
+    service.save_review(&request, chrono::Utc::now())
+}
+
+#[tauri::command]
+pub fn inspect_source_project(
+    state: State<'_, FindingsState>,
+    path: String,
+) -> Result<ProjectContext, CommandError> {
+    inspect_source_project_inner(&*state, path)
+}
+
+#[tauri::command]
+pub fn list_source_projects(
+    state: State<'_, FindingsState>,
+    limit: u32,
+) -> Result<Vec<RecentProject>, CommandError> {
+    list_source_projects_inner(&*state, limit)
+}
+
+#[tauri::command]
+pub fn list_source_runs(
+    state: State<'_, FindingsState>,
+    project_id: String,
+    limit: u32,
+) -> Result<Vec<ScanRunSummary>, CommandError> {
+    list_source_runs_inner(&*state, &project_id, limit)
+}
+
+#[tauri::command]
+pub fn load_source_run(
+    state: State<'_, FindingsState>,
+    run_id: String,
+) -> Result<ScanRunDetail, CommandError> {
+    load_source_run_inner(&*state, &run_id)
+}
+
+#[tauri::command]
+pub fn retry_source_run_save(
+    state: State<'_, FindingsState>,
+    retry_token: String,
+) -> Result<ScanRunDetail, CommandError> {
+    retry_source_run_save_inner(&*state, &retry_token)
+}
+
+#[tauri::command]
+pub fn save_finding_review(
+    state: State<'_, FindingsState>,
+    request: ReviewRequest,
+) -> Result<ReviewRecord, CommandError> {
+    save_finding_review_inner(&*state, request)
+}
+
+#[tauri::command]
+pub fn delete_finding_review(
+    state: State<'_, FindingsState>,
+    request: ReviewRequest,
+) -> Result<ReviewRecord, CommandError> {
+    delete_finding_review_inner(&*state, request)
+}
+
+#[cfg(test)]
+mod source_finding_command_tests {
+    use super::{
+        delete_finding_review_inner, inspect_source_project_inner, list_source_projects_inner,
+        list_source_runs_inner, load_source_run_inner, retry_source_run_save_inner,
+        save_finding_review_inner,
+    };
+    use crate::cve::CveState;
+    use crate::findings::{
+        domain::{
+            DiffStatus, PolicyStatus, ReviewOrigin, ReviewRequest, ReviewState, RunPersistence,
+            RunStatus, ScanRunDetail,
+        },
+        error::{CommandError, ErrorCode},
+        repository::FindingsRepository,
+        service::{FindingsService, FindingsState, ScanEventSink},
+    };
+    use crate::models::{ScanOptions, ScanSummary};
+    use crate::triage::gates::{GateNote, GateVerdict, ALL_GATES};
+    use std::sync::atomic::AtomicBool;
+
+    struct QuietEvents;
+
+    impl ScanEventSink for QuietEvents {
+        fn emit(&self, _event: &str, _payload: serde_json::Value) -> Result<(), CommandError> {
+            Ok(())
+        }
+    }
+
+    fn cached_cve_state() -> CveState {
+        let state = CveState::new(reqwest::Client::new());
+        *state.kev.lock().unwrap() = Some((std::time::Instant::now(), Default::default()));
+        state
+    }
+
+    fn review_request(
+        detail: &ScanRunDetail,
+        state: ReviewState,
+        origin: ReviewOrigin,
+    ) -> ReviewRequest {
+        let finding = detail
+            .findings
+            .iter()
+            .find(|finding| finding.observation_run_id == detail.run_id)
+            .unwrap();
+        ReviewRequest {
+            project_id: detail.project_id.clone(),
+            fingerprint_version: finding.fingerprint_version,
+            fingerprint: finding.fingerprint.clone(),
+            category: finding.category.clone(),
+            state,
+            reason: if state == ReviewState::Candidate {
+                String::new()
+            } else {
+                "Reviewed through the command boundary".into()
+            },
+            evidence: None,
+            entry_point: None,
+            data_flow: None,
+            gates: Vec::new(),
+            deciding_gate: None,
+            expires_at: None,
+            origin,
+        }
+    }
+
+    fn empty_summary(path: &std::path::Path) -> ScanSummary {
+        ScanSummary {
+            path: path.to_string_lossy().into_owned(),
+            files_scanned: 0,
+            files_skipped: 0,
+            bytes_scanned: 0,
+            duration_ms: 0,
+            secrets_found: 0,
+            vulnerabilities_found: 0,
+            total_findings: 0,
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            info: 0,
+            rules_fired: Default::default(),
+        }
+    }
+
+    fn running_detail(
+        project_id: &str,
+        run_id: &str,
+        project: &std::path::Path,
+        started_at: String,
+    ) -> ScanRunDetail {
+        ScanRunDetail {
+            project_id: project_id.to_owned(),
+            run_id: run_id.to_owned(),
+            baseline_run_id: None,
+            status: RunStatus::Running,
+            persistence: RunPersistence::Saved,
+            policy: PolicyStatus::Missing,
+            started_at,
+            completed_at: None,
+            summary: empty_summary(project),
+            findings: Vec::new(),
+            maintenance_warning: None,
+        }
+    }
+
+    #[test]
+    fn project_inspection_is_canonical_and_visible_in_recent_projects() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let service = FindingsService::new(FindingsRepository::open_in_memory().unwrap());
+
+        let context = inspect_source_project_inner(&service, &project).unwrap();
+
+        assert_eq!(
+            context.canonical_path,
+            project
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let recent = list_source_projects_inner(&service, 12).unwrap();
+        assert_eq!(recent[0].project_id, context.project_id);
+    }
+
+    #[test]
+    fn list_limits_are_clamped_and_unknown_identifiers_are_typed() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        let mut run_project = None;
+        for index in 0..102 {
+            let project = directory.path().join(format!("project-{index:03}"));
+            std::fs::create_dir(&project).unwrap();
+            let canonical = project
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let context = repository
+                .upsert_project(
+                    &format!("project-{index:03}"),
+                    &canonical,
+                    &format!("Project {index:03}"),
+                    &format!("2026-01-01T00:00:00.{index:09}Z"),
+                    None,
+                )
+                .unwrap();
+            if index == 0 {
+                run_project = Some((project, context));
+            }
+        }
+        let (project, context) = run_project.unwrap();
+        for index in 0..102 {
+            repository
+                .start_run(
+                    &running_detail(
+                        &context.project_id,
+                        &format!("run-{index:03}"),
+                        &project,
+                        format!("2026-02-01T00:00:00.{index:09}Z"),
+                    ),
+                    "test-scanner",
+                    &ScanOptions::default(),
+                )
+                .unwrap();
+        }
+        let service = FindingsService::new(repository);
+
+        assert_eq!(list_source_projects_inner(&service, 0).unwrap().len(), 1);
+        assert_eq!(
+            list_source_projects_inner(&service, u32::MAX)
+                .unwrap()
+                .len(),
+            100
+        );
+        assert_eq!(
+            list_source_runs_inner(&service, &context.project_id, 0)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_source_runs_inner(&service, &context.project_id, u32::MAX)
+                .unwrap()
+                .len(),
+            100
+        );
+        assert_eq!(
+            list_source_runs_inner(&service, "unknown-project", 10)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            load_source_run_inner(&service, "run-000").unwrap().run_id,
+            "run-000"
+        );
+        assert_eq!(
+            load_source_run_inner(&service, "unknown-run")
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            retry_source_run_save_inner(&service, "unknown-token")
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn reviews_save_and_delete_as_auditable_candidate_transition() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let service = FindingsService::new(FindingsRepository::open_in_memory().unwrap());
+        let detail = service
+            .scan(
+                ScanOptions {
+                    path: project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &QuietEvents,
+            )
+            .await
+            .unwrap();
+
+        let accepted = review_request(&detail, ReviewState::AcceptedRisk, ReviewOrigin::Local);
+        let stored = save_finding_review_inner(&service, accepted.clone()).unwrap();
+        assert_eq!(stored.state, ReviewState::AcceptedRisk);
+        assert_eq!(stored.origin, ReviewOrigin::Local);
+
+        let deleted = delete_finding_review_inner(
+            &service,
+            review_request(&detail, ReviewState::Candidate, ReviewOrigin::Local),
+        )
+        .unwrap();
+        assert_eq!(deleted.state, ReviewState::Candidate);
+        assert_eq!(deleted.origin, ReviewOrigin::Local);
+        let loaded = load_source_run_inner(&service, &detail.run_id).unwrap();
+        let finding = loaded
+            .findings
+            .iter()
+            .find(|finding| finding.observation_run_id == detail.run_id)
+            .unwrap();
+        assert!(finding.review.is_none());
+        assert!(finding
+            .review_history
+            .iter()
+            .any(|review| review.state == ReviewState::AcceptedRisk));
+        assert!(finding
+            .review_history
+            .iter()
+            .any(|review| review.state == ReviewState::Candidate));
+
+        assert_eq!(
+            delete_finding_review_inner(&service, accepted)
+                .unwrap_err()
+                .code,
+            ErrorCode::ReviewInvalid
+        );
+
+        let mut forbidden =
+            review_request(&detail, ReviewState::Confirmed, ReviewOrigin::ProjectPolicy);
+        forbidden.gates = ALL_GATES
+            .into_iter()
+            .map(|gate| GateNote {
+                gate,
+                verdict: GateVerdict::Survives,
+                evidence: "Reviewed sanitized source evidence".into(),
+            })
+            .collect();
+        assert_eq!(
+            save_finding_review_inner(&service, forbidden)
+                .unwrap_err()
+                .code,
+            ErrorCode::ReviewInvalid
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_policy_is_visible_and_project_policy_save_preserves_exact_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let policy_path = project.join(".oxaudit/policy.json");
+        let invalid_bytes = b"{ invalid command policy bytes }";
+        std::fs::write(&policy_path, invalid_bytes).unwrap();
+        let service = FindingsService::new(FindingsRepository::open_in_memory().unwrap());
+
+        let context = inspect_source_project_inner(&service, &project).unwrap();
+        assert!(matches!(context.policy, PolicyStatus::Invalid { .. }));
+        let detail = service
+            .scan(
+                ScanOptions {
+                    path: project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ignore_invalid_policy: true,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &QuietEvents,
+            )
+            .await
+            .unwrap();
+        let request = review_request(
+            &detail,
+            ReviewState::Suppressed,
+            ReviewOrigin::ProjectPolicy,
+        );
+
+        assert_eq!(
+            save_finding_review_inner(&service, request)
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyInvalid
+        );
+        assert_eq!(std::fs::read(policy_path).unwrap(), invalid_bytes);
+    }
+
+    #[test]
+    fn unavailable_state_returns_the_same_sanitized_error_from_every_adapter() {
+        let expected = CommandError::persistence_unavailable();
+        let state = FindingsState::unavailable(expected.clone());
+        let request = ReviewRequest {
+            project_id: "project".into(),
+            fingerprint_version: 1,
+            fingerprint: "fingerprint".into(),
+            category: "secret".into(),
+            state: ReviewState::Candidate,
+            reason: String::new(),
+            evidence: None,
+            entry_point: None,
+            data_flow: None,
+            gates: Vec::new(),
+            deciding_gate: None,
+            expires_at: None,
+            origin: ReviewOrigin::Local,
+        };
+        let expected = serde_json::to_value(expected).unwrap();
+
+        let errors = [
+            inspect_source_project_inner(&state, "/unused").unwrap_err(),
+            list_source_projects_inner(&state, 12).unwrap_err(),
+            list_source_runs_inner(&state, "project", 50).unwrap_err(),
+            load_source_run_inner(&state, "run").unwrap_err(),
+            retry_source_run_save_inner(&state, "token").unwrap_err(),
+            save_finding_review_inner(&state, request.clone()).unwrap_err(),
+            delete_finding_review_inner(&state, request).unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(serde_json::to_value(error).unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn file_restart_recovers_running_attempt_and_preserves_compatible_baseline() {
+        let temporary = tempfile::tempdir().unwrap();
+        let data_dir = temporary.path().join("private-app-data");
+        let project = temporary.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let database_path = data_dir.join("findings.sqlite3");
+        let service = FindingsService::new(FindingsRepository::open(&database_path).unwrap());
+        let options = ScanOptions {
+            path: project.to_string_lossy().into_owned(),
+            scan_secrets: false,
+            ..ScanOptions::default()
+        };
+        let baseline = service
+            .scan(
+                options.clone(),
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &QuietEvents,
+            )
+            .await
+            .unwrap();
+        drop(service);
+
+        let repository = FindingsRepository::open(&database_path).unwrap();
+        let interrupted_id = "interrupted-run";
+        repository
+            .start_run(
+                &running_detail(
+                    &baseline.project_id,
+                    interrupted_id,
+                    &project,
+                    chrono::Utc::now().to_rfc3339(),
+                ),
+                "test-scanner",
+                &options,
+            )
+            .unwrap();
+        drop(repository);
+
+        let state = crate::initialize_findings_state(&data_dir, chrono::Utc::now());
+        let service = state.service().unwrap();
+        assert_eq!(
+            load_source_run_inner(service, interrupted_id)
+                .unwrap()
+                .status,
+            RunStatus::Incomplete
+        );
+        let rescanned = service
+            .scan(
+                options,
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &QuietEvents,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rescanned.baseline_run_id.as_deref(),
+            Some(baseline.run_id.as_str())
+        );
+        assert!(rescanned.findings.iter().any(|finding| {
+            finding.observation_run_id == rescanned.run_id
+                && finding.diff_status == Some(DiffStatus::Unchanged)
+        }));
+    }
+
+    #[test]
+    fn startup_failure_creates_an_unavailable_sanitized_state() {
+        let data_dir_file = tempfile::NamedTempFile::new().unwrap();
+
+        let state = crate::initialize_findings_state(data_dir_file.path(), chrono::Utc::now());
+
+        let error = match state.service() {
+            Ok(_) => panic!("startup through a file path must be unavailable"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::PersistenceUnavailable);
+        assert_eq!(error.detail, None);
+    }
 }
 
 // ---------------------------------------------------------------------------
