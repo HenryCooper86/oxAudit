@@ -17,6 +17,7 @@ use super::{
         ReviewOrigin, ReviewRecord, ReviewState, RunPersistence, RunStatus, ScanRunDetail,
     },
     error::CommandError,
+    policy::PolicyAuthority,
 };
 use crate::{
     models::{Finding, ScanOptions, ScanSummary},
@@ -713,12 +714,19 @@ impl FindingsRepository {
         latest_project_observations_from_connection(&connection, project_id)
     }
 
-    /// Appends an analyst event and supersedes only the current event from the
-    /// same origin in one transaction. Persistence owns the UUID event key.
-    pub fn save_review_event(&self, review: &ReviewRecord) -> Result<ReviewRecord, CommandError> {
+    /// Test-only Local event injection for projection/history fixtures. Policy
+    /// events must always enter through the authority-bound review service.
+    #[cfg(test)]
+    pub(in crate::findings) fn inject_local_review_event_for_test(
+        &self,
+        review: &ReviewRecord,
+    ) -> Result<ReviewRecord, CommandError> {
+        if review.origin != ReviewOrigin::Local {
+            return Err(CommandError::review_invalid());
+        }
         let mut connection = self.connection.lock().map_err(persistence_error)?;
         let transaction = connection.transaction().map_err(persistence_error)?;
-        let stored = append_review_event(&transaction, review)?;
+        let stored = append_review_event(&transaction, review, None)?;
         transaction.commit().map_err(persistence_error)?;
         Ok(stored)
     }
@@ -753,7 +761,7 @@ impl FindingsRepository {
         {
             return Err(CommandError::review_invalid());
         }
-        let stored = append_review_event(&transaction, &review)?;
+        let stored = append_review_event(&transaction, &review, None)?;
         transaction.commit().map_err(persistence_error)?;
         Ok(stored)
     }
@@ -763,35 +771,20 @@ impl FindingsRepository {
         self.connection.try_lock().is_ok()
     }
 
-    /// Reconciles a policy-derived projection without duplicating an exact
-    /// active event. A Candidate is persisted only when it clears an existing
-    /// project-policy event.
-    pub fn reconcile_project_policy_event(
-        &self,
-        review: &ReviewRecord,
-    ) -> Result<(ReviewRecord, bool), CommandError> {
-        if review.origin != ReviewOrigin::ProjectPolicy {
-            return Err(CommandError::persistence_unavailable());
-        }
-        let mut connection = self.connection.lock().map_err(persistence_error)?;
-        let transaction = connection.transaction().map_err(persistence_error)?;
-        let result = reconcile_project_policy_event_in_transaction(&transaction, review, false)?;
-        transaction.commit().map_err(persistence_error)?;
-        Ok(result)
-    }
-
     /// Reconciles a complete project-policy projection atomically. Either all
     /// changed identities are appended or none are.
-    pub fn reconcile_project_policy_events(
+    pub(in crate::findings) fn reconcile_project_policy_events(
         &self,
+        authority: &PolicyAuthority<'_>,
         reviews: &[ReviewRecord],
     ) -> Result<usize, CommandError> {
-        self.reconcile_project_policy_projection(reviews, None)
+        self.reconcile_project_policy_projection(authority, reviews, None)
             .map(|(_, inserted)| inserted)
     }
 
-    pub(crate) fn reconcile_project_policy_projection(
+    pub(in crate::findings) fn reconcile_project_policy_projection(
         &self,
+        authority: &PolicyAuthority<'_>,
         reviews: &[ReviewRecord],
         explicit_identity: Option<(u16, &str)>,
     ) -> Result<(Vec<ReviewRecord>, usize), CommandError> {
@@ -805,6 +798,7 @@ impl FindingsRepository {
             });
             let (event, was_inserted) = reconcile_project_policy_event_in_transaction(
                 &transaction,
+                authority,
                 review,
                 force_initial_candidate,
             )?;
@@ -1861,7 +1855,12 @@ fn current_project_policy_reviews_from_connection(
 fn append_review_event(
     transaction: &rusqlite::Transaction<'_>,
     review: &ReviewRecord,
+    policy_authority: Option<&PolicyAuthority<'_>>,
 ) -> Result<ReviewRecord, CommandError> {
+    match (review.origin, policy_authority.is_some()) {
+        (ReviewOrigin::Local, false) | (ReviewOrigin::ProjectPolicy, true) => {}
+        _ => return Err(CommandError::review_invalid()),
+    }
     let current = load_reviews(
         transaction,
         &review.project_id,
@@ -1916,6 +1915,7 @@ fn append_review_event(
 
 fn reconcile_project_policy_event_in_transaction(
     transaction: &rusqlite::Transaction<'_>,
+    authority: &PolicyAuthority<'_>,
     review: &ReviewRecord,
     force_initial_candidate: bool,
 ) -> Result<(ReviewRecord, bool), CommandError> {
@@ -1939,7 +1939,7 @@ fn reconcile_project_policy_event_in_transaction(
         return Ok((review.clone(), false));
     }
 
-    append_review_event(transaction, review).map(|stored| (stored, true))
+    append_review_event(transaction, review, Some(authority)).map(|stored| (stored, true))
 }
 
 fn same_reconciled_policy_state(left: &ReviewRecord, right: &ReviewRecord) -> bool {
