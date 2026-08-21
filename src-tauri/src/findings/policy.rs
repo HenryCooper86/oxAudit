@@ -992,6 +992,9 @@ fn contains_absolute_or_traversal(value: &str) -> bool {
         if unsafe_path_token(token) {
             return true;
         }
+        if delimiter_attached_unsafe_path(token) {
+            return true;
+        }
         token
             .split_once('=')
             .is_some_and(|(_, assigned)| unsafe_path_token(unwrap_token(assigned)))
@@ -1003,13 +1006,22 @@ fn contains_absolute_or_traversal(value: &str) -> bool {
     })
 }
 
-fn unwrap_token(value: &str) -> &str {
-    value.trim_matches(|character: char| {
-        matches!(
-            character,
-            '`' | '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';'
-        )
+fn delimiter_attached_unsafe_path(token: &str) -> bool {
+    token.char_indices().any(|(index, character)| {
+        conventional_prose_delimiter(character)
+            && unsafe_path_token(unwrap_token(&token[index + character.len_utf8()..]))
     })
+}
+
+fn unwrap_token(value: &str) -> &str {
+    value.trim_matches(conventional_prose_delimiter)
+}
+
+fn conventional_prose_delimiter(character: char) -> bool {
+    matches!(
+        character,
+        '`' | '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';'
+    )
 }
 
 fn unsafe_path_token(token: &str) -> bool {
@@ -3780,6 +3792,101 @@ mod tests {
         }
         for value in ["threshold < limit", "version >= minimum"] {
             assert!(safe_required_text(value), "rejected fixture {value:?}");
+        }
+    }
+
+    #[test]
+    fn delimiter_attached_machine_paths_are_rejected_at_public_policy_boundaries() {
+        let digest = "a9f73c6d14e82b05f7c9134da6e28b40c17f5892";
+        let reasons = [
+            "checked(/etc/passwd)".to_owned(),
+            "path[/etc/passwd]".to_owned(),
+            "note{/etc/passwd}".to_owned(),
+            "checked</etc/passwd>".to_owned(),
+            "checked'/etc/passwd'".to_owned(),
+            "checked\"/etc/passwd\"".to_owned(),
+            "checked`/etc/passwd`".to_owned(),
+            "checked(file:///Users/alice/private.rs)".to_owned(),
+            "checked[//server/share]".to_owned(),
+            "checked{C:/Users/alice/private.rs}".to_owned(),
+            "checked(src/../../private.rs)".to_owned(),
+            format!("commit=<{digest}></etc/passwd>"),
+            format!("commit=<{digest}>(../private.rs)"),
+        ];
+
+        for reason in reasons {
+            let load_root = tempfile::tempdir().unwrap();
+            let loaded = load_json(
+                load_root.path(),
+                serde_json::json!({"version": 1, "entries": [{
+                    "kind": "finding",
+                    "fingerprintVersion": 1,
+                    "fingerprint": "abcdef0123456789",
+                    "category": "secret",
+                    "state": "acceptedRisk",
+                    "reason": reason.clone(),
+                }]}),
+            );
+            assert_eq!(
+                loaded.status(),
+                &PolicyStatus::Invalid {
+                    message: INVALID_POLICY_MESSAGE.to_owned()
+                },
+                "load accepted unsafe reason {reason:?}"
+            );
+
+            let update_root = tempfile::tempdir().unwrap();
+            let mut unsafe_request = request(ReviewState::AcceptedRisk, "secret");
+            unsafe_request.reason = reason.clone();
+            let error = update_policy_decision(
+                update_root.path(),
+                &finding("secret"),
+                &unsafe_request,
+                now(),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.code,
+                crate::findings::error::ErrorCode::ReviewInvalid,
+                "update accepted unsafe reason {reason:?}"
+            );
+            assert_eq!(error.message, "The review request is invalid.");
+            assert_eq!(error.detail, None);
+        }
+    }
+
+    #[test]
+    fn delimiter_scan_preserves_safe_public_policy_reasons() {
+        let digest = "a9f73c6d14e82b05f7c9134da6e28b40c17f5892";
+        for reason in [
+            format!("commit={digest}"),
+            format!("commit=<{digest}>"),
+            "See https://docs.example.com/security/production-feature-manifest".to_owned(),
+            format!("sha256: {digest}"),
+            "threshold < limit and version >= minimum".to_owned(),
+            "comparison(a<b) and condition(x>y)".to_owned(),
+            "production-feature-manifest".to_owned(),
+            "checked(src/security/policy.rs)".to_owned(),
+            "path[src/security/policy.rs]".to_owned(),
+            "checked<refs/heads/main>".to_owned(),
+            "ratio(1/2)".to_owned(),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let loaded = load_json(
+                root.path(),
+                serde_json::json!({"version": 1, "entries": [{
+                    "kind": "finding",
+                    "fingerprintVersion": 1,
+                    "fingerprint": "abcdef0123456789",
+                    "category": "secret",
+                    "state": "acceptedRisk",
+                    "reason": reason.clone(),
+                }]}),
+            );
+            assert!(
+                matches!(loaded.status(), PolicyStatus::Valid { .. }),
+                "load rejected safe reason {reason:?}"
+            );
         }
     }
 
