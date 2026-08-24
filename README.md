@@ -95,6 +95,53 @@ sarif > out.sarif` needs no extra flags.
 oxAudit runs this against its own repository on every push
 ([`self-scan.yml`](.github/workflows/self-scan.yml)).
 
+## Detection quality
+
+Measured, not asserted. `oxaudit-cli benchmark` runs the committed corpus in
+[`benchmarks/corpus/`](benchmarks/corpus) and reports precision and recall per
+rule.
+
+| | Before | After |
+|---|---|---|
+| Corpus precision | 46.2% | **100%** |
+| Corpus recall | 85.7% | **100%** |
+| Findings on this repository | 142 | **34** |
+
+The corpus is 26 fixtures, 19 of them negatives, and none of the negatives were
+invented: each is a shape oxAudit was observed firing on when it scanned its own
+source — type declarations, prose in Markdown, comments, environment lookups,
+function parameters, JSON schemas, UI labels, and the detector code that
+searches for PEM headers.
+
+A corpus you tuned against proves little, so the second row is the one that
+matters: this repository is held-out data, and the fixtures that were tuned
+against are excluded from it. Of the 34 findings that remain, 21 sit inside
+oxAudit's own `#[cfg(test)]` modules and are deliberately fake credentials in
+test fixtures — a real finding class that belongs in a suppression file rather
+than in the scanner.
+
+Two defects the corpus found on its first run:
+
+- `generic-password` matched `\bpassword\b`, and an underscore is a word
+  character, so `DB_PASSWORD` and `DATABASE_PASSWORD` never matched. The rule
+  responsible for 111 of the 142 findings here also missed the commonest real
+  credential shape there is.
+- Its separator class `[^A-Za-z0-9]{0,10}` included newlines, so the word
+  "secret" on one line paired with an unrelated token three lines below.
+
+### Confidence tiers
+
+Every finding records how far oxAudit could qualify it:
+
+- **`syntax`** — a grammar parsed the file and the match sits in code, not in a
+  comment or a string literal. Available for JavaScript/TypeScript, Python,
+  Java, Rust, and Go.
+- **`text`** — the rule matched raw file text; no grammar was available.
+
+A language without a grammar is never suppressed on a guess. A false negative in
+a security scanner is worse than a false positive, so the absence of a parser
+means every match stands and says so.
+
 ## Architecture
 
 ```

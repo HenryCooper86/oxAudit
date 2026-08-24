@@ -38,6 +38,9 @@ jobs:
       - name: Check version declarations agree
         run: node tools/check-versions.mjs
 
+      - name: Check the benchmark corpus manifest is current
+        run: node tools/build-corpus-suite.mjs --check
+
       - name: Type-check
         run: npm run check
 
@@ -101,3 +104,12 @@ jobs:
       - name: Clippy
         if: runner.os == 'Linux'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+
+      # The corpus is the only defensible answer to "how accurate is it?", so a
+      # change that drops precision or recall has to fail rather than quietly
+      # move the number the README publishes.
+      - name: Check detection quality has not regressed
+        if: runner.os == 'Linux'
+        run: |
+          cargo run --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli -- \
+            benchmark --min-precision 100 --min-recall 100
