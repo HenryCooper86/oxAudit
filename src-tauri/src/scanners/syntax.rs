@@ -73,12 +73,20 @@ impl FileSyntax {
         let Some(call) = dataflow::enclosing_call(root, offset) else {
             return Taint::Unknown;
         };
-        let Some(argument) = dataflow::first_argument(call) else {
-            // A call with no arguments has nothing an attacker could supply.
+        let arguments = dataflow::chain_arguments(call);
+        if arguments.is_empty() {
+            // A call with no arguments anywhere in its chain has nothing an
+            // attacker could supply.
             return Taint::Constant;
-        };
+        }
         let function = dataflow::enclosing_function(root, offset);
-        dataflow::classify_expression(argument, content, function, sink_cwe)
+        // One tainted argument taints the call: a fluent chain is a single
+        // expression as far as an attacker is concerned.
+        dataflow::combine_all(
+            arguments.into_iter().map(|argument| {
+                dataflow::classify_expression(argument, content, function, sink_cwe)
+            }),
+        )
     }
 }
 

@@ -95,7 +95,7 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
 
         // --------------------------------------------------------------- Rust
         srule!("rs-command-sh", "Command::new with a shell", &["rust"], "high", "CWE-78", r#"Command::new\s*\(\s*['"](?:sh|bash)['"]\)"#, "Spawning sh/bash to execute constructed command strings is a command-injection sink.", "Invoke the program directly with .arg() values — never pass a command string to a shell."),
-        srule!("rs-sql-format", "SQL built with format!/+", &["rust"], "high", "CWE-89", r"(?:query|execute|execute_batch|execute_many)\s*\([^)]*(?:format!|write!|\+)", "SQL statements assembled with format! or + are SQL-injection sinks.", "Use sqlx/rusqlite bound parameters (? or $1)."),
+        srule!("rs-sql-format", "SQL built with format!/+", &["rust"], "high", "CWE-89", r#"(?:query|execute|execute_batch|execute_many)\s*\(\s*[^;]{0,160}?(?:format!|write!|"\s*\+|\+\s*")"#, "SQL statements assembled with format! or + are SQL-injection sinks.", "Use sqlx/rusqlite bound parameters (? or $1)."),
         srule!("rs-weak-hash", "md5::compute usage", &["rust"], "medium", "CWE-327", r"\bmd5::compute\b", "MD5 is cryptographically broken.", "Use sha2 or blake3 for hashing, or a password hasher (argon2/bcrypt)."),
 
         // ------------------------------------------------------------ Generic
