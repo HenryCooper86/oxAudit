@@ -728,6 +728,11 @@ export interface AppSettings {
   binaryScannerRuntime: BinaryScannerRuntime | null;
   /** Explicit grype path; null/empty means "find it on PATH". */
   grypePath: string | null;
+  /**
+   * Extra hosts the assistant's `web_fetch` tool may read from, on top of the
+   * built-in advisory sources. Entries may be bare hosts or pasted URLs.
+   */
+  agentAllowedFetchHosts: string[];
 }
 
 export interface SaveSettingsRequest {

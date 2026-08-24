@@ -61,7 +61,7 @@ quick-xml = "0.42"
 once_cell = "1"
 log = "0.4"
 percent-encoding = "2"
-tokio = { version = "1", features = ["time", "rt-multi-thread", "macros", "process", "io-util"] }
+tokio = { version = "1", features = ["time", "rt-multi-thread", "macros", "process", "io-util", "net"] }
 futures = "0.3"
 printpdf = { version = "0.8.2", default-features = false }
 keyring = { version = "3.6.3", default-features = false }

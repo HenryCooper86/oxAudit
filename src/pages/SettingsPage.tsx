@@ -65,6 +65,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   binaryScannerPath: null,
   binaryScannerRuntime: "auto",
   grypePath: null,
+  agentAllowedFetchHosts: [],
 };
 
 function cloneSettings(settings: AppSettings): AppSettings {
@@ -76,6 +77,7 @@ function cloneSettings(settings: AppSettings): AppSettings {
       ...settings.scan,
       ignoredDirs: [...settings.scan.ignoredDirs],
     },
+    agentAllowedFetchHosts: [...(settings.agentAllowedFetchHosts ?? [])],
   };
 }
 
@@ -584,6 +586,28 @@ export function SettingsPage() {
           <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
             This checks the current draft only. Assistant readiness continues to reflect saved settings.
           </p>
+
+          <div className="mt-4">
+            <Field
+              label="Allowed fetch hosts"
+              htmlFor="agent-allowed-fetch-hosts"
+              hint="One host per line. The assistant can already read advisory sources such as nvd.nist.gov, osv.dev, and github.com — add a host here to let it read vendor advisories elsewhere. Every fetch still asks for your approval, and addresses on your own machine or network are always refused."
+            >
+              <Textarea
+                id="agent-allowed-fetch-hosts"
+                aria-describedby="agent-allowed-fetch-hosts-hint"
+                placeholder="psirt.vendor.example"
+                value={(form.agentAllowedFetchHosts ?? []).join("\n")}
+                onChange={(event) =>
+                  update(
+                    "agentAllowedFetchHosts",
+                    event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
+                  )
+                }
+                rows={3}
+              />
+            </Field>
+          </div>
         </section>
 
         <section className={sectionCls} aria-labelledby="appearance-title">
