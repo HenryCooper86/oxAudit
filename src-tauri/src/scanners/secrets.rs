@@ -347,7 +347,7 @@ pub static SECRET_RULES: Lazy<Vec<SecretRule>> = Lazy::new(|| {
         rule!(
             "generic-password",
             "Generic Password",
-            r#"(?i)(?:^|[^A-Za-z0-9])(?:password|passwd|pwd|secret)[^A-Za-z0-9\r\n]{1,10}['"]([^'"\r\n]{8,64})['"]"#,
+            r#"(?i)(?:^|[^A-Za-z0-9])(?:password|passwd|pwd|secret)[^A-Za-z0-9\r\n|,]{1,10}['"]([^'"\r\n]{8,64})['"]"#,
             &["password", "passwd", "pwd", "secret"],
             2.8,
             1,

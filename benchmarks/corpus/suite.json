@@ -12,9 +12,9 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 26,
+    "fixtures": 28,
     "positives": 7,
-    "negatives": 19,
+    "negatives": 21,
     "rules": 7
   },
   "targets": [
@@ -132,6 +132,22 @@
       ]
     },
     {
+      "id": "generic-password.negative.list-member",
+      "inputPath": "secrets/generic-password__negative__list-member.json",
+      "inputSha256": "54520b35ad18752fa0ed98091d8cf0aff582cfae869cc27dc6b65282364e159b",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
       "id": "generic-password.negative.parameter-name",
       "inputPath": "secrets/generic-password__negative__parameter-name.py",
       "inputSha256": "67e17663bb8dc350b1a33d4405ee5bbb3fd33f10f836f70fdffdf8ffc6b15f38",
@@ -215,6 +231,22 @@
       "id": "generic-password.negative.ui-label",
       "inputPath": "secrets/generic-password__negative__ui-label.tsx",
       "inputSha256": "5b2d02c947841edc9cab3cc1abe157a41cd31b4bec40ab6b5d6ad5e9080a88ac",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.union-type",
+      "inputPath": "secrets/generic-password__negative__union-type.ts",
+      "inputSha256": "601c5d47b98518660592b4a7a6a29be541b19703f01dffce367d47574493995f",
       "language": "javascript",
       "scannerFamilies": [
         "secret"
