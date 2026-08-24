@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { CommandPalette } from "./CommandPalette";
+import { api } from "../../lib/api";
 import { useAppStore } from "../../lib/stores";
 
 /**
@@ -164,5 +165,61 @@ describe("CommandPalette", () => {
     // The listbox and active option are what a screen reader follows as the
     // highlight moves.
     expect(screen.getByRole("listbox")).toBeInTheDocument();
+  });
+
+  describe("projects", () => {
+    const projects = [
+      {
+        projectId: "p1",
+        canonicalPath: "/clients/acme/api",
+        displayName: "acme-api",
+        lastOpenedAt: "",
+        lastCompletedRunId: null,
+        lastCompletedAt: null,
+        openFindings: 7,
+        critical: 1,
+        high: 2,
+      },
+    ];
+
+    test("switching to a project sets it active and goes to its findings", async () => {
+      vi.spyOn(api, "listSourceProjects").mockResolvedValue(projects as never);
+      const { user } = setup();
+
+      const option = await screen.findByText("acme-api");
+      await user.click(option);
+
+      expect(useAppStore.getState().activeProject).toBe("/clients/acme/api");
+      // Landing on whatever screen happened to be open would leave the switch
+      // invisible.
+      expect(page()).toBe("source-scan");
+    });
+
+    test("a project is findable by its client directory, not just its name", async () => {
+      vi.spyOn(api, "listSourceProjects").mockResolvedValue(projects as never);
+      const { user } = setup();
+      await screen.findByText("acme-api");
+
+      await user.type(screen.getByRole("textbox", { name: /search commands/i }), "clients");
+      expect(screen.getAllByRole("option")[0]).toHaveTextContent("acme-api");
+    });
+
+    test("what is still open is shown beside each project", async () => {
+      vi.spyOn(api, "listSourceProjects").mockResolvedValue(projects as never);
+      setup();
+      // Choosing between codebases is a question about outstanding work, not
+      // about when each was last opened.
+      expect(await screen.findByText("1 critical, 2 high of 7")).toBeInTheDocument();
+    });
+
+    test("the palette still navigates when projects cannot be listed", async () => {
+      // Storage being unavailable must not cost someone their navigation.
+      vi.spyOn(api, "listSourceProjects").mockRejectedValue(new Error("persistence unavailable"));
+      const { user } = setup();
+
+      await user.type(screen.getByRole("textbox", { name: /search commands/i }), "settings");
+      await user.keyboard("{Enter}");
+      expect(page()).toBe("settings");
+    });
   });
 });

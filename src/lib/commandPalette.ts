@@ -29,7 +29,19 @@ export interface NavigateCommand extends Command {
   page: Page;
 }
 
-export type PaletteCommand = NavigateCommand;
+/**
+ * Switch the active project.
+ *
+ * A consultant holds a dozen client codebases at once, and re-picking a folder
+ * to move between them turns a two-second action into a file dialog. Projects
+ * are commands for the same reason screens are.
+ */
+export interface ProjectCommand extends Command {
+  kind: "project";
+  projectPath: string;
+}
+
+export type PaletteCommand = NavigateCommand | ProjectCommand;
 
 /**
  * Words people type when looking for a screen, beyond its title.
@@ -139,4 +151,51 @@ export function groupCommands<T extends Command>(commands: T[]): Array<[string, 
 export function moveSelection(current: number, delta: number, count: number): number {
   if (count <= 0) return 0;
   return (((current + delta) % count) + count) % count;
+}
+
+/**
+ * Recent projects, as commands.
+ *
+ * The hint carries what is actually load-bearing when choosing between
+ * codebases — how much is still open — rather than a timestamp nobody reads.
+ * The path is a keyword so a directory name finds a project whose display name
+ * is something else.
+ */
+export function projectCommands(
+  projects: readonly RecentProjectLike[],
+): ProjectCommand[] {
+  return projects.map((project) => ({
+    kind: "project",
+    id: `project:${project.projectId}`,
+    projectPath: project.canonicalPath,
+    title: project.displayName,
+    group: "Projects",
+    keywords: [project.canonicalPath],
+    hint: describeProjectState(project),
+  }));
+}
+
+/** The subset of a recent project the palette needs. */
+export interface RecentProjectLike {
+  projectId: string;
+  canonicalPath: string;
+  displayName: string;
+  openFindings: number;
+  critical: number;
+  high: number;
+}
+
+/**
+ * What is still outstanding in a project, in a few characters.
+ *
+ * Severity counts lead because that is what decides where to go next; a project
+ * with nothing open says so rather than showing a zero.
+ */
+export function describeProjectState(project: RecentProjectLike): string {
+  if (project.openFindings === 0) return "clear";
+  const parts: string[] = [];
+  if (project.critical > 0) parts.push(`${project.critical} critical`);
+  if (project.high > 0) parts.push(`${project.high} high`);
+  if (parts.length === 0) return `${project.openFindings} open`;
+  return `${parts.join(", ")} of ${project.openFindings}`;
 }

@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 
 import {
   NAVIGATION_COMMANDS,
+  describeProjectState,
+  projectCommands,
   filterCommands,
   groupCommands,
   moveSelection,
@@ -148,5 +150,52 @@ describe("moveSelection", () => {
     // Guards a modulo by zero when the query matches nothing.
     expect(moveSelection(0, 1, 0)).toBe(0);
     expect(moveSelection(5, -1, 0)).toBe(0);
+  });
+});
+
+describe("project commands", () => {
+  const project = (overrides: Partial<Parameters<typeof projectCommands>[0][number]> = {}) => ({
+    projectId: "p1",
+    canonicalPath: "/Users/analyst/clients/acme/api",
+    displayName: "api",
+    openFindings: 0,
+    critical: 0,
+    high: 0,
+    ...overrides,
+  });
+
+  test("a project is findable by its directory path, not just its name", () => {
+    // Half a dozen clients each have a directory called "api". The path is how
+    // a person tells them apart.
+    const commands = projectCommands([project()]);
+    expect(filterCommands(commands, "acme")).toHaveLength(1);
+  });
+
+  test("a project command carries the path needed to switch to it", () => {
+    const [command] = projectCommands([project()]);
+    expect(command.kind).toBe("project");
+    expect(command.projectPath).toBe("/Users/analyst/clients/acme/api");
+  });
+
+  test("projects and screens coexist in one list", () => {
+    const combined = [...projectCommands([project({ displayName: "inventory-api" })]), ...NAVIGATION_COMMANDS];
+    const groups = groupCommands(filterCommands(combined, "inventory")).map(([name]) => name);
+    expect(groups).toContain("Projects");
+    expect(groups.length).toBeGreaterThan(1);
+  });
+
+  test("the hint leads with severity, because that decides where to go next", () => {
+    expect(describeProjectState(project({ openFindings: 12, critical: 2, high: 3 }))).toBe(
+      "2 critical, 3 high of 12",
+    );
+    expect(describeProjectState(project({ openFindings: 4, high: 1 }))).toBe("1 high of 4");
+  });
+
+  test("a project with nothing open says so rather than showing a zero", () => {
+    expect(describeProjectState(project())).toBe("clear");
+  });
+
+  test("open findings with no severity breakdown still report a count", () => {
+    expect(describeProjectState(project({ openFindings: 5 }))).toBe("5 open");
   });
 });

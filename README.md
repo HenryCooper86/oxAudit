@@ -125,8 +125,14 @@ with a reason, an expiry, and a pull request.
 - **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key, allowed fetch hosts, diagnostics
 
 Press <kbd>⌘K</kbd> (<kbd>Ctrl</kbd>+<kbd>K</kbd> on Windows and Linux) to reach any
-screen from the keyboard. Type what you know it as — `sarif`, `lockfile`,
-`precision`, `epss` — rather than what oxAudit calls it.
+screen — or any project you have scanned before — from the keyboard. Type what
+you know it as: `sarif`, `lockfile`, `precision`, `epss`, or a client directory
+name. Each project shows what is still open beside it, so switching between a
+dozen codebases does not mean opening a file dialog.
+
+In a findings list, <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>x</kbd> selects, and
+<kbd>shift</kbd> extends a selection — then review the whole selection at once
+with one reason.
 
 ## Command line
 
