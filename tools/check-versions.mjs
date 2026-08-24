@@ -28,6 +28,17 @@ if (!cargoVersion) {
   problems.push("src-tauri/Cargo.toml: no [package] version found.");
 }
 
+// The package builds two binaries — the desktop app and the CLI. Without
+// `default-run`, Tauri bundled the CLI as the app's executable, so the .app
+// launched the command line and exited without ever opening a window. The
+// build succeeds either way, which is why nothing else catches it.
+if (!/^default-run\s*=\s*"oxaudit"/m.test(readFileSync("src-tauri/Cargo.toml", "utf8"))) {
+  problems.push(
+    'src-tauri/Cargo.toml must set `default-run = "oxaudit"` in [package], or the ' +
+      "bundled desktop app will run oxaudit-cli and show no window.",
+  );
+}
+
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 if (packageJson.version !== cargoVersion) {
   problems.push(
@@ -37,6 +48,7 @@ if (packageJson.version !== cargoVersion) {
 }
 
 const tauriConf = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
+
 if (Object.hasOwn(tauriConf, "version")) {
   problems.push(
     "src-tauri/tauri.conf.json declares its own version. Remove the key so the bundle " +

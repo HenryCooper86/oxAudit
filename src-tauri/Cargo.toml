@@ -17,6 +17,11 @@ authors = ["Henry Cooper"]
 license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.77"
+# The package builds two binaries: the desktop app from src/main.rs and
+# src/bin/oxaudit-cli.rs. Without this, Tauri picked the CLI as the app's
+# main executable, so the bundled .app ran the command line, printed its
+# help to a console nobody could see, and exited without a window.
+default-run = "oxaudit"
 # Internal to the oxAudit workspace; not published to crates.io.
 publish = false
 
