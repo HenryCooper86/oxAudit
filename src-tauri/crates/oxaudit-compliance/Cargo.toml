@@ -3,6 +3,8 @@ name = "oxaudit-compliance"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
+# Internal to the oxAudit workspace; not published to crates.io.
+publish = false
 license = "Apache-2.0"
 
 [dependencies]

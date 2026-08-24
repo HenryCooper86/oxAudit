@@ -1,0 +1,128 @@
+# cargo-deny configuration for the oxAudit Rust workspace.
+#
+# `dependency-review` on GitHub only runs on pull requests and does not walk the
+# Cargo tree, which is where the large majority of oxAudit's code lives. This
+# file is what actually gates the Rust supply chain.
+#
+#   cargo deny --manifest-path src-tauri/Cargo.toml check
+#
+# The allow-list below is deliberately narrow: it lists the licences that are
+# actually present in the resolved tree today, not every licence that might be
+# acceptable. A new dependency carrying anything else fails CI and gets a human
+# decision, which is the point.
+
+[graph]
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------- advisories
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Fail on any advisory or unmaintained crate. Every id below carries the
+# reachability analysis that justifies it and the condition that removes it.
+# An entry with no analysis is not acceptable here — if we cannot say why an
+# advisory does not apply, it applies.
+ignore = [
+  # ---- Reachability-cleared vulnerabilities ----------------------------------
+  # lopdf parses nested PDF objects with unbounded recursion. Reached only
+  # through `Document::load*`, which is a *reading* entry point. oxAudit uses
+  # printpdf to generate reports and never loads a PDF, so no attacker-supplied
+  # bytes reach the parser. Verified: `grep -rn 'load_mem\|Document::load'`
+  # over src-tauri/src returns nothing.
+  # Clears when printpdf 0.12+ (lopdf 0.44) is adopted — an API break tracked
+  # separately, not a security fix.
+  { id = "RUSTSEC-2026-0187", reason = "lopdf load path is unreachable; oxAudit only writes PDFs" },
+
+  # ---- Unmaintained, transitively imposed -----------------------------------
+  # The gtk-rs GTK3 bindings are Tauri's Linux webview backend. oxAudit does not
+  # depend on them directly and cannot replace them; they leave the tree when
+  # Tauri moves to GTK4. No known exploitable defect — the advisory is a
+  # maintenance-status notice.
+  { id = "RUSTSEC-2024-0411", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0412", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0413", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0414", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0415", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0416", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0417", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0418", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0419", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+  { id = "RUSTSEC-2024-0420", reason = "gtk3 via tauri; removable only by Tauri moving to GTK4" },
+
+  # unic-* reaches the tree as urlpattern <- tauri-utils. Unmaintained Unicode
+  # tables, no known defect. Removable only upstream.
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-range via urlpattern <- tauri-utils" },
+  { id = "RUSTSEC-2025-0080", reason = "unic-common via urlpattern <- tauri-utils" },
+  { id = "RUSTSEC-2025-0081", reason = "unic-char-property via urlpattern <- tauri-utils" },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version via urlpattern <- tauri-utils" },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident via urlpattern <- tauri-utils" },
+
+  # Font shaping and parsing, via printpdf. oxAudit lays out reports using the
+  # PDF builtin fonts only and embeds no user-supplied font file, so no
+  # untrusted font data reaches either crate.
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser via printpdf; builtin fonts only, no untrusted font input" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz via printpdf; builtin fonts only, no untrusted font input" },
+
+  # Build-time proc-macro helper, not present in any shipped artifact.
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is build-time only and never linked into a release binary" },
+]
+
+# ------------------------------------------------------------------ licences
+[licenses]
+# oxAudit ships under Apache-2.0. Anything copyleft that would attach to a
+# distributed binary must never appear here; the NOTICE file explains why
+# cve-bin-tool (GPL-3.0-or-later) is invoked at arm's length rather than linked.
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",       # file-level copyleft; safe to link, no obligation on our source
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+confidence-threshold = 0.9
+# Crates whose licence cannot be read from metadata must be resolved explicitly
+# rather than waved through.
+unused-allowed-license = "allow"
+
+[[licenses.exceptions]]
+# Ring vendors BoringSSL-derived code under a combination that scores below the
+# confidence threshold when detected from the file alone.
+name = "ring"
+allow = ["ISC", "MIT", "OpenSSL"]
+
+# ---------------------------------------------------------------------- bans
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace's own crates are path dependencies with no version requirement.
+# That is not the unpinned-registry-dependency risk `wildcards` exists to catch.
+allow-wildcard-paths = true
+# `highfive` on a duplicate version is usually a transitive-dependency lag, not
+# a defect — warn so it stays visible without blocking unrelated work.
+deny = [
+  # OpenSSL must not creep back in: reqwest is pinned to rustls precisely so
+  # release builds do not depend on a system OpenSSL of unknown vintage.
+  { name = "openssl-sys", reason = "oxAudit uses rustls; a native OpenSSL dependency is a supply-chain regression" },
+  { name = "openssl", reason = "oxAudit uses rustls; a native OpenSSL dependency is a supply-chain regression" },
+]
+skip = []
+skip-tree = []
+
+# -------------------------------------------------------------------- sources
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
