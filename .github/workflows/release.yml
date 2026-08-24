@@ -1,0 +1,355 @@
+name: Release
+
+# Tag-driven. `git tag v0.2.0 && git push --tags` is the whole release ritual;
+# the version comes from src-tauri/Cargo.toml, which tools/check-versions.mjs
+# keeps in step with package.json on every push.
+#
+# ---------------------------------------------------------------------------
+# BEFORE THE FIRST RELEASE
+#
+# 1. Pin the two `actions/*` uses below to full commit SHAs, the way ci.yml and
+#    security.yml already do. They are on tags here because this file was
+#    authored without network access to resolve them, and SECURITY.md promises
+#    SHA pinning. Resolve with:
+#       gh api repos/actions/upload-artifact/git/ref/tags/v4 --jq .object.sha
+#       gh api repos/actions/download-artifact/git/ref/tags/v4 --jq .object.sha
+#       gh api repos/actions/attest-build-provenance/git/ref/tags/v2 --jq .object.sha
+#
+# 2. Configure the signing secrets listed under `bundle`. Without them the job
+#    still succeeds and produces UNSIGNED bundles, and says so loudly — an
+#    unsigned security tool is not something to ship quietly.
+#
+# No third-party actions are used: bundling is `npm run tauri build` and
+# publishing is the `gh` CLI, both already present on the runners.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and sign, but publish nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A release whose tests never ran is not a release.
+  verify:
+    name: Verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential curl file libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev wget
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Check version declarations agree
+        run: node tools/check-versions.mjs
+
+      - name: Confirm the tag matches the declared version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          declared="$(grep -m1 '^version = ' src-tauri/Cargo.toml | cut -d'"' -f2)"
+          tagged="${GITHUB_REF_NAME#v}"
+          if [ "$declared" != "$tagged" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${declared}"
+            exit 1
+          fi
+          echo "Releasing ${declared}"
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --all-features
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+
+  bundle:
+    name: Bundle (${{ matrix.platform }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+          - os: macos-15
+            platform: macos-universal
+            tauri_args: --target universal-apple-darwin
+          - os: windows-2025
+            platform: windows-x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential curl file libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev wget
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Add the macOS targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - run: npm ci
+
+      - name: Report the signing posture
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          case "${{ runner.os }}" in
+            macOS)   [ -n "$APPLE_CERTIFICATE" ]   && signed=yes || signed=no ;;
+            Windows) [ -n "$WINDOWS_CERTIFICATE" ] && signed=yes || signed=no ;;
+            *)       signed=na ;;
+          esac
+          if [ "$signed" = "no" ]; then
+            echo "::warning::Producing an UNSIGNED ${{ runner.os }} bundle — signing secrets are not configured. Do not publish this to users."
+          else
+            echo "Signing posture for ${{ runner.os }}: $signed"
+          fi
+
+      - name: Build the bundle
+        shell: bash
+        env:
+          # Tauri updater signature, so an update cannot be swapped in transit.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS Developer ID signing and notarization.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows Authenticode.
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: npm run tauri build -- ${{ matrix.tauri_args }}
+
+      - name: Build the command line
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # One binary that runs on both architectures, same as the app bundle.
+            cargo build --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli --target x86_64-apple-darwin
+            cargo build --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli --target aarch64-apple-darwin
+            lipo -create -output /tmp/oxaudit-cli \
+              src-tauri/target/x86_64-apple-darwin/release/oxaudit-cli \
+              src-tauri/target/aarch64-apple-darwin/release/oxaudit-cli
+          else
+            cargo build --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli
+          fi
+
+      - name: Smoke-test the command line
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS)   cli=/tmp/oxaudit-cli ;;
+            Windows) cli=src-tauri/target/release/oxaudit-cli.exe ;;
+            *)       cli=src-tauri/target/release/oxaudit-cli ;;
+          esac
+          "$cli" --version
+          # oxAudit scanning oxAudit: the binary must find the planted findings
+          # in the committed ground-truth fixtures, or it is not working.
+          "$cli" scan benchmarks/ground-truth/source-smoke --format sarif -q -o /tmp/smoke.sarif
+          node -e '
+            const sarif = require("/tmp/smoke.sarif");
+            const results = sarif.runs[0].results.length;
+            const rules = sarif.runs[0].tool.driver.rules.length;
+            if (results < 5) throw new Error(`expected planted findings, got ${results}`);
+            if (rules < 1) throw new Error("SARIF carries no rule metadata");
+            console.log(`SARIF: ${results} results across ${rules} rules`);
+          '
+          "$cli" scan benchmarks/ground-truth/source-smoke --fail-on high -q >/dev/null && {
+            echo "::error::--fail-on high should have exited 1 on the fixtures"; exit 1;
+          } || [ $? -eq 1 ]
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p staging
+          find src-tauri/target -type f \
+            \( -name '*.dmg' -o -name '*.msi' -o -name '*.AppImage' \
+               -o -name '*.deb' -o -name '*.rpm' -o -name '*.sig' \) \
+            -not -path '*/deps/*' -exec cp {} staging/ \; || true
+          case "${{ runner.os }}" in
+            macOS)   cp /tmp/oxaudit-cli "staging/oxaudit-cli-${{ matrix.platform }}" ;;
+            Windows) cp src-tauri/target/release/oxaudit-cli.exe "staging/oxaudit-cli-${{ matrix.platform }}.exe" ;;
+            *)       cp src-tauri/target/release/oxaudit-cli "staging/oxaudit-cli-${{ matrix.platform }}" ;;
+          esac
+          ls -la staging
+
+      - name: Checksum every artifact
+        shell: bash
+        run: |
+          cd staging
+          if command -v sha256sum >/dev/null; then
+            sha256sum * > "SHA256SUMS-${{ matrix.platform }}.txt"
+          else
+            shasum -a 256 * > "SHA256SUMS-${{ matrix.platform }}.txt"
+          fi
+          cat "SHA256SUMS-${{ matrix.platform }}.txt"
+
+      # TODO(before first release): pin to a commit SHA.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxaudit-${{ matrix.platform }}
+          path: staging/*
+          if-no-files-found: error
+
+  # A supply-chain tool that cannot describe its own supply chain is asking for
+  # trust it has not earned. Every release ships an SBOM of oxAudit itself.
+  sbom:
+    name: Self SBOM
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - run: npm ci
+
+      - name: Generate the Rust SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --manifest-path src-tauri/Cargo.toml --format json --all-features
+          find src-tauri -name '*.cdx.json' -print -quit | xargs -I{} cp {} oxaudit-rust.cdx.json
+          test -s oxaudit-rust.cdx.json
+
+      - name: Generate the JavaScript SBOM
+        run: |
+          npx --yes @cyclonedx/cyclonedx-npm@latest \
+            --output-format JSON --output-file oxaudit-npm.cdx.json --omit dev
+          test -s oxaudit-npm.cdx.json
+
+      # TODO(before first release): pin to a commit SHA.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxaudit-sbom
+          path: |
+            oxaudit-rust.cdx.json
+            oxaudit-npm.cdx.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [bundle, sbom]
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      # Needed to mint the build-provenance attestation.
+      id-token: write
+      attestations: write
+    steps:
+      # TODO(before first release): pin to a commit SHA.
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect the release files
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          # Per-platform sums were staged for the build logs; the release ships
+          # one list covering everything.
+          rm -f release/SHA256SUMS-*.txt
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          ls -la
+
+      # Binds each artifact to this workflow run, so a downloader can prove
+      # where it came from with `gh attestation verify`.
+      # TODO(before first release): pin to a commit SHA.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/*
+
+      - name: Publish a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          ## Verifying this release
+
+          Every artifact is checksummed in `SHA256SUMS.txt` and carries a SLSA
+          build-provenance attestation:
+
+          ```bash
+          sha256sum -c SHA256SUMS.txt
+          gh attestation verify <file> --repo OWNER/REPO
+          ```
+
+          `oxaudit-rust.cdx.json` and `oxaudit-npm.cdx.json` are CycloneDX SBOMs
+          of oxAudit itself.
+
+          ## Command line
+
+          `oxaudit-cli` runs the same scanners as the desktop app.
+
+          ```bash
+          oxaudit-cli scan . --format sarif --fail-on high -o oxaudit.sarif
+          ```
+
+          Exit codes: 0 clean, 1 findings at or above `--fail-on`, 2 usage
+          error, 3 scan failure.
+          NOTES
+          sed -i "s|OWNER/REPO|${GITHUB_REPOSITORY}|" notes.md
+          # Draft, so a human looks at the artifact list before anyone can
+          # download a security tool that claims to be signed.
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --title "oxAudit ${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --generate-notes \
+            release/*
