@@ -1,5 +1,6 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Toasts } from "./components/Toasts";
+import { CommandPalette } from "./components/workbench/CommandPalette";
 import { ReadinessWizard } from "./components/onboarding/ReadinessWizard";
 import { AppShell } from "./components/workbench/AppShell";
 import { PageErrorBoundary } from "./components/workbench/PageErrorBoundary";
@@ -93,6 +94,7 @@ function Page({ page }: { page: PageName }) {
 }
 
 export default function App() {
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const page = useAppStore((s) => s.page);
   const setPage = useAppStore((s) => s.setPage);
   const setSettings = useAppStore((s) => s.setSettings);
@@ -131,6 +133,19 @@ export default function App() {
     };
   }, [setSettings, setAiReadiness, setSettingsLoadError]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Cmd on macOS, Ctrl elsewhere — matching the platform rather than
+      // picking one and making half the users learn the other.
+      if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
     <AppShell>
       <PageErrorBoundary
@@ -147,6 +162,7 @@ export default function App() {
           <Page page={page} />
         </Suspense>
       </PageErrorBoundary>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <ReadinessWizard />
       <Toasts />
     </AppShell>

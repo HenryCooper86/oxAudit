@@ -1,5 +1,6 @@
 pub mod patterns;
 pub mod secrets;
+pub mod syntax;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -8,17 +9,24 @@ use crate::findings::redaction;
 use crate::fs_utils;
 use crate::models::Finding;
 
-pub(crate) fn benchmark_observations(
+/// Rule ids that fire on this content, for the corpus benchmark and the
+/// criterion throughput benches. Public so `benches/scanning.rs` can measure
+/// the same path a scan takes rather than an approximation of it.
+pub fn benchmark_observations(
     content: &str,
     language: &str,
     source_patterns: bool,
     secret_patterns: bool,
 ) -> Vec<(&'static str, &'static str)> {
     let mut observations = Vec::new();
+    // Parsed once and shared: both engines ask the same tree what is comment
+    // and what is code, so the benchmark and a real scan cannot disagree.
+    let spans = syntax::analyze(content, language);
     if source_patterns {
         observations.extend(
             patterns::scan_content(content, language)
                 .into_iter()
+                .filter(|hit| spans.allows_code_match(hit.offset))
                 .map(|hit| (patterns::SOURCE_RULES[hit.rule_index].id, "file_location")),
         );
     }
@@ -26,6 +34,7 @@ pub(crate) fn benchmark_observations(
         observations.extend(
             secrets::scan_content(content)
                 .into_iter()
+                .filter(|hit| spans.allows_secret_match(hit.offset))
                 .map(|hit| (secrets::SECRET_RULES[hit.rule_index].id, "redacted_secret")),
         );
     }
@@ -110,7 +119,14 @@ pub fn scan_file_with_relative_path(
     let rel = relative_path.to_string();
     let mut findings = Vec::new();
     let mut covered_families = Vec::new();
-    let secret_hits = secrets::scan_content(&content);
+    // Parsed once and shared by both engines, so a scan and the benchmark
+    // cannot disagree about what counts as a comment.
+    let detected_language = fs_utils::detect_language(path).unwrap_or("");
+    let spans = syntax::analyze(&content, detected_language);
+    let secret_hits: Vec<_> = secrets::scan_content(&content)
+        .into_iter()
+        .filter(|hit| spans.allows_secret_match(hit.offset))
+        .collect();
     let secret_values = secret_redaction_values(&secret_hits);
 
     if scan_secrets {
@@ -144,6 +160,13 @@ pub fn scan_file_with_relative_path(
                 recommendation: rule.recommendation.into(),
                 entropy: Some(hit.entropy),
                 verified: None,
+                // Secret matches are checked against the tree for comments
+                // only; a credential in a string literal is the normal case.
+                analysis: if spans.analyzed() {
+                    crate::models::AnalysisTier::Syntax
+                } else {
+                    crate::models::AnalysisTier::Text
+                },
                 observation_run_id: String::new(),
                 resolved_by_run_id: None,
                 fingerprint_version: 0,
@@ -162,6 +185,12 @@ pub fn scan_file_with_relative_path(
             covered_families.push("vulnerability".to_string());
             let hits = patterns::scan_content(&content, lang);
             for hit in hits {
+                // A rule matching inside a comment or a string literal is
+                // describing code rather than being it — the single largest
+                // false-positive class the corpus measured.
+                if !spans.allows_code_match(hit.offset) {
+                    continue;
+                }
                 let rule = &patterns::SOURCE_RULES[hit.rule_index];
                 let (line, col) = fs_utils::line_col(&starts, hit.offset);
                 let context = fs_utils::context_lines(&content, &starts, line - 1, 2);
@@ -188,6 +217,11 @@ pub fn scan_file_with_relative_path(
                     recommendation: rule.recommendation.into(),
                     entropy: None,
                     verified: None,
+                    analysis: if spans.analyzed() {
+                        crate::models::AnalysisTier::Syntax
+                    } else {
+                        crate::models::AnalysisTier::Text
+                    },
                     observation_run_id: String::new(),
                     resolved_by_run_id: None,
                     fingerprint_version: 0,

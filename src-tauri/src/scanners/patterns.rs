@@ -35,7 +35,7 @@ const ANY: &[&str] = &[];
 pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
     vec![
         // ---------------------------------------------------------- JavaScript
-        srule!("js-eval", "eval() usage", &["javascript"], "high", "CWE-95", r"\beval\s*\(", "The eval() function executes arbitrary strings as code. If any part of the argument is attacker-controlled this is arbitrary code execution (RCE).", "Avoid eval() entirely. Use JSON.parse for data, or Function constructors only with trusted, static code."),
+        srule!("js-eval", "eval() usage", &["javascript"], "high", "CWE-95", r"(?:^|[^.\w$])(eval\s*\()", "The eval() function executes arbitrary strings as code. If any part of the argument is attacker-controlled this is arbitrary code execution (RCE).", "Avoid eval() entirely. Use JSON.parse for data, or Function constructors only with trusted, static code."),
         srule!("js-function-ctor", "Function() constructor", &["javascript"], "high", "CWE-95", r"\bnew\s+Function\s*\(", "The Function constructor compiles a string as code at runtime, equivalent to eval() and a common RCE sink.", "Remove the dynamic Function() call; refactor to static functions and lookups (e.g. a switch/map of handlers)."),
         srule!("js-inner-html", "innerHTML assignment", &["javascript"], "medium", "CWE-79", r"\.(?:innerHTML|outerHTML)\s*=", "Assigning to innerHTML/outerHTML with unsanitized input leads to DOM-based XSS.", "Build DOM nodes with createElement/textContent or use a framework's escaping (React JSX). Never interpolate user input into innerHTML."),
         srule!("js-dangerously-set-inner-html", "dangerouslySetInnerHTML", &["javascript"], "medium", "CWE-79", r"dangerouslySetInnerHTML", "React's dangerouslySetInnerHTML bypasses React's XSS protections; the value is inserted as raw HTML.", "Avoid it. If unavoidable, sanitize the HTML with DOMPurify before assigning."),
@@ -47,8 +47,8 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         srule!("js-postmessage-wildcard", "postMessage wildcard origin", &["javascript"], "low", "CWE-345", r#"postMessage\s*\([^)]*,\s*['"]\*['"]"#, "postMessage() with targetOrigin '*' lets any window receive the message, potentially leaking sensitive data.", "Pass the specific expected origin instead of '*'."),
 
         // ------------------------------------------------------------ Python
-        srule!("py-eval", "eval() usage", &["python"], "high", "CWE-95", r"\beval\s*\(", "eval() executes arbitrary Python expressions; attacker-controlled input becomes code execution.", "Avoid eval()/exec(); use ast.literal_eval for trusted literals or a proper parser for the data format."),
-        srule!("py-exec", "exec() usage", &["python"], "high", "CWE-95", r"\bexec\s*\(", "exec() executes arbitrary Python code strings; any dynamic input is a code-execution primitive.", "Replace with static code; if dynamic evaluation is truly required, sandbox it (e.g. RestrictedPython) and document the risk."),
+        srule!("py-eval", "eval() usage", &["python"], "high", "CWE-95", r"(?:^|[^.\w])(eval\s*\()", "eval() executes arbitrary Python expressions; attacker-controlled input becomes code execution.", "Avoid eval()/exec(); use ast.literal_eval for trusted literals or a proper parser for the data format."),
+        srule!("py-exec", "exec() usage", &["python"], "high", "CWE-95", r"(?:^|[^.\w])(exec\s*\()", "exec() executes arbitrary Python code strings; any dynamic input is a code-execution primitive.", "Replace with static code; if dynamic evaluation is truly required, sandbox it (e.g. RestrictedPython) and document the risk."),
         srule!("py-pickle", "pickle.load(s) — unsafe deserialization", &["python"], "high", "CWE-502", r"(?:pickle|cPickle)\s*\.\s*loads?\s*\(", "pickle deserialization can execute arbitrary code embedded in the payload (pickle is not a safe format).", "Never unpickle untrusted data. Use JSON/msgpack for untrusted input, or verify authenticity with a signature first."),
         srule!("py-yaml-load", "yaml.load() — unsafe deserialization", &["python"], "high", "CWE-502", r"yaml\s*\.\s*load\s*\(", "yaml.load() without an explicit safe Loader can construct arbitrary Python objects and execute code.", "Use yaml.safe_load() (or CSafeLoader) — never yaml.load() on untrusted YAML."),
         srule!("py-subprocess-shell", "subprocess with shell=True", &["python"], "high", "CWE-78", r"(?:subprocess\s*\.\s*)?(?:run|call|Popen|check_output|check_call)\s*\([^)]*shell\s*=\s*True", "shell=True routes commands through /bin/sh, enabling shell metacharacter injection when arguments contain user input.", "Use shell=False with an argument list; build commands as argv arrays, never strings."),
@@ -119,11 +119,20 @@ pub fn scan_content(content: &str, language: &str) -> Vec<PatternHit> {
         if !rule.languages.is_empty() && !rule.languages.contains(&language) {
             continue;
         }
-        for m in rule.regex.find_iter(content) {
+        for captures in rule.regex.captures_iter(content) {
+            // Rust's regex has no lookbehind, so a rule that must exclude a
+            // preceding character has to consume it — `(?:^|[^.\w$])eval\s*\(`
+            // is how `parser.eval(` is told apart from the builtin. Reporting
+            // that match verbatim would shift the finding one column left and
+            // change its text depending on what precedes it, which moves the
+            // fingerprint. When a rule captures group 1, that group is the
+            // finding; the rest is context the rule needed in order to decide.
+            let span = captures.get(1).or_else(|| captures.get(0));
+            let Some(span) = span else { continue };
             hits.push(PatternHit {
                 rule_index: i,
-                offset: m.start(),
-                match_text: m.as_str().to_string(),
+                offset: span.start(),
+                match_text: span.as_str().to_string(),
             });
         }
     }

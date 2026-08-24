@@ -86,6 +86,7 @@ mod tests {
             recommendation: "Rotate it.".into(),
             entropy: Some(4.2),
             verified: None,
+            analysis: Default::default(),
             observation_run_id: String::new(),
             resolved_by_run_id: None,
             fingerprint_version: 0,

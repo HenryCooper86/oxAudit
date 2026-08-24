@@ -1,0 +1,64 @@
+name: Self scan
+
+# oxAudit scanning oxAudit, on every push. Two reasons this exists:
+#
+#  1. Dogfooding. If the CLI breaks, or a rule starts firing on everything, we
+#     find out on our own repository before a user does.
+#  2. The findings land in GitHub code scanning, which is exactly the workflow
+#     oxAudit asks other people to adopt. Publishing our own results is the
+#     cheapest honest demonstration that it works.
+#
+# `--fail-on` is deliberately absent: this uploads findings, it does not gate
+# the build. Gating our own repository on our own scanner would be circular.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-scan-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  scan:
+    name: Scan this repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential curl file libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev wget
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Build the command line
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli
+
+      - name: Scan
+        run: |
+          ./src-tauri/target/release/oxaudit-cli scan . \
+            --format sarif \
+            --output oxaudit.sarif \
+            --ignore-dir node_modules \
+            --ignore-dir target \
+            --ignore-dir dist
+
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@bb16b9baa2ec4010b29f5c606d57d01190139edd # v4.37.1
+        with:
+          sarif_file: oxaudit.sarif
+          category: oxaudit

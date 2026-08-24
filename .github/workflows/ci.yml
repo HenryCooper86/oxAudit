@@ -35,6 +35,12 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Check version declarations agree
+        run: node tools/check-versions.mjs
+
+      - name: Check the benchmark corpus manifest is current
+        run: node tools/build-corpus-suite.mjs --check
+
       - name: Type-check
         run: npm run check
 
@@ -72,11 +78,15 @@ jobs:
             libxdo-dev \
             wget
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: stable
-          components: clippy, rustfmt
+      # The version and components come from rust-toolchain.toml at the repo
+      # root. `rustup show` materializes them; naming a toolchain here would
+      # reintroduce the drift that file exists to prevent.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
 
       - name: Check formatting
         if: runner.os == 'Linux'
@@ -89,8 +99,17 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml -p oxaudit-benchmark
-          cargo test --manifest-path src-tauri/Cargo.toml -p vulncompanion bundled_signature_provenance
+          cargo test --manifest-path src-tauri/Cargo.toml -p oxaudit bundled_signature_provenance
 
       - name: Clippy
         if: runner.os == 'Linux'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+
+      # The corpus is the only defensible answer to "how accurate is it?", so a
+      # change that drops precision or recall has to fail rather than quietly
+      # move the number the README publishes.
+      - name: Check detection quality has not regressed
+        if: runner.os == 'Linux'
+        run: |
+          cargo run --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli -- \
+            benchmark --min-precision 100 --min-recall 100

@@ -1,0 +1,477 @@
+{
+  "schemaVersion": 1,
+  "id": "oxaudit.corpus",
+  "version": "1.0.0",
+  "description": "Paired positive and negative fixtures for oxAudit's source-pattern and secret rules. Negatives are drawn from shapes the scanner was observed to fire on incorrectly, so the precision figure this produces reflects real false-positive classes rather than only cases chosen to pass.",
+  "provenance": {
+    "authors": [
+      "oxAudit contributors"
+    ],
+    "source": "Repository-authored fixtures",
+    "license": "Apache-2.0",
+    "creationMethod": "authored"
+  },
+  "counts": {
+    "fixtures": 28,
+    "positives": 7,
+    "negatives": 21,
+    "rules": 7
+  },
+  "targets": [
+    {
+      "id": "generic-api-key.negative.documentation",
+      "inputPath": "secrets/generic-api-key__negative__documentation.md",
+      "inputSha256": "1e6f2c8dfeb49d418616eb14d4ff097d787ae0a2e93de241d0d05d721b0591c3",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-api-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-api-key"
+        }
+      ]
+    },
+    {
+      "id": "generic-api-key.negative.environment",
+      "inputPath": "secrets/generic-api-key__negative__environment.py",
+      "inputSha256": "1d47fc8d95063a814fbd85d83bfb8966a644fc8b39e539599110a7e27b625d2b",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-api-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-api-key"
+        }
+      ]
+    },
+    {
+      "id": "generic-api-key.negative.type-declaration",
+      "inputPath": "secrets/generic-api-key__negative__type-declaration.ts",
+      "inputSha256": "16981c90cab9cfa9af455384e1cae008af57e22ba53b8f3eef4004097adb65c3",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-api-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-api-key"
+        }
+      ]
+    },
+    {
+      "id": "generic-api-key.positive.literal",
+      "inputPath": "secrets/generic-api-key__positive__literal.js",
+      "inputSha256": "5d0c7eceda66f87eeca2c1674993536559437440af1a2786d86dcb43ad19ca5b",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-api-key",
+      "expected": [
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "generic-password.negative.comment",
+      "inputPath": "secrets/generic-password__negative__comment.py",
+      "inputSha256": "228103f46f59a9666280415afe5b515db22d308001de97cf06fb23dad681c34d",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.environment-lookup",
+      "inputPath": "secrets/generic-password__negative__environment-lookup.js",
+      "inputSha256": "6598db98ecafa2b5d981b1fd0adfa52b46e8ecdb339374ab5f18eebf63e5c011",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.json-schema",
+      "inputPath": "secrets/generic-password__negative__json-schema.json",
+      "inputSha256": "c131462cce253b1be2f89d23d7e262d10eeb63d686505534b06db69f19550db3",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.list-member",
+      "inputPath": "secrets/generic-password__negative__list-member.json",
+      "inputSha256": "54520b35ad18752fa0ed98091d8cf0aff582cfae869cc27dc6b65282364e159b",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.parameter-name",
+      "inputPath": "secrets/generic-password__negative__parameter-name.py",
+      "inputSha256": "67e17663bb8dc350b1a33d4405ee5bbb3fd33f10f836f70fdffdf8ffc6b15f38",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.placeholder",
+      "inputPath": "secrets/generic-password__negative__placeholder.env",
+      "inputSha256": "2e64b80870b7ba97fc299b2ffafb2be5efad6be2fb08d18490334da1f1d8c0a3",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.prose",
+      "inputPath": "secrets/generic-password__negative__prose.md",
+      "inputSha256": "17065a6f4fdd1c3703fa11174339f0eef9d02ab0ce2acb01afde8e7194a81103",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.separated-by-newlines",
+      "inputPath": "secrets/generic-password__negative__separated-by-newlines.py",
+      "inputSha256": "4fe39cf22201c6a65aaf71343a86a3955895b01e21aa2674a3576e4412fdbc44",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.type-annotation",
+      "inputPath": "secrets/generic-password__negative__type-annotation.ts",
+      "inputSha256": "2acf44ea08769a258bd96735e20147fcf75dc3db09f866ec52cd9edc4e4106d8",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.ui-label",
+      "inputPath": "secrets/generic-password__negative__ui-label.tsx",
+      "inputSha256": "5b2d02c947841edc9cab3cc1abe157a41cd31b4bec40ab6b5d6ad5e9080a88ac",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.union-type",
+      "inputPath": "secrets/generic-password__negative__union-type.ts",
+      "inputSha256": "601c5d47b98518660592b4a7a6a29be541b19703f01dffce367d47574493995f",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.positive.python-assignment",
+      "inputPath": "secrets/generic-password__positive__python-assignment.py",
+      "inputSha256": "1c2589411f80f14d69f5a6ff7161d532d84cdb772163f386bd30388a36108d51",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [
+        {
+          "ruleId": "generic-password",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "generic-password.positive.yaml-inline",
+      "inputPath": "secrets/generic-password__positive__yaml-inline.yml",
+      "inputSha256": "cc1908b5facc80757eb78c72d0d346de6795de4a492e7c4697b1455a9eebdb7c",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [
+        {
+          "ruleId": "generic-password",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "private-key.negative.detector-pattern",
+      "inputPath": "secrets/private-key__negative__detector-pattern.rs",
+      "inputSha256": "f67594a55a499727cd4f81bab8600677b7efffd5bc947ff14c05ccab9aa8184c",
+      "language": "rust",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "private-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "private-key"
+        }
+      ]
+    },
+    {
+      "id": "private-key.positive.pem",
+      "inputPath": "secrets/private-key__positive__pem.txt",
+      "inputSha256": "128a51f27b238f09539e45ab850a611b982f742d701833edb8e4c3564e980f56",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "private-key",
+      "expected": [
+        {
+          "ruleId": "private-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "js-eval.negative.in-comment",
+      "inputPath": "source/js-eval__negative__in-comment.js",
+      "inputSha256": "1e867d4a97a2239cc8c66c65ccc5a4cd63cb53842d442939c2cb7753053320b6",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-eval"
+        }
+      ]
+    },
+    {
+      "id": "js-eval.negative.in-string",
+      "inputPath": "source/js-eval__negative__in-string.js",
+      "inputSha256": "33f0dd8a07e0826c88abf609ede959f5fc137ddeedfd6d3daf5bd38fdbee4f8b",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-eval"
+        }
+      ]
+    },
+    {
+      "id": "js-eval.negative.method-named-eval",
+      "inputPath": "source/js-eval__negative__method-named-eval.js",
+      "inputSha256": "6ec3f54c1d32afa48f079c650f1b65bd93b6c1795215c026387c4b8f55aef0db",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-eval"
+        }
+      ]
+    },
+    {
+      "id": "js-eval.positive.direct-call",
+      "inputPath": "source/js-eval__positive__direct-call.js",
+      "inputSha256": "0960e7fe6a6870791a5b3ce94f4de15dbfb39946c7ef194108da7cf67bb459a6",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [
+        {
+          "ruleId": "js-eval",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "py-eval.negative.dataframe-method",
+      "inputPath": "source/py-eval__negative__dataframe-method.py",
+      "inputSha256": "7e7031619f4c6a01c26ec018df737b49347e8deea8bcd27837953042352adbe0",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-eval"
+        }
+      ]
+    },
+    {
+      "id": "py-eval.positive.direct-call",
+      "inputPath": "source/py-eval__positive__direct-call.py",
+      "inputSha256": "b9fc5d45101f20ddcd197146174a1a11313130bda630030475d0cc5caf359365",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-eval",
+      "expected": [
+        {
+          "ruleId": "py-eval",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "py-subprocess-shell.negative.argument-list",
+      "inputPath": "source/py-subprocess-shell__negative__argument-list.py",
+      "inputSha256": "74a3f4fba58fe928b3245871d5ae736d7c24837f205a210d0b7aecb58f124cc8",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-subprocess-shell",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-subprocess-shell"
+        }
+      ]
+    },
+    {
+      "id": "py-subprocess-shell.positive.shell-true",
+      "inputPath": "source/py-subprocess-shell__positive__shell-true.py",
+      "inputSha256": "acafac4203e70b4be43393234f43a571b34109cbf0e0359978c268802f673ee4",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-subprocess-shell",
+      "expected": [
+        {
+          "ruleId": "py-subprocess-shell",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "py-weak-hash.negative.in-comment",
+      "inputPath": "source/py-weak-hash__negative__in-comment.py",
+      "inputSha256": "b6b29988697b1d39e86997778ca1d2bfa7cd670562a8c30cfa362b85d68344a4",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-weak-hash",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-weak-hash"
+        }
+      ]
+    }
+  ]
+}

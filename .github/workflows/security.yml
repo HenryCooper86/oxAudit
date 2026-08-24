@@ -44,6 +44,27 @@ jobs:
           queries: security-extended
       - uses: github/codeql-action/analyze@bb16b9baa2ec4010b29f5c606d57d01190139edd # v4.37.1
 
+  cargo-deny:
+    name: Rust supply chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # dependency-review only runs on pull requests and does not walk the Cargo
+      # tree, where most of oxAudit's code lives. cargo-deny is what actually
+      # gates the Rust supply chain: advisories, licences, bans, and sources.
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check advisories, licences, bans, and sources
+        run: cargo deny --manifest-path src-tauri/Cargo.toml check
+
   parser-fuzz-smoke:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04

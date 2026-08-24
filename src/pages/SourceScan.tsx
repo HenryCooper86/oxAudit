@@ -14,6 +14,7 @@ import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { ToolPage } from "../components/workbench/ToolPage";
+import { BulkReviewBar } from "../features/source-scan/BulkReviewBar";
 import { FindingList } from "../features/source-scan/FindingList";
 import { SourceProjectLoader } from "../features/source-scan/projectLoader";
 import { ResultViewTabs } from "../features/source-scan/ResultViewTabs";
@@ -23,6 +24,14 @@ import {
   nextSelection,
   sanitizeExport,
 } from "../features/source-scan/resultsModel";
+import {
+  EMPTY_SELECTION,
+  pruneToVisible,
+  selectAll,
+  selectRange,
+  toggle,
+  type Selection,
+} from "../features/source-scan/selectionModel";
 import { RunHistory } from "../features/source-scan/RunHistory";
 import { RunTimeline } from "../features/runs/RunTimeline";
 import { SourceTargetPanel } from "../features/source-scan/SourceTargetPanel";
@@ -491,6 +500,60 @@ export function SourceScanPage(): JSX.Element {
     [findings, query],
   );
   const effectiveSelection = nextSelection(filtered, selectedFingerprint);
+  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkFailures, setBulkFailures] = useState(0);
+  // The anchor for shift-extension is the last row toggled, not the last row
+  // viewed — extending from something the reviewer merely looked at would
+  // select a range they never indicated.
+  const bulkAnchor = useRef<string | null>(null);
+
+  // Filters are how a reviewer says "this class". When they change, anything no
+  // longer on screen leaves the selection: applying a decision to findings the
+  // reviewer can no longer see is the failure this prevents.
+  useEffect(() => {
+    setSelection((current) =>
+      current.size === 0 ? current : pruneToVisible(current, filtered),
+    );
+  }, [filtered]);
+
+  const toggleSelect = (fingerprint: string, extend: boolean) => {
+    setSelection((current) => {
+      const anchor = bulkAnchor.current;
+      if (extend && anchor) return selectRange(current, filtered, anchor, fingerprint);
+      return toggle(current, fingerprint);
+    });
+    bulkAnchor.current = fingerprint;
+  };
+
+  const applyBulkReview = async (requests: ReviewRequest[]) => {
+    if (!run || bulkSaving) return;
+    setBulkSaving(true);
+    setBulkFailures(0);
+    try {
+      const outcome = await api.saveFindingReviews(requests);
+      setBulkFailures(outcome.failures.length);
+      // The selection is cleared only on a clean run. After a partial one the
+      // reviewer keeps their selection so they can see what they acted on.
+      if (outcome.failures.length === 0) {
+        setSelection(EMPTY_SELECTION);
+        bulkAnchor.current = null;
+        push("success", `${outcome.recorded.length} reviews recorded.`);
+      } else {
+        push(
+          "info",
+          `${outcome.recorded.length} recorded, ${outcome.failures.length} not applied.`,
+        );
+      }
+      const refreshed = await api.loadSourceRun(run.runId);
+      setRun(refreshed);
+      setReviewAnnouncement(`${outcome.recorded.length} reviews recorded.`);
+    } catch (error) {
+      setReviewError(normalizeCommandError(error));
+    } finally {
+      setBulkSaving(false);
+    }
+  };
   const selectedFinding =
     filtered.find((finding) => finding.fingerprint === effectiveSelection) ?? null;
   const hasExplicitSelection =
@@ -703,7 +766,31 @@ export function SourceScanPage(): JSX.Element {
                 detailLabel="Finding detail"
                 hasSelection={hasExplicitSelection}
                 onBackToList={() => setSelectedFingerprint(null)}
-                list={<FindingList findings={filtered} selectedFingerprint={effectiveSelection} onSelect={setSelectedFingerprint} />}
+                list={
+                  <>
+                    <FindingList
+                      findings={filtered}
+                      selectedFingerprint={effectiveSelection}
+                      onSelect={setSelectedFingerprint}
+                      selection={selection}
+                      onToggleSelect={toggleSelect}
+                    />
+                    <BulkReviewBar
+                      projectId={run.projectId}
+                      visible={filtered}
+                      selection={selection}
+                      saving={bulkSaving}
+                      failures={bulkFailures}
+                      onClear={() => {
+                        setSelection(EMPTY_SELECTION);
+                        bulkAnchor.current = null;
+                        setBulkFailures(0);
+                      }}
+                      onSelectAll={() => setSelection(selectAll(filtered))}
+                      onApply={applyBulkReview}
+                    />
+                  </>
+                }
                 detail={selectedFinding ? (
                   <FindingDetail
                     projectId={run.projectId}

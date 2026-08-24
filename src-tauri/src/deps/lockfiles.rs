@@ -361,7 +361,7 @@ fn parse_composer_lock(content: &str) -> Result<Vec<(String, String)>, String> {
 
 fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
     use quick_xml::events::Event;
-    use quick_xml::Reader;
+    use quick_xml::{Reader, XmlVersion};
 
     let mut reader = Reader::from_str(content);
     let mut out = Vec::new();
@@ -369,14 +369,13 @@ fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
     let mut current: Option<(String, String, String)> = None; // groupId, artifactId, version
     let mut in_dependency = false;
     let mut in_dependencies = false;
-    let mut tag_stack: Vec<String> = Vec::new();
-    let mut buf = Vec::new();
+    let mut pending_text = String::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        match reader.read_event() {
             Ok(Event::Start(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                tag_stack.push(name.clone());
+                let name = e.name().as_ref().to_string();
+                pending_text.clear();
                 match name.as_str() {
                     "dependencies" | "dependencyManagement" => {
                         in_dependencies = true;
@@ -395,32 +394,42 @@ fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
             }
             Ok(Event::Text(t)) => {
                 if in_dependency {
-                    let text = t
-                        .unescape()
-                        .unwrap_or_default()
-                        .into_owned()
-                        .trim()
-                        .to_string();
-                    if text.is_empty() {
-                        buf.clear();
-                        continue;
+                    pending_text.push_str(&t.xml_content(XmlVersion::Implicit1_0));
+                }
+            }
+            // `&amp;` and `&#38;` arrive as their own events. A group or
+            // artifact id containing one is unusual but legal, and dropping the
+            // reference would silently corrupt the coordinate we look up.
+            Ok(Event::GeneralRef(r)) => {
+                if in_dependency {
+                    match r.resolve_char_ref() {
+                        Ok(Some(ch)) => pending_text.push(ch),
+                        Ok(None) => {
+                            if let Some(resolved) = quick_xml::escape::resolve_predefined_entity(&r)
+                            {
+                                pending_text.push_str(resolved);
+                            }
+                            // An unresolvable entity is defined in a DTD oxAudit
+                            // does not read. Skipping it is the safe reading; a
+                            // partial coordinate simply fails to match later.
+                        }
+                        Err(_) => {}
                     }
-                    let last = tag_stack.last().cloned().unwrap_or_default();
-                    match last.as_str() {
-                        "groupId" => {
-                            if let Some(c) = &mut current {
-                                c.0 = text;
-                            } else {
-                                current = Some((text, String::new(), String::new()));
-                            }
-                        }
-                        "artifactId" => {
-                            if let Some(c) = &mut current {
-                                c.1 = text;
-                            } else {
-                                current = Some((String::new(), text, String::new()));
-                            }
-                        }
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = e.name().as_ref().to_string();
+                let text = std::mem::take(&mut pending_text).trim().to_string();
+                if in_dependency && !text.is_empty() {
+                    match name.as_str() {
+                        "groupId" => match &mut current {
+                            Some(c) => c.0 = text,
+                            None => current = Some((text, String::new(), String::new())),
+                        },
+                        "artifactId" => match &mut current {
+                            Some(c) => c.1 = text,
+                            None => current = Some((String::new(), text, String::new())),
+                        },
                         "version" => {
                             if let Some(c) = &mut current {
                                 c.2 = text;
@@ -429,9 +438,6 @@ fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
                         _ => {}
                     }
                 }
-            }
-            Ok(Event::End(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if name == "dependency" && in_dependency {
                     if let Some((g, a, v)) = current.take() {
                         if !a.is_empty() && !v.is_empty() {
@@ -448,14 +454,12 @@ fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
                 if name == "dependencies" || name == "dependencyManagement" {
                     in_dependencies = false;
                 }
-                tag_stack.pop();
                 depth = depth.saturating_sub(1);
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("invalid pom.xml: {e}")),
             _ => {}
         }
-        buf.clear();
     }
 
     if out.is_empty() {
@@ -516,4 +520,170 @@ pub fn dedupe_dependencies(deps: Vec<Dependency>) -> Vec<Dependency> {
         seen.entry(key).or_insert(d);
     }
     seen.into_values().collect()
+}
+
+#[cfg(test)]
+mod pom_tests {
+    use super::parse_pom_xml;
+
+    /// A `pom.xml` comes from the repository under scan, so every property
+    /// asserted here is a property of parsing *untrusted* input.
+    fn pom(body: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+{body}
+</project>"#
+        )
+    }
+
+    #[test]
+    fn reads_group_artifact_and_version() {
+        let out = parse_pom_xml(&pom(r#"  <dependencies>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>3.12.0</version>
+    </dependency>
+  </dependencies>"#))
+        .expect("a well-formed pom with one dependency parses");
+        assert_eq!(
+            out,
+            vec![("org.apache.commons:commons-lang3".into(), "3.12.0".into())]
+        );
+    }
+
+    #[test]
+    fn reads_every_dependency_in_order() {
+        let out = parse_pom_xml(&pom(r#"  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId><artifactId>alpha</artifactId><version>1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId><artifactId>beta</artifactId><version>2.0</version>
+    </dependency>
+  </dependencies>"#))
+        .expect("two dependencies parse");
+        assert_eq!(
+            out,
+            vec![
+                ("com.example:alpha".into(), "1.0".into()),
+                ("com.example:beta".into(), "2.0".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_dependency_management_section() {
+        let out = parse_pom_xml(&pom(r#"  <dependencyManagement>
+    <dependency>
+      <groupId>io.netty</groupId><artifactId>netty-all</artifactId><version>4.1.68.Final</version>
+    </dependency>
+  </dependencyManagement>"#))
+        .expect("dependencyManagement is treated as a dependency source");
+        assert_eq!(
+            out,
+            vec![("io.netty:netty-all".into(), "4.1.68.Final".into())]
+        );
+    }
+
+    #[test]
+    fn skips_a_dependency_with_no_version() {
+        // Version comes from a parent POM or a property oxAudit does not resolve.
+        // Reporting it as unversioned would produce a bogus advisory query.
+        let err = parse_pom_xml(&pom(r#"  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId><artifactId>inherited</artifactId>
+    </dependency>
+  </dependencies>"#))
+        .expect_err("a dependency with no version yields no packages");
+        assert!(err.contains("no dependencies with versions"), "got: {err}");
+    }
+
+    #[test]
+    fn falls_back_to_artifact_id_when_group_is_absent() {
+        let out = parse_pom_xml(&pom(r#"  <dependencies>
+    <dependency><artifactId>lonely</artifactId><version>0.1</version></dependency>
+  </dependencies>"#))
+        .expect("an artifactId with a version is still identifiable");
+        assert_eq!(out, vec![("lonely".into(), "0.1".into())]);
+    }
+
+    #[test]
+    fn ignores_dependency_elements_outside_a_dependencies_block() {
+        let err = parse_pom_xml(&pom(r#"  <build>
+    <dependency>
+      <groupId>com.example</groupId><artifactId>stray</artifactId><version>9.9</version>
+    </dependency>
+  </build>"#))
+        .expect_err("a <dependency> outside <dependencies> is not a declared dependency");
+        assert!(err.contains("no dependencies with versions"), "got: {err}");
+    }
+
+    #[test]
+    fn unescapes_xml_entities_in_values() {
+        let out = parse_pom_xml(&pom(r#"  <dependencies>
+    <dependency>
+      <groupId>a&amp;b</groupId><artifactId>c&amp;d</artifactId><version>1.0</version>
+    </dependency>
+  </dependencies>"#))
+        .expect("entities are decoded rather than passed through");
+        assert_eq!(out, vec![("a&b:c&d".into(), "1.0".into())]);
+    }
+
+    #[test]
+    fn rejects_a_pom_with_no_dependencies() {
+        let err = parse_pom_xml(&pom("  <name>empty</name>"))
+            .expect_err("a pom with no dependencies is reported, not silently empty");
+        assert!(err.contains("no dependencies with versions"), "got: {err}");
+    }
+
+    #[test]
+    fn reports_malformed_xml_as_an_error() {
+        let err = parse_pom_xml("<project><dependencies><dependency>")
+            .expect_err("an unterminated document is an error, not a panic");
+        assert!(
+            err.contains("invalid pom.xml") || err.contains("no dependencies"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_input_terminates_without_exhausting_the_stack() {
+        // A scan target can ship a hostile pom.xml. The parser is iterative, so
+        // nesting depth must cost heap, not stack. This is a regression guard
+        // for the class of bug RUSTSEC-2026-0187 describes in lopdf.
+        let depth = 50_000;
+        let mut xml = String::with_capacity(depth * 8);
+        xml.push_str("<project>");
+        for _ in 0..depth {
+            xml.push_str("<x>");
+        }
+        for _ in 0..depth {
+            xml.push_str("</x>");
+        }
+        xml.push_str("</project>");
+
+        // Either outcome is acceptable; hanging or aborting is not.
+        let _ = parse_pom_xml(&xml);
+    }
+
+    #[test]
+    fn repeated_attributes_do_not_stall_the_parser() {
+        // RUSTSEC-2026-0194 is quadratic only for callers that read attributes.
+        // oxAudit never does, and this locks that in: a start tag carrying many
+        // duplicate attributes must still parse promptly.
+        let attributes = (0..2_000)
+            .map(|index| format!(r#"a{index}="v""#))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let xml = format!(
+            r#"<project><dependencies><dependency {attributes}>
+                 <groupId>g</groupId><artifactId>a</artifactId><version>1</version>
+               </dependency></dependencies></project>"#
+        );
+        let out = parse_pom_xml(&xml).expect("attributes are skipped, not enumerated");
+        assert_eq!(out, vec![("g:a".into(), "1".into())]);
+    }
 }

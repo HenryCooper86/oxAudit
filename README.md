@@ -1,11 +1,91 @@
-# oxAudit — Security Research Workbench
+# oxAudit
 
-A cross-platform desktop app (Tauri v2 + React + Rust) that helps security analysts
-and developers find CVEs, scan source code for vulnerabilities and leaked secrets,
-scan applications for known vulnerable dependencies, and research vulnerabilities
-with the help of an AI assistant.
+**Find vulnerabilities and leaked credentials in source, dependencies, and
+binaries — on your machine, in your pipeline, and without sending your code
+anywhere.**
 
-![stack](https://img.shields.io/badge/Tauri-2-24c8db) ![stack](https://img.shields.io/badge/React-19-61dafb) ![stack](https://img.shields.io/badge/Rust-1.95-dea584)
+A desktop workbench and a command line over the same engine, so a finding in CI
+and a finding on a workstation are the same finding.
+
+<!-- SCREENSHOT: a populated Source Scan — findings list, one finding selected,
+     detail pane showing the review gates. 1440x900, both themes if practical.
+     Capture with `npm run tauri dev` against benchmarks/corpus. -->
+
+![Tauri 2](https://img.shields.io/badge/Tauri-2-24c8db)
+![React 19](https://img.shields.io/badge/React-19-61dafb)
+![Rust 1.97](https://img.shields.io/badge/Rust-1.97-dea584)
+![Licence Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)
+
+---
+
+## Install
+
+> **No release has been cut yet.** Build from source for now — see
+> [Development](#development). The release pipeline is in place and unused.
+
+When the first release lands, builds for macOS, Windows, and Linux will be
+published on the [releases page](https://github.com/HenryCooper86/oxAudit/releases),
+each signed and notarized, with a SHA-256 checksum, a SLSA build-provenance
+attestation, and a CycloneDX SBOM of oxAudit itself, so a download can be
+verified rather than trusted:
+
+```bash
+sha256sum -c SHA256SUMS.txt
+gh attestation verify <file> --repo HenryCooper86/oxAudit
+```
+
+The desktop app and `oxaudit-cli` ship together.
+
+## Sixty seconds
+
+```bash
+# What is in this project?
+oxaudit-cli scan .
+
+# Put it in a pipeline. --fail-on is opt-in, so this reports without
+# breaking your build until you ask it to.
+oxaudit-cli scan . --format sarif --output oxaudit.sarif --fail-on high
+```
+
+In GitHub Actions:
+
+```yaml
+- run: oxaudit-cli scan . --format sarif --output oxaudit.sarif
+- uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: oxaudit.sarif
+```
+
+Adopting a scanner on an existing codebase means meeting a backlog. Gate on what
+the change introduced and leave the rest visible:
+
+```bash
+# On main, once: capture where you are today.
+oxaudit-cli scan . --format json --output baseline.json
+
+# On every pull request: fail only on what this change added.
+oxaudit-cli scan . --baseline baseline.json --fail-on-new high
+```
+
+Reviewed something and decided it is not a problem? Record it in
+[`.oxaudit/policy.json`](#suppressing-a-finding) and it stops failing the build —
+with a reason, an expiry, and a pull request.
+
+## What makes it different
+
+- **It tells you how accurate it is.** [Detection quality](#detection-quality) is
+  measured against a committed corpus and published per rule, including the
+  numbers that are not flattering. CI fails if they regress.
+- **Every finding says how far it was verified** — `syntax` when a parser
+  confirmed the match sits in code rather than a comment, `text` when no grammar
+  was available.
+- **Nothing is sent anywhere.** Scanning is local. oxAudit contacts NVD, OSV,
+  CISA KEV, and FIRST EPSS, plus whatever AI endpoint you configure — and
+  nothing else. There is no telemetry to opt out of.
+- **Dismissals are decisions, not deletions.** A suppressed finding stays in the
+  report with its reason and its author, and expires.
+- **The assistant asks before it reaches the network**, and cannot reach your
+  own machine or network at all. See [Security notes](#security-notes).
 
 ---
 
@@ -42,7 +122,195 @@ with the help of an AI assistant.
 - **Report Studio** — professional multi-format report metadata, disclosure controls, preview, atomic save, and content receipts
 - **CVE Research** — NVD search + OSV package lookup + detail view with AI briefing
 - **AI Assistant** — chat with code/context attachment
-- **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key
+- **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key, allowed fetch hosts, diagnostics
+
+Press <kbd>⌘K</kbd> (<kbd>Ctrl</kbd>+<kbd>K</kbd> on Windows and Linux) to reach any
+screen — or any project you have scanned before — from the keyboard. Type what
+you know it as: `sarif`, `lockfile`, `precision`, `epss`, or a client directory
+name. Each project shows what is still open beside it, so switching between a
+dozen codebases does not mean opening a file dialog.
+
+In a findings list, <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>x</kbd> selects, and
+<kbd>shift</kbd> extends a selection — then review the whole selection at once
+with one reason.
+
+## Command line
+
+`oxaudit-cli` runs the same scanners, rules, and policy evaluation as the desktop
+app — it is a second adapter over the same core, not a second engine, so a
+finding reported in CI and a finding reported in the window are the same finding.
+
+```bash
+# Human-readable, grouped by file
+oxaudit-cli scan .
+
+# SARIF for GitHub code scanning and most CI viewers
+oxaudit-cli scan . --format sarif --output oxaudit.sarif
+
+# Gate a build. Opt-in: --fail-on defaults to `none`
+oxaudit-cli scan . --fail-on high
+
+# Fail only on what this change introduced, not the existing backlog
+oxaudit-cli scan . --baseline baseline.json --fail-on-new high
+
+# Lockfiles against OSV
+oxaudit-cli deps . --format json
+
+# Keep the run so the desktop app can open it
+oxaudit-cli scan . --db ~/.oxaudit/findings.sqlite3
+oxaudit-cli export --db ~/.oxaudit/findings.sqlite3 --run <id> --format cyclonedx
+```
+
+Progress goes to stderr and the report to stdout, so `oxaudit-cli scan . --format
+sarif > out.sarif` needs no extra flags.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Ran to completion; nothing at or above `--fail-on` |
+| `1` | Ran to completion; findings at or above `--fail-on` |
+| `2` | The command was not usable — bad path, bad flag, bad format |
+| `3` | The scan itself failed |
+
+### In GitHub Actions
+
+```yaml
+- name: Scan
+  run: oxaudit-cli scan . --format sarif --output oxaudit.sarif
+
+- name: Upload to code scanning
+  uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: oxaudit.sarif
+```
+
+oxAudit runs this against its own repository on every push
+([`self-scan.yml`](.github/workflows/self-scan.yml)).
+
+## Detection quality
+
+Measured, not asserted. `oxaudit-cli benchmark` runs the committed corpus in
+[`benchmarks/corpus/`](benchmarks/corpus) and reports precision and recall per
+rule.
+
+| | Before | After |
+|---|---|---|
+| Corpus precision | 46.2% | **100%** |
+| Corpus recall | 85.7% | **100%** |
+| Findings on this repository | 142 | **34** |
+
+The corpus is 26 fixtures, 19 of them negatives, and none of the negatives were
+invented: each is a shape oxAudit was observed firing on when it scanned its own
+source — type declarations, prose in Markdown, comments, environment lookups,
+function parameters, JSON schemas, UI labels, and the detector code that
+searches for PEM headers.
+
+A corpus you tuned against proves little, so the second row is the one that
+matters: this repository is held-out data, and the fixtures that were tuned
+against are excluded from it. Of the 34 findings that remain, 21 sit inside
+oxAudit's own `#[cfg(test)]` modules and are deliberately fake credentials in
+test fixtures — a real finding class that belongs in a suppression file rather
+than in the scanner.
+
+Two defects the corpus found on its first run:
+
+- `generic-password` matched `\bpassword\b`, and an underscore is a word
+  character, so `DB_PASSWORD` and `DATABASE_PASSWORD` never matched. The rule
+  responsible for 111 of the 142 findings here also missed the commonest real
+  credential shape there is.
+- Its separator class `[^A-Za-z0-9]{0,10}` included newlines, so the word
+  "secret" on one line paired with an unrelated token three lines below.
+
+### Throughput
+
+`cargo bench --bench scanning` measures the per-file work. Figures below are the
+median of a run on an Apple M-series laptop, so treat them as ratios rather than
+absolutes:
+
+| Stage | Throughput |
+|---|---|
+| Source pattern rules | 400–840 MiB/s |
+| Secret rules (33 rules over every file) | 210–290 MiB/s |
+| Syntax analysis (tree-sitter parse + span collection) | 15–21 MiB/s |
+
+Throughput is flat across three orders of magnitude of input size, which is the
+property that actually matters: a rule change that made matching quadratic would
+show up here as throughput falling as files grow.
+
+Syntax analysis is roughly 40× more expensive than rule matching and dominates
+scan time — it is the entire cost of the precision improvement above. End to
+end, this repository (329 files, 5.1 MB) scans in about 2.2 seconds.
+
+### Confidence tiers
+
+Every finding records how far oxAudit could qualify it:
+
+- **`syntax`** — a grammar parsed the file and the match sits in code, not in a
+  comment or a string literal. Available for JavaScript/TypeScript, Python,
+  Java, Rust, and Go.
+- **`text`** — the rule matched raw file text; no grammar was available.
+
+A language without a grammar is never suppressed on a guess. A false negative in
+a security scanner is worse than a false positive, so the absence of a parser
+means every match stands and says so.
+
+## Suppressing a finding
+
+A finding that has been reviewed and dismissed should not be raised again on
+every push. `.oxaudit/policy.json` records that decision **in the repository**,
+so it arrives through a pull request, is reviewed like any other change, and is
+attributed to the project rather than to whoever last ran a scan.
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "suppression",
+      "ruleId": "generic-password",
+      "pathPattern": "tests/**",
+      "state": "suppressed",
+      "reason": "Synthetic credential fixtures; see tests/README.md.",
+      "expiresAt": "2027-01-01T00:00:00Z"
+    },
+    {
+      "kind": "finding",
+      "fingerprintVersion": 1,
+      "fingerprint": "…",
+      "category": "vulnerability",
+      "state": "falsePositive",
+      "reason": "The affected branch is excluded from production builds.",
+      "gates": [
+        {
+          "gate": "reachable",
+          "verdict": "eliminates",
+          "evidence": "The production feature manifest excludes this branch."
+        }
+      ],
+      "decidingGate": "reachable"
+    }
+  ]
+}
+```
+
+A `suppression` entry dismisses a rule across a path pattern. A `finding` entry
+dismisses one specific finding by fingerprint, and for a vulnerability it must
+name the gate that eliminates it and show the evidence — asserting "false
+positive" is not the same as arguing it.
+
+Four properties this has, and why:
+
+- **A reason is required.** A dismissal with no justification looks reviewed
+  without being reviewed.
+- **`expiresAt` is honoured.** An expired decision returns the finding to the
+  queue, so a temporary exception cannot quietly become permanent.
+- **A dismissed finding still appears in reports**, marked with its state and
+  `"origin": "projectPolicy"`. Suppression changes whether something gates the
+  build, not whether it happened — the decision has to stay auditable.
+- **A malformed policy stops the scan.** Ignoring an unparseable file would
+  silently un-suppress everything the team agreed to, and the run would not mean
+  what it appears to mean. Pass `--ignore-invalid-policy` to scan anyway.
 
 ## Architecture
 
