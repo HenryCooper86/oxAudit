@@ -594,3 +594,152 @@ fn a_malformed_policy_stops_the_scan_rather_than_being_ignored() {
     let output = run(&["scan", &project.path().to_string_lossy(), "-q"]);
     assert_ne!(code(&output), 0, "an invalid policy must not pass silently");
 }
+
+// ------------------------------------------------------------- baseline diff
+
+#[test]
+fn gating_on_new_findings_ignores_a_pre_existing_backlog() {
+    // Adopting a scanner on an existing codebase means meeting a backlog. A
+    // team that cannot merge until the backlog is clear turns the scanner off,
+    // so the gate has to distinguish "this codebase has problems" from "this
+    // change made it worse".
+    let project = project();
+    let path = project.path().to_string_lossy().into_owned();
+    let baseline = project.path().join("baseline.json");
+
+    let captured = run(&[
+        "scan",
+        &path,
+        "--format",
+        "json",
+        "-q",
+        "-o",
+        &baseline.to_string_lossy(),
+    ]);
+    assert_eq!(code(&captured), 0);
+
+    let unchanged = run(&[
+        "scan",
+        &path,
+        "--baseline",
+        &baseline.to_string_lossy(),
+        "--fail-on-new",
+        "high",
+        "-q",
+    ]);
+    assert_eq!(
+        code(&unchanged),
+        0,
+        "an untouched backlog must not fail the build"
+    );
+}
+
+#[test]
+fn a_newly_introduced_finding_fails_the_new_gate() {
+    let project = project();
+    let path = project.path().to_string_lossy().into_owned();
+    let baseline = project.path().join("baseline.json");
+    run(&[
+        "scan",
+        &path,
+        "--format",
+        "json",
+        "-q",
+        "-o",
+        &baseline.to_string_lossy(),
+    ]);
+
+    std::fs::write(
+        project.path().join("src/added.js"),
+        "export function added(input) {\n  return eval(input);\n}\n",
+    )
+    .expect("new fixture");
+
+    let output = run(&[
+        "scan",
+        &path,
+        "--baseline",
+        &baseline.to_string_lossy(),
+        "--fail-on-new",
+        "high",
+        "-q",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn the_comparison_is_reported_even_when_nothing_gates() {
+    let project = project();
+    let path = project.path().to_string_lossy().into_owned();
+    let baseline = project.path().join("baseline.json");
+    run(&[
+        "scan",
+        &path,
+        "--format",
+        "json",
+        "-q",
+        "-o",
+        &baseline.to_string_lossy(),
+    ]);
+
+    let output = run(&["scan", &path, "--baseline", &baseline.to_string_lossy()]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("pre-existing"), "stderr: {stderr}");
+}
+
+#[test]
+fn gating_on_new_findings_without_a_baseline_is_refused() {
+    // Silently passing would be the dangerous reading of "compare against
+    // nothing".
+    let project = project();
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--fail-on-new",
+        "high",
+        "-q",
+    ]);
+    assert_eq!(code(&output), 2);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--baseline"));
+}
+
+#[test]
+fn a_baseline_that_is_not_an_oxaudit_report_names_the_command_that_makes_one() {
+    let project = project();
+    let wrong = project.path().join("report.sarif");
+    run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--format",
+        "sarif",
+        "-q",
+        "-o",
+        &wrong.to_string_lossy(),
+    ]);
+
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--baseline",
+        &wrong.to_string_lossy(),
+        "-q",
+    ]);
+    assert_eq!(code(&output), 2);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--format json"), "stderr: {stderr}");
+}
+
+#[test]
+fn a_missing_baseline_file_is_refused_rather_than_treated_as_empty() {
+    // Treating it as empty would make every finding new and fail the build for
+    // a typo in a path.
+    let project = project();
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--baseline",
+        "/definitely/not/here.json",
+        "-q",
+    ]);
+    assert_eq!(code(&output), 2);
+}
