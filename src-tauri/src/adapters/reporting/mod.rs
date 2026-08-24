@@ -109,14 +109,20 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                                 })]
                             })
                             .unwrap_or_default();
+                        let rule_id = record.observation.rule_id.as_deref();
                         serde_json::json!({
                             "ruleId": record.observation.rule_id,
+                            // Consumers that show a severity read `level`, not
+                            // our own vocabulary. Without it every finding
+                            // arrives as an undifferentiated warning.
+                            "level": sarif_level(rule_severity(rule_id)),
                             "message": { "text": record.observation.summary },
                             "locations": locations,
                             "properties": {
                                 "observationId": record.observation.id,
                                 "detectorId": record.observation.detector_id,
-                                "detectorVersion": record.observation.detector_version
+                                "detectorVersion": record.observation.detector_version,
+                                "severity": rule_severity(rule_id).unwrap_or("unknown")
                             }
                         })
                     })
@@ -124,11 +130,28 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             if results.is_empty() {
                 warnings.push("This run has no source, secret, policy, or semantic observations that map to SARIF.".into());
             }
+            // `tool.driver.rules` is where a SARIF consumer finds what a rule
+            // means and how to fix it. Emitting only the rules that fired keeps
+            // the document proportional to the run.
+            let fired: std::collections::BTreeSet<&str> = data
+                .observations
+                .iter()
+                .filter_map(|record| record.observation.rule_id.as_deref())
+                .collect();
+            let rules = fired
+                .iter()
+                .filter_map(|id| sarif_rule(id))
+                .collect::<Vec<_>>();
             serde_json::json!({
                 "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
                 "version": "2.1.0",
                 "runs": [{
-                    "tool": { "driver": { "name": "oxAudit", "version": env!("CARGO_PKG_VERSION") } },
+                    "tool": { "driver": {
+                        "name": "oxAudit",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "informationUri": "https://github.com/HenryCooper86/oxAudit",
+                        "rules": rules
+                    } },
                     "results": results,
                     "properties": { "oxAuditRunId": data.run.id }
                 }]
@@ -298,5 +321,170 @@ mod tests {
             let report = generate(&data, format).expect("generate report");
             serde_json::from_slice::<serde_json::Value>(&report.bytes).expect("valid JSON");
         }
+    }
+}
+
+/// The severity a rule carries in the catalogue that defines it.
+///
+/// The canonical `Observation` deliberately records what was seen rather than
+/// how bad it is; severity is a property of the rule. Reading it back here is
+/// what lets a SARIF consumer rank findings without oxAudit inventing a second
+/// source of truth for it.
+fn rule_severity(rule_id: Option<&str>) -> Option<&'static str> {
+    let rule_id = rule_id?;
+    if let Some(rule) = crate::scanners::patterns::SOURCE_RULES
+        .iter()
+        .find(|rule| rule.id == rule_id)
+    {
+        return Some(rule.severity);
+    }
+    crate::scanners::secrets::SECRET_RULES
+        .iter()
+        .find(|rule| rule.id == rule_id)
+        .map(|rule| rule.severity)
+}
+
+/// Map oxAudit's five-step severity onto SARIF's three levels.
+///
+/// SARIF has no "critical", so critical and high both become `error`. Losing
+/// that distinction in `level` is why the original severity is also carried in
+/// `properties.severity`.
+fn sarif_level(severity: Option<&str>) -> &'static str {
+    match severity {
+        Some("critical") | Some("high") => "error",
+        Some("medium") | Some("low") => "warning",
+        Some("info") => "note",
+        _ => "warning",
+    }
+}
+
+/// A `reportingDescriptor` for one rule: what it detects and how to fix it.
+fn sarif_rule(rule_id: &str) -> Option<serde_json::Value> {
+    if let Some(rule) = crate::scanners::patterns::SOURCE_RULES
+        .iter()
+        .find(|rule| rule.id == rule_id)
+    {
+        let mut tags = vec!["security".to_string()];
+        if !rule.cwe.is_empty() {
+            tags.push(rule.cwe.to_string());
+        }
+        for language in rule.languages {
+            tags.push((*language).to_string());
+        }
+        return Some(serde_json::json!({
+            "id": rule.id,
+            "name": rule.name,
+            "shortDescription": { "text": rule.name },
+            "fullDescription": { "text": rule.message },
+            "help": { "text": rule.recommendation },
+            "defaultConfiguration": { "level": sarif_level(Some(rule.severity)) },
+            "properties": {
+                "severity": rule.severity,
+                "tags": tags,
+                "problem.severity": rule.severity,
+                "cwe": rule.cwe
+            }
+        }));
+    }
+    crate::scanners::secrets::SECRET_RULES
+        .iter()
+        .find(|rule| rule.id == rule_id)
+        .map(|rule| {
+            serde_json::json!({
+                "id": rule.id,
+                "name": rule.name,
+                "shortDescription": { "text": rule.name },
+                "fullDescription": { "text": rule.description },
+                "help": { "text": rule.recommendation },
+                "defaultConfiguration": { "level": sarif_level(Some(rule.severity)) },
+                "properties": {
+                    "severity": rule.severity,
+                    "tags": ["security", "secret", "CWE-798"],
+                    "problem.severity": rule.severity,
+                    "cwe": "CWE-798"
+                }
+            })
+        })
+}
+
+#[cfg(test)]
+mod sarif_metadata_tests {
+    use super::{rule_severity, sarif_level, sarif_rule};
+
+    #[test]
+    fn severity_is_read_from_the_rule_that_defines_it() {
+        // A canonical Observation records what was seen, not how bad it is.
+        // SARIF consumers rank by severity, so it has to come from somewhere.
+        assert_eq!(rule_severity(Some("js-eval")), Some("high"));
+        assert_eq!(rule_severity(Some("go-weak-hash")), Some("medium"));
+    }
+
+    #[test]
+    fn secret_rules_resolve_as_well_as_source_rules() {
+        assert!(rule_severity(Some("generic-api-key")).is_some());
+    }
+
+    #[test]
+    fn an_unknown_rule_has_no_severity_rather_than_a_guessed_one() {
+        assert_eq!(rule_severity(Some("not-a-rule")), None);
+        assert_eq!(rule_severity(None), None);
+    }
+
+    #[test]
+    fn severity_maps_onto_the_three_levels_sarif_actually_has() {
+        assert_eq!(sarif_level(Some("critical")), "error");
+        assert_eq!(sarif_level(Some("high")), "error");
+        assert_eq!(sarif_level(Some("medium")), "warning");
+        assert_eq!(sarif_level(Some("low")), "warning");
+        assert_eq!(sarif_level(Some("info")), "note");
+    }
+
+    #[test]
+    fn an_unrankable_finding_defaults_to_warning_not_error() {
+        // Defaulting unknown to `error` would fail builds over a metadata gap.
+        assert_eq!(sarif_level(None), "warning");
+        assert_eq!(sarif_level(Some("nonsense")), "warning");
+    }
+
+    #[test]
+    fn a_rule_descriptor_carries_what_a_reviewer_needs() {
+        let rule = sarif_rule("py-subprocess-shell").expect("rule exists");
+        assert_eq!(rule["id"], "py-subprocess-shell");
+        assert!(rule["fullDescription"]["text"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()));
+        // Without remediation text a SARIF alert tells a reviewer that
+        // something is wrong and nothing about what to do next.
+        assert!(rule["help"]["text"].as_str().is_some_and(|t| !t.is_empty()));
+        assert_eq!(rule["defaultConfiguration"]["level"], "error");
+        assert_eq!(rule["properties"]["cwe"], "CWE-78");
+        let tags = rule["properties"]["tags"].as_array().expect("tags");
+        assert!(tags.iter().any(|tag| tag == "CWE-78"));
+        assert!(tags.iter().any(|tag| tag == "security"));
+    }
+
+    #[test]
+    fn every_catalogued_rule_can_describe_itself() {
+        // A rule that fires but has no descriptor shows up in a SARIF viewer as
+        // a bare identifier with no explanation.
+        for rule in crate::scanners::patterns::SOURCE_RULES.iter() {
+            assert!(
+                sarif_rule(rule.id).is_some(),
+                "{} has no descriptor",
+                rule.id
+            );
+        }
+        for rule in crate::scanners::secrets::SECRET_RULES.iter() {
+            assert!(
+                sarif_rule(rule.id).is_some(),
+                "{} has no descriptor",
+                rule.id
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_rule_yields_no_descriptor() {
+        assert!(sarif_rule("not-a-rule").is_none());
     }
 }
