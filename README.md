@@ -42,7 +42,11 @@ with the help of an AI assistant.
 - **Report Studio** — professional multi-format report metadata, disclosure controls, preview, atomic save, and content receipts
 - **CVE Research** — NVD search + OSV package lookup + detail view with AI briefing
 - **AI Assistant** — chat with code/context attachment
-- **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key
+- **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key, allowed fetch hosts, diagnostics
+
+Press <kbd>⌘K</kbd> (<kbd>Ctrl</kbd>+<kbd>K</kbd> on Windows and Linux) to reach any
+screen from the keyboard. Type what you know it as — `sarif`, `lockfile`,
+`precision`, `epss` — rather than what oxAudit calls it.
 
 ## Command line
 
