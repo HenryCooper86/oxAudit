@@ -992,3 +992,20 @@ export interface Diagnostics {
   logTail: string;
   notes: string[];
 }
+
+/** One finding a bulk review could not be recorded against. */
+export interface BulkReviewFailure {
+  fingerprint: string;
+  message: string;
+}
+
+/**
+ * What a bulk review actually did.
+ *
+ * Both halves are reported: a caller that only learns "it worked" cannot tell a
+ * reviewer that three of their forty decisions did not land.
+ */
+export interface BulkReviewOutcome {
+  recorded: ReviewRecord[];
+  failures: BulkReviewFailure[];
+}
