@@ -41,6 +41,9 @@ jobs:
       - name: Check the benchmark corpus manifest is current
         run: node tools/build-corpus-suite.mjs --check
 
+      - name: Check every action is pinned to a commit SHA
+        run: node tools/check-action-pins.mjs
+
       - name: Type-check
         run: npm run check
 
