@@ -28,10 +28,89 @@ use tree_sitter::Node;
 pub enum Taint {
     /// A literal, or a name that resolves to one. An attacker cannot choose it.
     Constant,
+    /// Passed through a transform that neutralizes *this sink's* weakness.
+    Sanitized {
+        /// The call responsible, so a reviewer can check the claim.
+        by: &'static str,
+    },
     /// Traces to a parameter or a known external source.
     Tainted,
     /// Undetermined. The finding stands.
     Unknown,
+}
+
+/// A transform that neutralizes specific weakness classes.
+///
+/// The CWE list is the entire point. Sanitizers are sink-specific:
+/// `escapeHtml` neutralizes markup and does nothing whatsoever about code
+/// execution, so treating sanitizers generically would silently drop live RCE.
+/// A recognised call only excuses a sink whose CWE it actually covers.
+struct Sanitizer {
+    /// Matched against the called name, or the final member of a call chain.
+    name: &'static str,
+    /// Weakness classes this genuinely neutralizes.
+    neutralizes: &'static [&'static str],
+}
+
+/// Deliberately short, and every entry is defensible on its own.
+///
+/// The bar for adding one: the transform must make the value incapable of
+/// carrying the named weakness, not merely less likely to. A guess here is a
+/// false negative, which is the expensive direction.
+const SANITIZERS: &[Sanitizer] = &[
+    // Numeric coercion cannot return anything that carries code or a command.
+    Sanitizer {
+        name: "parseInt",
+        neutralizes: &["CWE-95", "CWE-94", "CWE-78", "CWE-89"],
+    },
+    Sanitizer {
+        name: "parseFloat",
+        neutralizes: &["CWE-95", "CWE-94", "CWE-78", "CWE-89"],
+    },
+    Sanitizer {
+        name: "Number",
+        neutralizes: &["CWE-95", "CWE-94", "CWE-78", "CWE-89"],
+    },
+    // Python's int()/float() raise rather than returning a hostile value.
+    Sanitizer {
+        name: "int",
+        neutralizes: &["CWE-95", "CWE-94", "CWE-78", "CWE-89"],
+    },
+    Sanitizer {
+        name: "float",
+        neutralizes: &["CWE-95", "CWE-94", "CWE-78", "CWE-89"],
+    },
+    // Accepts literals only; cannot evaluate code.
+    Sanitizer {
+        name: "literal_eval",
+        neutralizes: &["CWE-95", "CWE-94"],
+    },
+    // Shell quoting: neutralizes metacharacters, nothing else.
+    Sanitizer {
+        name: "quote",
+        neutralizes: &["CWE-78"],
+    },
+    Sanitizer {
+        name: "escapeshellarg",
+        neutralizes: &["CWE-78"],
+    },
+    // Markup escaping: neutralizes XSS, and explicitly not code or commands.
+    Sanitizer {
+        name: "escapeHtml",
+        neutralizes: &["CWE-79"],
+    },
+    Sanitizer {
+        name: "sanitize",
+        neutralizes: &["CWE-79"],
+    },
+];
+
+/// Does this call neutralize `sink_cwe`?
+fn sanitizes(name: &str, sink_cwe: Option<&str>) -> Option<&'static Sanitizer> {
+    let sink_cwe = sink_cwe?;
+    SANITIZERS
+        .iter()
+        .find(|entry| entry.name == name && entry.neutralizes.contains(&sink_cwe))
 }
 
 /// How far a name is followed before giving up.
@@ -139,14 +218,20 @@ pub fn first_argument<'tree>(call: Node<'tree>) -> Option<Node<'tree>> {
 }
 
 /// Classify the value an expression evaluates to.
-pub fn classify_expression(node: Node<'_>, source: &str, function: Option<Node<'_>>) -> Taint {
-    classify_with_depth(node, source, function, 0)
+pub fn classify_expression(
+    node: Node<'_>,
+    source: &str,
+    function: Option<Node<'_>>,
+    sink_cwe: Option<&str>,
+) -> Taint {
+    classify_with_depth(node, source, function, sink_cwe, 0)
 }
 
 fn classify_with_depth(
     node: Node<'_>,
     source: &str,
     function: Option<Node<'_>>,
+    sink_cwe: Option<&str>,
     depth: usize,
 ) -> Taint {
     if depth > MAX_RESOLUTION_DEPTH {
@@ -173,8 +258,8 @@ fn classify_with_depth(
         let right = node.child_by_field_name("right");
         return match (left, right) {
             (Some(left), Some(right)) => {
-                let left = classify_with_depth(left, source, function, depth + 1);
-                let right = classify_with_depth(right, source, function, depth + 1);
+                let left = classify_with_depth(left, source, function, sink_cwe, depth + 1);
+                let right = classify_with_depth(right, source, function, sink_cwe, depth + 1);
                 combine(left, right)
             }
             _ => Taint::Unknown,
@@ -193,6 +278,11 @@ fn classify_with_depth(
 
     if matches!(kind, "call_expression" | "call") {
         if let Some(name) = called_name(node, source) {
+            // Checked before the source list: a value read from input and then
+            // coerced to a number is no longer dangerous for this sink.
+            if let Some(sanitizer) = sanitizes(name, sink_cwe) {
+                return Taint::Sanitized { by: sanitizer.name };
+            }
             if TAINTED_CALLS.contains(&name) {
                 return Taint::Tainted;
             }
@@ -208,7 +298,7 @@ fn classify_with_depth(
         if is_parameter(function, source, name) {
             return Taint::Tainted;
         }
-        return resolve_binding(function, source, name, node.start_byte(), depth);
+        return resolve_binding(function, source, name, node.start_byte(), sink_cwe, depth);
     }
 
     Taint::Unknown
@@ -219,6 +309,12 @@ fn combine(left: Taint, right: Taint) -> Taint {
     match (left, right) {
         (Taint::Tainted, _) | (_, Taint::Tainted) => Taint::Tainted,
         (Taint::Constant, Taint::Constant) => Taint::Constant,
+        // A sanitized value concatenated with a constant is still safe for this
+        // sink; anything less certain falls back to reporting.
+        (Taint::Sanitized { by }, Taint::Constant) | (Taint::Constant, Taint::Sanitized { by }) => {
+            Taint::Sanitized { by }
+        }
+        (Taint::Sanitized { by }, Taint::Sanitized { .. }) => Taint::Sanitized { by },
         _ => Taint::Unknown,
     }
 }
@@ -300,17 +396,29 @@ fn resolve_binding(
     source: &str,
     name: &str,
     before: usize,
+    sink_cwe: Option<&str>,
     depth: usize,
 ) -> Taint {
-    fn scan_scope(
-        scope: Node<'_>,
-        function: Node<'_>,
-        source: &str,
-        name: &str,
+    /// What a scope scan needs to know, grouped so the signature stays legible.
+    struct Query<'a> {
+        function: Node<'a>,
+        source: &'a str,
+        name: &'a str,
+        /// A definition after the use cannot be the one that reaches it.
         before: usize,
+        sink_cwe: Option<&'a str>,
         depth: usize,
-        result: &mut Option<Taint>,
-    ) {
+    }
+
+    fn scan_scope(scope: Node<'_>, query: &Query<'_>, result: &mut Option<Taint>) {
+        let Query {
+            function,
+            source,
+            name,
+            before,
+            sink_cwe,
+            depth,
+        } = *query;
         walk(scope, &mut |node| {
             let assigned = match node.kind() {
                 "variable_declarator" => node
@@ -326,7 +434,8 @@ fn resolve_binding(
             if let Some(value) = assigned {
                 // A definition after the use cannot be the one that reaches it.
                 if value.start_byte() <= before {
-                    let taint = classify_with_depth(value, source, Some(function), depth + 1);
+                    let taint =
+                        classify_with_depth(value, source, Some(function), sink_cwe, depth + 1);
                     // Any tainted reaching definition wins: over-approximating
                     // toward reporting is the safe direction.
                     *result = Some(match *result {
@@ -339,15 +448,23 @@ fn resolve_binding(
         });
     }
 
+    let query = Query {
+        function,
+        source,
+        name,
+        before,
+        sink_cwe,
+        depth,
+    };
     let mut result = None;
-    scan_scope(function, function, source, name, before, depth, &mut result);
+    scan_scope(function, &query, &mut result);
     if result.is_none() {
         // Widen to the file for module-level constants.
         let mut root = function;
         while let Some(parent) = root.parent() {
             root = parent;
         }
-        scan_scope(root, function, source, name, before, depth, &mut result);
+        scan_scope(root, &query, &mut result);
     }
     result.unwrap_or(Taint::Unknown)
 }
@@ -371,8 +488,14 @@ mod tests {
 
     /// Classify the argument of the call containing `needle`.
     fn taint_of(source: &str, language: &str, needle: &str) -> Taint {
+        taint_for_cwe(source, language, needle, None)
+    }
+
+    /// As above, but stating the weakness class the sink describes — which is
+    /// what decides whether a transform counts as sanitizing it.
+    fn taint_for_cwe(source: &str, language: &str, needle: &str, cwe: Option<&str>) -> Taint {
         let offset = source.find(needle).expect("needle present in fixture");
-        syntax::parse(source, language).taint_at(source, offset)
+        syntax::parse(source, language).taint_at(source, offset, cwe)
     }
 
     // ------------------------------------------------------------ constants
@@ -526,5 +649,119 @@ mod tests {
             ")".repeat(5_000)
         );
         let _ = taint_of(&source, "javascript", "eval(");
+    }
+
+    // ------------------------------------------------------------ sanitizers
+
+    #[test]
+    fn a_sanitizer_matched_to_the_sink_neutralizes_it() {
+        // parseInt cannot return anything carrying code.
+        let source = "function f(userInput) { return eval(parseInt(userInput, 10)); }\n";
+        assert!(matches!(
+            taint_for_cwe(source, "javascript", "eval(", Some("CWE-95")),
+            Taint::Sanitized { .. }
+        ));
+    }
+
+    #[test]
+    fn a_sanitizer_for_a_different_weakness_does_not_excuse_the_sink() {
+        // The property that makes this feature safe rather than dangerous.
+        // escapeHtml neutralizes markup and does nothing about code execution,
+        // so this is still a live RCE and must not be suppressed.
+        let source = "function f(userInput) { return eval(escapeHtml(userInput)); }\n";
+        let taint = taint_for_cwe(source, "javascript", "eval(", Some("CWE-95"));
+        assert!(
+            !matches!(taint, Taint::Sanitized { .. } | Taint::Constant),
+            "escapeHtml must not excuse a code-execution sink, got {taint:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_sanitizer_does_excuse_the_sink_it_covers() {
+        // The mirror of the test above: escapeHtml is genuine protection for
+        // an XSS sink, and recognising it there is the whole point.
+        let source = "function f(userInput) { return render(escapeHtml(userInput)); }\n";
+        assert!(matches!(
+            taint_for_cwe(source, "javascript", "render(", Some("CWE-79")),
+            Taint::Sanitized { .. }
+        ));
+    }
+
+    #[test]
+    fn shell_quoting_covers_command_injection_and_nothing_else() {
+        let source = "import shlex\ndef f(user):\n    return os.system(shlex.quote(user))\n";
+        assert!(matches!(
+            taint_for_cwe(source, "python", "system(", Some("CWE-78")),
+            Taint::Sanitized { .. }
+        ));
+        // The same call is not protection against code execution.
+        assert!(!matches!(
+            taint_for_cwe(source, "python", "system(", Some("CWE-95")),
+            Taint::Sanitized { .. }
+        ));
+    }
+
+    #[test]
+    fn a_sink_with_no_weakness_class_is_never_sanitized() {
+        // Without a CWE there is nothing to match against, so no transform can
+        // be shown to neutralize it. Abstaining keeps the finding.
+        let source = "function f(userInput) { return eval(parseInt(userInput)); }\n";
+        assert!(!matches!(
+            taint_for_cwe(source, "javascript", "eval(", None),
+            Taint::Sanitized { .. }
+        ));
+    }
+
+    #[test]
+    fn sanitizing_happens_even_when_the_inner_value_is_attacker_controlled() {
+        // The inner read is tainted; the coercion is what matters.
+        let source = "def f():\n    return eval(int(input()))\n";
+        assert!(matches!(
+            taint_for_cwe(source, "python", "eval(", Some("CWE-95")),
+            Taint::Sanitized { .. }
+        ));
+    }
+
+    #[test]
+    fn a_sanitized_value_concatenated_with_a_constant_stays_sanitized() {
+        let source = "function f(u) { return eval(\"x=\" + parseInt(u)); }\n";
+        assert!(matches!(
+            taint_for_cwe(source, "javascript", "eval(", Some("CWE-95")),
+            Taint::Sanitized { .. }
+        ));
+    }
+
+    #[test]
+    fn a_sanitized_value_concatenated_with_tainted_input_is_tainted() {
+        // Sanitizing one half of a concatenation protects nothing.
+        let source = "function f(u) { return eval(parseInt(u) + u); }\n";
+        assert_eq!(
+            taint_for_cwe(source, "javascript", "eval(", Some("CWE-95")),
+            Taint::Tainted
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_transform_is_not_treated_as_protection() {
+        // A function named like a sanitizer but not on the list must not be
+        // assumed to do anything. Guessing here is a false negative.
+        let source = "function f(u) { return eval(makeSafe(u)); }\n";
+        assert!(!matches!(
+            taint_for_cwe(source, "javascript", "eval(", Some("CWE-95")),
+            Taint::Sanitized { .. }
+        ));
+    }
+
+    #[test]
+    fn every_sanitizer_declares_at_least_one_weakness_class() {
+        // An entry covering nothing can never match, which would be a silently
+        // dead table row rather than an error.
+        for entry in SANITIZERS {
+            assert!(
+                !entry.neutralizes.is_empty(),
+                "{} neutralizes nothing",
+                entry.name
+            );
+        }
     }
 }
