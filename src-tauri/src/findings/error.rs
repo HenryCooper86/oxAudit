@@ -14,6 +14,7 @@ pub struct CommandError {
 #[serde(rename_all = "camelCase")]
 pub enum ErrorCode {
     InvalidTarget,
+    NothingToScan,
     ScanCancelled,
     ScanFailed,
     ScanAlreadyRunning,
@@ -33,6 +34,23 @@ impl CommandError {
         Self::new(
             ErrorCode::InvalidTarget,
             "The selected target cannot be scanned.",
+            false,
+        )
+    }
+
+    /// The target exists but contains nothing this scan would read.
+    ///
+    /// Distinct from `scan_failed` on purpose. Nothing broke — the target, the
+    /// ignore list, and the size limit between them selected no files, and the
+    /// only useful response names all three. Reporting it as a generic failure
+    /// tells the user nothing; reporting it as a clean scan would be worse,
+    /// because "no files were examined" and "no problems were found" are very
+    /// different statements for a security tool to make.
+    pub fn nothing_to_scan() -> Self {
+        Self::new(
+            ErrorCode::NothingToScan,
+            "No files were eligible for this scan. Check the target path, the ignored \
+             directories, and the maximum file size.",
             false,
         )
     }
