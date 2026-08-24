@@ -1,11 +1,80 @@
-# oxAudit — Security Research Workbench
+# oxAudit
 
-A cross-platform desktop app (Tauri v2 + React + Rust) that helps security analysts
-and developers find CVEs, scan source code for vulnerabilities and leaked secrets,
-scan applications for known vulnerable dependencies, and research vulnerabilities
-with the help of an AI assistant.
+**Find vulnerabilities and leaked credentials in source, dependencies, and
+binaries — on your machine, in your pipeline, and without sending your code
+anywhere.**
 
-![stack](https://img.shields.io/badge/Tauri-2-24c8db) ![stack](https://img.shields.io/badge/React-19-61dafb) ![stack](https://img.shields.io/badge/Rust-1.95-dea584)
+A desktop workbench and a command line over the same engine, so a finding in CI
+and a finding on a workstation are the same finding.
+
+<!-- SCREENSHOT: a populated Source Scan — findings list, one finding selected,
+     detail pane showing the review gates. 1440x900, both themes if practical.
+     Capture with `npm run tauri dev` against benchmarks/corpus. -->
+
+![Tauri 2](https://img.shields.io/badge/Tauri-2-24c8db)
+![React 19](https://img.shields.io/badge/React-19-61dafb)
+![Rust 1.97](https://img.shields.io/badge/Rust-1.97-dea584)
+![Licence Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)
+
+---
+
+## Install
+
+> **No release has been cut yet.** Build from source for now — see
+> [Development](#development). The release pipeline is in place and unused.
+
+When the first release lands, builds for macOS, Windows, and Linux will be
+published on the [releases page](https://github.com/HenryCooper86/oxAudit/releases),
+each signed and notarized, with a SHA-256 checksum, a SLSA build-provenance
+attestation, and a CycloneDX SBOM of oxAudit itself, so a download can be
+verified rather than trusted:
+
+```bash
+sha256sum -c SHA256SUMS.txt
+gh attestation verify <file> --repo HenryCooper86/oxAudit
+```
+
+The desktop app and `oxaudit-cli` ship together.
+
+## Sixty seconds
+
+```bash
+# What is in this project?
+oxaudit-cli scan .
+
+# Put it in a pipeline. --fail-on is opt-in, so this reports without
+# breaking your build until you ask it to.
+oxaudit-cli scan . --format sarif --output oxaudit.sarif --fail-on high
+```
+
+In GitHub Actions:
+
+```yaml
+- run: oxaudit-cli scan . --format sarif --output oxaudit.sarif
+- uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: oxaudit.sarif
+```
+
+Reviewed something and decided it is not a problem? Record it in
+[`.oxaudit/policy.json`](#suppressing-a-finding) and it stops failing the build —
+with a reason, an expiry, and a pull request.
+
+## What makes it different
+
+- **It tells you how accurate it is.** [Detection quality](#detection-quality) is
+  measured against a committed corpus and published per rule, including the
+  numbers that are not flattering. CI fails if they regress.
+- **Every finding says how far it was verified** — `syntax` when a parser
+  confirmed the match sits in code rather than a comment, `text` when no grammar
+  was available.
+- **Nothing is sent anywhere.** Scanning is local. oxAudit contacts NVD, OSV,
+  CISA KEV, and FIRST EPSS, plus whatever AI endpoint you configure — and
+  nothing else. There is no telemetry to opt out of.
+- **Dismissals are decisions, not deletions.** A suppressed finding stays in the
+  report with its reason and its author, and expires.
+- **The assistant asks before it reaches the network**, and cannot reach your
+  own machine or network at all. See [Security notes](#security-notes).
 
 ---
 
