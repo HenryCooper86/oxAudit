@@ -407,6 +407,12 @@ pub struct AppSettings {
     /// Explicit grype path. Empty means "find it on PATH".
     #[serde(default)]
     pub grype_path: Option<String>,
+    /// Extra hosts the assistant's `web_fetch` tool may read from, on top of
+    /// the advisory sources in `agent::egress::DEFAULT_ALLOWED_HOSTS`. Entries
+    /// may be bare hosts or pasted URLs. Defaulted so settings files written
+    /// before the egress policy existed still load.
+    #[serde(default)]
+    pub agent_allowed_fetch_hosts: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -419,6 +425,7 @@ impl Default for AppSettings {
             binary_scanner_path: None,
             binary_scanner_runtime: None,
             grype_path: None,
+            agent_allowed_fetch_hosts: Vec::new(),
         }
     }
 }
