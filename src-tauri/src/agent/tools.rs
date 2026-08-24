@@ -550,9 +550,14 @@ pub fn builtins() -> Vec<Tool> {
             }
         ),
         // ------------------------------------------------------------- web_fetch
+        //
+        // Registered `dangerous`, so every call goes through HITL approval and
+        // the user sees the URL first. The egress policy in `agent::egress`
+        // then applies on top of that approval, and its address guard applies
+        // even when the user says yes — see that module for why.
         crate::tool!(
             "web_fetch",
-            "Fetch an http(s) URL and return its visible text (HTML stripped). Use to read vendor advisories, PoC write-ups, NVD/OSV pages, etc.",
+            "Fetch an http(s) URL and return its visible text (HTML stripped). Use to read vendor advisories, PoC write-ups, NVD/OSV pages, etc. Requires the user's approval, and only reaches hosts they allow.",
             json!({
                 "type": "object",
                 "properties": {
@@ -561,31 +566,80 @@ pub fn builtins() -> Vec<Tool> {
                 },
                 "required": ["url"]
             }),
-            true, false, false,
+            false, false, true,
             |ctx, args| {
                 let url = arg_str(&args, "url")?;
-                let parsed = reqwest::Url::parse(&url).map_err(|e| format!("invalid URL: {e}"))?;
-                if !matches!(parsed.scheme(), "http" | "https") {
-                    return Err("only http(s) URLs are allowed".into());
-                }
                 let max_bytes = arg_u64_default(&args, "max_bytes", 262144).min(262144) as usize;
                 let st = ctx.state().ok_or("app state unavailable")?;
-                let http = st.http.clone();
-                let resp = http
-                    .get(parsed)
-                    .timeout(std::time::Duration::from_secs(20))
-                    .send()
-                    .await
-                    .map_err(|e| format!("fetch failed: {e}"))?;
-                if !resp.status().is_success() {
-                    return Err(format!("endpoint returned {}", resp.status()));
-                }
-                let bytes = resp.bytes().await.map_err(|e| format!("read failed: {e}"))?;
+                let policy = {
+                    let settings = st.settings.lock().map_err(|_| "settings unavailable")?;
+                    crate::agent::egress::EgressPolicy::new(&settings.agent_allowed_fetch_hosts)
+                };
+                let http = st.http_no_redirect.clone();
+
+                let mut current =
+                    reqwest::Url::parse(&url).map_err(|e| format!("invalid URL: {e}"))?;
+                let mut hops = 0usize;
+
+                let (final_url, bytes) = loop {
+                    // Validate *this* hop before a single byte is sent. A host
+                    // that cleared the check and then redirected inward is the
+                    // whole reason the loop re-checks rather than trusting the
+                    // URL the model supplied.
+                    guard_egress(&policy, &current).await?;
+
+                    let response = http
+                        .get(current.clone())
+                        .timeout(std::time::Duration::from_secs(20))
+                        .send()
+                        .await
+                        .map_err(|e| format!("fetch failed: {e}"))?;
+
+                    let status = response.status();
+                    if status.is_redirection() {
+                        hops += 1;
+                        if hops > crate::agent::egress::MAX_REDIRECTS {
+                            return Err(
+                                crate::agent::egress::EgressError::TooManyRedirects.to_string()
+                            );
+                        }
+                        let location = response
+                            .headers()
+                            .get(reqwest::header::LOCATION)
+                            .and_then(|value| value.to_str().ok())
+                            .ok_or_else(|| {
+                                format!("endpoint returned {status} with no Location header")
+                            })?;
+                        // Relative targets resolve against the hop we are on.
+                        current = current.join(location).map_err(|_| {
+                            crate::agent::egress::EgressError::InvalidRedirect(
+                                location.to_owned(),
+                            )
+                            .to_string()
+                        })?;
+                        continue;
+                    }
+
+                    if !status.is_success() {
+                        return Err(format!("endpoint returned {status}"));
+                    }
+                    let bytes = response
+                        .bytes()
+                        .await
+                        .map_err(|e| format!("read failed: {e}"))?;
+                    break (current, bytes);
+                };
+
                 let slice = &bytes[..bytes.len().min(max_bytes)];
                 let raw = String::from_utf8_lossy(slice);
                 let text = strip_html(&raw);
                 let text = crate::scanners::secrets::truncate(&text, 20000);
-                Ok(json!({ "url": url, "content": text, "truncated": bytes.len() > max_bytes }))
+                Ok(json!({
+                    "url": final_url.to_string(),
+                    "content": text,
+                    "truncated": bytes.len() > max_bytes,
+                    "redirects": hops,
+                }))
             }
         ),
         // -------------------------------------------------------------- ask_user
@@ -828,6 +882,66 @@ fn strip_html(raw: &str) -> String {
     let s = re_ws.replace_all(&s, " ");
     let s = re_nl.replace_all(&s, "\n\n");
     s.trim().to_string()
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::builtins;
+    use crate::agent::guardrails::{classify, Permission};
+
+    fn spec_named(name: &str) -> crate::agent::tool::ToolSpec {
+        builtins()
+            .into_iter()
+            .find(|tool| tool.spec.name == name)
+            .unwrap_or_else(|| panic!("{name} is not registered"))
+            .spec
+    }
+
+    #[test]
+    fn web_fetch_requires_human_approval() {
+        // Regression guard. `web_fetch` was registered read-only, which
+        // `classify` maps straight to Allow — so the agent could reach an
+        // arbitrary URL with no prompt, while its context was full of source
+        // code from the project under scan. Outbound network access driven by
+        // untrusted input is not a read-only operation.
+        let spec = spec_named("web_fetch");
+        assert!(spec.dangerous, "web_fetch must stay classified dangerous");
+        assert!(
+            !spec.read_only,
+            "web_fetch must not be treated as read-only"
+        );
+        assert_eq!(classify(&spec), Permission::Ask);
+    }
+
+    #[test]
+    fn tools_that_only_read_the_project_stay_auto_allowed() {
+        // The counterpart guard: tightening web_fetch must not make the
+        // read-only tools prompt on every call, which would train users to
+        // click through approvals without reading them.
+        for name in ["read_file", "grep_project", "glob"] {
+            let spec = spec_named(name);
+            assert_eq!(
+                classify(&spec),
+                Permission::Allow,
+                "{name} should not prompt"
+            );
+        }
+    }
+
+    #[test]
+    fn every_registered_tool_has_a_decidable_permission() {
+        // `classify` denies anything unclassified. A tool registered with all
+        // three flags false is silently dead, which is a worse failure than a
+        // loud one.
+        for tool in builtins() {
+            assert_ne!(
+                classify(&tool.spec),
+                Permission::Deny,
+                "{} is registered such that it can never run",
+                tool.spec.name
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1114,4 +1228,41 @@ mod tests {
             Err("path escapes the project root".into())
         );
     }
+}
+
+/// Apply the egress policy to one hop: scheme, host allow-list, then every
+/// address that host resolves to.
+///
+/// Resolving here and connecting a moment later leaves a DNS-rebinding window we
+/// cannot close without owning the socket. Narrowing it is still worth doing:
+/// it turns "any hostname reaches any internal service" into "an attacker must
+/// win a race against a host the user already allow-listed".
+async fn guard_egress(
+    policy: &crate::agent::egress::EgressPolicy,
+    url: &reqwest::Url,
+) -> Result<(), String> {
+    use crate::agent::egress::{self, EgressError};
+
+    policy
+        .check_url(&egress::url_lite::Url::from(url))
+        .map_err(|error| error.to_string())?;
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| EgressError::MissingHost.to_string())?
+        .to_owned();
+    let port = url.port_or_known_default().unwrap_or(443);
+
+    // A literal address in the URL never goes near the resolver.
+    if let Ok(literal) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        return egress::check_address(&host, literal).map_err(|error| error.to_string());
+    }
+
+    let addresses: Vec<std::net::IpAddr> = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|_| EgressError::UnresolvableHost(host.clone()).to_string())?
+        .map(|socket| socket.ip())
+        .collect();
+
+    egress::check_addresses(&host, &addresses).map_err(|error| error.to_string())
 }

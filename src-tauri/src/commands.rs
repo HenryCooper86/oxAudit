@@ -1423,6 +1423,10 @@ pub struct AppState {
     pub settings: Mutex<AppSettings>,
     pub credentials: Arc<dyn crate::credentials::CredentialStore>,
     pub http: reqwest::Client,
+    /// Used only by the assistant's `web_fetch`. Redirects are *not* followed
+    /// automatically: each hop has to clear the egress policy first, and a
+    /// client that follows them for us would skip that check.
+    pub http_no_redirect: reqwest::Client,
     pub ai: AiClient,
     /// Shared per-tool request budgets for network-backed assistant tools.
     pub tool_rate_limiter: crate::agent::rate_limit::ToolRateLimiter,
@@ -1467,10 +1471,18 @@ impl AppState {
             .connect_timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build HTTP client");
+        let http_no_redirect = reqwest::Client::builder()
+            .user_agent("oxAudit/0.1 (security research)")
+            .gzip(true)
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("failed to build restricted HTTP client");
         Self {
             settings: Mutex::new(AppSettings::default()),
             credentials,
             http: http.clone(),
+            http_no_redirect,
             ai: AiClient::new(http.clone()),
             tool_rate_limiter: crate::agent::rate_limit::ToolRateLimiter::oxaudit_defaults(),
             osv: OsvClient::new(http.clone()),
