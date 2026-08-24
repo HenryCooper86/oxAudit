@@ -355,6 +355,16 @@ impl FindingsService {
         let canonical = Path::new(&options.path)
             .canonicalize()
             .map_err(|_| CommandError::invalid_target())?;
+        // The span covers the whole run, so every event underneath it carries
+        // the run's identity — which is what makes a log from a user's machine
+        // readable at all.
+        tracing::info!(
+            target_path = %canonical.display(),
+            scan_secrets = options.scan_secrets,
+            scan_vulnerabilities = options.scan_vulnerabilities,
+            max_file_size_kb = options.max_file_size_kb,
+            "scan starting"
+        );
         if !canonical.is_dir() {
             return Err(CommandError::invalid_target());
         }
@@ -649,6 +659,15 @@ impl FindingsService {
                 findings: findings.clone(),
                 maintenance_warning: None,
             };
+
+            tracing::info!(
+                run_id = %run_id,
+                files_scanned = summary.files_scanned,
+                files_skipped = summary.files_skipped,
+                findings = summary.total_findings,
+                duration_ms = summary.duration_ms,
+                "scan completed"
+            );
 
             managed_run
                 .as_mut()
