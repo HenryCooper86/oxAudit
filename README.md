@@ -258,6 +258,14 @@ eval(userInput)             // parameter — reported
 eval(req.body.expr)         // request data — reported
 ```
 
+A call chain is one expression: if any link takes a value an attacker chooses,
+the whole chain does.
+
+```rust
+Command::new("sh").arg("-lc").arg("ls").status()   // fixed — not reported
+Command::new("sh").arg("-lc").arg(user).status()   // reported
+```
+
 A transform that neutralizes the sink's weakness clears it:
 
 ```js
@@ -295,6 +303,8 @@ machine one.
 
 Three limits, stated because they bound what the result means:
 
+- **Five languages.** JavaScript/TypeScript, Python, Java, Rust, and Go. A
+  language without a grammar is never suppressed on a guess.
 - **Intraprocedural.** Analysis stops at the enclosing function. Following a
   value across call boundaries needs a call graph, and a wrong one produces
   confident nonsense.

@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 42,
-    "positives": 14,
-    "negatives": 28,
-    "rules": 8
+    "fixtures": 50,
+    "positives": 18,
+    "negatives": 32,
+    "rules": 12
   },
   "targets": [
     {
@@ -321,6 +321,72 @@
       "expected": [
         {
           "ruleId": "private-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "go-exec-shell.negative.literal-argument",
+      "inputPath": "source/go-exec-shell__negative__literal-argument.go",
+      "inputSha256": "f0c5f81e058aa63181f28f498e4bd97c6d47d71e6f84fb035b7e71980dbaee57",
+      "language": "go",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "go-exec-shell",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "go-exec-shell"
+        }
+      ]
+    },
+    {
+      "id": "go-exec-shell.positive.parameter-argument",
+      "inputPath": "source/go-exec-shell__positive__parameter-argument.go",
+      "inputSha256": "47f44a8aa0d5c2e96d4c32d08bb8333bba7482777bfd57aae0a299f8b3bc2212",
+      "language": "go",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "go-exec-shell",
+      "expected": [
+        {
+          "ruleId": "go-exec-shell",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-runtime-exec.negative.literal-command",
+      "inputPath": "source/java-runtime-exec__negative__literal-command.java",
+      "inputSha256": "71ff8e44ecf4be0924e08ebdac92c017b6255cc28b1b5840f761744197be6db7",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-runtime-exec"
+        }
+      ]
+    },
+    {
+      "id": "java-runtime-exec.positive.parameter-command",
+      "inputPath": "source/java-runtime-exec__positive__parameter-command.java",
+      "inputSha256": "db23b661a9dd72669e6bac1f51acd3259062a1ed5c65977aed9e686434ea1b84",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [
+        {
+          "ruleId": "java-runtime-exec",
           "minimum": 1
         }
       ],
@@ -703,6 +769,72 @@
           "ruleId": "py-weak-hash"
         }
       ]
+    },
+    {
+      "id": "rs-command-sh.negative.literal-program",
+      "inputPath": "source/rs-command-sh__negative__literal-program.rs",
+      "inputSha256": "b3ae2666080cfadd1c7f624b76fe431761bd5e12992a0c1ef89117199388e6e6",
+      "language": "rust",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rs-command-sh",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "rs-command-sh"
+        }
+      ]
+    },
+    {
+      "id": "rs-command-sh.positive.parameter-program",
+      "inputPath": "source/rs-command-sh__positive__parameter-program.rs",
+      "inputSha256": "689b9424d44651b1c237eab325fb46623ae5e77b1d721573ef6ed6f93ed83557",
+      "language": "rust",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rs-command-sh",
+      "expected": [
+        {
+          "ruleId": "rs-command-sh",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "rs-sql-format.negative.parameterized-query",
+      "inputPath": "source/rs-sql-format__negative__parameterized-query.rs",
+      "inputSha256": "01fa8d5710119cab8d3b7e201f84430814e475dfdc7cfd67968b84861c1ce2a5",
+      "language": "rust",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rs-sql-format",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "rs-sql-format"
+        }
+      ]
+    },
+    {
+      "id": "rs-sql-format.positive.format-macro",
+      "inputPath": "source/rs-sql-format__positive__format-macro.rs",
+      "inputSha256": "af8d901f4747178460fa3689e4071db7f5f3a8af5dd72d676bf998d982162bfe",
+      "language": "rust",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rs-sql-format",
+      "expected": [
+        {
+          "ruleId": "rs-sql-format",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
     }
   ]
 }

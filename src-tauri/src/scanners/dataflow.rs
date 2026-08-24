@@ -180,6 +180,21 @@ fn is_literal_kind(kind: &str) -> bool {
             | "null"
             | "concatenated_string"
             | "char_literal"
+            // Java
+            | "decimal_integer_literal"
+            | "decimal_floating_point_literal"
+            | "true_literal"
+            | "false_literal"
+            | "null_literal"
+            // Go
+            | "interpreted_string_literal"
+            | "raw_string_literal"
+            | "int_literal"
+            | "float_literal"
+            // Rust
+            | "integer_literal"
+            | "float_literal_rs"
+            | "boolean_literal"
     )
 }
 
@@ -210,30 +225,109 @@ fn is_interpolated(node: Node<'_>) -> bool {
     interpolated
 }
 
-/// The call expression a sink offset falls inside, if any.
+/// The receiver of a member access, whatever the grammar calls that field.
 ///
-/// The rule matched `eval(`, so the offset lands on the callee. What matters is
-/// the enclosing call, because that is what carries the arguments.
+/// JavaScript and Java say `object`, Go says `operand`, Rust says `value`.
+/// Looking for only one of them silently truncated the chain walk.
+fn member_object<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+    node.child_by_field_name("object")
+        .or_else(|| node.child_by_field_name("operand"))
+        .or_else(|| node.child_by_field_name("value"))
+}
+
+fn is_member_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "member_expression"
+            | "selector_expression"
+            | "field_access"
+            | "attribute"
+            // Rust
+            | "field_expression"
+            | "scoped_identifier"
+    )
+}
+
+fn is_call_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "call_expression" | "call" | "new_expression" | "method_invocation"
+    )
+}
+
+/// The outermost call of the chain the sink belongs to.
+///
+/// `Command::new("sh")` is flagged because it spawns a shell, but the value an
+/// attacker chooses arrives later, in `.arg(user)`. Stopping at the innermost
+/// call would read only `"sh"`, call it constant, and drop the finding — which
+/// is what happened before this walked the chain.
+///
+/// Climbing continues only while the sink sits in the *callee* of the parent
+/// call, which is exactly what a fluent chain looks like. A call in argument
+/// position is a different expression and is classified on its own.
 pub fn enclosing_call<'tree>(root: Node<'tree>, offset: usize) -> Option<Node<'tree>> {
     let mut node = root.descendant_for_byte_range(offset, offset)?;
+    while !is_call_kind(node.kind()) {
+        node = node.parent()?;
+    }
     loop {
-        if matches!(node.kind(), "call_expression" | "call" | "new_expression") {
+        let Some(parent) = node.parent() else {
+            return Some(node);
+        };
+        let ascend = if is_member_kind(parent.kind()) {
+            // Chained through a member access: `.arg(...)` on the result.
+            true
+        } else if is_call_kind(parent.kind()) {
+            // Part of the parent call's callee rather than its arguments. A
+            // call in argument position is a separate expression, classified
+            // on its own.
+            !parent
+                .child_by_field_name("arguments")
+                .or_else(|| parent.child_by_field_name("argument"))
+                .is_some_and(|args| args.byte_range().contains(&node.start_byte()))
+        } else {
+            false
+        };
+        if !ascend {
             return Some(node);
         }
-        node = node.parent()?;
+        node = parent;
     }
 }
 
-/// The first argument of a call, skipping punctuation.
-pub fn first_argument<'tree>(call: Node<'tree>) -> Option<Node<'tree>> {
-    let arguments = call
-        .child_by_field_name("arguments")
-        .or_else(|| call.child_by_field_name("argument"))?;
-    let mut cursor = arguments.walk();
-    let first = arguments
-        .children(&mut cursor)
-        .find(|child| child.is_named() && child.kind() != "comment");
-    first
+/// Every argument passed anywhere in a call chain.
+///
+/// A fluent chain is one expression as far as an attacker is concerned: if any
+/// link takes a value they control, the whole thing does.
+pub fn chain_arguments<'tree>(call: Node<'tree>) -> Vec<Node<'tree>> {
+    let mut arguments = Vec::new();
+    let mut stack = vec![call];
+    while let Some(node) = stack.pop() {
+        if is_call_kind(node.kind()) {
+            if let Some(list) = node
+                .child_by_field_name("arguments")
+                .or_else(|| node.child_by_field_name("argument"))
+            {
+                let mut cursor = list.walk();
+                for child in list.children(&mut cursor) {
+                    if child.is_named() && child.kind() != "comment" {
+                        arguments.push(child);
+                    }
+                }
+            }
+        }
+        // Descend the callee only: arguments are collected, not walked into,
+        // so a nested call stays one argument rather than contributing its own.
+        if let Some(callee) = node.child_by_field_name("function") {
+            stack.push(callee);
+        }
+        if is_member_kind(node.kind()) {
+            if let Some(object) = member_object(node) {
+                stack.push(object);
+            }
+        }
+    }
+    arguments
 }
 
 /// Classify the value an expression evaluates to.
@@ -258,6 +352,13 @@ fn classify_with_depth(
     }
 
     let kind = node.kind();
+
+    if matches!(kind, "keyword_argument" | "labeled_argument") {
+        return match node.child_by_field_name("value") {
+            Some(value) => classify_with_depth(value, source, function, sink_cwe, depth + 1),
+            None => Taint::Unknown,
+        };
+    }
 
     if is_literal_kind(kind) || kind == "template_string" {
         // An interpolated string is not a constant, whatever its node kind.
@@ -286,7 +387,7 @@ fn classify_with_depth(
     }
 
     // `req.body.expression` — the root decides.
-    if matches!(kind, "member_expression" | "attribute" | "subscript") {
+    if is_member_kind(kind) || kind == "subscript" {
         if let Some(root) = leftmost_identifier(node, source) {
             if TAINTED_ROOTS.contains(&root) {
                 return Taint::Tainted;
@@ -324,6 +425,24 @@ fn classify_with_depth(
     Taint::Unknown
 }
 
+/// Fold the assessments of every argument in a call into one.
+///
+/// Tainted dominates: one attacker-chosen argument is enough. A call is only
+/// constant when every argument is.
+pub fn combine_all(assessments: impl Iterator<Item = Taint>) -> Taint {
+    let mut folded: Option<Taint> = None;
+    for assessment in assessments {
+        folded = Some(match folded {
+            None => assessment,
+            Some(previous) => combine(previous, assessment),
+        });
+        if matches!(folded, Some(Taint::Tainted)) {
+            return Taint::Tainted;
+        }
+    }
+    folded.unwrap_or(Taint::Unknown)
+}
+
 /// Two operands combine to constant only when both are constant.
 fn combine(left: Taint, right: Taint) -> Taint {
     match (left, right) {
@@ -346,10 +465,8 @@ fn leftmost_identifier<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
     let mut current = node;
     loop {
         match current.kind() {
-            "member_expression" | "attribute" | "subscript" => {
-                current = current
-                    .child_by_field_name("object")
-                    .or_else(|| current.child_by_field_name("value"))?;
+            kind if is_member_kind(kind) || kind == "subscript" => {
+                current = member_object(current)?;
             }
             kind if is_identifier_kind(kind) => return Some(text(current, source)),
             _ => return None,
@@ -384,6 +501,14 @@ pub fn enclosing_function<'tree>(root: Node<'tree>, offset: usize) -> Option<Nod
                 | "arrow_function"
                 | "method_definition"
                 | "function"
+                // Rust
+                | "function_item"
+                // Java
+                | "method_declaration"
+                | "constructor_declaration"
+                // Go
+                | "func_literal"
+                | "method_declaration_go"
         ) {
             return Some(node);
         }
@@ -399,13 +524,30 @@ fn is_parameter(function: Node<'_>, source: &str, name: &str) -> bool {
     else {
         return false;
     };
-    let mut found = false;
+    let mut named = false;
+    let mut any_identifier = false;
     walk(parameters, &mut |node| {
+        if matches!(
+            node.kind(),
+            "formal_parameter" | "parameter" | "required_parameter" | "parameter_declaration"
+        ) {
+            if let Some(declared) = node
+                .child_by_field_name("name")
+                .or_else(|| node.child_by_field_name("pattern"))
+            {
+                if text(declared, source) == name {
+                    named = true;
+                }
+            }
+        }
         if is_identifier_kind(node.kind()) && text(node, source) == name {
-            found = true;
+            any_identifier = true;
         }
     });
-    found
+    // The declared name is authoritative where the grammar exposes one. Falling
+    // back to any identifier over-approximates toward reporting, which is the
+    // safe direction for a grammar that does not.
+    named || any_identifier
 }
 
 /// Find what `name` was assigned, searching the function then the whole file.
@@ -909,5 +1051,100 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --------------------------------------------------- chains and languages
+
+    #[test]
+    fn a_fluent_chain_is_judged_by_every_argument_in_it() {
+        // Command::new("sh") is flagged for spawning a shell, but the value an
+        // attacker chooses arrives later. Reading only the first call saw
+        // "sh", called it constant, and dropped the finding.
+        let tainted =
+            "fn run(user: &str) {\n    Command::new(\"sh\").arg(\"-lc\").arg(user).status();\n}\n";
+        assert_eq!(
+            taint_for_cwe(tainted, "rust", "Command::new", Some("CWE-78")),
+            Taint::Tainted
+        );
+
+        let fixed = "fn run() {\n    Command::new(\"sh\").arg(\"-lc\").arg(\"ls\").status();\n}\n";
+        assert_eq!(
+            taint_for_cwe(fixed, "rust", "Command::new", Some("CWE-78")),
+            Taint::Constant
+        );
+    }
+
+    #[test]
+    fn java_chains_through_its_receiver() {
+        let tainted =
+            "class A { void f(String userInput) { Runtime.getRuntime().exec(userInput); } }";
+        assert_eq!(
+            taint_for_cwe(tainted, "java", "Runtime.getRuntime", Some("CWE-78")),
+            Taint::Tainted
+        );
+
+        let fixed = "class A { void f() { Runtime.getRuntime().exec(\"ls -la\"); } }";
+        assert_eq!(
+            taint_for_cwe(fixed, "java", "Runtime.getRuntime", Some("CWE-78")),
+            Taint::Constant
+        );
+    }
+
+    #[test]
+    fn go_reads_arguments_beyond_the_first() {
+        // exec.Command("sh", "-c", user): the danger is the third argument.
+        let tainted = "package main\nfunc f(user string) { exec.Command(\"sh\", \"-c\", user) }\n";
+        assert_eq!(
+            taint_for_cwe(tainted, "go", "exec.Command", Some("CWE-78")),
+            Taint::Tainted
+        );
+
+        let fixed = "package main\nfunc f() { exec.Command(\"sh\", \"-c\", \"ls\") }\n";
+        assert_eq!(
+            taint_for_cwe(fixed, "go", "exec.Command", Some("CWE-78")),
+            Taint::Constant
+        );
+    }
+
+    #[test]
+    fn a_keyword_argument_is_judged_by_its_value() {
+        // `shell=True` is configuration, not data. Reading it as undetermined
+        // kept every subprocess finding the analysis had actually cleared.
+        let source = "import subprocess\ndef f():\n    subprocess.run(\"ls -la\", shell=True)\n";
+        assert_eq!(
+            taint_for_cwe(source, "python", "subprocess.run", Some("CWE-78")),
+            Taint::Constant
+        );
+    }
+
+    #[test]
+    fn a_call_in_argument_position_does_not_extend_the_chain() {
+        // eval(escapeHtml(u)) must classify escapeHtml as an argument, not walk
+        // into it as though it were a chained call.
+        let source = "function f(u) { return eval(escapeHtml(u)); }\n";
+        assert!(matches!(
+            taint_for_cwe(source, "javascript", "eval(", Some("CWE-95")),
+            Taint::SanitizedElsewhere { .. }
+        ));
+    }
+
+    #[test]
+    fn one_tainted_argument_taints_the_whole_call() {
+        let source = "function f(u) { return exec(\"prefix\", u, \"suffix\"); }\n";
+        assert_eq!(
+            taint_for_cwe(source, "javascript", "exec(", Some("CWE-78")),
+            Taint::Tainted
+        );
+    }
+
+    #[test]
+    fn a_type_name_is_not_mistaken_for_a_parameter() {
+        // `String userInput` puts two identifiers in the parameter list. A
+        // variable called String must not read as attacker-controlled.
+        let source = "class A { void f(String userInput) { exec(String); } }";
+        assert_ne!(
+            taint_for_cwe(source, "java", "exec(", Some("CWE-78")),
+            Taint::Tainted
+        );
     }
 }
