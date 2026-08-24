@@ -55,6 +55,25 @@ type ScanPause = (
     std::sync::Arc<std::sync::Barrier>,
 );
 
+/// One finding a bulk review could not be recorded against.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkReviewFailure {
+    pub fingerprint: String,
+    pub message: String,
+}
+
+/// What a bulk review actually did.
+///
+/// Both halves are reported. A caller that only learns "it worked" cannot tell
+/// a reviewer that three of their forty decisions did not land.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkReviewOutcome {
+    pub recorded: Vec<ReviewRecord>,
+    pub failures: Vec<BulkReviewFailure>,
+}
+
 pub struct FindingsService {
     repository: FindingsRepository,
     active_projects: Mutex<HashSet<String>>,
@@ -342,6 +361,37 @@ impl FindingsService {
                 save_project_policy_review(&self.repository, request, now)
             }
         }
+    }
+
+    /// Record the same decision against many findings.
+    ///
+    /// A first scan of a real project produces hundreds of findings, and
+    /// dismissing them one at a time is where a scanner gets abandoned. This
+    /// exists so a reviewer can act on a whole class at once.
+    ///
+    /// Deliberately *not* atomic. Reviews are an append-only history, so a
+    /// partial run cannot be rolled back into "nothing happened" without
+    /// writing more history to undo history — and a reviewer who marked 40
+    /// findings would rather keep the 37 that succeeded than lose them because
+    /// three were stale. Every outcome is reported per finding instead, so a
+    /// partial result is visible rather than silent.
+    pub fn save_reviews(
+        &self,
+        requests: &[ReviewRequest],
+        now: DateTime<Utc>,
+    ) -> BulkReviewOutcome {
+        let mut recorded = Vec::new();
+        let mut failures = Vec::new();
+        for request in requests {
+            match self.save_review(request, now) {
+                Ok(record) => recorded.push(record),
+                Err(error) => failures.push(BulkReviewFailure {
+                    fingerprint: request.fingerprint.clone(),
+                    message: error.message.clone(),
+                }),
+            }
+        }
+        BulkReviewOutcome { recorded, failures }
     }
 
     pub async fn scan<E: ScanEventSink + ?Sized>(
@@ -3569,5 +3619,157 @@ mod tests {
             saved.maintenance_warning.as_deref(),
             Some(expected.as_str())
         );
+    }
+
+    /// A scanned project with several findings, for the bulk-review tests.
+    async fn scanned_project_with_findings() -> (
+        tempfile::TempDir,
+        FindingsService,
+        crate::findings::domain::ScanRunDetail,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path();
+        std::fs::write(project.join("a.js"), "const a = eval(x);\n").unwrap();
+        std::fs::write(project.join("b.js"), "const b = eval(y);\n").unwrap();
+        std::fs::write(project.join("c.js"), "document.write(z);\n").unwrap();
+
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        let detail = service
+            .scan(
+                ScanOptions {
+                    path: project.to_string_lossy().into_owned(),
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cached_cve_state(),
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await
+            .unwrap();
+        (directory, service, detail)
+    }
+
+    fn dismissal(
+        project_id: &str,
+        finding: &crate::models::Finding,
+    ) -> crate::findings::domain::ReviewRequest {
+        crate::findings::domain::ReviewRequest {
+            project_id: project_id.to_owned(),
+            fingerprint_version: finding.fingerprint_version,
+            fingerprint: finding.fingerprint.clone(),
+            category: finding.category.clone(),
+            state: crate::findings::domain::ReviewState::AcceptedRisk,
+            reason: "Reviewed as a class during triage; tracked in SEC-441.".into(),
+            evidence: None,
+            entry_point: None,
+            data_flow: None,
+            gates: Vec::new(),
+            deciding_gate: None,
+            expires_at: None,
+            origin: crate::findings::domain::ReviewOrigin::Local,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bulk_review_records_every_decision() {
+        let (_directory, service, detail) = scanned_project_with_findings().await;
+        assert!(
+            detail.findings.len() >= 3,
+            "fixture should produce findings"
+        );
+
+        let requests: Vec<_> = detail
+            .findings
+            .iter()
+            .map(|finding| dismissal(&detail.project_id, finding))
+            .collect();
+
+        let outcome = service.save_reviews(&requests, chrono::Utc::now());
+        assert_eq!(outcome.recorded.len(), requests.len());
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+
+        // The decisions have to survive as history, not just be reported back.
+        let reloaded = service.load_run(&detail.run_id).unwrap();
+        for finding in &reloaded.findings {
+            assert_eq!(
+                finding.review.as_ref().map(|review| review.state),
+                Some(crate::findings::domain::ReviewState::AcceptedRisk),
+                "{} was not recorded",
+                finding.file_path
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bulk_review_reports_each_failure_instead_of_swallowing_it() {
+        let (_directory, service, detail) = scanned_project_with_findings().await;
+
+        let mut requests: Vec<_> = detail
+            .findings
+            .iter()
+            .take(2)
+            .map(|finding| dismissal(&detail.project_id, finding))
+            .collect();
+        // A fingerprint that belongs to no finding in this project.
+        let mut orphan = requests[0].clone();
+        orphan.fingerprint = "not-a-real-fingerprint".into();
+        requests.push(orphan);
+
+        let outcome = service.save_reviews(&requests, chrono::Utc::now());
+
+        // Partial results are kept and reported. A reviewer who acted on forty
+        // findings would rather keep the ones that landed than lose them all
+        // because one was stale — but they must be told which did not.
+        assert_eq!(outcome.recorded.len(), 2);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].fingerprint, "not-a-real-fingerprint");
+        assert!(!outcome.failures[0].message.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bulk_review_appends_rather_than_replacing_history() {
+        let (_directory, service, detail) = scanned_project_with_findings().await;
+        let finding = &detail.findings[0];
+
+        // Two gate-free states: confirming a vulnerability additionally
+        // requires the falsification gates, which is a separate invariant.
+        let mut first = dismissal(&detail.project_id, finding);
+        first.state = crate::findings::domain::ReviewState::Suppressed;
+        first.reason = "Suppressed during the first triage pass.".into();
+        service.save_review(&first, chrono::Utc::now()).unwrap();
+
+        let second = dismissal(&detail.project_id, finding);
+        let outcome = service.save_reviews(std::slice::from_ref(&second), chrono::Utc::now());
+        assert_eq!(outcome.recorded.len(), 1);
+
+        let reloaded = service.load_run(&detail.run_id).unwrap();
+        let reviewed = reloaded
+            .findings
+            .iter()
+            .find(|candidate| candidate.fingerprint == finding.fingerprint)
+            .unwrap();
+
+        // The latest decision stands, and the earlier one is still on record —
+        // a bulk action must not quietly erase a considered judgement.
+        assert_eq!(
+            reviewed.review.as_ref().map(|review| review.state),
+            Some(crate::findings::domain::ReviewState::AcceptedRisk)
+        );
+        assert!(
+            reviewed.review_history.len() >= 2,
+            "history was {:?}",
+            reviewed.review_history.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_bulk_review_does_nothing_rather_than_erroring() {
+        let (_directory, service, _detail) = scanned_project_with_findings().await;
+        let outcome = service.save_reviews(&[], chrono::Utc::now());
+        assert!(outcome.recorded.is_empty());
+        assert!(outcome.failures.is_empty());
     }
 }

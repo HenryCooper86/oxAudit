@@ -1887,6 +1887,27 @@ pub fn save_finding_review(
     save_finding_review_inner(&*state, request)
 }
 
+/// The most findings one bulk review may cover.
+///
+/// A bound rather than a preference: the request arrives from the GUI, and an
+/// unbounded list would let a single call write unbounded history.
+const MAX_BULK_REVIEW: usize = 1_000;
+
+#[tauri::command]
+pub fn save_finding_reviews(
+    state: State<'_, FindingsState>,
+    requests: Vec<ReviewRequest>,
+) -> Result<crate::findings::service::BulkReviewOutcome, CommandError> {
+    if requests.is_empty() {
+        return Err(CommandError::review_invalid());
+    }
+    if requests.len() > MAX_BULK_REVIEW {
+        return Err(CommandError::review_invalid());
+    }
+    let service = state.findings_service()?;
+    Ok(service.save_reviews(&requests, chrono::Utc::now()))
+}
+
 #[tauri::command]
 pub fn delete_finding_review(
     state: State<'_, FindingsState>,
