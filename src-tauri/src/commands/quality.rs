@@ -273,162 +273,79 @@ pub fn validate_rule_pack(path: String) -> Result<RulePackValidationPreview, Str
     })
 }
 
-/// Execute the committed deterministic cross-language contract suite.
-/// The result is honest about the corpus boundary and is not presented as a
+/// Score the committed corpus and record the result.
+///
+/// The same corpus and the same scoring the command line uses, embedded so the
+/// packaged app can reach it. This previously read a separate, much smaller
+/// suite, so the desktop app reported ten fixtures while the CLI and the README
+/// reported fifty — two answers to one question.
+///
+/// The result stays honest about the corpus boundary and is not presented as a
 /// representative ecosystem-wide recall claim.
 #[tauri::command]
 pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatus, String> {
-    let started = Instant::now();
-    let suite: oxaudit_benchmark::BenchmarkSuite = serde_json::from_str(include_str!(
-        "../../../benchmarks/ground-truth/source-smoke/suite.json"
-    ))
-    .map_err(|error| error.to_string())?;
-    suite.validate().map_err(|error| error.to_string())?;
-    let fixtures = [
-        (
-            "source-js-eval-positive",
-            include_str!("../../../benchmarks/ground-truth/source-smoke/positive.js"),
-        ),
-        (
-            "source-js-eval-negative",
-            include_str!("../../../benchmarks/ground-truth/source-smoke/negative.js"),
-        ),
-        (
-            "source-python-shell-positive",
-            include_str!("../../../benchmarks/ground-truth/source-smoke/python-shell-positive.py"),
-        ),
-        (
-            "source-python-shell-negative",
-            include_str!("../../../benchmarks/ground-truth/source-smoke/python-shell-negative.py"),
-        ),
-        (
-            "source-c-strcpy-positive",
-            include_str!("../../../benchmarks/ground-truth/source-smoke/c-strcpy-positive.c"),
-        ),
-        (
-            "source-c-strcpy-negative",
-            include_str!("../../../benchmarks/ground-truth/source-smoke/c-strcpy-negative.c"),
-        ),
-        (
-            "source-go-md5-positive",
-            include_str!("../../../benchmarks/ground-truth/source-smoke/go-md5-positive.go"),
-        ),
-        (
-            "source-go-md5-negative",
-            include_str!("../../../benchmarks/ground-truth/source-smoke/go-md5-negative.go"),
-        ),
-        (
-            "secret-generic-api-key-positive",
-            include_str!(
-                "../../../benchmarks/ground-truth/source-smoke/generic-api-key-positive.txt"
-            ),
-        ),
-        (
-            "secret-generic-api-key-negative",
-            include_str!(
-                "../../../benchmarks/ground-truth/source-smoke/generic-api-key-negative.txt"
-            ),
-        ),
-    ];
-    let mut passed_targets = 0;
-    let mut true_positives = 0;
-    let mut false_positives = 0;
-    let mut false_negatives = 0;
-    let mut misses = Vec::new();
-    let mut unexpected = Vec::new();
-    for (target_id, content) in fixtures {
-        let target = suite
-            .targets
-            .iter()
-            .find(|target| target.id == target_id)
-            .ok_or_else(|| format!("benchmark target {target_id} is missing"))?;
-        let families = if target.scanner_families.is_empty() {
-            vec!["source-pattern".to_string()]
-        } else {
-            target.scanner_families.clone()
-        };
-        let actual = crate::scanners::benchmark_observations(
-            content,
-            target.language.as_deref().unwrap_or(""),
-            families.iter().any(|family| family == "source-pattern"),
-            families.iter().any(|family| family == "secret"),
-        )
-        .into_iter()
-        .map(
-            |(rule_id, evidence_kind)| oxaudit_benchmark::ActualObservation {
-                identity: oxaudit_benchmark::ObservationIdentity {
-                    rule_id: rule_id.into(),
-                    artifact_path: target.input_path.clone(),
-                },
-                evidence_kind: evidence_kind.into(),
-            },
-        )
-        .collect::<Vec<_>>();
-        let result = oxaudit_benchmark::judge(
-            target,
-            oxaudit_benchmark::ExecutionResult {
-                observations: actual,
-                runtime_ms: 0,
-                peak_memory_bytes: None,
-            },
-        );
-        true_positives += result.true_positives as usize;
-        false_positives += result.false_positives as usize;
-        false_negatives += result.false_negatives as usize;
-        misses.extend(result.misses.into_iter().map(|identity| {
-            format!(
-                "{target_id}: {} @ {}",
-                identity.rule_id, identity.artifact_path
-            )
-        }));
-        unexpected.extend(result.unexpected.into_iter().map(|identity| {
-            format!(
-                "{target_id}: {} @ {}",
-                identity.rule_id, identity.artifact_path
-            )
-        }));
-        if result.status == oxaudit_benchmark::TargetStatus::Passed {
-            passed_targets += 1;
-        }
-    }
-    let precision_denominator = true_positives + false_positives;
-    let recall_denominator = true_positives + false_negatives;
+    let suite = crate::quality::embedded_suite().map_err(|error| error.to_string())?;
+    let report = crate::quality::run_embedded(&suite).map_err(|error| error.to_string())?;
+
     let service = findings.service().map_err(|error| error.to_string())?;
     let previous = service
         .repository()
         .benchmark_latest(&suite.id)
         .map_err(|error| error.to_string())?
         .and_then(|value| serde_json::from_value::<QualityStatus>(value).ok());
-    let precision =
-        (precision_denominator > 0).then_some(true_positives as f64 / precision_denominator as f64);
-    let recall =
-        (recall_denominator > 0).then_some(true_positives as f64 / recall_denominator as f64);
+
     let regression = previous.as_ref().is_some_and(|previous| {
-        false_positives > previous.false_positives
-            || false_negatives > previous.false_negatives
-            || matches!((precision, previous.precision), (Some(current), Some(old)) if current < old)
-            || matches!((recall, previous.recall), (Some(current), Some(old)) if current < old)
+        report.totals.false_positives as usize > previous.false_positives
+            || report.totals.false_negatives as usize > previous.false_negatives
+            || matches!((report.precision, previous.precision), (Some(current), Some(old)) if current < old)
+            || matches!((report.recall, previous.recall), (Some(current), Some(old)) if current < old)
     });
+
+    let negatives = suite
+        .targets
+        .iter()
+        .filter(|target| !target.expected_absent.is_empty())
+        .count();
+    let languages = suite
+        .targets
+        .iter()
+        .filter_map(|target| target.language.as_deref())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+
     let status = QualityStatus {
-        schema_version: suite.schema_version,
+        schema_version: 1,
         suite_id: suite.id.clone(),
         suite_version: suite.version.clone(),
-        description: suite.description,
+        description: suite.description.clone(),
         corpus_targets: suite.targets.len(),
-        passed_targets,
-        true_positives,
-        false_positives,
-        false_negatives,
-        precision,
-        recall,
-        runtime_ms: started.elapsed().as_millis() as u64,
-        misses,
-        unexpected,
-        limitation: "Ten repository-authored targets cover four source languages and one secret family with paired negatives. This is a stronger regression contract, not a representative ecosystem-wide recall claim.".into(),
+        // A fixture passes when it produced neither a miss nor a false positive.
+        passed_targets: suite.targets.len()
+            - report.misses.len()
+            - report.totals.false_positives as usize,
+        true_positives: report.totals.true_positives as usize,
+        false_positives: report.totals.false_positives as usize,
+        false_negatives: report.totals.false_negatives as usize,
+        precision: report.precision,
+        recall: report.recall,
+        runtime_ms: report.runtime_ms,
+        misses: report.misses.clone(),
+        unexpected: report
+            .collateral
+            .iter()
+            .map(|hit| format!("{} fired on {}", hit.rule_id, hit.fixture))
+            .collect(),
+        limitation: format!(
+            "{} repository-authored fixtures, {negatives} of them negatives drawn from shapes this \
+             scanner was observed reporting incorrectly, across {languages} languages. This is a \
+             regression contract, not a representative ecosystem-wide recall claim.",
+            suite.targets.len()
+        ),
         previous_precision: previous.as_ref().and_then(|previous| previous.precision),
         previous_recall: previous.as_ref().and_then(|previous| previous.recall),
         regression,
     };
+
     service
         .repository()
         .benchmark_save(

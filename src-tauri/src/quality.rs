@@ -1,5 +1,9 @@
 //! Measures the scanners against the committed corpus.
 //!
+//! Shared by the command line and the Quality Lab screen, deliberately. Two
+//! implementations would drift, and the desktop app was previously reporting a
+//! different — and much weaker — corpus than the CLI and the README.
+//!
 //! The number this produces is the only defensible answer to "how accurate is
 //! it?", so the runner is deliberately unflattering:
 //!
@@ -51,6 +55,8 @@ pub struct AbsentRule {
 pub struct CorpusSuite {
     pub id: String,
     pub version: String,
+    #[serde(default)]
+    pub description: String,
     pub targets: Vec<CorpusTarget>,
 }
 
@@ -162,8 +168,22 @@ pub fn load_suite(corpus_root: &Path) -> Result<CorpusSuite, CorpusError> {
     serde_json::from_str(&text).map_err(|error| CorpusError::Malformed(error.to_string()))
 }
 
-/// Run every fixture and score the result.
+/// Run every fixture and score the result, reading fixtures from disk.
 pub fn run(corpus_root: &Path, suite: &CorpusSuite) -> Result<BenchmarkReport, CorpusError> {
+    score(suite, |path| {
+        std::fs::read(corpus_root.join(path))
+            .map_err(|error| CorpusError::Unreadable(format!("cannot read {path}: {error}")))
+    })
+}
+
+/// Score a suite against fixtures supplied by `read_fixture`.
+///
+/// The indirection is what lets the packaged app score the same corpus as the
+/// command line without shipping the repository alongside it.
+pub fn score(
+    suite: &CorpusSuite,
+    mut read_fixture: impl FnMut(&str) -> Result<Vec<u8>, CorpusError>,
+) -> Result<BenchmarkReport, CorpusError> {
     let started = std::time::Instant::now();
 
     let mut per_rule: BTreeMap<String, Counts> = BTreeMap::new();
@@ -182,10 +202,7 @@ pub fn run(corpus_root: &Path, suite: &CorpusSuite) -> Result<BenchmarkReport, C
         .collect();
 
     for target in &suite.targets {
-        let path = corpus_root.join(&target.input_path);
-        let content = std::fs::read(&path).map_err(|error| {
-            CorpusError::Unreadable(format!("cannot read {}: {error}", path.display()))
-        })?;
+        let content = read_fixture(&target.input_path)?;
 
         let digest = sha256_hex(&content);
         if digest != target.input_sha256 {
@@ -315,6 +332,37 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// The corpus, compiled into the binary.
+///
+/// The Quality Lab screen has to score the same fixtures the command line and
+/// the README report, and a packaged desktop app has no repository to read
+/// them from. Embedding is what keeps the two answers the same number.
+static CORPUS: include_dir::Dir<'_> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/../benchmarks/corpus");
+
+/// Load the embedded suite.
+pub fn embedded_suite() -> Result<CorpusSuite, CorpusError> {
+    let manifest = CORPUS
+        .get_file("suite.json")
+        .ok_or_else(|| CorpusError::Unreadable("the embedded corpus has no suite.json".into()))?;
+    let text = manifest
+        .contents_utf8()
+        .ok_or_else(|| CorpusError::Malformed("suite.json is not UTF-8".into()))?;
+    serde_json::from_str(text).map_err(|error| CorpusError::Malformed(error.to_string()))
+}
+
+/// Score the embedded corpus.
+pub fn run_embedded(suite: &CorpusSuite) -> Result<BenchmarkReport, CorpusError> {
+    score(suite, |path| {
+        CORPUS
+            .get_file(path)
+            .map(|file| file.contents().to_vec())
+            .ok_or_else(|| {
+                CorpusError::Unreadable(format!("{path} is missing from the embedded corpus"))
+            })
+    })
 }
 
 /// Render the report the way a person reads it: the aggregate first, then the
@@ -503,5 +551,51 @@ mod tests {
             .parent()
             .expect("workspace root")
             .join("benchmarks/corpus")
+    }
+
+    #[test]
+    fn the_embedded_corpus_matches_the_one_on_disk() {
+        // The desktop app scores an embedded copy and the command line scores
+        // the directory. When those drifted, the app reported ten fixtures
+        // while the CLI and the README reported fifty — two answers to one
+        // question, with no error anywhere.
+        let disk = load_suite(&corpus_root()).expect("corpus on disk");
+        let embedded = embedded_suite().expect("embedded corpus");
+
+        assert_eq!(embedded.id, disk.id);
+        assert_eq!(embedded.version, disk.version);
+        assert_eq!(embedded.targets.len(), disk.targets.len());
+
+        let ids = |suite: &CorpusSuite| {
+            suite
+                .targets
+                .iter()
+                .map(|target| target.id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(ids(&embedded), ids(&disk));
+    }
+
+    #[test]
+    fn both_paths_score_the_corpus_identically() {
+        // Same fixtures is not enough; the numbers a user reads have to agree.
+        let disk = load_suite(&corpus_root()).expect("corpus on disk");
+        let from_disk = run(&corpus_root(), &disk).expect("scored from disk");
+        let from_embedded = run_embedded(&embedded_suite().expect("embedded")).expect("scored");
+
+        assert_eq!(from_disk.totals, from_embedded.totals);
+        assert_eq!(from_disk.precision, from_embedded.precision);
+        assert_eq!(from_disk.recall, from_embedded.recall);
+        assert_eq!(from_disk.misses, from_embedded.misses);
+    }
+
+    #[test]
+    fn every_embedded_fixture_matches_its_recorded_hash() {
+        // The embedded copy is verified the same way the on-disk one is: a
+        // fixture that changed without the manifest being rebuilt would
+        // otherwise be scored against an expectation that no longer describes
+        // it.
+        let suite = embedded_suite().expect("embedded corpus");
+        run_embedded(&suite).expect("every embedded fixture matches its hash");
     }
 }
