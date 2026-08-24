@@ -6,8 +6,10 @@ import {
   filterCommands,
   groupCommands,
   moveSelection,
+  projectCommands,
   type PaletteCommand,
 } from "../../lib/commandPalette";
+import { api } from "../../lib/api";
 import { useAppStore } from "../../lib/stores";
 
 /**
@@ -17,19 +19,29 @@ import { useAppStore } from "../../lib/stores";
  * findings, the assistant, and an export several times a minute. A sidebar is
  * fine for learning the product and slow for using it.
  *
- * The palette is deliberately navigation-only for now. Adding "run a scan" or
- * "record a review" to a list where Enter fires the highlighted row means a
- * mistyped query can start work or change a decision — those belong behind
- * their own confirmation, not behind a fuzzy match.
+ * It covers screens and projects: both are places to go, and a consultant
+ * holding a dozen client codebases should not open a file dialog to move
+ * between them.
+ *
+ * It deliberately does not cover actions. Putting "run a scan" or "record a
+ * review" in a list where Enter fires the highlighted row means a mistyped
+ * query starts work or changes a decision — those belong behind their own
+ * confirmation, not behind a fuzzy match.
  */
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const setPage = useAppStore((state) => state.setPage);
+  const setActiveProject = useAppStore((state) => state.setActiveProject);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
+  const [projects, setProjects] = useState<PaletteCommand[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const matches = useMemo(() => filterCommands(NAVIGATION_COMMANDS, query), [query]);
+  const commands = useMemo<PaletteCommand[]>(
+    () => [...projects, ...NAVIGATION_COMMANDS],
+    [projects],
+  );
+  const matches = useMemo(() => filterCommands(commands, query), [commands, query]);
   const grouped = useMemo(() => groupCommands(matches), [matches]);
 
   // A new query is a new list; keeping the old index would leave the highlight
@@ -40,6 +52,19 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     if (!open) return;
     setQuery("");
     setSelected(0);
+    // Loaded on open rather than held in the store: the counts go stale the
+    // moment a scan finishes, and a switcher showing yesterday's numbers is
+    // worse than one that pauses for a moment.
+    void (async () => {
+      try {
+        setProjects(projectCommands(await api.listSourceProjects(20)));
+      } catch {
+        // A palette that cannot list projects still navigates. Failing to open
+        // would be a worse trade than showing screens only.
+        setProjects([]);
+      }
+    })();
+
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
     return () => {
@@ -60,7 +85,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   if (!open) return null;
 
   const run = (command: PaletteCommand) => {
-    setPage(command.page);
+    if (command.kind === "project") {
+      setActiveProject(command.projectPath);
+      // Switching to a project means going to where its findings are; landing
+      // on whatever screen happened to be open would leave the switch
+      // invisible.
+      setPage("source-scan");
+    } else {
+      setPage(command.page);
+    }
     onClose();
   };
 
@@ -156,7 +189,14 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                         : "text-text-secondary hover:bg-surface-hover"
                     }`}
                   >
-                    {command.title}
+                    <span className="flex items-baseline gap-2">
+                      <span className="min-w-0 flex-1 truncate">{command.title}</span>
+                      {command.hint && (
+                        <span className="shrink-0 text-[11px] tabular-nums text-text-muted">
+                          {command.hint}
+                        </span>
+                      )}
+                    </span>
                   </div>
                 );
               })}
