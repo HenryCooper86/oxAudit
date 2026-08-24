@@ -56,6 +56,17 @@ In GitHub Actions:
     sarif_file: oxaudit.sarif
 ```
 
+Adopting a scanner on an existing codebase means meeting a backlog. Gate on what
+the change introduced and leave the rest visible:
+
+```bash
+# On main, once: capture where you are today.
+oxaudit-cli scan . --format json --output baseline.json
+
+# On every pull request: fail only on what this change added.
+oxaudit-cli scan . --baseline baseline.json --fail-on-new high
+```
+
 Reviewed something and decided it is not a problem? Record it in
 [`.oxaudit/policy.json`](#suppressing-a-finding) and it stops failing the build —
 with a reason, an expiry, and a pull request.
@@ -132,6 +143,9 @@ oxaudit-cli scan . --format sarif --output oxaudit.sarif
 
 # Gate a build. Opt-in: --fail-on defaults to `none`
 oxaudit-cli scan . --fail-on high
+
+# Fail only on what this change introduced, not the existing backlog
+oxaudit-cli scan . --baseline baseline.json --fail-on-new high
 
 # Lockfiles against OSV
 oxaudit-cli deps . --format json
