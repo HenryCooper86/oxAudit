@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "suppression",
+      "ruleId": "generic-password",
+      "pathPattern": "src-tauri/src/**",
+      "state": "suppressed",
+      "reason": "Synthetic credentials in Rust test modules. oxAudit's own suite plants fake secrets to prove the scanners and the redaction path work; they are not credentials for anything.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "generic-api-key",
+      "pathPattern": "src-tauri/src/**",
+      "state": "suppressed",
+      "reason": "Synthetic credentials in Rust test modules, as above.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "private-key",
+      "pathPattern": "src-tauri/src/findings/redaction.rs",
+      "state": "suppressed",
+      "reason": "A PEM header appearing in the code that redacts PEM headers. The detector has to name what it searches for.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "github-token",
+      "pathPattern": "docs/**",
+      "state": "suppressed",
+      "reason": "Illustrative token shapes in architecture and study documents, not issued credentials.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "generic-password",
+      "pathPattern": "docs/**",
+      "state": "suppressed",
+      "reason": "Prose and worked examples about credential handling in design documents.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "github-token",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "gitlab-pat",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "slack-token",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "stripe-key",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "openai-api-key",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "anthropic-api-key",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "google-api-key",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "jwt-token",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "basic-auth-url",
+      "pathPattern": "src-tauri/src/observability.rs",
+      "state": "suppressed",
+      "reason": "Synthetic vendor-shaped tokens in the redaction tests. observability.rs has to contain a real-looking token of each kind in order to prove the redactor removes it; none of them was ever issued.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "basic-auth-url",
+      "pathPattern": "src-tauri/src/agent/egress.rs",
+      "state": "suppressed",
+      "reason": "A credential-bearing URL in the egress tests, used to prove the policy refuses it. Not a reachable host.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "github-token",
+      "pathPattern": "src-tauri/src/agent/tools.rs",
+      "state": "suppressed",
+      "reason": "Synthetic token fixtures in Rust test modules.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "github-token",
+      "pathPattern": "src-tauri/src/findings/service.rs",
+      "state": "suppressed",
+      "reason": "Synthetic token fixtures in Rust test modules.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "github-token",
+      "pathPattern": "src-tauri/src/findings/policy.rs",
+      "state": "suppressed",
+      "reason": "Synthetic token fixtures in Rust test modules.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "github-token",
+      "pathPattern": "src-tauri/src/lib.rs",
+      "state": "suppressed",
+      "reason": "Synthetic token fixtures in Rust test modules.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "openai-api-key",
+      "pathPattern": "src-tauri/src/findings/policy.rs",
+      "state": "suppressed",
+      "reason": "Synthetic token fixture in a Rust test module.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    }
+  ]
+}

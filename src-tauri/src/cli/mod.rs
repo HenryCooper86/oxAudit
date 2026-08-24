@@ -504,6 +504,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
         detail
             .findings
             .iter()
+            .filter(|finding| gates_the_build(finding))
             .map(|finding| severity_rank(&finding.severity)),
         args.fail_on,
         quiet,
@@ -748,6 +749,28 @@ fn write_output(path: Option<&Path>, bytes: &[u8]) -> Result<(), CliError> {
                 .and_then(|()| stdout.flush())
                 .map_err(|error| failure(format!("cannot write to stdout: {error}")))
         }
+    }
+}
+
+/// Whether a finding should be able to fail the build.
+///
+/// A committed `.oxaudit/policy.json` exists so a team can say "we looked at
+/// this and it is not a problem" once, in review, and not be asked again on
+/// every push. A dismissal that still failed the pipeline would make the whole
+/// mechanism pointless, so a reviewed-and-dismissed finding is reported but
+/// does not gate.
+///
+/// Only dismissals are excused. An undecided finding gates because nobody has
+/// looked at it yet, and a confirmed one gates because somebody looked and said
+/// it was real. Expiry is handled upstream: an expired decision is not attached
+/// to the finding, so it lands here as undecided and gates again.
+fn gates_the_build(finding: &crate::models::Finding) -> bool {
+    use crate::findings::domain::ReviewState;
+    match finding.review.as_ref().map(|review| review.state) {
+        Some(ReviewState::FalsePositive)
+        | Some(ReviewState::AcceptedRisk)
+        | Some(ReviewState::Suppressed) => false,
+        Some(ReviewState::Candidate) | Some(ReviewState::Confirmed) | None => true,
     }
 }
 

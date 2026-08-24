@@ -444,3 +444,153 @@ fn corpus_root() -> PathBuf {
         .expect("workspace root")
         .join("benchmarks/corpus")
 }
+
+// --------------------------------------------------------- committed policy
+
+/// Write a `.oxaudit/policy.json` dismissing everything the fixture plants.
+///
+/// Both rules are listed because a suppression is per rule: leaving one out
+/// would leave the build gating for a reason unrelated to what is under test.
+fn write_suppression(root: &Path, expires_at: &str) {
+    std::fs::create_dir_all(root.join(".oxaudit")).expect(".oxaudit");
+    let entry = |rule: &str| {
+        format!(
+            r#"{{
+      "kind": "suppression",
+      "ruleId": "{rule}",
+      "pathPattern": "src/**",
+      "state": "suppressed",
+      "reason": "Sandboxed evaluation of static templates; tracked in SEC-441.",
+      "expiresAt": "{expires_at}"
+    }}"#
+        )
+    };
+    std::fs::write(
+        root.join(".oxaudit/policy.json"),
+        format!(
+            "{{\n  \"version\": 1,\n  \"entries\": [\n    {},\n    {}\n  ]\n}}",
+            entry("js-eval"),
+            entry("py-subprocess-shell"),
+        ),
+    )
+    .expect("policy file");
+}
+
+#[test]
+fn a_suppression_applies_only_to_the_rule_it_names() {
+    // A policy entry is a decision about one rule, not a blanket exemption for
+    // the path it mentions.
+    let project = project();
+    std::fs::create_dir_all(project.path().join(".oxaudit")).expect(".oxaudit");
+    std::fs::write(
+        project.path().join(".oxaudit/policy.json"),
+        r#"{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "suppression",
+      "ruleId": "js-eval",
+      "pathPattern": "src/**",
+      "state": "suppressed",
+      "reason": "Sandboxed evaluation of static templates.",
+      "expiresAt": "2099-01-01T00:00:00Z"
+    }
+  ]
+}"#,
+    )
+    .expect("policy file");
+
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--fail-on",
+        "high",
+        "-q",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the unsuppressed python finding must still gate"
+    );
+}
+
+#[test]
+fn a_committed_suppression_stops_a_finding_gating_the_build() {
+    // The point of a policy file is to say "we reviewed this" once, in a pull
+    // request, and not be asked again on every push. A dismissal that still
+    // failed the pipeline would make the mechanism pointless.
+    let project = project();
+    let path = project.path().to_string_lossy().into_owned();
+
+    let before = run(&["scan", &path, "--fail-on", "high", "-q"]);
+    assert_eq!(before.status.code(), Some(1), "unreviewed findings gate");
+
+    write_suppression(project.path(), "2099-01-01T00:00:00Z");
+    let after = run(&["scan", &path, "--fail-on", "high", "-q"]);
+    assert_eq!(
+        after.status.code(),
+        Some(0),
+        "a suppressed finding does not gate"
+    );
+}
+
+#[test]
+fn a_suppressed_finding_is_still_reported() {
+    // Suppression changes whether a finding gates, not whether it exists.
+    // Dropping it from the report would hide a decision someone has to be able
+    // to audit later.
+    let project = project();
+    write_suppression(project.path(), "2099-01-01T00:00:00Z");
+
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--format",
+        "json",
+        "-q",
+    ]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let suppressed = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .find(|finding| finding["ruleId"] == "js-eval")
+        .expect("the suppressed finding is still listed");
+
+    assert_eq!(suppressed["review"]["state"], "suppressed");
+    // The decision is attributed to the committed file, not to this machine.
+    assert_eq!(suppressed["review"]["origin"], "projectPolicy");
+}
+
+#[test]
+fn an_expired_suppression_gates_again() {
+    // An expiry that did not expire is a permanent exception with extra steps.
+    let project = project();
+    write_suppression(project.path(), "2020-01-01T00:00:00Z");
+
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--fail-on",
+        "high",
+        "-q",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an expired decision returns the finding to the queue"
+    );
+}
+
+#[test]
+fn a_malformed_policy_stops_the_scan_rather_than_being_ignored() {
+    // Silently ignoring an unparseable policy would silently un-suppress
+    // everything the team had agreed to, or silently suppress nothing they
+    // meant to. Either way the run would not mean what it appears to mean.
+    let project = project();
+    std::fs::create_dir_all(project.path().join(".oxaudit")).expect(".oxaudit");
+    std::fs::write(project.path().join(".oxaudit/policy.json"), "{ not json").expect("policy file");
+
+    let output = run(&["scan", &project.path().to_string_lossy(), "-q"]);
+    assert_ne!(code(&output), 0, "an invalid policy must not pass silently");
+}
