@@ -1,0 +1,11 @@
+# The single source of truth for the toolchain used to build, lint, and test
+# oxAudit. CI materializes this file with `rustup show`; contributors get it
+# automatically the first time they run cargo in this tree.
+#
+# `rust-version` in the Cargo manifests declares the supported *floor* (MSRV).
+# This pin is the version we actually build and gate `clippy -D warnings` on,
+# so a routine stable release cannot turn CI red on a commit that changed
+# nothing. Bump it deliberately, in its own commit.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]
