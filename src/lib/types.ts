@@ -978,3 +978,17 @@ export interface AiStatus {
   model: string | null;
   latencyMs: number;
 }
+
+/** What a person needs in order to report a problem. Redacted before it arrives. */
+export interface Diagnostics {
+  version: string;
+  os: string;
+  architecture: string;
+  /** Whether an AI endpoint is configured — never which one, and never the key. */
+  aiConfigured: boolean;
+  logPath: string | null;
+  logBytes: number;
+  /** Tail of the log, with credentials and home directory paths removed. */
+  logTail: string;
+  notes: string[];
+}

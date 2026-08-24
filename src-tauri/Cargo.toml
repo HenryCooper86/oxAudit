@@ -73,6 +73,9 @@ tree-sitter-python = "0.25.0"
 tree-sitter-java = "0.23.5"
 tree-sitter-rust = "0.24.2"
 tree-sitter-go = "0.25.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2.5"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
