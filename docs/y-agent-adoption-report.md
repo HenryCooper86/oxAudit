@@ -1,9 +1,16 @@
-# y-agent → VulnCompanion Adoption Report
+# y-agent → oxAudit Adoption Report
+
+> **Provenance.** This is a study document. The code blocks below are short
+> excerpts from [`gorgiaxx/y-agent`](https://github.com/gorgiaxx/y-agent),
+> quoted for commentary and comparison against oxAudit's own implementation.
+> No y-agent source is vendored into this repository, and none of it is
+> compiled into or redistributed with oxAudit. What oxAudit adopted from the
+> project is method and structure, which carries no licence obligation; see
+> [`NOTICE`](../NOTICE).
 
 **Research basis:** raw source of `gorgiaxx/y-agent@main` — `y-tools` (registry/index/taxonomy/parser/validator/executor/rate_limiter/dynamic + 10 builtin tools), `y-service` (loop_orchestrator, plan_orchestrator, chat, agent_service/{mod,executor,llm,tool_dispatch,tool_handling,subagent}, user_interaction_orchestrator, task_delegation_orchestrator, message_builder), `y-guardrails` (permission_pipeline, exec_policy DSL, loop_guard, taint, risk, hitl, mode_manager, config), `y-core` (tool, permission_types, hook, agent, session, trust), `y-storage` (chat_message, transcript, session_store, checkpoint), plus `config/prompts/*` hints.
-Local copies of every file cited: `yagent-research/`.
 
-**Bottom line up front:** y-agent is a heavyweight multi-agent harness; VulnCompanion should adopt its *shape* (ToolDefinition + JSON Schema, a bounded model-turn loop with dual iteration/call budgets, an allow/ask/deny permission pipeline with HITL, per-session JSONL persistence) and skip everything that exists to manage scale (lazy tool loading, taxonomy, MCP, dynamic tools, plan/loop orchestration, taint, risk scoring, session trees, SQLite checkpointing).
+**Bottom line up front:** y-agent is a heavyweight multi-agent harness; oxAudit should adopt its *shape* (ToolDefinition + JSON Schema, a bounded model-turn loop with dual iteration/call budgets, an allow/ask/deny permission pipeline with HITL, per-session JSONL persistence) and skip everything that exists to manage scale (lazy tool loading, taxonomy, MCP, dynamic tools, plan/loop orchestration, taint, risk scoring, session trees, SQLite checkpointing).
 
 ---
 
@@ -47,7 +54,7 @@ pub trait Tool: Send + Sync {
 
 | Concept | Verdict | Rationale |
 |---|---|---|
-| `ToolDefinition` + JSON-Schema params passed as OpenAI `tools[]` | **MUST** | This is exactly the OpenAI-compatible function-calling shape VulnCompanion already targets; zero protocol friction. |
+| `ToolDefinition` + JSON-Schema params passed as OpenAI `tools[]` | **MUST** | This is exactly the OpenAI-compatible function-calling shape oxAudit already targets; zero protocol friction. |
 | `Tool` trait with `is_read_only` / `is_destructive` / `is_dangerous` | **MUST** | These three flags drive the whole guardrail story; without them every tool needs bespoke checks. |
 | Registry (`HashMap` + index + duplicate rejection + `check_fn` gating) | **VALUABLE** | With ~10 tools a `HashMap` registry is enough, but `check_fn` gating (hide `run_scan` until a project is loaded, hide `web_fetch` when offline) is a cheap, high-value copy. |
 | `JsonSchemaValidator` with compiled cache | **MUST** | The `jsonschema` crate is one dependency; malformed args become a clean `validation_error` the LLM can self-correct instead of a panic. |
@@ -57,9 +64,9 @@ pub trait Tool: Send + Sync {
 | Dynamic/MCP tools | **SKIP (v1)** | No agent-created tools in a desktop vuln companion; MCP can come later via Tauri sidecar if ever needed. |
 | `result_schema` on definitions | **VALUABLE** | Documents output contract; lets the React side type tool-result cards without guessing. |
 | `ToolError` codes + `is_retryable()` | **VALUABLE** | Feed back into the loop ("tool timed out — retryable" vs "permission denied — do not retry") to stop the model from hammering denied tools. |
-| Prompt-based tool-call parser (parser.rs XML dialect) | **SKIP** | VulnCompanion's provider is OpenAI-compatible with native tool calls; keep a thin fallback later if models without tool-calling are allowed. |
+| Prompt-based tool-call parser (parser.rs XML dialect) | **SKIP** | oxAudit's provider is OpenAI-compatible with native tool calls; keep a thin fallback later if models without tool-calling are allowed. |
 
-### Proposed tool set for VulnCompanion (10 tools)
+### Proposed tool set for oxAudit (10 tools)
 
 Model-maintained research loop; every tool is **read-only except `ask_user`/`todo`** (no file writes, no shell — that's the safety posture that makes the guardrails trivial).
 
@@ -68,7 +75,7 @@ Model-maintained research loop; every tool is **read-only except `ask_user`/`tod
 | 1 | `read_file` | `path`, `line_offset`?, `limit`? (≤2000), `include_line_numbers`? → content, `has_more_lines`, `total_lines`; **path must resolve inside the scanned project root**. | y-agent `FileRead` |
 | 2 | `grep_project` | `pattern` (regex), `path`?, `output_mode` ∈ content/files_with_matches/count, `-C`?, `head_limit`? (≤500) → matches with file:line; **rooted at project dir**. | y-agent `Grep` |
 | 3 | `glob` | `pattern`, `path`?, `max_results`? (≤200) → absolute paths, sorted by mtime. | y-agent `Glob` |
-| 4 | `run_scan` | `scan_type` ∈ source/secret/deps (or `all`), `path`? (subdir filter), `severity`? filter → reuses VulnCompanion's existing 50-pattern / 30-regex / OSV scanners; returns findings JSON. **Read-only, idempotent.** | custom (no y-agent equivalent) |
+| 4 | `run_scan` | `scan_type` ∈ source/secret/deps (or `all`), `path`? (subdir filter), `severity`? filter → reuses oxAudit's existing 50-pattern / 30-regex / OSV scanners; returns findings JSON. **Read-only, idempotent.** | custom (no y-agent equivalent) |
 | 5 | `search_cve` | `query` (keyword or CVE id), `limit`? (≤25) → compact list of id/severity/date/summary from NVD/OSV. | custom (≈ `knowledge_search` pattern: compact, top-k) |
 | 6 | `get_cve_detail` | `cve_id` → full record (description, CVSS vector/score, references, affected configs) from NVD. | custom |
 | 7 | `query_osv_package` | `ecosystem`, `name`, `version`? → OSV vulns for that package@version (used when dep scan flags something). | custom |
@@ -193,7 +200,7 @@ Adopt the **minimal bounded single-agent loop** — not plan/loop orchestration,
 
 > **"max 10 model iterations (tool-call rounds), max 30 tool calls, todo list maintained by the model via the `todo` tool, stop when the model emits a final text answer with no tool calls, or when a budget trips, or when the user cancels (AtomicBool)."**
 
-That is almost exactly `execute_inner` with pruning/middleware/steering stripped out. Plan mode, Loop tool, and sub-agents are **SKIP**: VulnCompanion's research tasks (read → grep → scan → CVE lookup → summarize) fit one bounded turn; the progress-file/round machinery exists to keep *long-running* work alive across context resets, which a 10-iteration cap doesn't need.
+That is almost exactly `execute_inner` with pruning/middleware/steering stripped out. Plan mode, Loop tool, and sub-agents are **SKIP**: oxAudit's research tasks (read → grep → scan → CVE lookup → summarize) fit one bounded turn; the progress-file/round machinery exists to keep *long-running* work alive across context resets, which a 10-iteration cap doesn't need.
 
 ### Sketch: loop state machine in Rust
 
@@ -208,7 +215,7 @@ pub struct TurnBudget { iterations_left: u32, tool_calls_left: u32 }
 pub struct TurnStats { iterations: u32, tool_calls: u32, tokens_in: u64, tokens_out: u64, cost_usd: f64 }
 
 pub struct AgentLoop {
-    cancel: Arc<AtomicBool>,                    // existing VulnCompanion cancel flag
+    cancel: Arc<AtomicBool>,                    // existing oxAudit cancel flag
     budget: TurnBudget,
     stats: TurnStats,
     messages: Vec<Message>,                     // system + user + assistant + tool msgs
@@ -282,7 +289,7 @@ Message history is the single source of truth (y-agent's `working_history`); no 
 - **HITL** (hitl.rs): `HitlProtocol`/`HitlHandler` channel pair; `HitlResponse {Approve, ApproveAlways, Deny, DenyAlways}`; 120 s timeout default → deny.
 - **Mode manager** (mode_manager.rs): validated `PermissionMode` transitions; **LLM output guard** middleware (priority 900).
 
-### Verdicts for VulnCompanion
+### Verdicts for oxAudit
 
 | Guardrail | Verdict | Why |
 |---|---|---|
@@ -290,10 +297,10 @@ Message history is the single source of truth (y-agent's `working_history`); no 
 | Pipeline ordering (Deny > Ask > Allow; deny is bypass-immune; "do not retry" system message) | **MUST** | The "do NOT retry" message is what actually stops model loops against blocked tools. Copy it verbatim. |
 | HITL modal (React) with timeout → deny | **MUST** | Desktop app; `ask_user` and destructive approvals both need it; y-agent's oneshot + timeout pattern is the right shape. |
 | Loop guard — N identical tool calls → stop | **MUST** | ~40 lines (see sketch); protects against model thrash; **redundant-tool detection (same tool+args) is the key one** for a research agent that re-greps the same pattern. |
-| exec_policy DSL | **SKIP (v1)** | It gates shell commands; VulnCompanion v1 has no shell tool. Revisit the day `shell_exec`/`file_edit` are added — the DSL design (prefix rules, parse-time examples, auto-amend from HITL) is a good one to copy then. |
+| exec_policy DSL | **SKIP (v1)** | It gates shell commands; oxAudit v1 has no shell tool. Revisit the day `shell_exec`/`file_edit` are added — the DSL design (prefix rules, parse-time examples, auto-amend from HITL) is a good one to copy then. |
 | Taint tracking | **SKIP** | Meaningful only with write/shell sinks. All v1 tools are reads (fs, network, scanners); taint adds complexity with nothing to block. |
 | Risk scoring | **SKIP** | A 0–1 score adds nothing over Allow/Ask/Deny classification for 10 known tools. |
-| LLM output guard | **VALUABLE** | Cheap text filter on final output: refuse to render raw secrets/credentials (VulnCompanion has a secret scanner; mirror a light version on LLM output so the assistant can't dump `apiKey=` lines). |
+| LLM output guard | **VALUABLE** | Cheap text filter on final output: refuse to render raw secrets/credentials (oxAudit has a secret scanner; mirror a light version on LLM output so the assistant can't dump `apiKey=` lines). |
 | Mode manager / permission modes | **SKIP** | Single-user desktop; no plan-vs-normal modes in v1. |
 
 ### Sketches
@@ -383,7 +390,7 @@ The Rust side mirrors `await_permission_response`: `pending_permissions: Mutex<H
 
 ### Verdict
 
-**Adopt a lightweight version — YES, worth it.** VulnCompanion's chat is in-memory today; a Tauri window close or app update loses the whole research session, which is exactly when a vuln-research conversation is most valuable (multi-hour deep-dives). But the full SQLite+checkpoint+session-tree machinery is overkill for a single-session desktop chat.
+**Adopt a lightweight version — YES, worth it.** oxAudit's chat is in-memory today; a Tauri window close or app update loses the whole research session, which is exactly when a vuln-research conversation is most valuable (multi-hour deep-dives). But the full SQLite+checkpoint+session-tree machinery is overkill for a single-session desktop chat.
 
 **Recommended: JSONL per session (copy `transcript.rs`), not SQLite, for v1:**
 - One file per session: `<data_dir>/sessions/<session_id>.jsonl`, one JSON message per line (user/assistant/tool roles with `tool_call_id`, timestamps, metadata).
@@ -449,4 +456,4 @@ impl Transcript {
 
 **Deliberately NOT adopting (with reasons):** ToolSearch lazy loading & taxonomy (tool count too small), dynamic/MCP tools, Plan/Loop orchestration & sub-agents (single bounded turn suffices), exec_policy DSL (no shell tool yet), taint & risk scoring (no write/shell sinks), permission modes, SQLite chat_messages + orchestrator checkpoints + session trees (JSONL covers v1 needs; the checkpoint/branching machinery pays off only with long-running sub-agent workflows).
 
-*File paths above are suggestions for a conventional Tauri layout; adjust to VulnCompanion's actual structure. All claims trace to the local copies under `yagent-research/`.*
+*File paths above are suggestions for a conventional Tauri layout. All claims trace to `gorgiaxx/y-agent@main` as read at the time of the study; the excerpts quoted inline are the evidence.*
