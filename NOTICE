@@ -53,9 +53,17 @@ licence obligation. They are credited here because credit is owed.
                   Nibble-masked byte-pattern matching over binaries
                   (src-tauri/src/binscan/native/bytes.rs, docs/vulhunt-study.md)
 
-  y-agent         https://github.com/gorgiaxx/y-agent
-                  Design-system structure and the design-compliance test
-                  (docs/design-system.md, docs/y-agent-adoption.md)
+  y-agent         Licence not asserted here — see upstream
+                  https://github.com/gorgiaxx/y-agent
+                  Design-system structure, the design-compliance test, the
+                  ToolDefinition/registry shape, the bounded model-turn loop
+                  with dual budgets, and the allow/ask/deny permission pipeline
+                  (docs/design-system.md, docs/y-agent-adoption.md,
+                  docs/y-agent-adoption-report.md)
+
+                  oxAudit vendors no y-agent source. The study documents quote
+                  short excerpts for commentary; nothing from the project is
+                  compiled into or shipped with oxAudit.
 
 --------------------------------------------------------------------------------
 Data sources
