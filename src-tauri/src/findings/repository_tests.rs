@@ -100,6 +100,7 @@ fn finding(id: &str, fingerprint: &str) -> Finding {
         // Rows written before the tier existed read back as Text: a stored
         // finding must not claim a verification that never ran.
         analysis: crate::models::AnalysisTier::default(),
+        analysis_gates: Vec::new(),
         observation_run_id: "dynamic-run-id-must-not-be-persisted-in-payload".into(),
         resolved_by_run_id: Some("dynamic-resolution-must-not-be-persisted".into()),
         fingerprint_version: FINGERPRINT_VERSION,

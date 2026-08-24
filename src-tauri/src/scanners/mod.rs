@@ -29,7 +29,7 @@ pub fn benchmark_observations(
             patterns::scan_content(content, language)
                 .into_iter()
                 .filter(|hit| spans.allows_code_match(hit.offset))
-                .filter(|hit| reaches_attacker_input(&parsed, content, hit))
+                .filter(|hit| assess_sink(&parsed, content, hit).reportable)
                 .map(|hit| (patterns::SOURCE_RULES[hit.rule_index].id, "file_location")),
         );
     }
@@ -53,18 +53,30 @@ pub fn benchmark_observations(
 ///
 /// Rules that are not about a call argument are unaffected: they have no
 /// enclosing call, so the analysis returns `Unknown` and the finding stands.
-fn reaches_attacker_input(
+/// What the dataflow analysis concluded about one pattern match.
+struct SinkAssessment {
+    /// False when the value is provably beyond an attacker's choosing.
+    reportable: bool,
+    /// Gate answers to carry into the review, if the analysis found any.
+    gates: Vec<crate::triage::gates::GateNote>,
+}
+
+fn assess_sink(
     parsed: &syntax::FileSyntax,
     content: &str,
     hit: &patterns::PatternHit,
-) -> bool {
+) -> SinkAssessment {
     // The rule's weakness class decides which transforms count as sanitizing.
     let cwe = patterns::SOURCE_RULES[hit.rule_index].cwe;
     let sink_cwe = (!cwe.is_empty()).then_some(cwe);
-    !matches!(
-        parsed.taint_at(content, hit.offset, sink_cwe),
-        dataflow::Taint::Constant | dataflow::Taint::Sanitized { .. }
-    )
+    let taint = parsed.taint_at(content, hit.offset, sink_cwe);
+    SinkAssessment {
+        reportable: !matches!(
+            taint,
+            dataflow::Taint::Constant | dataflow::Taint::Sanitized { .. }
+        ),
+        gates: dataflow::gate_notes(taint, sink_cwe),
+    }
 }
 
 pub struct ScanFileOutcome {
@@ -194,6 +206,9 @@ pub fn scan_file_with_relative_path(
                 } else {
                     crate::models::AnalysisTier::Text
                 },
+                // A secret is a literal, not a call argument; there is no sink
+                // for the dataflow analysis to reason about.
+                analysis_gates: Vec::new(),
                 observation_run_id: String::new(),
                 resolved_by_run_id: None,
                 fingerprint_version: 0,
@@ -218,9 +233,11 @@ pub fn scan_file_with_relative_path(
                 if !spans.allows_code_match(hit.offset) {
                     continue;
                 }
-                // A sink whose argument is provably a constant is not a
-                // finding: nobody can choose the value.
-                if !reaches_attacker_input(&parsed, &content, &hit) {
+                // A sink whose argument is provably a constant, or sanitized
+                // for this weakness, is not a finding: nobody can choose the
+                // value that reaches it.
+                let assessment = assess_sink(&parsed, &content, &hit);
+                if !assessment.reportable {
                     continue;
                 }
                 let rule = &patterns::SOURCE_RULES[hit.rule_index];
@@ -254,6 +271,7 @@ pub fn scan_file_with_relative_path(
                     } else {
                         crate::models::AnalysisTier::Text
                     },
+                    analysis_gates: assessment.gates.clone(),
                     observation_run_id: String::new(),
                     resolved_by_run_id: None,
                     fingerprint_version: 0,

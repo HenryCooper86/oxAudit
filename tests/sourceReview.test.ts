@@ -142,3 +142,74 @@ test("candidate requests clear all review fields", () => {
   assert.deepEqual(request.gates, []);
   assert.equal(request.expiresAt, null);
 });
+
+test("an unreviewed finding starts from what the analysis worked out", () => {
+  // The gate model treats a finding as a candidate until something tries to
+  // disprove it. The analysis already made that attempt, so a reviewer should
+  // edit its argument rather than retype one.
+  const draft = createReviewDraft({
+    ...finding(),
+    review: null,
+    analysisGates: [
+      {
+        gate: "attackerControlled",
+        verdict: "survives",
+        evidence: "The value traces to a parameter.",
+      },
+    ],
+  });
+
+  const gate = draft.gates.find((note) => note.gate === "attackerControlled");
+  assert.equal(gate?.verdict, "survives");
+  assert.match(gate?.evidence ?? "", /traces to a parameter/);
+
+  // Gates the analysis said nothing about stay unanswered rather than being
+  // guessed at.
+  assert.equal(draft.gates.find((note) => note.gate === "intended")?.verdict, "unknown");
+});
+
+test("a recorded human decision is never overwritten by a suggestion", () => {
+  const draft = createReviewDraft({
+    ...finding(),
+    review: {
+      id: "r1",
+      projectId: "p1",
+      fingerprintVersion: 1,
+      fingerprint: "fp",
+      state: "confirmed",
+      reason: "Reviewed by hand.",
+      evidence: null,
+      entryPoint: null,
+      dataFlow: null,
+      gates: [
+        {
+          gate: "attackerControlled",
+          verdict: "eliminates",
+          evidence: "Callers are internal only.",
+        },
+      ],
+      decidingGate: null,
+      expiresAt: null,
+      origin: "local",
+      updatedAt: "2026-01-01T00:00:00Z",
+      supersededAt: null,
+    },
+    analysisGates: [
+      {
+        gate: "attackerControlled",
+        verdict: "survives",
+        evidence: "The value traces to a parameter.",
+      },
+    ],
+  } as never);
+
+  const gate = draft.gates.find((note) => note.gate === "attackerControlled");
+  // The person looked and disagreed with the machine. Their answer stands.
+  assert.equal(gate?.verdict, "eliminates");
+  assert.match(gate?.evidence ?? "", /internal only/);
+});
+
+test("a finding with no analysis gates behaves as before", () => {
+  const draft = createReviewDraft({ ...finding(), review: null, analysisGates: [] });
+  assert.ok(draft.gates.every((note) => note.verdict === "unknown"));
+});

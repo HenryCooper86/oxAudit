@@ -2938,6 +2938,7 @@ fn finding_from_raw_project_observation(
         entropy: payload.entropy,
         verified: payload.verified,
         analysis: payload.analysis,
+        analysis_gates: payload.analysis_gates.clone(),
         observation_run_id: observation.run_id,
         resolved_by_run_id: None,
         fingerprint_version: observation.fingerprint_version,
@@ -3167,6 +3168,8 @@ struct StoredFindingPayload {
     /// so a stored finding never claims a verification that did not run.
     #[serde(default)]
     analysis: crate::models::AnalysisTier,
+    #[serde(default)]
+    analysis_gates: Vec<crate::triage::gates::GateNote>,
 }
 
 impl From<&Finding> for StoredFindingPayload {
@@ -3189,6 +3192,7 @@ impl From<&Finding> for StoredFindingPayload {
             entropy: finding.entropy,
             verified: finding.verified,
             analysis: finding.analysis,
+            analysis_gates: finding.analysis_gates.clone(),
         }
     }
 }
@@ -3420,6 +3424,7 @@ fn load_findings(
                 entropy: payload.entropy,
                 verified: payload.verified,
                 analysis: payload.analysis,
+                analysis_gates: payload.analysis_gates.clone(),
                 observation_run_id: run_id.to_owned(),
                 resolved_by_run_id: None,
                 fingerprint_version: observation.fingerprint_version,

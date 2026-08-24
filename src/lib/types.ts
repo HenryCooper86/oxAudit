@@ -504,6 +504,12 @@ export interface Finding {
    * text with no grammar available for the language.
    */
   analysis: AnalysisTier;
+  /**
+   * What the dataflow analysis worked out, phrased as answers to the
+   * falsification gates. Suggestions, never decisions — the review form starts
+   * from these and a person submits it.
+   */
+  analysisGates: GateNote[];
   observationRunId: string;
   resolvedByRunId: string | null;
   fingerprintVersion: number;
