@@ -53,9 +53,18 @@ impl FileSyntax {
 
     /// Can an attacker choose the value reaching the sink at `offset`?
     ///
+    /// `sink_cwe` is the weakness class the matched rule describes. It is what
+    /// makes sanitizer recognition safe: a transform only excuses a sink whose
+    /// weakness it actually neutralizes, so `escapeHtml` never excuses `eval`.
+    ///
     /// `Unknown` whenever there is no grammar, no enclosing call, or the value
     /// cannot be traced — every one of those keeps the finding.
-    pub fn taint_at(&self, content: &str, offset: usize) -> super::dataflow::Taint {
+    pub fn taint_at(
+        &self,
+        content: &str,
+        offset: usize,
+        sink_cwe: Option<&str>,
+    ) -> super::dataflow::Taint {
         use super::dataflow::{self, Taint};
         let Some(tree) = &self.tree else {
             return Taint::Unknown;
@@ -69,7 +78,7 @@ impl FileSyntax {
             return Taint::Constant;
         };
         let function = dataflow::enclosing_function(root, offset);
-        dataflow::classify_expression(argument, content, function)
+        dataflow::classify_expression(argument, content, function, sink_cwe)
     }
 }
 

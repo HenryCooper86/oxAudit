@@ -58,9 +58,12 @@ fn reaches_attacker_input(
     content: &str,
     hit: &patterns::PatternHit,
 ) -> bool {
+    // The rule's weakness class decides which transforms count as sanitizing.
+    let cwe = patterns::SOURCE_RULES[hit.rule_index].cwe;
+    let sink_cwe = (!cwe.is_empty()).then_some(cwe);
     !matches!(
-        parsed.taint_at(content, hit.offset),
-        dataflow::Taint::Constant
+        parsed.taint_at(content, hit.offset, sink_cwe),
+        dataflow::Taint::Constant | dataflow::Taint::Sanitized { .. }
     )
 }
 

@@ -258,6 +258,19 @@ eval(userInput)             // parameter — reported
 eval(req.body.expr)         // request data — reported
 ```
 
+A transform that neutralizes the sink's weakness clears it:
+
+```js
+eval(parseInt(userInput, 10))   // coerced to a number — not reported
+eval(escapeHtml(userInput))     // escapes markup, not code — still reported
+```
+
+Sanitizers are matched to the CWE they actually neutralize, never applied
+generically. `escapeHtml` clears an XSS sink and nothing else; `shlex.quote`
+clears command injection and nothing else. A transform that is merely *named*
+like a sanitizer counts for nothing — guessing there produces a false negative,
+which is the expensive direction.
+
 Three limits, stated because they bound what the result means:
 
 - **Intraprocedural.** Analysis stops at the enclosing function. Following a
