@@ -2,6 +2,7 @@ mod adapters;
 mod agent;
 mod ai;
 pub mod binscan;
+pub mod cli;
 mod commands;
 pub mod compliance;
 mod credentials;

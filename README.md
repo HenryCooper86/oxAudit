@@ -44,6 +44,57 @@ with the help of an AI assistant.
 - **AI Assistant** — chat with code/context attachment
 - **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key
 
+## Command line
+
+`oxaudit-cli` runs the same scanners, rules, and policy evaluation as the desktop
+app — it is a second adapter over the same core, not a second engine, so a
+finding reported in CI and a finding reported in the window are the same finding.
+
+```bash
+# Human-readable, grouped by file
+oxaudit-cli scan .
+
+# SARIF for GitHub code scanning and most CI viewers
+oxaudit-cli scan . --format sarif --output oxaudit.sarif
+
+# Gate a build. Opt-in: --fail-on defaults to `none`
+oxaudit-cli scan . --fail-on high
+
+# Lockfiles against OSV
+oxaudit-cli deps . --format json
+
+# Keep the run so the desktop app can open it
+oxaudit-cli scan . --db ~/.oxaudit/findings.sqlite3
+oxaudit-cli export --db ~/.oxaudit/findings.sqlite3 --run <id> --format cyclonedx
+```
+
+Progress goes to stderr and the report to stdout, so `oxaudit-cli scan . --format
+sarif > out.sarif` needs no extra flags.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Ran to completion; nothing at or above `--fail-on` |
+| `1` | Ran to completion; findings at or above `--fail-on` |
+| `2` | The command was not usable — bad path, bad flag, bad format |
+| `3` | The scan itself failed |
+
+### In GitHub Actions
+
+```yaml
+- name: Scan
+  run: oxaudit-cli scan . --format sarif --output oxaudit.sarif
+
+- name: Upload to code scanning
+  uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: oxaudit.sarif
+```
+
+oxAudit runs this against its own repository on every push
+([`self-scan.yml`](.github/workflows/self-scan.yml)).
+
 ## Architecture
 
 ```
