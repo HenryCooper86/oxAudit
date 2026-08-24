@@ -141,6 +141,7 @@ mod tests {
             entropy: None,
             verified: None,
             analysis: Default::default(),
+            analysis_gates: Vec::new(),
             observation_run_id: "run".into(),
             resolved_by_run_id: None,
             fingerprint_version: 1,

@@ -33,6 +33,17 @@ pub enum Taint {
         /// The call responsible, so a reviewer can check the claim.
         by: &'static str,
     },
+    /// Sanitized, but for a different weakness than this sink's.
+    ///
+    /// The most useful thing the analysis can tell a reviewer: there *is*
+    /// sanitization on this path, and it does not cover this sink. Someone
+    /// wrote that call believing it made the line safe. Reported, never
+    /// suppressed, and carried into the review as evidence.
+    SanitizedElsewhere {
+        by: &'static str,
+        /// What that call does cover.
+        covers: &'static str,
+    },
     /// Traces to a parameter or a known external source.
     Tainted,
     /// Undetermined. The finding stands.
@@ -105,12 +116,20 @@ const SANITIZERS: &[Sanitizer] = &[
     },
 ];
 
-/// Does this call neutralize `sink_cwe`?
-fn sanitizes(name: &str, sink_cwe: Option<&str>) -> Option<&'static Sanitizer> {
-    let sink_cwe = sink_cwe?;
-    SANITIZERS
-        .iter()
-        .find(|entry| entry.name == name && entry.neutralizes.contains(&sink_cwe))
+/// Does this call neutralize `sink_cwe`, or something else?
+fn sanitizes(name: &str, sink_cwe: Option<&str>) -> Taint {
+    let Some(entry) = SANITIZERS.iter().find(|entry| entry.name == name) else {
+        return Taint::Unknown;
+    };
+    match sink_cwe {
+        Some(cwe) if entry.neutralizes.contains(&cwe) => Taint::Sanitized { by: entry.name },
+        // A recognised transform that does not cover this weakness. Worth
+        // saying out loud rather than treating as if nothing were there.
+        _ => Taint::SanitizedElsewhere {
+            by: entry.name,
+            covers: entry.neutralizes.first().copied().unwrap_or(""),
+        },
+    }
 }
 
 /// How far a name is followed before giving up.
@@ -280,8 +299,9 @@ fn classify_with_depth(
         if let Some(name) = called_name(node, source) {
             // Checked before the source list: a value read from input and then
             // coerced to a number is no longer dangerous for this sink.
-            if let Some(sanitizer) = sanitizes(name, sink_cwe) {
-                return Taint::Sanitized { by: sanitizer.name };
+            match sanitizes(name, sink_cwe) {
+                Taint::Unknown => {}
+                assessed => return assessed,
             }
             if TAINTED_CALLS.contains(&name) {
                 return Taint::Tainted;
@@ -315,6 +335,8 @@ fn combine(left: Taint, right: Taint) -> Taint {
             Taint::Sanitized { by }
         }
         (Taint::Sanitized { by }, Taint::Sanitized { .. }) => Taint::Sanitized { by },
+        (assessed @ Taint::SanitizedElsewhere { .. }, Taint::Constant)
+        | (Taint::Constant, assessed @ Taint::SanitizedElsewhere { .. }) => assessed,
         _ => Taint::Unknown,
     }
 }
@@ -467,6 +489,42 @@ fn resolve_binding(
         scan_scope(root, &query, &mut result);
     }
     result.unwrap_or(Taint::Unknown)
+}
+
+/// Turn what the analysis worked out into answers to the falsification gates.
+///
+/// The gate model treats a finding as a candidate until something tries to
+/// disprove it. This is that attempt, written down in the same vocabulary a
+/// human reviewer uses, so its reasoning can be checked rather than trusted.
+///
+/// These are *suggestions*, never decisions. The review form starts from them
+/// and a person submits it — the same line the assistant is held to.
+pub fn gate_notes(taint: Taint, sink_cwe: Option<&str>) -> Vec<crate::triage::gates::GateNote> {
+    use crate::triage::gates::{Gate, GateNote, GateVerdict};
+
+    match taint {
+        Taint::Tainted => vec![GateNote {
+            gate: Gate::AttackerControlled,
+            verdict: GateVerdict::Survives,
+            evidence: "The value reaching this sink traces to a parameter or an external \
+                       input within the same function."
+                .to_string(),
+        }],
+        Taint::SanitizedElsewhere { by, covers } => vec![GateNote {
+            gate: Gate::Sanitized,
+            // Survives, not eliminates: sanitization is present and does not
+            // cover this weakness, which is the trap worth naming.
+            verdict: GateVerdict::Survives,
+            evidence: format!(
+                "The value passes through `{by}()`, which neutralizes {covers} and not {}. \
+                 Sanitization is present on this path but does not cover this sink.",
+                sink_cwe.unwrap_or("this weakness")
+            ),
+        }],
+        // Constant and Sanitized never reach a reviewer: the finding is not
+        // reported at all, so there is nothing to pre-fill.
+        Taint::Constant | Taint::Sanitized { .. } | Taint::Unknown => Vec::new(),
+    }
 }
 
 /// Depth-first walk, iterative so a deeply nested file cannot exhaust the stack.
@@ -762,6 +820,94 @@ mod tests {
                 "{} neutralizes nothing",
                 entry.name
             );
+        }
+    }
+
+    // ---------------------------------------------------------- gate notes
+
+    #[test]
+    fn a_mismatched_sanitizer_is_reported_rather_than_ignored() {
+        // The most useful thing the analysis can say: sanitization is present
+        // on this path and does not cover this sink. Someone wrote that call
+        // believing it made the line safe.
+        let source = "function f(u) { return eval(escapeHtml(u)); }\n";
+        let taint = taint_for_cwe(source, "javascript", "eval(", Some("CWE-95"));
+        assert!(
+            matches!(
+                taint,
+                Taint::SanitizedElsewhere {
+                    by: "escapeHtml",
+                    ..
+                }
+            ),
+            "got {taint:?}"
+        );
+    }
+
+    #[test]
+    fn a_mismatched_sanitizer_answers_the_sanitized_gate_without_eliminating() {
+        use crate::triage::gates::{Gate, GateVerdict};
+        let taint = Taint::SanitizedElsewhere {
+            by: "escapeHtml",
+            covers: "CWE-79",
+        };
+        let notes = gate_notes(taint, Some("CWE-95"));
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].gate, Gate::Sanitized);
+        // Survives, not eliminates: sanitization that does not cover the sink
+        // must never read as a reason to dismiss the finding.
+        assert_eq!(notes[0].verdict, GateVerdict::Survives);
+        assert!(notes[0].evidence.contains("escapeHtml"));
+        assert!(notes[0].evidence.contains("CWE-79"));
+        assert!(notes[0].evidence.contains("CWE-95"));
+    }
+
+    #[test]
+    fn tainted_input_answers_the_attacker_controlled_gate() {
+        use crate::triage::gates::{Gate, GateVerdict};
+        let notes = gate_notes(Taint::Tainted, Some("CWE-95"));
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].gate, Gate::AttackerControlled);
+        assert_eq!(notes[0].verdict, GateVerdict::Survives);
+        assert!(!notes[0].evidence.is_empty());
+    }
+
+    #[test]
+    fn a_suppressed_finding_contributes_no_gate_notes() {
+        // Constant and Sanitized never reach a reviewer, so there is nothing
+        // to pre-fill and nothing to explain.
+        assert!(gate_notes(Taint::Constant, Some("CWE-95")).is_empty());
+        assert!(gate_notes(Taint::Sanitized { by: "parseInt" }, Some("CWE-95")).is_empty());
+    }
+
+    #[test]
+    fn an_undetermined_value_suggests_nothing() {
+        // Abstaining beats inventing an answer a reviewer might trust.
+        assert!(gate_notes(Taint::Unknown, Some("CWE-95")).is_empty());
+    }
+
+    #[test]
+    fn no_note_ever_claims_to_eliminate_a_finding() {
+        use crate::triage::gates::GateVerdict;
+        // The machine argues; the human decides. An eliminating verdict is a
+        // dismissal, and the review model requires a person to make one.
+        for taint in [
+            Taint::Tainted,
+            Taint::Unknown,
+            Taint::Constant,
+            Taint::Sanitized { by: "parseInt" },
+            Taint::SanitizedElsewhere {
+                by: "escapeHtml",
+                covers: "CWE-79",
+            },
+        ] {
+            for note in gate_notes(taint, Some("CWE-95")) {
+                assert_ne!(
+                    note.verdict,
+                    GateVerdict::Eliminates,
+                    "{taint:?} produced an eliminating verdict"
+                );
+            }
         }
     }
 }

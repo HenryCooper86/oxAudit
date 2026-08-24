@@ -119,6 +119,7 @@ fn finding(category: &str) -> Finding {
         entropy: Some(4.95),
         verified: None,
         analysis: Default::default(),
+        analysis_gates: Vec::new(),
         observation_run_id: format!("run-{CANARY}"),
         resolved_by_run_id: None,
         fingerprint_version: FINGERPRINT_VERSION,

@@ -271,6 +271,28 @@ clears command injection and nothing else. A transform that is merely *named*
 like a sanitizer counts for nothing — guessing there produces a false negative,
 which is the expensive direction.
 
+### What the analysis tells a reviewer
+
+The review model treats a finding as a *candidate* until something tries to
+disprove it, through five falsification gates. The dataflow analysis is an
+automated attempt at exactly that, so it answers the gates in the same
+vocabulary a person uses, and the review form starts from its answers:
+
+| What it found | Gate | Verdict |
+|---|---|---|
+| The value traces to a parameter or external input | Attacker control | survives |
+| Sanitization is present but covers a different weakness | Effective sanitization | survives |
+
+The second row is the one worth having. `eval(escapeHtml(userInput))` reports
+with *"passes through `escapeHtml()`, which neutralizes CWE-79 and not CWE-95"* —
+someone wrote that call believing it made the line safe, and saying so is more
+useful than either hiding the finding or reporting it bare.
+
+**No suggestion ever eliminates a finding.** An eliminating verdict is a
+dismissal, and the review model requires a person to make one — the same line
+the assistant is held to. A recorded human answer is never overwritten by a
+machine one.
+
 Three limits, stated because they bound what the result means:
 
 - **Intraprocedural.** Analysis stops at the enclosing function. Following a

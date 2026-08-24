@@ -113,6 +113,13 @@ pub struct Finding {
     /// Whether a grammar qualified this match or it stands on text alone.
     #[serde(default)]
     pub analysis: AnalysisTier,
+    /// What the dataflow analysis worked out, phrased as answers to the
+    /// falsification gates.
+    ///
+    /// Suggestions, never decisions: the review form starts from these and a
+    /// person submits it. Empty when the analysis had nothing to contribute.
+    #[serde(default)]
+    pub analysis_gates: Vec<crate::triage::gates::GateNote>,
     #[serde(default)]
     pub observation_run_id: String,
     #[serde(default)]

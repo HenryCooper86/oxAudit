@@ -48,9 +48,14 @@ export function createReviewDraft(finding: Finding): ReviewDraft {
     dataFlow: review?.dataFlow ?? "",
     gates: ALL_GATES.map((gate) => {
       const saved = review?.gates.find((note) => note.gate === gate);
-      return saved
-        ? { ...saved }
-        : { gate, verdict: "unknown", evidence: "" };
+      if (saved) return { ...saved };
+      // Nothing recorded by a person yet: start from what the dataflow
+      // analysis worked out, so a reviewer edits an argument rather than
+      // typing one from scratch. A saved answer always wins — a human
+      // decision is never overwritten by a machine suggestion.
+      const suggested = finding.analysisGates?.find((note) => note.gate === gate);
+      if (suggested) return { ...suggested };
+      return { gate, verdict: "unknown", evidence: "" };
     }),
     decidingGate: review?.decidingGate ?? null,
     expiresAt: review?.expiresAt ?? "",
