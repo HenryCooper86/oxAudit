@@ -129,6 +129,26 @@ Two defects the corpus found on its first run:
 - Its separator class `[^A-Za-z0-9]{0,10}` included newlines, so the word
   "secret" on one line paired with an unrelated token three lines below.
 
+### Throughput
+
+`cargo bench --bench scanning` measures the per-file work. Figures below are the
+median of a run on an Apple M-series laptop, so treat them as ratios rather than
+absolutes:
+
+| Stage | Throughput |
+|---|---|
+| Source pattern rules | 400–840 MiB/s |
+| Secret rules (33 rules over every file) | 210–290 MiB/s |
+| Syntax analysis (tree-sitter parse + span collection) | 15–21 MiB/s |
+
+Throughput is flat across three orders of magnitude of input size, which is the
+property that actually matters: a rule change that made matching quadratic would
+show up here as throughput falling as files grow.
+
+Syntax analysis is roughly 40× more expensive than rule matching and dominates
+scan time — it is the entire cost of the precision improvement above. End to
+end, this repository (329 files, 5.1 MB) scans in about 2.2 seconds.
+
 ### Confidence tiers
 
 Every finding records how far oxAudit could qualify it:

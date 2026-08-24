@@ -9,7 +9,10 @@ use crate::findings::redaction;
 use crate::fs_utils;
 use crate::models::Finding;
 
-pub(crate) fn benchmark_observations(
+/// Rule ids that fire on this content, for the corpus benchmark and the
+/// criterion throughput benches. Public so `benches/scanning.rs` can measure
+/// the same path a scan takes rather than an approximation of it.
+pub fn benchmark_observations(
     content: &str,
     language: &str,
     source_patterns: bool,
