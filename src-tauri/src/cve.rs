@@ -16,7 +16,6 @@ const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 pub struct CveState {
     pub http: reqwest::Client,
     pub osv: OsvClient,
-    pub api_key: Mutex<Option<String>>,
     /// (timestamp, count) of requests in the current 30s window
     pub window: Mutex<(Instant, usize)>,
     pub cache: Mutex<HashMap<String, (Instant, CveSearchResult)>>,
@@ -31,7 +30,6 @@ impl CveState {
         Self {
             http: http.clone(),
             osv: OsvClient::new(http),
-            api_key: Mutex::new(None),
             window: Mutex::new((Instant::now(), 0)),
             cache: Mutex::new(HashMap::new()),
             kev: Mutex::new(None),
@@ -63,12 +61,8 @@ impl CveState {
     }
 
     /// Enforce NVD rate limits: 5 req / 30s without a key, 50 with one.
-    async fn throttle(&self) {
-        let limit = if self.api_key.lock().unwrap().is_some() {
-            50
-        } else {
-            5
-        };
+    async fn throttle(&self, authenticated: bool) {
+        let limit = if authenticated { 50 } else { 5 };
         loop {
             let sleep = {
                 let mut w = self.window.lock().unwrap();
@@ -94,8 +88,13 @@ impl CveState {
         }
     }
 
-    pub(crate) async fn nvd_get(&self, params: &[(&str, String)]) -> Result<Value, String> {
-        self.throttle().await;
+    pub(crate) async fn nvd_get(
+        &self,
+        params: &[(&str, String)],
+        api_key: Option<&str>,
+    ) -> Result<Value, String> {
+        let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
+        self.throttle(api_key.is_some()).await;
         let mut url = reqwest::Url::parse(NVD_BASE).map_err(|e| e.to_string())?;
         {
             let mut q = url.query_pairs_mut();
@@ -103,9 +102,8 @@ impl CveState {
                 q.append_pair(k, v);
             }
         }
-        let key = self.api_key.lock().unwrap().clone();
         let mut req = self.http.get(url);
-        if let Some(key) = &key {
+        if let Some(key) = api_key {
             req = req.header("apiKey", key);
         }
         let resp = req
@@ -147,6 +145,7 @@ impl CveState {
 /// Free-text CVE search via NVD keywordSearch.
 pub async fn search_cves(
     state: &CveState,
+    api_key: Option<&str>,
     query: &str,
     start_index: usize,
     per_page: usize,
@@ -181,7 +180,7 @@ pub async fn search_cves(
         ));
     }
 
-    let json = state.nvd_get(&params).await?;
+    let json = state.nvd_get(&params, api_key).await?;
     let total = json
         .get("totalResults")
         .and_then(|t| t.as_u64())
@@ -194,12 +193,16 @@ pub async fn search_cves(
 }
 
 /// Fetch full detail for a CVE id: NVD record + OSV enrichment.
-pub async fn cve_detail(state: &CveState, id: &str) -> Result<CveDetail, String> {
+pub async fn cve_detail(
+    state: &CveState,
+    api_key: Option<&str>,
+    id: &str,
+) -> Result<CveDetail, String> {
     let id = id.trim().to_ascii_uppercase();
     if !id.starts_with("CVE-") {
         return Err("id must look like CVE-YYYY-XXXX".into());
     }
-    let json = state.nvd_get(&[("cveId", id.clone())]).await?;
+    let json = state.nvd_get(&[("cveId", id.clone())], api_key).await?;
     let raw = json.clone();
     let items = parse_cve_items(json);
     let mut item = items

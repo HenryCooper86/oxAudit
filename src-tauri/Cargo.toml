@@ -10,9 +10,9 @@ members = [
 resolver = "2"
 
 [package]
-name = "vulncompanion"
+name = "oxaudit"
 version = "0.1.0"
-description = "VulnCompanion — AI-assisted vulnerability research companion"
+description = "oxAudit — security research workbench"
 authors = ["Henry Cooper"]
 license = "Apache-2.0"
 edition = "2021"
@@ -24,7 +24,7 @@ rust-version = "1.77"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "vulncompanion_lib"
+name = "oxaudit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -62,9 +62,18 @@ percent-encoding = "2"
 tokio = { version = "1", features = ["time", "rt-multi-thread", "macros", "process", "io-util"] }
 futures = "0.3"
 printpdf = { version = "0.8.2", default-features = false }
+keyring = { version = "3.6.3", default-features = false }
+zeroize = "1.8"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["linux-native-sync-persistent", "crypto-rust", "vendored"] }
 
 [profile.release]
 lto = true

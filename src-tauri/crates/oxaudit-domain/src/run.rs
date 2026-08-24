@@ -11,6 +11,7 @@ pub enum RunKind {
     Binary,
     Firmware,
     Import,
+    ExternalEvidence,
     Verification,
 }
 

@@ -405,6 +405,7 @@ pub struct Enrichment {
 /// things, so half an answer is worth far more than none.
 pub async fn enrich(
     state: &crate::cve::CveState,
+    nvd_api_key: Option<&str>,
     queries: &[ComponentQuery],
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     on_progress: std::sync::Arc<dyn Fn(String) + Send + Sync>,
@@ -481,7 +482,7 @@ pub async fn enrich(
             MAX_NVD_QUERIES
         ));
     }
-    if !askable.is_empty() && state.api_key.lock().unwrap().is_none() {
+    if !askable.is_empty() && nvd_api_key.is_none() {
         notes.push(
             "No NVD API key is set, so lookups are limited to five requests per thirty seconds. Setting one in Settings makes this roughly ten times faster."
                 .to_string(),
@@ -504,10 +505,13 @@ pub async fn enrich(
             query.version
         ));
         match state
-            .nvd_get(&[
-                ("virtualMatchString", cpe),
-                ("resultsPerPage", "200".to_string()),
-            ])
+            .nvd_get(
+                &[
+                    ("virtualMatchString", cpe),
+                    ("resultsPerPage", "200".to_string()),
+                ],
+                nvd_api_key,
+            )
             .await
         {
             Ok(json) => {

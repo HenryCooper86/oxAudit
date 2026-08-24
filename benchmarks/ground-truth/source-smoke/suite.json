@@ -1,47 +1,106 @@
 {
   "schemaVersion": 1,
   "id": "oxaudit.source-smoke",
-  "version": "1.0.0",
-  "description": "A deliberately small deterministic source-scanner contract. It proves the harness and js-eval rule; it is not a representative recall claim.",
+  "version": "2.0.0",
+  "description": "A deterministic cross-language source and secret-scanner contract covering JavaScript, Python, C, Go, and credential detection with paired positive and negative fixtures.",
   "provenance": {
     "authors": ["oxAudit contributors"],
-    "source": "Repository-authored positive and negative JavaScript fixtures",
+    "source": "Repository-authored positive and negative source and secret fixtures",
     "license": "Apache-2.0",
     "creationMethod": "authored",
-    "contentSha256": "e70a749b8305a5ee91b5b0926a7491318fa6c8ef839160b27524d16402cedeea"
+    "contentSha256": "3a135126e747321ad0994f75b0a4e7821d83b41ce461ca4b93678eacecd85ce1"
   },
   "targets": [
     {
       "id": "source-js-eval-positive",
       "inputPath": "positive.js",
       "inputSha256": "0083fe297764882864f2e6c0a84ae673c94125282a2c7f2dc252615d329cbe50",
-      "platform": "any",
-      "architecture": "any",
-      "expected": [
-        {
-          "identity": {
-            "ruleId": "js-eval",
-            "artifactPath": "positive.js"
-          },
-          "count": 1,
-          "evidenceKind": "file_location"
-        }
-      ],
-      "expectedAbsent": [],
-      "allowedVariants": []
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["source-pattern"], "language": "javascript",
+      "expected": [{ "identity": { "ruleId": "js-eval", "artifactPath": "positive.js" }, "count": 1, "evidenceKind": "file_location" }],
+      "expectedAbsent": [], "allowedVariants": []
     },
     {
       "id": "source-js-eval-negative",
       "inputPath": "negative.js",
       "inputSha256": "147213bc69194e9fe56f46ac94000b27629c1e45d345d9a0dd062c6c0f3ed8ac",
-      "platform": "any",
-      "architecture": "any",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["source-pattern"], "language": "javascript",
+      "expected": [],
+      "expectedAbsent": [{ "ruleId": "js-eval", "artifactPath": "negative.js" }], "allowedVariants": []
+    },
+    {
+      "id": "source-python-shell-positive",
+      "inputPath": "python-shell-positive.py",
+      "inputSha256": "fbb5ae522ecc010e204904a7adca9a30a6c63c8e719f08200ef5a797561f70f2",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["source-pattern"], "language": "python",
+      "expected": [{ "identity": { "ruleId": "py-subprocess-shell", "artifactPath": "python-shell-positive.py" }, "count": 1, "evidenceKind": "file_location" }],
+      "expectedAbsent": [], "allowedVariants": []
+    },
+    {
+      "id": "source-python-shell-negative",
+      "inputPath": "python-shell-negative.py",
+      "inputSha256": "3321c668e941e9e95cb23f921614e5238273bfa8144cc78296185117908b9b02",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["source-pattern"], "language": "python",
+      "expected": [],
+      "expectedAbsent": [{ "ruleId": "py-subprocess-shell", "artifactPath": "python-shell-negative.py" }], "allowedVariants": []
+    },
+    {
+      "id": "source-c-strcpy-positive",
+      "inputPath": "c-strcpy-positive.c",
+      "inputSha256": "9733cdf09961d379d4a99c99e8e25b61e27a17653af3e48bd424c1913f50c2dd",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["source-pattern"], "language": "c",
+      "expected": [{ "identity": { "ruleId": "c-strcpy", "artifactPath": "c-strcpy-positive.c" }, "count": 1, "evidenceKind": "file_location" }],
+      "expectedAbsent": [], "allowedVariants": []
+    },
+    {
+      "id": "source-c-strcpy-negative",
+      "inputPath": "c-strcpy-negative.c",
+      "inputSha256": "c08f89a388cf5ce17e65c145eedddc543c57be7a4a07a79db3ce6b325dccc7cd",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["source-pattern"], "language": "c",
+      "expected": [],
+      "expectedAbsent": [{ "ruleId": "c-strcpy", "artifactPath": "c-strcpy-negative.c" }], "allowedVariants": []
+    },
+    {
+      "id": "source-go-md5-positive",
+      "inputPath": "go-md5-positive.go",
+      "inputSha256": "0b1bdee40729e5ce294ce00df0628e1fb2fb32c823a4d1593572e8cee7ddae8f",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["source-pattern"], "language": "go",
+      "expected": [{ "identity": { "ruleId": "go-weak-hash", "artifactPath": "go-md5-positive.go" }, "count": 1, "evidenceKind": "file_location" }],
+      "expectedAbsent": [], "allowedVariants": []
+    },
+    {
+      "id": "source-go-md5-negative",
+      "inputPath": "go-md5-negative.go",
+      "inputSha256": "d37ef925da62555b956773ea8fd5c0b71e6dfabc8f199e24ebab6744d5d12ca3",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["source-pattern"], "language": "go",
+      "expected": [],
+      "expectedAbsent": [{ "ruleId": "go-weak-hash", "artifactPath": "go-md5-negative.go" }], "allowedVariants": []
+    },
+    {
+      "id": "secret-generic-api-key-positive",
+      "inputPath": "generic-api-key-positive.txt",
+      "inputSha256": "43d3c2678d730933bb5861b57cab4765d03d2718a57caa3184eda7693fe47792",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["secret"], "language": null,
+      "expected": [{ "identity": { "ruleId": "generic-api-key", "artifactPath": "generic-api-key-positive.txt" }, "count": 1, "evidenceKind": "redacted_secret" }],
+      "expectedAbsent": [], "allowedVariants": []
+    },
+    {
+      "id": "secret-generic-api-key-negative",
+      "inputPath": "generic-api-key-negative.txt",
+      "inputSha256": "60aec899ab8a5d3c87a7a784bbce059ea8b25d351c09ce69f3e90afdf011b685",
+      "platform": "any", "architecture": "any",
+      "scannerFamilies": ["secret"], "language": null,
       "expected": [],
       "expectedAbsent": [
-        {
-          "ruleId": "js-eval",
-          "artifactPath": "negative.js"
-        }
+        { "ruleId": "generic-api-key", "artifactPath": "generic-api-key-negative.txt" }
       ],
       "allowedVariants": []
     }

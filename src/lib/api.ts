@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AiSettings,
   AiStatus,
   AppSettings,
+  SaveSettingsRequest,
+  SaveSettingsResult,
+  TestAiRequest,
   ChatRequest,
   ChatResponse,
   CveDetail,
@@ -85,6 +87,8 @@ export const api = {
     invoke<ImportPreview>("preview_report_import", { path }),
   importInventoryReport: (path: string, expectedSha256: string) =>
     invoke<CanonicalRun>("import_inventory_report", { path, expectedSha256 }),
+  importExternalReport: (path: string, expectedSha256: string) =>
+    invoke<CanonicalRun>("import_external_report", { path, expectedSha256 }),
   previewRunExport: (runId: string, format: ExportFormat) =>
     invoke<ExportPreview>("preview_run_export", { runId, format }),
   writeRunExport: (runId: string, format: ExportFormat, outputPath: string) =>
@@ -169,12 +173,11 @@ export const api = {
   researchCve: (cve: CveItem, osv: unknown | null) =>
     invoke<ChatResponse>("research_cve", { cve, osv }),
   testAi: () => invoke<AiStatus>("test_ai"),
-  testAiWith: (settings: AiSettings) =>
-    invoke<AiStatus>("test_ai_with", { settings }),
+  testAiWith: (request: TestAiRequest) =>
+    invoke<AiStatus>("test_ai_with", { request }),
   loadSettings: () => invoke<AppSettings>("load_settings"),
-  saveSettings: (settings: AppSettings) =>
-    invoke<void>("save_settings", { settings }),
-  getAiSettings: () => invoke<AiSettings>("get_ai_settings"),
+  saveSettings: (request: SaveSettingsRequest) =>
+    invoke<SaveSettingsResult>("save_settings", { request }),
   listComplianceProfiles: () =>
     invoke<ComplianceProfile[]>("list_compliance_profiles"),
   runComplianceAssessment: (request: RunComplianceRequest) =>

@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from "react";
 import { Toasts } from "./components/Toasts";
 import { ReadinessWizard } from "./components/onboarding/ReadinessWizard";
 import { AppShell } from "./components/workbench/AppShell";
+import { PageErrorBoundary } from "./components/workbench/PageErrorBoundary";
 import { api } from "./lib/api";
 import {
   loadingAiReadiness,
@@ -11,24 +12,52 @@ import {
 } from "./lib/settingsRequests";
 import { useAppStore } from "./lib/stores";
 import { Dashboard } from "./pages/Dashboard";
-import { SourceScanPage } from "./pages/SourceScan";
-import { DepsScanPage } from "./pages/DepsScan";
-import { BinaryScanPage } from "./pages/BinaryScan";
-import { CveResearchPage } from "./pages/CveResearch";
-import { AssistantPage } from "./pages/Assistant";
-import { SettingsPage } from "./pages/SettingsPage";
+import type { Page as PageName } from "./lib/workbench";
 
-const InventoryPage = lazy(() => import("./pages/Inventory").then((module) => ({ default: module.InventoryPage })));
-const RuleLibraryPage = lazy(() => import("./pages/RuleLibrary").then((module) => ({ default: module.RuleLibraryPage })));
-const QualityLabPage = lazy(() => import("./pages/QualityLab").then((module) => ({ default: module.QualityLabPage })));
-const DataSourcesPage = lazy(() => import("./pages/DataSources").then((module) => ({ default: module.DataSourcesPage })));
-const ExportCenterPage = lazy(() => import("./pages/ExportCenter").then((module) => ({ default: module.ExportCenterPage })));
-const VerificationPage = lazy(() => import("./pages/Verification").then((module) => ({ default: module.VerificationPage })));
-const ComplianceCenterPage = lazy(() => import("./pages/ComplianceCenter").then((module) => ({ default: module.ComplianceCenterPage })));
-const ReportStudioPage = lazy(() => import("./pages/ReportStudio").then((module) => ({ default: module.ReportStudioPage })));
+const SourceScanPage = lazy(() =>
+  import("./pages/SourceScan").then((module) => ({ default: module.SourceScanPage })),
+);
+const DepsScanPage = lazy(() =>
+  import("./pages/DepsScan").then((module) => ({ default: module.DepsScanPage })),
+);
+const BinaryScanPage = lazy(() =>
+  import("./pages/BinaryScan").then((module) => ({ default: module.BinaryScanPage })),
+);
+const InventoryPage = lazy(() =>
+  import("./pages/Inventory").then((module) => ({ default: module.InventoryPage })),
+);
+const RuleLibraryPage = lazy(() =>
+  import("./pages/RuleLibrary").then((module) => ({ default: module.RuleLibraryPage })),
+);
+const QualityLabPage = lazy(() =>
+  import("./pages/QualityLab").then((module) => ({ default: module.QualityLabPage })),
+);
+const DataSourcesPage = lazy(() =>
+  import("./pages/DataSources").then((module) => ({ default: module.DataSourcesPage })),
+);
+const ExportCenterPage = lazy(() =>
+  import("./pages/ExportCenter").then((module) => ({ default: module.ExportCenterPage })),
+);
+const VerificationPage = lazy(() =>
+  import("./pages/Verification").then((module) => ({ default: module.VerificationPage })),
+);
+const ComplianceCenterPage = lazy(() =>
+  import("./pages/ComplianceCenter").then((module) => ({ default: module.ComplianceCenterPage })),
+);
+const ReportStudioPage = lazy(() =>
+  import("./pages/ReportStudio").then((module) => ({ default: module.ReportStudioPage })),
+);
+const CveResearchPage = lazy(() =>
+  import("./pages/CveResearch").then((module) => ({ default: module.CveResearchPage })),
+);
+const AssistantPage = lazy(() =>
+  import("./pages/Assistant").then((module) => ({ default: module.AssistantPage })),
+);
+const SettingsPage = lazy(() =>
+  import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })),
+);
 
-function Page() {
-  const page = useAppStore((s) => s.page);
+function Page({ page }: { page: PageName }) {
   switch (page) {
     case "dashboard":
       return <Dashboard />;
@@ -64,6 +93,8 @@ function Page() {
 }
 
 export default function App() {
+  const page = useAppStore((s) => s.page);
+  const setPage = useAppStore((s) => s.setPage);
   const setSettings = useAppStore((s) => s.setSettings);
   const setAiReadiness = useAppStore((s) => s.setAiReadiness);
   const setSettingsLoadError = useAppStore((s) => s.setSettingsLoadError);
@@ -102,9 +133,20 @@ export default function App() {
 
   return (
     <AppShell>
-      <Suspense fallback={<div className="p-6 text-[12px] text-text-muted" role="status">Loading workspace…</div>}>
-        <Page />
-      </Suspense>
+      <PageErrorBoundary
+        resetKey={page}
+        onReturnHome={() => setPage("dashboard")}
+      >
+        <Suspense
+          fallback={
+            <div className="p-6 text-[12px] text-text-muted" role="status">
+              Loading workspace…
+            </div>
+          }
+        >
+          <Page page={page} />
+        </Suspense>
+      </PageErrorBoundary>
       <ReadinessWizard />
       <Toasts />
     </AppShell>

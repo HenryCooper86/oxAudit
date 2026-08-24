@@ -10,7 +10,7 @@ import {
   unavailableAiReadiness,
   type AiReadiness,
 } from "../src/lib/settingsRequests";
-import type { AiStatus, AppSettings } from "../src/lib/types";
+import type { AiStatus, AppSettings, SaveSettingsRequest } from "../src/lib/types";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -33,7 +33,6 @@ function settings(baseUrl: string, enabled = true): AppSettings {
     ai: {
       enabled,
       baseUrl,
-      apiKey: "key",
       model: "model",
       temperature: 0.2,
       timeoutSecs: 120,
@@ -49,7 +48,7 @@ function settings(baseUrl: string, enabled = true): AppSettings {
       scanSecrets: true,
       scanVulnerabilities: true,
     },
-    nvdApiKey: null,
+    credentials: { aiApiKey: true, nvdApiKey: false },
     theme: "dark",
   };
 }
@@ -162,7 +161,7 @@ test("overlapping successful saves publish every authoritative native snapshot i
   let checkIndex = 0;
   const writes: string[] = [];
   const published: string[] = [];
-  const saveSettings = (snapshot: AppSettings) => {
+  const saveSettings = ({ settings: snapshot }: SaveSettingsRequest) => {
     writes.push(snapshot.ai.baseUrl);
     if (snapshot.ai.baseUrl.includes("older")) {
       olderStarted.resolve(undefined);
@@ -244,7 +243,7 @@ test("an older successful save remains store-visible when a newer save fails", a
   const writes: string[] = [];
   let storeSnapshot = settings("https://before.example/v1");
   const readiness: AiReadiness[] = [];
-  const saveSettings = (snapshot: AppSettings) => {
+  const saveSettings = ({ settings: snapshot }: SaveSettingsRequest) => {
     writes.push(snapshot.ai.baseUrl);
     if (snapshot.ai.baseUrl.includes("older")) {
       olderStarted.resolve(undefined);
@@ -299,7 +298,7 @@ test("a failed older save cannot prevent a newer successful snapshot publication
   const newerCheck = deferred<AiStatus>();
   const writes: string[] = [];
   const published: string[] = [];
-  const saveSettings = (snapshot: AppSettings) => {
+  const saveSettings = ({ settings: snapshot }: SaveSettingsRequest) => {
     writes.push(snapshot.ai.baseUrl);
     if (snapshot.ai.baseUrl.includes("older")) {
       olderStarted.resolve(undefined);
@@ -354,7 +353,7 @@ test("a save started by an unmounted Settings page still publishes before a remo
   const firstCheck = deferred<AiStatus>();
   let storeSnapshot = settings("https://before.example/v1");
   const storeReadiness: AiReadiness[] = [];
-  const saveSettings = (snapshot: AppSettings) => {
+  const saveSettings = ({ settings: snapshot }: SaveSettingsRequest) => {
     if (snapshot.ai.baseUrl.includes("first")) {
       firstStarted.resolve(undefined);
       return firstWrite.promise;

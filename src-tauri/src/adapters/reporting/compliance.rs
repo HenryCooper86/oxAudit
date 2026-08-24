@@ -550,8 +550,7 @@ fn md(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('|', "\\|")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\n', '\r'], " ")
 }
 
 fn html(value: &str) -> String {

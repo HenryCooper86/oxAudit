@@ -8,8 +8,8 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use vulncompanion_lib::binscan::native::{enrich, scan};
-use vulncompanion_lib::cve::CveState;
+use oxaudit_lib::binscan::native::{enrich, scan};
+use oxaudit_lib::cve::CveState;
 
 #[tokio::main]
 async fn main() {
@@ -35,6 +35,7 @@ async fn main() {
         let state = CveState::new(reqwest::Client::new());
         let enriched = enrich::enrich(
             &state,
+            None,
             &scanned.queries,
             Arc::new(AtomicBool::new(false)),
             Arc::new(|m| eprintln!("[lookup] {m}")),

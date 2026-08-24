@@ -8,6 +8,30 @@ use crate::findings::redaction;
 use crate::fs_utils;
 use crate::models::Finding;
 
+pub(crate) fn benchmark_observations(
+    content: &str,
+    language: &str,
+    source_patterns: bool,
+    secret_patterns: bool,
+) -> Vec<(&'static str, &'static str)> {
+    let mut observations = Vec::new();
+    if source_patterns {
+        observations.extend(
+            patterns::scan_content(content, language)
+                .into_iter()
+                .map(|hit| (patterns::SOURCE_RULES[hit.rule_index].id, "file_location")),
+        );
+    }
+    if secret_patterns {
+        observations.extend(
+            secrets::scan_content(content)
+                .into_iter()
+                .map(|hit| (secrets::SECRET_RULES[hit.rule_index].id, "redacted_secret")),
+        );
+    }
+    observations
+}
+
 pub struct ScanFileOutcome {
     pub findings: Vec<Finding>,
     // Consumed by the durable scan service introduced in the next foundation slice.
@@ -226,6 +250,88 @@ mod tests {
         assert_eq!(both.covered_families, ["secret", "vulnerability"]);
         assert!(unsupported.covered_families.is_empty());
         assert!(disabled.covered_families.is_empty());
+    }
+
+    #[test]
+    fn committed_quality_corpus_passes_the_real_scanner_paths() {
+        let suite: oxaudit_benchmark::BenchmarkSuite = serde_json::from_str(include_str!(
+            "../../../benchmarks/ground-truth/source-smoke/suite.json"
+        ))
+        .expect("committed suite");
+        for target in &suite.targets {
+            let content = match target.input_path.as_str() {
+                "positive.js" => {
+                    include_str!("../../../benchmarks/ground-truth/source-smoke/positive.js")
+                }
+                "negative.js" => {
+                    include_str!("../../../benchmarks/ground-truth/source-smoke/negative.js")
+                }
+                "python-shell-positive.py" => include_str!(
+                    "../../../benchmarks/ground-truth/source-smoke/python-shell-positive.py"
+                ),
+                "python-shell-negative.py" => include_str!(
+                    "../../../benchmarks/ground-truth/source-smoke/python-shell-negative.py"
+                ),
+                "c-strcpy-positive.c" => include_str!(
+                    "../../../benchmarks/ground-truth/source-smoke/c-strcpy-positive.c"
+                ),
+                "c-strcpy-negative.c" => include_str!(
+                    "../../../benchmarks/ground-truth/source-smoke/c-strcpy-negative.c"
+                ),
+                "go-md5-positive.go" => {
+                    include_str!("../../../benchmarks/ground-truth/source-smoke/go-md5-positive.go")
+                }
+                "go-md5-negative.go" => {
+                    include_str!("../../../benchmarks/ground-truth/source-smoke/go-md5-negative.go")
+                }
+                "generic-api-key-positive.txt" => include_str!(
+                    "../../../benchmarks/ground-truth/source-smoke/generic-api-key-positive.txt"
+                ),
+                "generic-api-key-negative.txt" => include_str!(
+                    "../../../benchmarks/ground-truth/source-smoke/generic-api-key-negative.txt"
+                ),
+                path => panic!("unwired committed fixture {path}"),
+            };
+            let observations = super::benchmark_observations(
+                content,
+                target.language.as_deref().unwrap_or(""),
+                target
+                    .scanner_families
+                    .iter()
+                    .any(|family| family == "source-pattern"),
+                target
+                    .scanner_families
+                    .iter()
+                    .any(|family| family == "secret"),
+            )
+            .into_iter()
+            .map(
+                |(rule_id, evidence_kind)| oxaudit_benchmark::ActualObservation {
+                    identity: oxaudit_benchmark::ObservationIdentity {
+                        rule_id: rule_id.into(),
+                        artifact_path: target.input_path.clone(),
+                    },
+                    evidence_kind: evidence_kind.into(),
+                },
+            )
+            .collect();
+            let result = oxaudit_benchmark::judge(
+                target,
+                oxaudit_benchmark::ExecutionResult {
+                    observations,
+                    runtime_ms: 0,
+                    peak_memory_bytes: None,
+                },
+            );
+            assert_eq!(
+                result.status,
+                oxaudit_benchmark::TargetStatus::Passed,
+                "{} failed: misses={:?}, unexpected={:?}",
+                target.id,
+                result.misses,
+                result.unexpected
+            );
+        }
     }
 
     #[test]

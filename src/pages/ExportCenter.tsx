@@ -117,6 +117,22 @@ export function ExportCenterPage(): JSX.Element {
     }
   };
 
+  const importExternalClaims = async () => {
+    if (!importPreview || !importPath) return;
+    setImportLoading(true);
+    setImportError(null);
+    try {
+      const importedRun = await api.importExternalReport(importPath, importPreview.contentSha256);
+      setRuns((current) => current ? [importedRun, ...current.filter((run) => run.id !== importedRun.id)] : [importedRun]);
+      push("success", `Retained ${importPreview.mappedClaimCount} mapped claims with external-unverified trust`);
+    } catch (cause) {
+      setImportError(String(cause));
+      push("error", "The external claims were not imported");
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
   return (
     <ToolPage
       title="Export Center"
@@ -138,11 +154,17 @@ export function ExportCenterPage(): JSX.Element {
                 <p className="text-[12px] font-medium text-text-primary">{importPreview.fileName} <span className="font-mono text-[10px] text-text-muted">{importPreview.format}</span></p>
                 <p className="mt-0.5 text-[10px] text-text-muted">{importPreview.componentRecords} components · {importPreview.findingRecords} findings · {importPreview.reviewRecords} review statements · {importPreview.unmappedCount} unmapped</p>
               </div>
-              {importPreview.canImportInventory ? (
-                <Button type="button" onClick={() => void importInventory()} variant="primary" size="md" disabled={importLoading}><Upload size={13} aria-hidden="true" />Import separate inventory</Button>
-              ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                {importPreview.canImportInventory && (
+                  <Button type="button" onClick={() => void importInventory()} variant="primary" size="md" disabled={importLoading}><Upload size={13} aria-hidden="true" />Import separate inventory</Button>
+                )}
+                {importPreview.canImportExternalClaims && (
+                  <Button type="button" onClick={() => void importExternalClaims()} variant="outline" size="md" disabled={importLoading}><ShieldAlert size={13} aria-hidden="true" />Retain external claims</Button>
+                )}
+                {!importPreview.canImportInventory && !importPreview.canImportExternalClaims && (
                 <span className="inline-flex items-center gap-1 text-[11px] text-warning"><ShieldAlert size={13} aria-hidden="true" />Preview only—mapping required</span>
-              )}
+                )}
+              </div>
             </header>
             {importPreview.warnings.map((warning) => <p key={warning} className="flex items-start gap-2 border-b border-warning-subtle bg-warning-subtle px-3 py-2 text-[11px] text-text-secondary"><TriangleAlert size={13} aria-hidden="true" className="mt-0.5 shrink-0" />{warning}</p>)}
             <div className="grid gap-3 p-3 text-[11px] min-[760px]:grid-cols-2">
@@ -153,6 +175,21 @@ export function ExportCenterPage(): JSX.Element {
               <div>
                 <p className="font-semibold text-text-secondary">Unmapped records ({importPreview.unmappedCount})</p>
                 {importPreview.unmappedRecords.length ? <ul className="mt-1 list-disc space-y-1 pl-4 text-text-muted">{importPreview.unmappedRecords.map((record) => <li key={record}>{record}</li>)}</ul> : <p className="mt-1 text-text-muted">Every record passed the preview mapper.</p>}
+              </div>
+              <div className="min-[760px]:col-span-2">
+                <p className="font-semibold text-text-secondary">Mapped external claims ({importPreview.mappedClaimCount})</p>
+                {importPreview.mappedClaims.length ? (
+                  <ul className="mt-1 space-y-1 text-text-muted">
+                    {importPreview.mappedClaims.slice(0, 20).map((claim) => (
+                      <li key={claim.recordId} className="flex flex-wrap gap-x-2">
+                        <span className="font-mono text-text-secondary">{claim.vulnerabilityId ?? claim.ruleId}</span>
+                        <span>{claim.status}</span>
+                        <span>{claim.subjectIds.join(", ")}</span>
+                        <span className="text-warning">{claim.trust}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="mt-1 text-text-muted">No record met the strict identifier, subject, status, and provenance mapping rules.</p>}
               </div>
             </div>
             <p className="break-all border-t border-border px-3 py-2 font-mono text-[10px] text-text-muted">SHA-256 {importPreview.contentSha256}</p>
