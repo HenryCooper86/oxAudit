@@ -4,7 +4,7 @@
 > **Update 2026-08-19:** the visual layer is now ported — see
 > [`design-system.md`](./design-system.md). Remaining feature candidates are ranked in
 > [`y-agent-port-candidates.md`](./y-agent-port-candidates.md).
-> Deep-dive reports with full code sketches: [`yagent-research/adoption-report.md`](../yagent-research/adoption-report.md)
+> Deep-dive reports with full code sketches: [`y-agent-adoption-report.md`](y-agent-adoption-report.md)
 > (tool loop, guardrails, transcripts) plus the three subsystem studies summarized here.
 
 y-agent is a Rust-first, model-agnostic agent harness (Codex-class): it wraps LLMs

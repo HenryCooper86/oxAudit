@@ -473,6 +473,8 @@ export interface ScanSummary {
   rulesFired: Record<string, number>;
 }
 
+export type AnalysisTier = "text" | "syntax";
+
 export interface Finding {
   id: string;
   category: "secret" | "vulnerability";
@@ -496,6 +498,12 @@ export interface Finding {
   recommendation: string;
   entropy: number | null;
   verified: boolean | null;
+  /**
+   * How far oxAudit could qualify this match. `syntax` means a grammar parsed
+   * the file and the match sits in code; `text` means the rule matched raw file
+   * text with no grammar available for the language.
+   */
+  analysis: AnalysisTier;
   observationRunId: string;
   resolvedByRunId: string | null;
   fingerprintVersion: number;
@@ -728,6 +736,11 @@ export interface AppSettings {
   binaryScannerRuntime: BinaryScannerRuntime | null;
   /** Explicit grype path; null/empty means "find it on PATH". */
   grypePath: string | null;
+  /**
+   * Extra hosts the assistant's `web_fetch` tool may read from, on top of the
+   * built-in advisory sources. Entries may be bare hosts or pasted URLs.
+   */
+  agentAllowedFetchHosts: string[];
 }
 
 export interface SaveSettingsRequest {
@@ -964,4 +977,35 @@ export interface AiStatus {
   message: string;
   model: string | null;
   latencyMs: number;
+}
+
+/** What a person needs in order to report a problem. Redacted before it arrives. */
+export interface Diagnostics {
+  version: string;
+  os: string;
+  architecture: string;
+  /** Whether an AI endpoint is configured — never which one, and never the key. */
+  aiConfigured: boolean;
+  logPath: string | null;
+  logBytes: number;
+  /** Tail of the log, with credentials and home directory paths removed. */
+  logTail: string;
+  notes: string[];
+}
+
+/** One finding a bulk review could not be recorded against. */
+export interface BulkReviewFailure {
+  fingerprint: string;
+  message: string;
+}
+
+/**
+ * What a bulk review actually did.
+ *
+ * Both halves are reported: a caller that only learns "it worked" cannot tell a
+ * reviewer that three of their forty decisions did not land.
+ */
+export interface BulkReviewOutcome {
+  recorded: ReviewRecord[];
+  failures: BulkReviewFailure[];
 }

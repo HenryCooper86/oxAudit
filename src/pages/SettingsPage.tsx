@@ -14,6 +14,7 @@ import {
   SlidersHorizontal,
   Sun,
   XCircle,
+  FileText,
 } from "lucide-react";
 import { Field } from "../components/workbench/Field";
 import { InlineState } from "../components/workbench/InlineState";
@@ -65,6 +66,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   binaryScannerPath: null,
   binaryScannerRuntime: "auto",
   grypePath: null,
+  agentAllowedFetchHosts: [],
 };
 
 function cloneSettings(settings: AppSettings): AppSettings {
@@ -76,6 +78,7 @@ function cloneSettings(settings: AppSettings): AppSettings {
       ...settings.scan,
       ignoredDirs: [...settings.scan.ignoredDirs],
     },
+    agentAllowedFetchHosts: [...(settings.agentAllowedFetchHosts ?? [])],
   };
 }
 
@@ -86,6 +89,10 @@ export function SettingsPage() {
   const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const setSettingsLoadError = useAppStore((state) => state.setSettingsLoadError);
   const push = useToastStore((state) => state.push);
+
+  const [diagnostics, setDiagnostics] = useState<string | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const [form, setForm] = useState<AppSettings | null>(() =>
     settings ? cloneSettings(settings) : null,
@@ -330,6 +337,34 @@ export function SettingsPage() {
       credentials: { ...current.credentials },
       scan: { ...DEFAULT_SETTINGS.scan, ignoredDirs: [...DEFAULT_SETTINGS.scan.ignoredDirs] },
     });
+  };
+
+  const gatherDiagnostics = async () => {
+    setDiagnosticsError(null);
+    setCopied(false);
+    try {
+      const report = await api.collectDiagnostics();
+      const text = [
+        `oxAudit ${report.version} on ${report.os}/${report.architecture}`,
+        `AI endpoint configured: ${report.aiConfigured ? "yes" : "no"}`,
+        `Log: ${report.logPath ?? "not running"} (${report.logBytes} bytes)`,
+        "",
+        ...report.notes.map((note) => `Note: ${note}`),
+        "",
+        "--- log tail ---",
+        report.logTail || "(empty)",
+      ].join("\n");
+      setDiagnostics(text);
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+      } catch {
+        // Clipboard access can be refused; the text is on screen either way.
+        setCopied(false);
+      }
+    } catch (error) {
+      setDiagnosticsError(String(error));
+    }
   };
 
   const test = async () => {
@@ -584,6 +619,72 @@ export function SettingsPage() {
           <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
             This checks the current draft only. Assistant readiness continues to reflect saved settings.
           </p>
+
+          <div className="mt-4">
+            <Field
+              label="Allowed fetch hosts"
+              htmlFor="agent-allowed-fetch-hosts"
+              hint="One host per line. The assistant can already read advisory sources such as nvd.nist.gov, osv.dev, and github.com — add a host here to let it read vendor advisories elsewhere. Every fetch still asks for your approval, and addresses on your own machine or network are always refused."
+            >
+              <Textarea
+                id="agent-allowed-fetch-hosts"
+                aria-describedby="agent-allowed-fetch-hosts-hint"
+                placeholder="psirt.vendor.example"
+                value={(form.agentAllowedFetchHosts ?? []).join("\n")}
+                onChange={(event) =>
+                  update(
+                    "agentAllowedFetchHosts",
+                    event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
+                  )
+                }
+                rows={3}
+              />
+            </Field>
+          </div>
+        </section>
+
+        <section className={sectionCls} aria-labelledby="diagnostics-title">
+          <h2 id="diagnostics-title" className={sectionTitleCls}>
+            <FileText size={15} aria-hidden="true" className="text-accent" />
+            Diagnostics
+          </h2>
+          <p className={sectionDescriptionCls}>
+            If a scan fails, this gathers the version, platform, and recent log so a
+            problem can be reproduced. Credentials and your home directory path are
+            removed before it reaches you. oxAudit sends nothing anywhere — you copy
+            it and choose who sees it.
+          </p>
+
+          <div className="mt-3 flex items-center gap-2">
+            <Button type="button" variant="outline" onClick={gatherDiagnostics}>
+              Copy diagnostics
+            </Button>
+            {copied && (
+              <span className="text-[11px] text-success" role="status">
+                Copied to the clipboard.
+              </span>
+            )}
+            {diagnostics && !copied && (
+              <span className="text-[11px] text-text-muted" role="status">
+                Ready below — select and copy.
+              </span>
+            )}
+          </div>
+
+          {diagnosticsError && (
+            <p className="mt-2 text-[11px] text-error" role="alert">
+              Diagnostics could not be gathered: {diagnosticsError}
+            </p>
+          )}
+
+          {diagnostics && (
+            <pre
+              className="mt-3 max-h-64 overflow-auto rounded-sm border border-border bg-surface-code p-3 text-[11px] leading-relaxed text-text-secondary"
+              aria-label="Diagnostics report"
+            >
+              {diagnostics}
+            </pre>
+          )}
         </section>
 
         <section className={sectionCls} aria-labelledby="appearance-title">
