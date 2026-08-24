@@ -20,6 +20,7 @@
 //! `--fail-on` defaults to `none`, so oxAudit reports without failing a build
 //! until someone deliberately asks it to gate one.
 
+pub mod baseline;
 pub mod benchmark;
 
 use std::io::Write;
@@ -116,6 +117,17 @@ struct ScanArgs {
     /// Exit 1 when a finding at this severity or higher is reported.
     #[arg(long, value_enum, default_value_t = FailOn::None)]
     fail_on: FailOn,
+
+    /// A previous `--format json` report to compare against.
+    ///
+    /// Findings present in it are pre-existing; the rest are new.
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
+
+    /// Exit 1 only for findings this change introduced, at this severity or
+    /// higher. Requires --baseline.
+    #[arg(long, value_enum, default_value_t = FailOn::None, value_name = "SEVERITY")]
+    fail_on_new: FailOn,
 
     /// Keep the run in this database so the desktop app can open it.
     /// Without it the scan runs in memory and leaves nothing behind.
@@ -500,7 +512,29 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
         }
     }
 
-    Ok(gate(
+    // A gate on new findings is meaningless without something to be new
+    // against, and silently passing would be the dangerous reading.
+    if args.fail_on_new != FailOn::None && args.baseline.is_none() {
+        return Err(usage("--fail-on-new needs --baseline to compare against"));
+    }
+
+    let comparison = match &args.baseline {
+        Some(path) => {
+            let previous = baseline::load(path).map_err(|error| usage(error.to_string()))?;
+            let comparison = baseline::compare(&previous, &detail.findings);
+            if !quiet {
+                eprintln!(
+                    "Against {}: {}",
+                    path.display(),
+                    baseline::describe(&comparison)
+                );
+            }
+            Some(comparison)
+        }
+        None => None,
+    };
+
+    let gated = gate(
         detail
             .findings
             .iter()
@@ -508,7 +542,25 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
             .map(|finding| severity_rank(&finding.severity)),
         args.fail_on,
         quiet,
-    ))
+    );
+
+    let gated_new = match &comparison {
+        Some(comparison) => gate(
+            comparison
+                .introduced
+                .iter()
+                .filter(|finding| gates_the_build(finding))
+                .map(|finding| severity_rank(&finding.severity)),
+            args.fail_on_new,
+            quiet,
+        ),
+        None => EXIT_OK,
+    };
+
+    // Either gate failing fails the run. They answer different questions —
+    // "is this codebase clean?" and "did this change make it worse?" — and a
+    // pipeline may reasonably ask both.
+    Ok(if gated == EXIT_OK { gated_new } else { gated })
 }
 
 // --------------------------------------------------------------------- deps
