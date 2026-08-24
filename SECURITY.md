@@ -85,7 +85,9 @@ oxAudit is pre-1.0. Only the latest release receives security fixes.
 
 The measures below are enforced in CI, not aspirational:
 
-- Every GitHub Action is pinned to a full commit SHA.
+- Every GitHub Action is pinned to a full commit SHA, checked in CI by
+  `tools/check-action-pins.mjs`. A tag can be repointed by whoever controls
+  the action, and these workflows hold the signing keys.
 - `cargo-deny` gates advisories, licences, and unexpected sources.
 - `npm audit` and `dependency-review` gate JavaScript dependencies.
 - CodeQL runs `security-extended` on the TypeScript surface.
