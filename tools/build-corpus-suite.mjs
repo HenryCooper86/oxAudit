@@ -1,0 +1,163 @@
+#!/usr/bin/env node
+/**
+ * Regenerates benchmarks/corpus/suite.json from the fixture files on disk.
+ *
+ * The corpus is the only thing standing between "our scanner is accurate" and
+ * an unverifiable claim, so adding a case has to be cheap. It costs one file:
+ *
+ *     <rule-id>__positive__<slug>.<ext>    that rule must fire at least once
+ *     <rule-id>__negative__<slug>.<ext>    that rule must not fire at all
+ *
+ * Then `node tools/build-corpus-suite.mjs` rewrites the manifest with a SHA-256
+ * per fixture, so a fixture cannot drift out from under a recorded expectation
+ * without the hash changing.
+ *
+ * Pass --check to verify the committed manifest matches the files without
+ * writing anything; CI uses that so a fixture edited without a rebuild fails
+ * loudly rather than silently changing what the numbers mean.
+ */
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
+import { join, relative, extname } from "node:path";
+
+const CORPUS = "benchmarks/corpus";
+const MANIFEST = join(CORPUS, "suite.json");
+
+/** Language for a fixture, from its extension. Drives which rules apply. */
+const LANGUAGE_BY_EXTENSION = {
+  ".js": "javascript",
+  ".jsx": "javascript",
+  ".ts": "javascript",
+  ".tsx": "javascript",
+  ".py": "python",
+  ".java": "java",
+  ".go": "go",
+  ".c": "c",
+  ".h": "c",
+  ".cpp": "cpp",
+  ".rs": "rust",
+  ".php": "php",
+  ".rb": "ruby",
+};
+
+function walk(directory) {
+  const found = [];
+  for (const entry of readdirSync(directory)) {
+    const path = join(directory, entry);
+    if (statSync(path).isDirectory()) found.push(...walk(path));
+    else if (entry !== "suite.json") found.push(path);
+  }
+  return found.sort();
+}
+
+function parseFixtureName(path) {
+  const name = path.split("/").pop() ?? "";
+  const base = name.slice(0, name.length - extname(name).length);
+  const parts = base.split("__");
+  if (parts.length !== 3) {
+    throw new Error(
+      `${path}: expected <rule-id>__<positive|negative>__<slug>, got "${base}"`,
+    );
+  }
+  const [ruleId, polarity, slug] = parts;
+  if (polarity !== "positive" && polarity !== "negative") {
+    throw new Error(`${path}: polarity must be positive or negative, got "${polarity}"`);
+  }
+  return { ruleId, polarity, slug };
+}
+
+/**
+ * Which scanner families a fixture exercises.
+ *
+ * Secret rules and source-pattern rules are separate engines; running both over
+ * every fixture would credit a rule for a hit another engine produced.
+ */
+function familyFor(path) {
+  return path.includes("/secrets/") ? "secret" : "source-pattern";
+}
+
+const fixtures = walk(CORPUS).map((path) => {
+  const { ruleId, polarity, slug } = parseFixtureName(path);
+  const content = readFileSync(path);
+  return {
+    id: `${ruleId}.${polarity}.${slug}`,
+    inputPath: relative(CORPUS, path).replaceAll("\\", "/"),
+    inputSha256: createHash("sha256").update(content).digest("hex"),
+    language: LANGUAGE_BY_EXTENSION[extname(path)] ?? null,
+    scannerFamilies: [familyFor(path)],
+    ruleId,
+    // A positive asserts the rule fires here; a negative asserts it does not.
+    // Both are load-bearing: a corpus of only positives measures recall and
+    // says nothing about the false positives that make a scanner unusable.
+    expected: polarity === "positive" ? [{ ruleId, minimum: 1 }] : [],
+    expectedAbsent: polarity === "negative" ? [{ ruleId }] : [],
+  };
+});
+
+if (fixtures.length === 0) {
+  console.error(`No fixtures found under ${CORPUS}.`);
+  process.exit(1);
+}
+
+const duplicates = fixtures
+  .map((fixture) => fixture.id)
+  .filter((id, index, all) => all.indexOf(id) !== index);
+if (duplicates.length > 0) {
+  console.error(`Duplicate fixture ids: ${[...new Set(duplicates)].join(", ")}`);
+  process.exit(1);
+}
+
+const suite = {
+  schemaVersion: 1,
+  id: "oxaudit.corpus",
+  // Bump when expectations change meaning, not when a fixture is added.
+  version: "1.0.0",
+  description:
+    "Paired positive and negative fixtures for oxAudit's source-pattern and secret rules. " +
+    "Negatives are drawn from shapes the scanner was observed to fire on incorrectly, so the " +
+    "precision figure this produces reflects real false-positive classes rather than only " +
+    "cases chosen to pass.",
+  provenance: {
+    authors: ["oxAudit contributors"],
+    source: "Repository-authored fixtures",
+    license: "Apache-2.0",
+    creationMethod: "authored",
+  },
+  counts: {
+    fixtures: fixtures.length,
+    positives: fixtures.filter((f) => f.expected.length > 0).length,
+    negatives: fixtures.filter((f) => f.expectedAbsent.length > 0).length,
+    rules: new Set(fixtures.map((f) => f.ruleId)).size,
+  },
+  targets: fixtures,
+};
+
+const serialized = `${JSON.stringify(suite, null, 2)}\n`;
+
+if (process.argv.includes("--check")) {
+  let committed;
+  try {
+    committed = readFileSync(MANIFEST, "utf8");
+  } catch {
+    console.error(`${MANIFEST} does not exist. Run: node tools/build-corpus-suite.mjs`);
+    process.exit(1);
+  }
+  if (committed !== serialized) {
+    console.error(
+      `${MANIFEST} is out of date with the fixtures on disk.\n` +
+        "A fixture was added, removed, or edited without rebuilding the manifest, so the " +
+        "recorded expectations no longer describe the files being measured.\n\n" +
+        "Run: node tools/build-corpus-suite.mjs",
+    );
+    process.exit(1);
+  }
+  console.log(`${MANIFEST} matches ${fixtures.length} fixtures on disk.`);
+  process.exit(0);
+}
+
+writeFileSync(MANIFEST, serialized);
+console.log(
+  `Wrote ${MANIFEST}: ${suite.counts.fixtures} fixtures ` +
+    `(${suite.counts.positives} positive, ${suite.counts.negatives} negative) ` +
+    `across ${suite.counts.rules} rules.`,
+);

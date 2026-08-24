@@ -20,6 +20,8 @@
 //! `--fail-on` defaults to `none`, so oxAudit reports without failing a build
 //! until someone deliberately asks it to gate one.
 
+pub mod benchmark;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -71,6 +73,31 @@ enum Command {
     Export(ExportArgs),
     /// List stored runs.
     Runs(RunsArgs),
+    /// Measure the scanners against the committed ground-truth corpus.
+    Benchmark(BenchmarkArgs),
+}
+
+#[derive(Args, Debug)]
+struct BenchmarkArgs {
+    /// Corpus directory holding suite.json and the fixtures.
+    #[arg(long, default_value = "benchmarks/corpus")]
+    corpus: PathBuf,
+
+    /// Emit the full report as JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+
+    /// Write the report here instead of stdout.
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+
+    /// Exit 1 if precision falls below this percentage.
+    #[arg(long, value_name = "PERCENT")]
+    min_precision: Option<f64>,
+
+    /// Exit 1 if recall falls below this percentage.
+    #[arg(long, value_name = "PERCENT")]
+    min_recall: Option<f64>,
 }
 
 #[derive(Args, Debug)]
@@ -346,6 +373,7 @@ pub fn run() -> i32 {
         Command::Deps(args) => run_deps(args, cli.quiet),
         Command::Export(args) => run_export(args),
         Command::Runs(args) => run_runs(args),
+        Command::Benchmark(args) => run_benchmark(args, cli.quiet),
     };
 
     match result {
@@ -589,6 +617,58 @@ fn run_runs(args: &RunsArgs) -> CliResult {
         println!("{}", serde_json::to_string(project).unwrap_or_default());
     }
     Ok(EXIT_OK)
+}
+
+// ---------------------------------------------------------------- benchmark
+
+fn run_benchmark(args: &BenchmarkArgs, quiet: bool) -> CliResult {
+    let suite = benchmark::load_suite(&args.corpus).map_err(|error| usage(error.to_string()))?;
+    let report =
+        benchmark::run(&args.corpus, &suite).map_err(|error| failure(error.to_string()))?;
+
+    let rendered = if args.json {
+        let mut bytes =
+            serde_json::to_vec_pretty(&report).map_err(|error| failure(error.to_string()))?;
+        bytes.push(b'\n');
+        bytes
+    } else {
+        benchmark::render_text(&report).into_bytes()
+    };
+    write_output(args.output.as_deref(), &rendered)?;
+
+    // A threshold is only meaningful against a defined figure. Refusing to
+    // compare against `None` beats treating "nothing fired" as a pass.
+    let mut breached = Vec::new();
+    if let Some(floor) = args.min_precision {
+        match report.precision {
+            Some(actual) if actual * 100.0 + f64::EPSILON < floor => breached.push(format!(
+                "precision {:.1}% is below the required {floor:.1}%",
+                actual * 100.0
+            )),
+            None => breached.push("precision is undefined; nothing was flagged".to_string()),
+            Some(_) => {}
+        }
+    }
+    if let Some(floor) = args.min_recall {
+        match report.recall {
+            Some(actual) if actual * 100.0 + f64::EPSILON < floor => breached.push(format!(
+                "recall {:.1}% is below the required {floor:.1}%",
+                actual * 100.0
+            )),
+            None => breached.push("recall is undefined; the corpus has no positives".to_string()),
+            Some(_) => {}
+        }
+    }
+
+    if breached.is_empty() {
+        return Ok(EXIT_OK);
+    }
+    if !quiet {
+        for breach in &breached {
+            eprintln!("Failing: {breach}");
+        }
+    }
+    Ok(EXIT_FINDINGS)
 }
 
 // ------------------------------------------------------------------ helpers
