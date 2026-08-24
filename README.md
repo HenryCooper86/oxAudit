@@ -162,6 +162,63 @@ A language without a grammar is never suppressed on a guess. A false negative in
 a security scanner is worse than a false positive, so the absence of a parser
 means every match stands and says so.
 
+## Suppressing a finding
+
+A finding that has been reviewed and dismissed should not be raised again on
+every push. `.oxaudit/policy.json` records that decision **in the repository**,
+so it arrives through a pull request, is reviewed like any other change, and is
+attributed to the project rather than to whoever last ran a scan.
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "suppression",
+      "ruleId": "generic-password",
+      "pathPattern": "tests/**",
+      "state": "suppressed",
+      "reason": "Synthetic credential fixtures; see tests/README.md.",
+      "expiresAt": "2027-01-01T00:00:00Z"
+    },
+    {
+      "kind": "finding",
+      "fingerprintVersion": 1,
+      "fingerprint": "…",
+      "category": "vulnerability",
+      "state": "falsePositive",
+      "reason": "The affected branch is excluded from production builds.",
+      "gates": [
+        {
+          "gate": "reachable",
+          "verdict": "eliminates",
+          "evidence": "The production feature manifest excludes this branch."
+        }
+      ],
+      "decidingGate": "reachable"
+    }
+  ]
+}
+```
+
+A `suppression` entry dismisses a rule across a path pattern. A `finding` entry
+dismisses one specific finding by fingerprint, and for a vulnerability it must
+name the gate that eliminates it and show the evidence — asserting "false
+positive" is not the same as arguing it.
+
+Four properties this has, and why:
+
+- **A reason is required.** A dismissal with no justification looks reviewed
+  without being reviewed.
+- **`expiresAt` is honoured.** An expired decision returns the finding to the
+  queue, so a temporary exception cannot quietly become permanent.
+- **A dismissed finding still appears in reports**, marked with its state and
+  `"origin": "projectPolicy"`. Suppression changes whether something gates the
+  build, not whether it happened — the decision has to stay auditable.
+- **A malformed policy stops the scan.** Ignoring an unparseable file would
+  silently un-suppress everything the team agreed to, and the run would not mean
+  what it appears to mean. Pass `--ignore-invalid-policy` to scan anyway.
+
 ## Architecture
 
 ```
