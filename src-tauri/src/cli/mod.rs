@@ -458,8 +458,16 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     let cancel = AtomicBool::new(false);
     let events = StderrEvents { quiet };
 
-    let detail = block_on(service.scan(options, &cve, &cancel, &events))
-        .map_err(|error| failure(format!("scan failed: {error}")))?;
+    let detail = block_on(service.scan(options, &cve, &cancel, &events)).map_err(|error| {
+        // "Nothing matched your filters" is something the caller can fix, so it
+        // exits 2 like any other unusable invocation rather than 3, which means
+        // the scan itself broke. A pipeline distinguishes the two.
+        if error.code == crate::findings::error::ErrorCode::NothingToScan {
+            usage(error.to_string())
+        } else {
+            failure(format!("scan failed: {error}"))
+        }
+    })?;
 
     let summary = &detail.summary;
     if !quiet {

@@ -453,7 +453,10 @@ impl FindingsService {
                 },
             );
             if collection.files.is_empty() {
-                return Err(CommandError::scan_failed());
+                // Not a failure: nothing broke. The target, the ignore list,
+                // and the size limit between them selected no files, and
+                // saying so beats a generic error the user cannot act on.
+                return Err(CommandError::nothing_to_scan());
             }
             let canonical_run_id = managed_run
                 .as_ref()
