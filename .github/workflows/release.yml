@@ -204,6 +204,23 @@ jobs:
             echo "::error::--fail-on high should have exited 1 on the fixtures"; exit 1;
           } || [ $? -eq 1 ]
 
+      # A Tauri bundle whose CFBundleExecutable points at the wrong binary still
+      # builds, installs, and launches — it just opens no window. Nothing else
+      # in the pipeline notices.
+      - name: Verify the bundle launches the desktop app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app=$(find src-tauri/target -name 'oxAudit.app' -maxdepth 5 -print -quit)
+          test -n "$app" || { echo "::error::no oxAudit.app was produced"; exit 1; }
+          executable=$(plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist")
+          if [ "$executable" != "oxaudit" ]; then
+            echo "::error::bundle executable is '$executable', expected 'oxaudit' — the .app would launch the CLI and show no window"
+            exit 1
+          fi
+          test -x "$app/Contents/MacOS/oxaudit" || { echo "::error::the GUI binary is missing from the bundle"; exit 1; }
+          echo "Bundle launches $executable"
+
       - name: Stage artifacts
         shell: bash
         run: |
