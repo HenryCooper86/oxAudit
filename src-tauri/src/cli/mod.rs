@@ -21,7 +21,6 @@
 //! until someone deliberately asks it to gate one.
 
 pub mod baseline;
-pub mod benchmark;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -683,9 +682,10 @@ fn run_runs(args: &RunsArgs) -> CliResult {
 // ---------------------------------------------------------------- benchmark
 
 fn run_benchmark(args: &BenchmarkArgs, quiet: bool) -> CliResult {
-    let suite = benchmark::load_suite(&args.corpus).map_err(|error| usage(error.to_string()))?;
+    let suite =
+        crate::quality::load_suite(&args.corpus).map_err(|error| usage(error.to_string()))?;
     let report =
-        benchmark::run(&args.corpus, &suite).map_err(|error| failure(error.to_string()))?;
+        crate::quality::run(&args.corpus, &suite).map_err(|error| failure(error.to_string()))?;
 
     let rendered = if args.json {
         let mut bytes =
@@ -693,7 +693,7 @@ fn run_benchmark(args: &BenchmarkArgs, quiet: bool) -> CliResult {
         bytes.push(b'\n');
         bytes
     } else {
-        benchmark::render_text(&report).into_bytes()
+        crate::quality::render_text(&report).into_bytes()
     };
     write_output(args.output.as_deref(), &rendered)?;
 
