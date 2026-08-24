@@ -100,6 +100,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::collect_diagnostics,
+            commands::save_finding_reviews,
             commands::scan_project,
             commands::cancel_scan,
             commands::open_scan_finding,
