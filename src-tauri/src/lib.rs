@@ -13,6 +13,7 @@ pub mod findings;
 mod fs_utils;
 mod migration;
 mod models;
+pub mod observability;
 mod presentation;
 mod scanners;
 mod sessions;
@@ -66,6 +67,11 @@ pub fn run() {
                 .try_state::<AppState>()
                 .ok_or_else(findings::error::CommandError::migration_failed)?;
             migration::migrate_legacy_profile(app.handle(), app_state.credentials.as_ref())?;
+            // Started before anything else in setup that can fail, so a
+            // failure during initialization is itself in the log.
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                crate::observability::init(&data_dir);
+            }
             let findings_state = match app.path().app_data_dir() {
                 Ok(data_dir) => initialize_findings_state(&data_dir, chrono::Utc::now()),
                 Err(_) => FindingsState::unavailable(
@@ -90,6 +96,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::collect_diagnostics,
             commands::scan_project,
             commands::cancel_scan,
             commands::open_scan_finding,

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  Diagnostics,
   AiStatus,
   AppSettings,
   SaveSettingsRequest,
@@ -197,4 +198,6 @@ export const api = {
     invoke<ComplianceReportPreview>("preview_compliance_report", { request }),
   writeComplianceReport: (request: ComplianceReportRequest, outputPath: string) =>
     invoke<ComplianceReportReceipt>("write_compliance_report", { request: { ...request, outputPath } }),
+  collectDiagnostics: () => invoke<Diagnostics>("collect_diagnostics"),
+
 };

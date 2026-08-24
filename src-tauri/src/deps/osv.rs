@@ -34,10 +34,10 @@ impl OsvClient {
             .send()
             .await
             .map_err(|e| {
-                eprintln!("OSV transport error: {e}");
+                tracing::warn!(error = %e, "OSV transport error");
                 let mut cur: Option<&dyn std::error::Error> = e.source();
                 while let Some(c) = cur {
-                    eprintln!("  cause: {c}");
+                    tracing::warn!(cause = %c, "OSV transport error cause");
                     cur = c.source();
                 }
                 format!("OSV request failed: {e}")

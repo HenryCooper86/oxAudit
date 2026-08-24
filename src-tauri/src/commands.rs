@@ -3980,3 +3980,26 @@ pub fn session_truncate(
 ) -> Result<(), String> {
     crate::sessions::SessionStore::new(&app)?.truncate(&session_id, keep_count)
 }
+
+/// Everything a person needs in order to report a problem, redacted.
+///
+/// Returned to the GUI rather than written to a file: the user copies it and
+/// decides who sees it. oxAudit sends nothing anywhere.
+#[tauri::command]
+pub fn collect_diagnostics(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::observability::Diagnostics, String> {
+    // Whether an endpoint is configured, never which one — a base URL is
+    // sometimes an internal host, and that is itself worth not disclosing.
+    let ai_configured = state
+        .settings
+        .lock()
+        .map(|settings| settings.ai.enabled && !settings.ai.base_url.trim().is_empty())
+        .unwrap_or(false);
+    let home = app.path().home_dir().ok();
+    Ok(crate::observability::collect(
+        ai_configured,
+        home.as_deref(),
+    ))
+}
