@@ -1,3 +1,4 @@
+pub mod dataflow;
 pub mod patterns;
 pub mod secrets;
 pub mod syntax;
@@ -21,12 +22,14 @@ pub fn benchmark_observations(
     let mut observations = Vec::new();
     // Parsed once and shared: both engines ask the same tree what is comment
     // and what is code, so the benchmark and a real scan cannot disagree.
-    let spans = syntax::analyze(content, language);
+    let parsed = syntax::parse(content, language);
+    let spans = parsed.spans();
     if source_patterns {
         observations.extend(
             patterns::scan_content(content, language)
                 .into_iter()
                 .filter(|hit| spans.allows_code_match(hit.offset))
+                .filter(|hit| reaches_attacker_input(&parsed, content, hit))
                 .map(|hit| (patterns::SOURCE_RULES[hit.rule_index].id, "file_location")),
         );
     }
@@ -39,6 +42,26 @@ pub fn benchmark_observations(
         );
     }
     observations
+}
+
+/// Should a pattern match be reported, given what reaches its sink?
+///
+/// Only a value *positively shown* to be constant is dropped. Anything the
+/// analysis cannot decide — no grammar, no enclosing call, an unresolvable
+/// name — is reported, because a false negative in a security scanner costs
+/// more than a false positive.
+///
+/// Rules that are not about a call argument are unaffected: they have no
+/// enclosing call, so the analysis returns `Unknown` and the finding stands.
+fn reaches_attacker_input(
+    parsed: &syntax::FileSyntax,
+    content: &str,
+    hit: &patterns::PatternHit,
+) -> bool {
+    !matches!(
+        parsed.taint_at(content, hit.offset),
+        dataflow::Taint::Constant
+    )
 }
 
 pub struct ScanFileOutcome {
@@ -122,7 +145,8 @@ pub fn scan_file_with_relative_path(
     // Parsed once and shared by both engines, so a scan and the benchmark
     // cannot disagree about what counts as a comment.
     let detected_language = fs_utils::detect_language(path).unwrap_or("");
-    let spans = syntax::analyze(&content, detected_language);
+    let parsed = syntax::parse(&content, detected_language);
+    let spans = parsed.spans();
     let secret_hits: Vec<_> = secrets::scan_content(&content)
         .into_iter()
         .filter(|hit| spans.allows_secret_match(hit.offset))
@@ -189,6 +213,11 @@ pub fn scan_file_with_relative_path(
                 // describing code rather than being it — the single largest
                 // false-positive class the corpus measured.
                 if !spans.allows_code_match(hit.offset) {
+                    continue;
+                }
+                // A sink whose argument is provably a constant is not a
+                // finding: nobody can choose the value.
+                if !reaches_attacker_input(&parsed, &content, &hit) {
                     continue;
                 }
                 let rule = &patterns::SOURCE_RULES[hit.rule_index];

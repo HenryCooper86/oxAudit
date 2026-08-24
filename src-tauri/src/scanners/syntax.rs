@@ -35,6 +35,44 @@ pub enum Context {
     StringLiteral,
 }
 
+/// One parse of one file: the comment and string spans, plus the tree the
+/// dataflow analysis queries.
+///
+/// The tree is retained rather than dropped because parsing is roughly forty
+/// times the cost of rule matching, and a second parse for taint would double
+/// the most expensive part of a scan.
+pub struct FileSyntax {
+    spans: SyntaxSpans,
+    tree: Option<tree_sitter::Tree>,
+}
+
+impl FileSyntax {
+    pub fn spans(&self) -> &SyntaxSpans {
+        &self.spans
+    }
+
+    /// Can an attacker choose the value reaching the sink at `offset`?
+    ///
+    /// `Unknown` whenever there is no grammar, no enclosing call, or the value
+    /// cannot be traced — every one of those keeps the finding.
+    pub fn taint_at(&self, content: &str, offset: usize) -> super::dataflow::Taint {
+        use super::dataflow::{self, Taint};
+        let Some(tree) = &self.tree else {
+            return Taint::Unknown;
+        };
+        let root = tree.root_node();
+        let Some(call) = dataflow::enclosing_call(root, offset) else {
+            return Taint::Unknown;
+        };
+        let Some(argument) = dataflow::first_argument(call) else {
+            // A call with no arguments has nothing an attacker could supply.
+            return Taint::Constant;
+        };
+        let function = dataflow::enclosing_function(root, offset);
+        dataflow::classify_expression(argument, content, function)
+    }
+}
+
 /// Byte ranges of comments and string literals in one file.
 #[derive(Debug, Default, Clone)]
 pub struct SyntaxSpans {
@@ -147,15 +185,24 @@ fn is_string_kind(kind: &str) -> bool {
 /// in dialects the grammar does not accept, and refusing to scan those would
 /// trade a false positive for a blind spot.
 pub fn analyze(content: &str, language: &str) -> SyntaxSpans {
+    parse(content, language).spans
+}
+
+/// Parse once and keep the tree for both span queries and taint queries.
+pub fn parse(content: &str, language: &str) -> FileSyntax {
+    let unparsed = FileSyntax {
+        spans: SyntaxSpans::default(),
+        tree: None,
+    };
     let Some(grammar) = language_for(language) else {
-        return SyntaxSpans::default();
+        return unparsed;
     };
     let mut parser = Parser::new();
     if parser.set_language(&grammar).is_err() {
-        return SyntaxSpans::default();
+        return unparsed;
     }
     let Some(tree) = parser.parse(content, None) else {
-        return SyntaxSpans::default();
+        return unparsed;
     };
 
     let mut spans = SyntaxSpans {
@@ -163,7 +210,10 @@ pub fn analyze(content: &str, language: &str) -> SyntaxSpans {
         ..Default::default()
     };
     collect(tree.root_node(), &mut spans);
-    spans
+    FileSyntax {
+        spans,
+        tree: Some(tree),
+    }
 }
 
 /// Walk the tree, recording comment and string ranges.
