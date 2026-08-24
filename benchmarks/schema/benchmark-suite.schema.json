@@ -59,6 +59,12 @@
         "inputSha256": { "$ref": "#/$defs/sha256" },
         "platform": { "type": "string", "minLength": 1 },
         "architecture": { "type": "string", "minLength": 1 },
+        "scannerFamilies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["source-pattern", "secret"] }
+        },
+        "language": { "type": ["string", "null"], "minLength": 1 },
         "expected": { "type": "array", "items": { "$ref": "#/$defs/expected" } },
         "expectedAbsent": { "type": "array", "items": { "$ref": "#/$defs/identity" } },
         "allowedVariants": { "type": "array" }

@@ -338,10 +338,10 @@ fn summarize(controls: &[ControlAssessment]) -> AssessmentSummary {
     let assessable = summary
         .total
         .saturating_sub(summary.manual_review + summary.not_applicable);
-    if assessable > 0 {
-        summary.evidence_coverage_percent =
-            (((summary.supported * 100) + (summary.partial * 50)) / assessable).min(100) as u8;
-    }
+    summary.evidence_coverage_percent = ((summary.supported * 100) + (summary.partial * 50))
+        .checked_div(assessable)
+        .unwrap_or_default()
+        .min(100) as u8;
     summary
 }
 

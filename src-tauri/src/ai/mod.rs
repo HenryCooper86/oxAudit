@@ -10,6 +10,7 @@ use futures::StreamExt;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::credentials::ResolvedAiSettings;
 use crate::models::{
     AiSettings, AiStatus, ChatMessage, ChatRequest, ChatResponse, CveItem, Finding, Usage,
 };
@@ -148,13 +149,13 @@ impl AiClient {
     fn authed_request(
         &self,
         url: &str,
-        settings: &AiSettings,
+        settings: &ResolvedAiSettings,
         body: &serde_json::Value,
         stream: bool,
     ) -> reqwest::RequestBuilder {
         let mut builder = self.http.post(url).json(body);
-        if !settings.api_key.is_empty() {
-            builder = builder.bearer_auth(&settings.api_key);
+        if let Some(api_key) = settings.api_key.as_ref() {
+            builder = builder.bearer_auth(api_key.as_str());
         }
         if !stream {
             // No total timeout for streams: a long generation would trip it.
@@ -170,7 +171,7 @@ impl AiClient {
     /// Send a non-streaming chat completion request (OpenAI-compatible API).
     pub async fn chat(
         &self,
-        settings: &AiSettings,
+        settings: &ResolvedAiSettings,
         req: ChatRequest,
     ) -> Result<ChatResponse, String> {
         let url = format!("{}/chat/completions", Self::base_url(settings));
@@ -234,7 +235,7 @@ impl AiClient {
     /// `cancel` (optional) is checked between chunks.
     pub async fn stream_chat(
         &self,
-        settings: &AiSettings,
+        settings: &ResolvedAiSettings,
         messages: Vec<Value>,
         tools: Vec<Value>,
         cancel: Option<Arc<AtomicBool>>,
@@ -411,12 +412,12 @@ impl AiClient {
     }
 
     /// Test connectivity with a 1-token ping; classified errors.
-    pub async fn test_connection(&self, settings: &AiSettings) -> Result<AiStatus, String> {
+    pub async fn test_connection(&self, settings: &ResolvedAiSettings) -> Result<AiStatus, String> {
         let url = format!("{}/models", Self::base_url(settings));
         let timeout = std::time::Duration::from_secs(settings.timeout_secs.max(10));
         let mut builder = self.http.get(&url).timeout(timeout);
-        if !settings.api_key.is_empty() {
-            builder = builder.bearer_auth(&settings.api_key);
+        if let Some(api_key) = settings.api_key.as_ref() {
+            builder = builder.bearer_auth(api_key.as_str());
         }
         let started = Instant::now();
         let resp = builder
@@ -704,9 +705,11 @@ mod tests {
 
     #[test]
     fn context_preflight_reserves_output_tokens() {
-        let mut settings = AiSettings::default();
-        settings.context_window = 1_000;
-        settings.max_tokens = 200;
+        let settings = AiSettings {
+            context_window: 1_000,
+            max_tokens: 200,
+            ..AiSettings::default()
+        };
         assert!(AiClient::context_fits(800, &settings));
         assert!(!AiClient::context_fits(801, &settings));
     }

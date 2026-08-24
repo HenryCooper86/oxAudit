@@ -28,6 +28,7 @@ export type CanonicalRunKind =
   | "binary"
   | "firmware"
   | "import"
+  | "external_evidence"
   | "verification";
 export type CanonicalRunState =
   | "queued"
@@ -167,6 +168,28 @@ export interface ImportPreview {
   unmappedRecords: string[];
   warnings: string[];
   canImportInventory: boolean;
+  mappedClaimCount: number;
+  mappedClaims: ExternalClaim[];
+  canImportExternalClaims: boolean;
+}
+
+export interface ExternalClaimLocation {
+  uri: string;
+  startLine: number | null;
+  startColumn: number | null;
+}
+
+export interface ExternalClaim {
+  recordId: string;
+  claimKind: string;
+  producer: string;
+  ruleId: string | null;
+  vulnerabilityId: string | null;
+  subjectIds: string[];
+  status: string;
+  summary: string;
+  location: ExternalClaimLocation | null;
+  trust: "external-unverified";
 }
 
 export interface InventoryIdentityView {
@@ -666,7 +689,6 @@ export interface CveDetail {
 export interface AiSettings {
   enabled: boolean;
   baseUrl: string;
-  apiKey: string;
   model: string;
   temperature: number;
   timeoutSecs: number;
@@ -675,6 +697,16 @@ export interface AiSettings {
   contextWindow: number;
   systemPrompt: string;
 }
+
+export interface CredentialPresence {
+  aiApiKey: boolean;
+  nvdApiKey: boolean;
+}
+
+export type CredentialMutation =
+  | { action: "unchanged" }
+  | { action: "replace"; value: string }
+  | { action: "delete" };
 
 export interface ScanSettings {
   maxFileSizeKb: number;
@@ -688,7 +720,7 @@ export interface ScanSettings {
 export interface AppSettings {
   ai: AiSettings;
   scan: ScanSettings;
-  nvdApiKey: string | null;
+  credentials: CredentialPresence;
   theme: string;
   /** Explicit cve-bin-tool path; null/empty means "find it on PATH". */
   binaryScannerPath: string | null;
@@ -696,6 +728,21 @@ export interface AppSettings {
   binaryScannerRuntime: BinaryScannerRuntime | null;
   /** Explicit grype path; null/empty means "find it on PATH". */
   grypePath: string | null;
+}
+
+export interface SaveSettingsRequest {
+  settings: AppSettings;
+  aiApiKey: CredentialMutation;
+  nvdApiKey: CredentialMutation;
+}
+
+export interface SaveSettingsResult {
+  settings: AppSettings;
+}
+
+export interface TestAiRequest {
+  settings: AiSettings;
+  aiApiKey: CredentialMutation;
 }
 
 export type BinaryScannerRuntime = "auto" | "native" | "docker";

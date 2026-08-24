@@ -1,6 +1,23 @@
 import { api } from "./api";
 import { LatestRequestQueue, type RequestToken } from "./latestRequest";
-import type { AiStatus, AppSettings } from "./types";
+import type {
+  AiStatus,
+  AppSettings,
+  CredentialMutation,
+  SaveSettingsRequest,
+  SaveSettingsResult,
+} from "./types";
+
+const unchangedCredential = (): CredentialMutation => ({ action: "unchanged" });
+
+export function unchangedCredentialMutations() {
+  return {
+    aiApiKey: unchangedCredential(),
+    nvdApiKey: unchangedCredential(),
+  };
+}
+
+export type CredentialMutations = ReturnType<typeof unchangedCredentialMutations>;
 
 export type AiReadinessStatus =
   | "loading"
@@ -33,7 +50,7 @@ interface PersistedReadinessDependencies {
 
 interface PersistedSaveDependencies extends PersistedReadinessDependencies {
   saveRequests?: SerializedSettingsWrites;
-  saveSettings?: (settings: AppSettings) => Promise<void>;
+  saveSettings?: (request: SaveSettingsRequest) => Promise<SaveSettingsResult | void>;
 }
 
 /** Native writes are serialized without suppressing any successful snapshot. */
@@ -110,7 +127,7 @@ export function publishSavedSettingsSnapshot(
 
 interface PersistedPreferenceDependencies {
   saveRequests?: SerializedSettingsWrites;
-  saveSettings?: (settings: AppSettings) => Promise<void>;
+  saveSettings?: (request: SaveSettingsRequest) => Promise<SaveSettingsResult | void>;
 }
 
 /**
@@ -135,14 +152,19 @@ export async function savePersistedThemePreference(
     if (!current || current.theme === theme) return null;
 
     const next = { ...current, theme };
-    await saveSettings(next);
-    publishSettings(next);
-    return next;
+    const result = await saveSettings({
+      settings: next,
+      ...unchangedCredentialMutations(),
+    });
+    const persisted = result?.settings ?? next;
+    publishSettings(persisted);
+    return persisted;
   });
 }
 
 export interface SavedSettingsPublication {
   token: RequestToken;
+  settings: AppSettings;
   readiness: Promise<void>;
 }
 
@@ -155,6 +177,7 @@ export async function savePersistedSettingsSnapshot(
   publishSettings: (settings: AppSettings) => void,
   publishReadiness: (readiness: AiReadiness) => void,
   dependencies: PersistedSaveDependencies = {},
+  credentialMutations: CredentialMutations = unchangedCredentialMutations(),
 ): Promise<SavedSettingsPublication | null> {
   const requests = dependencies.requests ?? persistedSettingsRequests;
   const saveRequests =
@@ -162,15 +185,16 @@ export async function savePersistedSettingsSnapshot(
   const saveSettings = dependencies.saveSettings ?? api.saveSettings;
 
   return saveRequests.run(async () => {
-    await saveSettings(settings);
+    const result = await saveSettings({ settings, ...credentialMutations });
+    const persisted = result?.settings ?? settings;
     const token = requests.begin();
     const readiness = publishSavedSettingsSnapshot(
-      settings,
+      persisted,
       token,
       publishSettings,
       publishReadiness,
       { requests, testAi: dependencies.testAi },
     );
-    return readiness ? { token, readiness } : null;
+    return readiness ? { token, settings: persisted, readiness } : null;
   });
 }

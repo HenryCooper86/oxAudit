@@ -1,4 +1,4 @@
-# VulnCompanion — AI Vulnerability Research Companion
+# oxAudit — Security Research Workbench
 
 A cross-platform desktop app (Tauri v2 + React + Rust) that helps security analysts
 and developers find CVEs, scan source code for vulnerabilities and leaked secrets,
@@ -21,7 +21,7 @@ with the help of an AI assistant.
 | **Binary scanning** | Detects vulnerable components bundled inside compiled binaries and firmware images (statically linked OpenSSL, zlib, zstd, sqlite, …) with oxAudit's **own scanner** — no database to download, no external tool required — then looks each component up in NVD and OSV, and ranks every finding by CISA KEV (actively exploited?) and EPSS (exploitation probability). Optionally also runs [cve-bin-tool](https://github.com/ossf/cve-bin-tool) or [grype](https://github.com/anchore/grype) if you have them installed; neither is bundled |
 | **Durable evidence and inventory** | Source, Dependency, Binary, and imported SBOM runs use one persisted Artifact → Component → Observation → Evidence → Finding graph. Runs survive restart, unflagged components remain visible, provider/rule snapshots preserve historical meaning, and every scan family shares the same lifecycle timeline |
 | **Rules, data, and quality** | A GUI Rule Library exposes provenance and fixture health and safely validates bounded declarative packs; Data Sources exposes immutable advisory snapshots and offline readiness; Quality Lab runs committed ground truth and reports precision, recall, misses, runtime, corpus size, and regression honestly |
-| **Standards and verification** | Preview and export oxAudit JSON, SARIF 2.1.0, CycloneDX 1.6, SPDX 2.3, OpenVEX, and CycloneDX VEX. Preview bounded imports with conflict/unmapped records and import SBOM inventory as a separate immutable run. Independent verification records bind a separate verifier to an immutable input hash |
+| **Standards and verification** | Preview and export oxAudit JSON, SARIF 2.1.0, CycloneDX 1.6, SPDX 2.3, OpenVEX, and CycloneDX VEX. Preview bounded imports with conflict/unmapped records, import SBOM inventory separately, and retain strictly mapped SARIF/VEX assertions as immutable `external-unverified` claims that cannot alter local findings or reviews. Independent verification records bind a separate verifier to an immutable input hash |
 | **Compliance readiness and reports** | GUI-first evidence checks for ISO 26262, ISO/SAE 21434, UNECE R155/R156, GDPR, CCPA/CPRA, NIST Privacy Framework, and ISO/IEC 27001; append-only qualified reviews; and professional JSON, CSV, Markdown, self-contained HTML, and paginated PDF reports. Readiness is never presented as certification or legal conformity |
 | **Dashboard** | At-a-glance stats, quick actions, recent scan history |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
@@ -165,9 +165,11 @@ parses ten lockfile formats natively and queries OSV directly.
 
 ## Security notes
 
-- API keys you configure are stored in the app config directory
-  (`~/Library/Application Support/com.vulncompanion.app/settings.json` on macOS) —
-  never in the scanned project.
+- API keys are stored by the operating system credential manager, never in ordinary
+  settings or the scanned project. Public settings are committed atomically and use
+  owner-only Unix permissions. Upgrades checkpoint a safe, idempotent migration from
+  `com.vulncompanion.app` to `com.oxaudit.desktop`, retain a sanitized legacy backup,
+  and fail closed on symlinks or conflicting destination files.
 - The secret scanner is heuristic: always confirm a finding is a real credential
   before rotating anything, and beware false positives from test fixtures.
 - Binary scanning shells out to cve-bin-tool with arguments passed directly — never

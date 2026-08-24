@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    vulncompanion_lib::run()
+    oxaudit_lib::run()
 }

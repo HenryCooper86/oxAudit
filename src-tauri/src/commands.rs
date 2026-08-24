@@ -23,8 +23,9 @@ use crate::findings::{
 };
 use crate::fs_utils;
 use crate::models::{
-    AiSettings, AppSettings, ChatRequest, ChatResponse, DependencyScanResult, Finding,
-    LockfileInfo, ScanOptions, ScanSettings, StreamStarted,
+    AppSettings, ChatRequest, ChatResponse, DependencyScanResult, Finding, LockfileInfo,
+    SaveSettingsRequest, SaveSettingsResult, ScanOptions, ScanSettings, StreamStarted,
+    TestAiRequest,
 };
 
 fn epoch_millis() -> u64 {
@@ -149,6 +150,9 @@ pub struct ImportPreview {
     unmapped_records: Vec<String>,
     warnings: Vec<String>,
     can_import_inventory: bool,
+    mapped_claim_count: usize,
+    mapped_claims: Vec<crate::adapters::reporting::import::ExternalClaim>,
+    can_import_external_claims: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -307,6 +311,8 @@ pub fn preview_report_import(
     let conflict_count = conflicts.len();
     let unmapped_count = analysis.unmapped_records.len();
     let can_import_inventory = analysis.can_import_inventory();
+    let can_import_external_claims = !analysis.external_claims.is_empty();
+    let mapped_claim_count = analysis.external_claims.len();
     Ok(ImportPreview {
         format: analysis.format.into(),
         media_type: analysis.media_type.into(),
@@ -324,7 +330,127 @@ pub fn preview_report_import(
         unmapped_records: analysis.unmapped_records.into_iter().take(200).collect(),
         warnings: analysis.warnings,
         can_import_inventory,
+        mapped_claim_count,
+        mapped_claims: analysis.external_claims.into_iter().take(200).collect(),
+        can_import_external_claims,
     })
+}
+
+#[tauri::command]
+pub fn import_external_report(
+    app: AppHandle,
+    findings: State<'_, FindingsState>,
+    path: String,
+    expected_sha256: String,
+) -> Result<oxaudit_domain::Run, String> {
+    use sha2::Digest;
+
+    const MAX_EXTERNAL_CLAIMS: usize = 50_000;
+    let (path, bytes, analysis) = read_import_report(&path)?;
+    if analysis.content_sha256 != expected_sha256.to_ascii_lowercase() {
+        return Err("the report changed after preview; preview it again before importing".into());
+    }
+    if analysis.external_claims.is_empty() {
+        return Err("this report has no external claims that can be mapped safely".into());
+    }
+    if analysis.external_claims.len() > MAX_EXTERNAL_CLAIMS {
+        return Err("the report exceeds the 50,000-claim import limit".into());
+    }
+
+    let service = findings.service().map_err(|error| error.to_string())?;
+    let mut run = oxaudit_domain::Run::queued(
+        oxaudit_domain::RunKind::ExternalEvidence,
+        path.to_string_lossy(),
+        epoch_millis(),
+    );
+    run.engine_ids
+        .push(format!("oxaudit.external-import.{}", analysis.format));
+    let artifact_id = oxaudit_domain::ArtifactId::parse(format!(
+        "artifact_{:x}",
+        sha2::Sha256::digest(
+            format!(
+                "{}\0{}\0{}\0external-claims",
+                run.id,
+                path.display(),
+                analysis.content_sha256
+            )
+            .as_bytes()
+        )
+    ))
+    .map_err(|error| error.to_string())?;
+    let artifact = oxaudit_domain::Artifact {
+        id: artifact_id,
+        kind: oxaudit_domain::ArtifactKind::Report,
+        location: oxaudit_domain::ArtifactLocation {
+            normalized_path: path.to_string_lossy().replace('\\', "/"),
+            canonical_path: Some(path.to_string_lossy().into_owned()),
+            parent_id: None,
+        },
+        size_bytes: bytes.len() as u64,
+        media_type: Some(analysis.media_type.into()),
+        content_sha256: Some(analysis.content_sha256.clone()),
+    };
+    let canonical_repository =
+        crate::adapters::persistence::CanonicalSqliteRepository::new(service.repository());
+    let canonical_events = crate::presentation::TauriRunEvents::new(app);
+    let coordinator =
+        oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
+    let mut managed = Some(coordinator.begin(run).map_err(|error| error.to_string())?);
+    let imported = (|| -> Result<oxaudit_domain::Run, String> {
+        let lifecycle = managed.as_mut().expect("managed external import exists");
+        lifecycle
+            .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .append_artifact(&artifact)
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .transition(oxaudit_domain::RunState::Detecting, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .transition(oxaudit_domain::RunState::Normalizing, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        lifecycle
+            .transition(oxaudit_domain::RunState::Assessing, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        lifecycle.warning(
+            "external_claims_unverified",
+            "Imported claims remain external-unverified and cannot change local findings or reviews.",
+        );
+        for warning in &analysis.warnings {
+            lifecycle.warning("import_limitation", warning);
+        }
+        lifecycle
+            .transition(oxaudit_domain::RunState::Persisting, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        service
+            .repository()
+            .canonical_save_projection(
+                &lifecycle.run().id,
+                "external-claims",
+                1,
+                &serde_json::json!({
+                    "format": analysis.format,
+                    "contentSha256": analysis.content_sha256,
+                    "trustBoundary": "external-unverified",
+                    "claims": analysis.external_claims,
+                    "unmappedRecords": analysis.unmapped_records,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+        let outcome = managed
+            .take()
+            .expect("managed external import exists")
+            .complete(epoch_millis())
+            .map_err(|error| error.to_string())?;
+        Ok(outcome.run)
+    })();
+    if imported.is_err() {
+        if let Some(lifecycle) = managed.take() {
+            let _ = lifecycle.terminate(oxaudit_domain::RunState::Failed, epoch_millis());
+        }
+    }
+    imported
 }
 
 #[tauri::command]
@@ -995,7 +1121,10 @@ pub fn rule_library_status() -> Result<Vec<RuleLibraryPackStatus>, String> {
                     .map(|language| (*language).into())
                     .collect()
             },
-            fixture_health: if rule.id == "js-eval" {
+            fixture_health: if matches!(
+                rule.id,
+                "js-eval" | "py-subprocess-shell" | "c-strcpy" | "go-weak-hash"
+            ) {
                 "verified".into()
             } else {
                 "coverageNeeded".into()
@@ -1027,7 +1156,7 @@ pub fn rule_library_status() -> Result<Vec<RuleLibraryPackStatus>, String> {
             creation_method: "authored".into(),
             content_sha256: source_snapshot_sha256,
             validation: "compiledSnapshotVerified".into(),
-            fixture_summary: "1 committed positive/negative ground-truth pair; remaining rules require fixture provenance".into(),
+            fixture_summary: "4 committed cross-language positive/negative pairs; remaining rules require fixture provenance".into(),
             rules: source_rules,
         },
         RuleLibraryPackStatus {
@@ -1041,7 +1170,7 @@ pub fn rule_library_status() -> Result<Vec<RuleLibraryPackStatus>, String> {
             creation_method: "authored".into(),
             content_sha256: secret_snapshot_sha256,
             validation: "compiledSnapshotVerified".into(),
-            fixture_summary: "Unit coverage is present; per-rule provenance fixtures remain a visible coverage gap".into(),
+            fixture_summary: "Unit coverage plus a committed generic-key positive/negative pair; most rules still require provenance fixtures".into(),
             rules: secret_rules,
         },
         RuleLibraryPackStatus {
@@ -1125,8 +1254,9 @@ pub fn validate_rule_pack(path: String) -> Result<RulePackValidationPreview, Str
     })
 }
 
-/// Execute the small committed deterministic suite. This is intentionally a
-/// contract smoke test, not a representative security-recall claim.
+/// Execute the committed deterministic cross-language contract suite.
+/// The result is honest about the corpus boundary and is not presented as a
+/// representative ecosystem-wide recall claim.
 #[tauri::command]
 pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatus, String> {
     let started = Instant::now();
@@ -1138,13 +1268,43 @@ pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatu
     let fixtures = [
         (
             "source-js-eval-positive",
-            "positive.js",
             include_str!("../../benchmarks/ground-truth/source-smoke/positive.js"),
         ),
         (
             "source-js-eval-negative",
-            "negative.js",
             include_str!("../../benchmarks/ground-truth/source-smoke/negative.js"),
+        ),
+        (
+            "source-python-shell-positive",
+            include_str!("../../benchmarks/ground-truth/source-smoke/python-shell-positive.py"),
+        ),
+        (
+            "source-python-shell-negative",
+            include_str!("../../benchmarks/ground-truth/source-smoke/python-shell-negative.py"),
+        ),
+        (
+            "source-c-strcpy-positive",
+            include_str!("../../benchmarks/ground-truth/source-smoke/c-strcpy-positive.c"),
+        ),
+        (
+            "source-c-strcpy-negative",
+            include_str!("../../benchmarks/ground-truth/source-smoke/c-strcpy-negative.c"),
+        ),
+        (
+            "source-go-md5-positive",
+            include_str!("../../benchmarks/ground-truth/source-smoke/go-md5-positive.go"),
+        ),
+        (
+            "source-go-md5-negative",
+            include_str!("../../benchmarks/ground-truth/source-smoke/go-md5-negative.go"),
+        ),
+        (
+            "secret-generic-api-key-positive",
+            include_str!("../../benchmarks/ground-truth/source-smoke/generic-api-key-positive.txt"),
+        ),
+        (
+            "secret-generic-api-key-negative",
+            include_str!("../../benchmarks/ground-truth/source-smoke/generic-api-key-negative.txt"),
         ),
     ];
     let mut passed_targets = 0;
@@ -1153,49 +1313,58 @@ pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatu
     let mut false_negatives = 0;
     let mut misses = Vec::new();
     let mut unexpected = Vec::new();
-    for (target_id, path, content) in fixtures {
+    for (target_id, content) in fixtures {
         let target = suite
             .targets
             .iter()
             .find(|target| target.id == target_id)
             .ok_or_else(|| format!("benchmark target {target_id} is missing"))?;
-        let actual = crate::scanners::patterns::scan_content(content, "javascript")
-            .into_iter()
-            .map(|hit| crate::scanners::patterns::SOURCE_RULES[hit.rule_index].id)
-            .collect::<Vec<_>>();
-        let expected_count = target
-            .expected
-            .iter()
-            .filter(|expected| expected.identity.artifact_path == path)
-            .map(|expected| expected.count as usize)
-            .sum::<usize>();
-        let expected_ids = target
-            .expected
-            .iter()
-            .map(|expected| expected.identity.rule_id.as_str())
-            .collect::<Vec<_>>();
-        let matched = actual
-            .iter()
-            .filter(|rule_id| expected_ids.contains(rule_id))
-            .count();
-        true_positives += matched.min(expected_count);
-        if matched < expected_count {
-            false_negatives += expected_count - matched;
-            misses.push(format!(
-                "{target_id}: expected {expected_count}, observed {matched}"
-            ));
-        }
-        for rule_id in actual
-            .iter()
-            .filter(|rule_id| !expected_ids.contains(rule_id))
-        {
-            false_positives += 1;
-            unexpected.push(format!("{target_id}: {rule_id}"));
-        }
-        if matched == expected_count
-            && actual.len() == matched
-            && (target.expected_absent.is_empty() || actual.is_empty())
-        {
+        let families = if target.scanner_families.is_empty() {
+            vec!["source-pattern".to_string()]
+        } else {
+            target.scanner_families.clone()
+        };
+        let actual = crate::scanners::benchmark_observations(
+            content,
+            target.language.as_deref().unwrap_or(""),
+            families.iter().any(|family| family == "source-pattern"),
+            families.iter().any(|family| family == "secret"),
+        )
+        .into_iter()
+        .map(
+            |(rule_id, evidence_kind)| oxaudit_benchmark::ActualObservation {
+                identity: oxaudit_benchmark::ObservationIdentity {
+                    rule_id: rule_id.into(),
+                    artifact_path: target.input_path.clone(),
+                },
+                evidence_kind: evidence_kind.into(),
+            },
+        )
+        .collect::<Vec<_>>();
+        let result = oxaudit_benchmark::judge(
+            target,
+            oxaudit_benchmark::ExecutionResult {
+                observations: actual,
+                runtime_ms: 0,
+                peak_memory_bytes: None,
+            },
+        );
+        true_positives += result.true_positives as usize;
+        false_positives += result.false_positives as usize;
+        false_negatives += result.false_negatives as usize;
+        misses.extend(result.misses.into_iter().map(|identity| {
+            format!(
+                "{target_id}: {} @ {}",
+                identity.rule_id, identity.artifact_path
+            )
+        }));
+        unexpected.extend(result.unexpected.into_iter().map(|identity| {
+            format!(
+                "{target_id}: {} @ {}",
+                identity.rule_id, identity.artifact_path
+            )
+        }));
+        if result.status == oxaudit_benchmark::TargetStatus::Passed {
             passed_targets += 1;
         }
     }
@@ -1232,7 +1401,7 @@ pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatu
         runtime_ms: started.elapsed().as_millis() as u64,
         misses,
         unexpected,
-        limitation: "Two repository-authored JavaScript targets validate the harness and js-eval rule only; these results do not measure representative recall.".into(),
+        limitation: "Ten repository-authored targets cover four source languages and one secret family with paired negatives. This is a stronger regression contract, not a representative ecosystem-wide recall claim.".into(),
         previous_precision: previous.as_ref().and_then(|previous| previous.precision),
         previous_recall: previous.as_ref().and_then(|previous| previous.recall),
         regression,
@@ -1252,6 +1421,7 @@ pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatu
 
 pub struct AppState {
     pub settings: Mutex<AppSettings>,
+    pub credentials: Arc<dyn crate::credentials::CredentialStore>,
     pub http: reqwest::Client,
     pub ai: AiClient,
     /// Shared per-tool request budgets for network-backed assistant tools.
@@ -1281,14 +1451,25 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
+        #[cfg(test)]
+        let credentials: Arc<dyn crate::credentials::CredentialStore> =
+            Arc::new(crate::credentials::MemoryCredentialStore::default());
+        #[cfg(not(test))]
+        let credentials: Arc<dyn crate::credentials::CredentialStore> =
+            Arc::new(crate::credentials::KeyringCredentialStore);
+        Self::with_credentials(credentials)
+    }
+
+    pub fn with_credentials(credentials: Arc<dyn crate::credentials::CredentialStore>) -> Self {
         let http = reqwest::Client::builder()
-            .user_agent("VulnCompanion/0.1 (security research)")
+            .user_agent("oxAudit/0.1 (security research)")
             .gzip(true)
             .connect_timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build HTTP client");
         Self {
             settings: Mutex::new(AppSettings::default()),
+            credentials,
             http: http.clone(),
             ai: AiClient::new(http.clone()),
             tool_rate_limiter: crate::agent::rate_limit::ToolRateLimiter::oxaudit_defaults(),
@@ -2166,6 +2347,7 @@ pub fn list_canonical_runs(
         Some("binary") => Some("binary"),
         Some("firmware") => Some("firmware"),
         Some("import") => Some("import"),
+        Some("external_evidence") => Some("external_evidence"),
         Some("verification") => Some("verification"),
         Some(_) => return Err("unknown run kind".into()),
         None => None,
@@ -2617,20 +2799,34 @@ pub fn find_lockfiles(
 #[tauri::command]
 pub async fn search_cves(
     state: State<'_, CveState>,
+    app_state: State<'_, AppState>,
     query: String,
     start_index: usize,
     per_page: usize,
     recent_days: Option<u64>,
 ) -> Result<crate::models::CveSearchResult, String> {
-    crate::cve::search_cves(&state, &query, start_index, per_page, recent_days).await
+    let key = crate::credentials::resolve_nvd_key(app_state.credentials.as_ref())
+        .map_err(|error| error.to_string())?;
+    crate::cve::search_cves(
+        &state,
+        key.as_ref().map(|key| key.as_str()),
+        &query,
+        start_index,
+        per_page,
+        recent_days,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn cve_detail(
     state: State<'_, CveState>,
+    app_state: State<'_, AppState>,
     id: String,
 ) -> Result<crate::models::CveDetail, String> {
-    crate::cve::cve_detail(&state, &id).await
+    let key = crate::credentials::resolve_nvd_key(app_state.credentials.as_ref())
+        .map_err(|error| error.to_string())?;
+    crate::cve::cve_detail(&state, key.as_ref().map(|key| key.as_str()), &id).await
 }
 
 #[tauri::command]
@@ -2668,13 +2864,16 @@ fn scan_context(
             .filter(|v| !v.is_empty())
     };
 
+    let nvd_api_key = crate::credentials::resolve_nvd_key(state.credentials.as_ref())
+        .map_err(|error| error.to_string())?;
+
     Ok(crate::binscan::scan::ScanContext {
         runtime: crate::binscan::runtime::Runtime::parse(
             settings.binary_scanner_runtime.as_deref(),
         ),
         cve_bin_tool_path: trimmed(settings.binary_scanner_path.clone()),
         grype_path: trimmed(settings.grype_path.clone()),
-        nvd_api_key: settings.nvd_api_key.clone(),
+        nvd_api_key,
         scratch_dir,
         use_cve_bin_tool: true,
         use_grype,
@@ -3139,10 +3338,13 @@ pub async fn chat(
     state: State<'_, AppState>,
     request: ChatRequest,
 ) -> Result<ChatResponse, String> {
-    let settings = state.settings.lock().unwrap().ai.clone();
-    if !settings.enabled {
+    let public = state.settings.lock().unwrap().ai.clone();
+    if !public.enabled {
         return Err("AI is disabled — enable it in Settings and configure an endpoint.".into());
     }
+    let settings =
+        crate::credentials::resolve_ai_settings(&public, state.credentials.as_ref(), None)
+            .map_err(|error| error.to_string())?;
     state.ai.chat(&settings, request).await
 }
 
@@ -3151,11 +3353,14 @@ pub async fn analyze_finding(
     state: State<'_, AppState>,
     finding: Finding,
 ) -> Result<ChatResponse, String> {
-    let settings = state.settings.lock().unwrap().ai.clone();
-    if !settings.enabled {
+    let public = state.settings.lock().unwrap().ai.clone();
+    if !public.enabled {
         return Err("AI is disabled — enable it in Settings and configure an endpoint.".into());
     }
-    let messages = crate::ai::analyze_finding_messages(&finding, &settings);
+    let settings =
+        crate::credentials::resolve_ai_settings(&public, state.credentials.as_ref(), None)
+            .map_err(|error| error.to_string())?;
+    let messages = crate::ai::analyze_finding_messages(&finding, &public);
     state
         .ai
         .chat(
@@ -3176,11 +3381,14 @@ pub async fn research_cve(
     cve: crate::models::CveItem,
     osv: Option<Value>,
 ) -> Result<ChatResponse, String> {
-    let settings = state.settings.lock().unwrap().ai.clone();
-    if !settings.enabled {
+    let public = state.settings.lock().unwrap().ai.clone();
+    if !public.enabled {
         return Err("AI is disabled — enable it in Settings and configure an endpoint.".into());
     }
-    let messages = crate::ai::research_cve_messages(&cve, osv.as_ref(), &settings);
+    let settings =
+        crate::credentials::resolve_ai_settings(&public, state.credentials.as_ref(), None)
+            .map_err(|error| error.to_string())?;
+    let messages = crate::ai::research_cve_messages(&cve, osv.as_ref(), &public);
     state
         .ai
         .chat(
@@ -3236,10 +3444,13 @@ pub async fn stream_chat(
     request: ChatRequest,
     run_id: Option<String>,
 ) -> Result<StreamStarted, String> {
-    let settings = state.settings.lock().unwrap().ai.clone();
-    if !settings.enabled {
+    let public = state.settings.lock().unwrap().ai.clone();
+    if !public.enabled {
         return Err("AI is disabled — enable it in Settings and configure an endpoint.".into());
     }
+    let settings =
+        crate::credentials::resolve_ai_settings(&public, state.credentials.as_ref(), None)
+            .map_err(|error| error.to_string())?;
     let run_id = resolve_stream_run_id(run_id)?;
     let run_id_response = run_id.clone();
     let cancel = Arc::new(crate::agent::tool::RunCancellation::new());
@@ -3654,18 +3865,27 @@ pub fn get_total_usage(app: AppHandle) -> Result<UsageSummary, String> {
 
 #[tauri::command]
 pub async fn test_ai(state: State<'_, AppState>) -> Result<crate::models::AiStatus, String> {
-    let settings = state.settings.lock().unwrap().ai.clone();
-    if settings.base_url.trim().is_empty() {
+    let public = state.settings.lock().unwrap().ai.clone();
+    if public.base_url.trim().is_empty() {
         return Err("no AI endpoint configured".into());
     }
+    let settings =
+        crate::credentials::resolve_ai_settings(&public, state.credentials.as_ref(), None)
+            .map_err(|error| error.to_string())?;
     state.ai.test_connection(&settings).await
 }
 
 #[tauri::command]
 pub async fn test_ai_with(
     state: State<'_, AppState>,
-    settings: AiSettings,
+    request: TestAiRequest,
 ) -> Result<crate::models::AiStatus, String> {
+    let settings = crate::credentials::resolve_ai_settings(
+        &request.settings,
+        state.credentials.as_ref(),
+        Some(&request.ai_api_key),
+    )
+    .map_err(|error| error.to_string())?;
     state.ai.test_connection(&settings).await
 }
 
@@ -3674,8 +3894,11 @@ pub async fn test_ai_with(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn load_settings(app: AppHandle, state: State<'_, AppState>) -> Result<AppSettings, String> {
-    let settings = crate::settings::load(&app);
+pub fn load_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, CommandError> {
+    let settings = crate::settings::load(&app, state.credentials.as_ref())?;
     *state.settings.lock().unwrap() = settings.clone();
     Ok(settings)
 }
@@ -3684,23 +3907,12 @@ pub fn load_settings(app: AppHandle, state: State<'_, AppState>) -> Result<AppSe
 pub fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
-    settings: AppSettings,
-) -> Result<(), String> {
-    // keep the in-memory copy in sync and refresh NVD key
+    request: SaveSettingsRequest,
+) -> Result<SaveSettingsResult, CommandError> {
     let mut current = state.settings.lock().unwrap();
-    crate::settings::save(&app, &settings)?;
-    if let Some(cve) = app.try_state::<CveState>() {
-        if let Ok(mut guard) = cve.api_key.lock() {
-            *guard = settings.nvd_api_key.clone();
-        }
-    }
-    *current = settings;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettings, String> {
-    Ok(state.settings.lock().unwrap().ai.clone())
+    let result = crate::settings::save(&app, state.credentials.as_ref(), request)?;
+    *current = result.settings.clone();
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------

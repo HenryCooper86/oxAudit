@@ -97,6 +97,30 @@ impl CommandError {
         )
     }
 
+    pub fn credential_unavailable() -> Self {
+        Self::new(
+            ErrorCode::CredentialUnavailable,
+            "Protected credential storage is unavailable. Unlock the system credential store and try again.",
+            true,
+        )
+    }
+
+    pub fn credential_rollback_failed() -> Self {
+        Self::new(
+            ErrorCode::CredentialRollbackFailed,
+            "Credential storage could not be restored after a failed settings save. Review both credentials before retrying.",
+            false,
+        )
+    }
+
+    pub fn migration_failed() -> Self {
+        Self::new(
+            ErrorCode::MigrationFailed,
+            "Existing oxAudit data could not be migrated safely. The original data was preserved.",
+            true,
+        )
+    }
+
     fn new(code: ErrorCode, message: &str, retryable: bool) -> Self {
         Self {
             code,

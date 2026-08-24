@@ -24,7 +24,7 @@ pub struct ScanContext {
     pub cve_bin_tool_path: Option<String>,
     /// Explicit grype path, if the user pinned one.
     pub grype_path: Option<String>,
-    pub nvd_api_key: Option<String>,
+    pub nvd_api_key: Option<zeroize::Zeroizing<String>>,
     pub scratch_dir: PathBuf,
     pub use_cve_bin_tool: bool,
     pub use_grype: bool,
@@ -69,7 +69,15 @@ pub async fn run_scan(
     // the user has an answer on screen before either subprocess has started.
     if context.use_native {
         on_progress("starting oxAudit native scanner".into());
-        match run_native(&target, cancel.clone(), on_progress.clone(), cve).await {
+        match run_native(
+            &target,
+            context.nvd_api_key.as_ref().map(|key| key.as_str()),
+            cancel.clone(),
+            on_progress.clone(),
+            cve,
+        )
+        .await
+        {
             Ok((result, mut native_notes)) => {
                 notes.append(&mut native_notes);
                 results.push(result);
@@ -164,6 +172,7 @@ pub async fn run_scan(
 /// unreachable would be the wrong trade.
 async fn run_native(
     target: &Path,
+    nvd_api_key: Option<&str>,
     cancel: Arc<AtomicBool>,
     on_progress: Arc<dyn Fn(String) + Send + Sync>,
     cve: Option<&crate::cve::CveState>,
@@ -186,8 +195,14 @@ listed without vulnerabilities."
     };
 
     if !scanned.queries.is_empty() {
-        let enriched =
-            enrich::enrich(cve, &scanned.queries, cancel.clone(), on_progress.clone()).await;
+        let enriched = enrich::enrich(
+            cve,
+            nvd_api_key,
+            &scanned.queries,
+            cancel.clone(),
+            on_progress.clone(),
+        )
+        .await;
         // apply() re-tallies the summary, so a de-duplicated CVE is never
         // counted twice and the headline can never drift from the list.
         enrich::apply(&mut result, enriched.found);
@@ -215,7 +230,7 @@ async fn run_cve_bin_tool(
             target,
             &host_report,
             request,
-            context.nvd_api_key.as_deref(),
+            context.nvd_api_key.as_ref().map(|key| key.as_str()),
         )?,
         Runtime::Native => {
             let invocation = detect::resolve(context.cve_bin_tool_path.as_deref())?;
@@ -224,7 +239,7 @@ async fn run_cve_bin_tool(
                 target,
                 &host_report,
                 request,
-                context.nvd_api_key.as_deref(),
+                context.nvd_api_key.as_ref().map(|key| key.as_str()),
             )
         }
         Runtime::Auto => match detect::resolve(context.cve_bin_tool_path.as_deref()) {
@@ -233,7 +248,7 @@ async fn run_cve_bin_tool(
                 target,
                 &host_report,
                 request,
-                context.nvd_api_key.as_deref(),
+                context.nvd_api_key.as_ref().map(|key| key.as_str()),
             ),
             // No native install: fall back to the container, which is also the
             // runtime carrying the upstream NVD bootstrap fix.
@@ -243,7 +258,7 @@ async fn run_cve_bin_tool(
                 target,
                 &host_report,
                 request,
-                context.nvd_api_key.as_deref(),
+                context.nvd_api_key.as_ref().map(|key| key.as_str()),
             )?,
         },
     };

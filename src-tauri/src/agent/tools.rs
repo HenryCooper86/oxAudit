@@ -376,7 +376,7 @@ pub fn builtins() -> Vec<Tool> {
         // -------------------------------------------------------------- run_scan
         crate::tool!(
             "run_scan",
-            "Run a VulnCompanion scan on the active project: source (vulnerable code patterns), secrets (leaked credentials), or dependencies (lockfiles vs OSV). Returns counts and the top findings.",
+            "Run an oxAudit scan on the active project: source (vulnerable code patterns), secrets (leaked credentials), or dependencies (lockfiles vs OSV). Returns counts and the top findings.",
             json!({
                 "type": "object",
                 "properties": {
@@ -456,7 +456,17 @@ pub fn builtins() -> Vec<Tool> {
                 let query = arg_str(&args, "query")?;
                 let limit = arg_u64_default(&args, "limit", 10).min(25) as usize;
                 let cve = ctx.app.state::<crate::cve::CveState>();
-                let res = crate::cve::search_cves(&cve, &query, 0, limit, None)
+                let state = ctx.state().ok_or("app state unavailable")?;
+                let key = crate::credentials::resolve_nvd_key(state.credentials.as_ref())
+                    .map_err(|error| error.to_string())?;
+                let res = crate::cve::search_cves(
+                    &cve,
+                    key.as_ref().map(|key| key.as_str()),
+                    &query,
+                    0,
+                    limit,
+                    None,
+                )
                     .await
                     .map_err(|e| format!("NVD search failed: {e}"))?;
                 let items: Vec<Value> = res.items.iter().map(|i| json!({
@@ -482,7 +492,15 @@ pub fn builtins() -> Vec<Tool> {
             |ctx, args| {
                 let cve_id = arg_str(&args, "cve_id")?;
                 let cve = ctx.app.state::<crate::cve::CveState>();
-                let detail = crate::cve::cve_detail(&cve, &cve_id).await?;
+                let state = ctx.state().ok_or("app state unavailable")?;
+                let key = crate::credentials::resolve_nvd_key(state.credentials.as_ref())
+                    .map_err(|error| error.to_string())?;
+                let detail = crate::cve::cve_detail(
+                    &cve,
+                    key.as_ref().map(|key| key.as_str()),
+                    &cve_id,
+                )
+                .await?;
                 let item = detail.item;
                 Ok(json!({
                     "id": item.id, "severity": item.severity, "cvss": item.cvss_score,
@@ -652,6 +670,8 @@ pub fn builtins() -> Vec<Tool> {
 
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().clone();
+                let nvd_api_key = crate::credentials::resolve_nvd_key(st.credentials.as_ref())
+                    .map_err(|error| error.to_string())?;
                 let cancel = st.cancel_binary_scan.clone();
                 cancel.store(false, std::sync::atomic::Ordering::Relaxed);
 
@@ -671,7 +691,7 @@ pub fn builtins() -> Vec<Tool> {
                     ),
                     cve_bin_tool_path: trimmed(settings.binary_scanner_path.clone()),
                     grype_path: trimmed(settings.grype_path.clone()),
-                    nvd_api_key: settings.nvd_api_key.clone(),
+                    nvd_api_key,
                     scratch_dir,
                     use_cve_bin_tool: true,
                     // Every scanner sees different things, so the agent gets

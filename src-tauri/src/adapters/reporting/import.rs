@@ -1,3 +1,4 @@
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -13,6 +14,34 @@ pub struct ImportedComponent {
     pub cpes: Vec<String>,
     pub aliases: Vec<String>,
     pub confidence: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalClaimLocation {
+    pub uri: String,
+    pub start_line: Option<u64>,
+    pub start_column: Option<u64>,
+}
+
+/// A bounded, semantically mapped assertion from an external report.
+///
+/// These records are deliberately not local Findings or Reviews. Their trust
+/// level remains explicit when persisted so a third-party status can never
+/// silently close or confirm locally produced evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalClaim {
+    pub record_id: String,
+    pub claim_kind: String,
+    pub producer: String,
+    pub rule_id: Option<String>,
+    pub vulnerability_id: Option<String>,
+    pub subject_ids: Vec<String>,
+    pub status: String,
+    pub summary: String,
+    pub location: Option<ExternalClaimLocation>,
+    pub trust: String,
 }
 
 impl ImportedComponent {
@@ -37,6 +66,7 @@ pub struct ImportAnalysis {
     pub media_type: &'static str,
     pub content_sha256: String,
     pub components: Vec<ImportedComponent>,
+    pub external_claims: Vec<ExternalClaim>,
     pub finding_records: usize,
     pub review_records: usize,
     pub unmapped_records: Vec<String>,
@@ -104,6 +134,7 @@ fn inspect_oxaudit(value: &Value, content_sha256: String) -> Result<ImportAnalys
         media_type: "application/vnd.oxaudit.run+json",
         content_sha256,
         components,
+        external_claims: Vec::new(),
         finding_records,
         review_records: 0,
         unmapped_records: unmapped,
@@ -129,24 +160,28 @@ fn inspect_cyclonedx(value: &Value, content_sha256: String) -> Result<ImportAnal
         .and_then(Value::as_array)
         .map(|items| parse_components(items, ComponentDialect::CycloneDx, &mut unmapped))
         .unwrap_or_default();
-    let review_records = value
+    let vulnerabilities = value
         .get("vulnerabilities")
         .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    let format = if review_records > 0 {
-        "cyclonedx-vex"
-    } else {
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let external_claims = map_cyclonedx_vex(value, vulnerabilities, &content_sha256, &mut unmapped);
+    let review_records = external_claims.len();
+    let format = if vulnerabilities.is_empty() {
         "cyclonedx"
+    } else {
+        "cyclonedx-vex"
     };
     let mut warnings = Vec::new();
-    if review_records > 0 {
-        warnings.push("Vulnerability analysis records are previewed but never overwrite local reviews; explicit finding mapping is required before VEX can affect disposition.".into());
+    if !vulnerabilities.is_empty() {
+        warnings.push("Mapped CycloneDX VEX records can be retained as external-unverified claims. They never overwrite local reviews or findings.".into());
     }
     Ok(ImportAnalysis {
         format,
         media_type: "application/vnd.cyclonedx+json",
         content_sha256,
         components,
+        external_claims,
         finding_records: 0,
         review_records,
         unmapped_records: unmapped,
@@ -173,6 +208,7 @@ fn inspect_spdx(value: &Value, content_sha256: String) -> Result<ImportAnalysis,
         media_type: "application/spdx+json",
         content_sha256,
         components,
+        external_claims: Vec::new(),
         finding_records: 0,
         review_records: 0,
         unmapped_records: unmapped,
@@ -187,24 +223,76 @@ fn inspect_sarif(value: &Value, content_sha256: String) -> Result<ImportAnalysis
         .ok_or_else(|| "SARIF runs must be an array".to_string())?;
     let mut finding_records = 0;
     let mut unmapped = Vec::new();
+    let mut external_claims = Vec::new();
     for (run_index, run) in runs.iter().enumerate() {
         let Some(results) = run.get("results").and_then(Value::as_array) else {
             unmapped.push(format!("SARIF run {run_index} has no results array"));
             continue;
         };
+        let producer = run
+            .pointer("/tool/driver/name")
+            .and_then(Value::as_str)
+            .and_then(|name| bounded_text(name, 256))
+            .map(|name| {
+                let version = run
+                    .pointer("/tool/driver/semanticVersion")
+                    .or_else(|| run.pointer("/tool/driver/version"))
+                    .and_then(Value::as_str)
+                    .and_then(|version| bounded_text(version, 128));
+                version.map_or(name.clone(), |version| format!("{name}@{version}"))
+            });
         for (result_index, result) in results.iter().enumerate() {
-            if result
-                .get("message")
-                .and_then(|message| message.get("text"))
+            let coordinate = format!("SARIF result {run_index}:{result_index}");
+            let Some(producer) = producer.as_ref() else {
+                unmapped.push(format!("{coordinate} has no bounded tool.driver.name"));
+                continue;
+            };
+            let Some(rule_id) = result
+                .get("ruleId")
                 .and_then(Value::as_str)
-                .is_some()
-            {
-                finding_records += 1;
-            } else {
-                unmapped.push(format!(
-                    "SARIF result {run_index}:{result_index} has no message.text"
-                ));
-            }
+                .and_then(valid_external_identifier)
+            else {
+                unmapped.push(format!("{coordinate} has no usable ruleId"));
+                continue;
+            };
+            let Some(summary) = result
+                .pointer("/message/text")
+                .and_then(Value::as_str)
+                .and_then(|text| bounded_text(text, 16 * 1024))
+            else {
+                unmapped.push(format!("{coordinate} has no bounded message.text"));
+                continue;
+            };
+            let Some(location) = map_sarif_location(result) else {
+                unmapped.push(format!("{coordinate} has no safe physical location"));
+                continue;
+            };
+            let status = match result.get("level").and_then(Value::as_str) {
+                Some("error") => "error",
+                Some("warning") => "warning",
+                Some("note") => "note",
+                Some("none") | None => "unspecified",
+                Some(_) => {
+                    unmapped.push(format!("{coordinate} has an unsupported level"));
+                    continue;
+                }
+            };
+            external_claims.push(ExternalClaim {
+                record_id: mapped_record_id(
+                    &content_sha256,
+                    &format!("sarif\0{run_index}\0{result_index}\0{rule_id}"),
+                ),
+                claim_kind: "sarif-result".into(),
+                producer: producer.clone(),
+                rule_id: Some(rule_id),
+                vulnerability_id: None,
+                subject_ids: vec![location.uri.clone()],
+                status: status.into(),
+                summary,
+                location: Some(location),
+                trust: "external-unverified".into(),
+            });
+            finding_records += 1;
         }
     }
     Ok(ImportAnalysis {
@@ -212,10 +300,11 @@ fn inspect_sarif(value: &Value, content_sha256: String) -> Result<ImportAnalysis
         media_type: "application/sarif+json",
         content_sha256,
         components: Vec::new(),
+        external_claims,
         finding_records,
         review_records: 0,
         unmapped_records: unmapped,
-        warnings: vec!["SARIF findings are preview-only until detector trust and path mapping are explicitly accepted; they are not silently promoted to local findings.".into()],
+        warnings: vec!["Mapped SARIF results can be retained as external-unverified claims. They never become local findings or inherit trust without independent verification.".into()],
     })
 }
 
@@ -226,17 +315,76 @@ fn inspect_openvex(value: &Value, content_sha256: String) -> Result<ImportAnalys
         .ok_or_else(|| "OpenVEX statements must be an array".to_string())?;
     let mut mapped = 0;
     let mut unmapped = Vec::new();
+    let mut external_claims = Vec::new();
     for (index, statement) in statements.iter().enumerate() {
         let vulnerability = statement
             .get("vulnerability")
             .and_then(|item| item.get("name"))
-            .and_then(Value::as_str);
+            .and_then(Value::as_str)
+            .and_then(valid_external_identifier);
         let status = statement.get("status").and_then(Value::as_str);
-        if vulnerability.is_some() && status.is_some() {
+        let allowed_status = status.filter(|status| {
+            matches!(
+                *status,
+                "not_affected" | "affected" | "fixed" | "under_investigation"
+            )
+        });
+        let product_records = statement
+            .get("products")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let products = product_records
+            .iter()
+            .filter_map(|product| product.get("@id").and_then(Value::as_str))
+            .filter_map(valid_subject_identifier)
+            .collect::<Vec<_>>();
+        let detail = statement
+            .get("impact_statement")
+            .or_else(|| statement.get("status_notes"))
+            .and_then(Value::as_str)
+            .and_then(|text| bounded_text(text, 16 * 1024));
+        let justification = statement
+            .get("justification")
+            .and_then(Value::as_str)
+            .and_then(valid_external_identifier);
+        let not_affected_is_qualified =
+            allowed_status != Some("not_affected") || justification.is_some() || detail.is_some();
+        if let (Some(vulnerability), Some(status)) = (vulnerability, allowed_status) {
+            if products.is_empty()
+                || products.len() != product_records.len()
+                || !not_affected_is_qualified
+            {
+                unmapped.push(format!(
+                    "OpenVEX statement {index} lacks a valid vulnerability, supported status, qualified not_affected rationale, or product @id"
+                ));
+                continue;
+            }
+            let summary = detail.unwrap_or_else(|| {
+                justification.clone().map_or_else(
+                    || format!("External VEX status: {status}"),
+                    |justification| format!("External VEX status: {status} ({justification})"),
+                )
+            });
+            external_claims.push(ExternalClaim {
+                record_id: mapped_record_id(
+                    &content_sha256,
+                    &format!("openvex\0{index}\0{vulnerability}"),
+                ),
+                claim_kind: "vex-statement".into(),
+                producer: "OpenVEX document".into(),
+                rule_id: None,
+                vulnerability_id: Some(vulnerability),
+                subject_ids: products,
+                status: status.into(),
+                summary,
+                location: None,
+                trust: "external-unverified".into(),
+            });
             mapped += 1;
         } else {
             unmapped.push(format!(
-                "OpenVEX statement {index} lacks vulnerability.name or status"
+                "OpenVEX statement {index} lacks a valid vulnerability, supported status, qualified not_affected rationale, or product @id"
             ));
         }
     }
@@ -245,11 +393,213 @@ fn inspect_openvex(value: &Value, content_sha256: String) -> Result<ImportAnalys
         media_type: "application/openvex+json",
         content_sha256,
         components: Vec::new(),
+        external_claims,
         finding_records: 0,
         review_records: mapped,
         unmapped_records: unmapped,
-        warnings: vec!["VEX statements are previewed but never overwrite local reviews; explicit finding mapping and conflict resolution are required.".into()],
+        warnings: vec!["Mapped VEX statements can be retained as external-unverified claims. A third-party status never overwrites a local review or finding state.".into()],
     })
+}
+
+fn map_cyclonedx_vex(
+    document: &Value,
+    vulnerabilities: &[Value],
+    content_sha256: &str,
+    unmapped: &mut Vec<String>,
+) -> Vec<ExternalClaim> {
+    let mut component_refs = std::collections::BTreeSet::new();
+    collect_cyclonedx_refs(document.get("components"), &mut component_refs);
+    let producer = document
+        .pointer("/metadata/tools/components/0/name")
+        .and_then(Value::as_str)
+        .and_then(|name| bounded_text(name, 256))
+        .map(|name| {
+            let version = document
+                .pointer("/metadata/tools/components/0/version")
+                .and_then(Value::as_str)
+                .and_then(|version| bounded_text(version, 128));
+            version.map_or(name.clone(), |version| format!("{name}@{version}"))
+        })
+        .unwrap_or_else(|| "CycloneDX document".into());
+
+    vulnerabilities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, vulnerability)| {
+            let identifier = vulnerability
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(valid_external_identifier);
+            let status = vulnerability
+                .pointer("/analysis/state")
+                .and_then(Value::as_str)
+                .filter(|status| {
+                    matches!(
+                        *status,
+                        "resolved"
+                            | "resolved_with_pedigree"
+                            | "exploitable"
+                            | "in_triage"
+                            | "false_positive"
+                            | "not_affected"
+                    )
+                });
+            let affected_records = vulnerability
+                .get("affects")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let subjects = affected_records
+                        .iter()
+                        .filter_map(|affected| affected.get("ref").and_then(Value::as_str))
+                        .filter_map(valid_subject_identifier)
+                        .collect::<Vec<_>>();
+            let subjects_are_known = !subjects.is_empty()
+                && subjects.len() == affected_records.len()
+                && subjects
+                    .iter()
+                    .all(|subject| component_refs.contains(subject));
+            let detail = vulnerability
+                .pointer("/analysis/detail")
+                .and_then(Value::as_str)
+                .and_then(|text| bounded_text(text, 16 * 1024));
+            let justification = vulnerability
+                .pointer("/analysis/justification")
+                .and_then(Value::as_str)
+                .and_then(valid_external_identifier);
+            let qualified = !matches!(status, Some("false_positive" | "not_affected"))
+                || justification.is_some()
+                || detail.is_some();
+
+            let (Some(identifier), Some(status)) = (identifier, status) else {
+                unmapped.push(format!(
+                    "CycloneDX vulnerability {index} lacks a valid id or supported analysis.state"
+                ));
+                return None;
+            };
+            if !subjects_are_known || !qualified {
+                unmapped.push(format!(
+                    "CycloneDX vulnerability {index} lacks exact component refs or a qualified non-affected rationale"
+                ));
+                return None;
+            }
+            let summary = detail.unwrap_or_else(|| {
+                justification.clone().map_or_else(
+                    || format!("External CycloneDX VEX status: {status}"),
+                    |justification| {
+                        format!("External CycloneDX VEX status: {status} ({justification})")
+                    },
+                )
+            });
+            Some(ExternalClaim {
+                record_id: mapped_record_id(
+                    content_sha256,
+                    &format!("cyclonedx-vex\0{index}\0{identifier}"),
+                ),
+                claim_kind: "vex-statement".into(),
+                producer: producer.clone(),
+                rule_id: None,
+                vulnerability_id: Some(identifier),
+                subject_ids: subjects,
+                status: status.into(),
+                summary,
+                location: None,
+                trust: "external-unverified".into(),
+            })
+        })
+        .collect()
+}
+
+fn collect_cyclonedx_refs(
+    components: Option<&Value>,
+    collected: &mut std::collections::BTreeSet<String>,
+) {
+    let Some(components) = components.and_then(Value::as_array) else {
+        return;
+    };
+    for component in components {
+        if let Some(reference) = component
+            .get("bom-ref")
+            .and_then(Value::as_str)
+            .and_then(valid_subject_identifier)
+        {
+            collected.insert(reference);
+        }
+        collect_cyclonedx_refs(component.get("components"), collected);
+    }
+}
+
+fn map_sarif_location(result: &Value) -> Option<ExternalClaimLocation> {
+    result
+        .get("locations")?
+        .as_array()?
+        .iter()
+        .find_map(|location| {
+            let physical = location.get("physicalLocation")?;
+            let uri = physical
+                .pointer("/artifactLocation/uri")?
+                .as_str()
+                .and_then(normalize_sarif_uri)?;
+            let start_line = positive_u64(physical.pointer("/region/startLine"));
+            let start_column = positive_u64(physical.pointer("/region/startColumn"));
+            Some(ExternalClaimLocation {
+                uri,
+                start_line,
+                start_column,
+            })
+        })
+}
+
+fn positive_u64(value: Option<&Value>) -> Option<u64> {
+    value.and_then(Value::as_u64).filter(|value| *value > 0)
+}
+
+fn normalize_sarif_uri(value: &str) -> Option<String> {
+    let normalized = valid_subject_identifier(value)?.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    if (lower.contains("://") && !lower.starts_with("file://"))
+        || normalized.split('/').any(|segment| segment == "..")
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn valid_external_identifier(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 256
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'.' | b'_' | b':' | b'/' | b'#' | b'@' | b'+' | b'-')
+        }))
+    .then(|| value.to_owned())
+}
+
+fn valid_subject_identifier(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= 4096
+        && !value.chars().any(char::is_control)
+        && !value.chars().any(char::is_whitespace))
+    .then(|| value.to_owned())
+}
+
+fn bounded_text(value: &str, max_bytes: usize) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= max_bytes
+        && !value
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t')))
+    .then(|| value.to_owned())
+}
+
+fn mapped_record_id(content_sha256: &str, coordinate: &str) -> String {
+    format!(
+        "external_claim_{:x}",
+        Sha256::digest(format!("{content_sha256}\0{coordinate}").as_bytes())
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -384,13 +734,14 @@ mod tests {
     fn cyclonedx_inventory_and_vex_are_detected_without_applying_reviews() {
         let bytes = br#"{
           "bomFormat":"CycloneDX","specVersion":"1.6",
-          "components":[{"type":"library","name":"openssl","version":"3.0.1","purl":"pkg:generic/openssl@3.0.1"}],
-          "vulnerabilities":[{"id":"CVE-1","analysis":{"state":"exploitable"}}]
+          "components":[{"bom-ref":"pkg:generic/openssl@3.0.1","type":"library","name":"openssl","version":"3.0.1","purl":"pkg:generic/openssl@3.0.1"}],
+          "vulnerabilities":[{"id":"CVE-2024-1000","affects":[{"ref":"pkg:generic/openssl@3.0.1"}],"analysis":{"state":"exploitable","detail":"Reachable in the deployed configuration."}}]
         }"#;
         let analysis = inspect(bytes).unwrap();
         assert_eq!(analysis.format, "cyclonedx-vex");
         assert_eq!(analysis.components.len(), 1);
         assert_eq!(analysis.review_records, 1);
+        assert_eq!(analysis.external_claims[0].trust, "external-unverified");
         assert!(analysis.can_import_inventory());
         assert!(analysis.warnings[0].contains("never overwrite"));
     }
@@ -401,6 +752,39 @@ mod tests {
         assert_eq!(analysis.finding_records, 0);
         assert_eq!(analysis.unmapped_records.len(), 1);
         assert!(!analysis.can_import_inventory());
+    }
+
+    #[test]
+    fn sarif_mapping_requires_tool_rule_message_and_safe_physical_location() {
+        let analysis = inspect(
+            br#"{"version":"2.1.0","runs":[{
+              "tool":{"driver":{"name":"Semgrep","semanticVersion":"1.2.3"}},
+              "results":[{"ruleId":"python.sql-injection","level":"error","message":{"text":"Untrusted input reaches SQL."},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/app.py"},"region":{"startLine":42,"startColumn":7}}}]}]
+            }]}"#,
+        )
+        .unwrap();
+        assert_eq!(analysis.finding_records, 1);
+        assert_eq!(analysis.external_claims.len(), 1);
+        assert_eq!(analysis.external_claims[0].producer, "Semgrep@1.2.3");
+        assert_eq!(analysis.external_claims[0].subject_ids, ["src/app.py"]);
+        assert_eq!(analysis.external_claims[0].trust, "external-unverified");
+    }
+
+    #[test]
+    fn vex_non_affected_status_needs_a_product_and_rationale() {
+        let analysis = inspect(
+            br#"{"@context":"https://openvex.dev/ns/v0.2.0","statements":[
+              {"vulnerability":{"name":"CVE-2024-1000"},"products":[{"@id":"pkg:generic/app@1"}],"status":"not_affected"},
+              {"vulnerability":{"name":"CVE-2024-1001"},"products":[{"@id":"pkg:generic/app@1"}],"status":"not_affected","justification":"vulnerable_code_not_present"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(analysis.review_records, 1);
+        assert_eq!(analysis.unmapped_records.len(), 1);
+        assert_eq!(
+            analysis.external_claims[0].vulnerability_id.as_deref(),
+            Some("CVE-2024-1001")
+        );
     }
 
     #[test]
