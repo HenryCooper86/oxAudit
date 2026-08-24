@@ -15,7 +15,10 @@ mod migration;
 mod models;
 pub mod observability;
 mod presentation;
-mod scanners;
+// Public so benches/scanning.rs can measure the rule engines directly. The
+// benchmark exists to catch a rule change that quietly makes matching
+// quadratic, which means it has to reach the same functions a scan does.
+pub mod scanners;
 mod sessions;
 mod settings;
 pub mod triage;
