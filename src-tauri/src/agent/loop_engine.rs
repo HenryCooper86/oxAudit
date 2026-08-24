@@ -16,7 +16,8 @@ use super::tool::{
 use crate::ai::errors::LlmError;
 use crate::ai::{AiClient, AiStreamEvent};
 use crate::commands::AppState;
-use crate::models::{AiSettings, Usage};
+use crate::credentials::ResolvedAiSettings;
+use crate::models::Usage;
 use tauri::Manager;
 
 pub const MAX_ITERATIONS: usize = 10;
@@ -109,7 +110,7 @@ fn close_steers(
 /// budgets are exhausted. Returns the final answer text + last usage.
 pub struct RunTurnRequest<'a> {
     pub client: &'a AiClient,
-    pub settings: &'a AiSettings,
+    pub settings: &'a ResolvedAiSettings,
     pub registry: &'a ToolRegistry,
     pub user_messages: Vec<Value>,
     pub conversation_id: Option<String>,
@@ -133,7 +134,7 @@ pub async fn run_turn(request: RunTurnRequest<'_>) -> Result<(String, Option<Usa
         steer,
         emit,
     } = request;
-    let hint = "You are running inside VulnCompanion, a security research desktop app. \
+    let hint = "You are running inside oxAudit, a security research desktop app. \
 You have research tools available: read_file, grep_project, glob, run_scan, search_cve, \
 get_cve_detail, query_osv_package, web_fetch, ask_user, todo. \
 Use them when they genuinely help — never invent file contents, scan results, or CVE data \

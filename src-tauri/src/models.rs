@@ -239,11 +239,10 @@ pub struct CveDetail {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct AiSettings {
     pub enabled: bool,
     pub base_url: String,
-    pub api_key: String,
     pub model: String,
     pub temperature: f32,
     pub timeout_secs: u64,
@@ -262,7 +261,6 @@ impl Default for AiSettings {
         Self {
             enabled: false,
             base_url: "https://api.openai.com/v1".into(),
-            api_key: String::new(),
             model: "gpt-4o-mini".into(),
             temperature: 0.2,
             timeout_secs: 120,
@@ -273,14 +271,62 @@ impl Default for AiSettings {
     }
 }
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "You are VulnCompanion, an expert application security engineer \
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CredentialPresence {
+    pub ai_api_key: bool,
+    pub nvd_api_key: bool,
+}
+
+#[derive(Serialize, Deserialize, PartialEq)]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CredentialMutation {
+    Unchanged,
+    Replace { value: String },
+    Delete,
+}
+
+impl Drop for CredentialMutation {
+    fn drop(&mut self) {
+        if let Self::Replace { value } = self {
+            zeroize::Zeroize::zeroize(value);
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSettingsRequest {
+    pub settings: AppSettings,
+    pub ai_api_key: CredentialMutation,
+    pub nvd_api_key: CredentialMutation,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSettingsResult {
+    pub settings: AppSettings,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestAiRequest {
+    pub settings: AiSettings,
+    pub ai_api_key: CredentialMutation,
+}
+
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You are oxAudit, an expert application security engineer \
 and vulnerability researcher embedded in a desktop security tool. You help developers and security \
 analysts understand vulnerabilities, exploit details, remediation steps and CVE research. Be precise, \
 concrete and actionable. When analyzing code, reference exact lines and suggest specific fixes. \
 Never invent CVEs or exploit details you are not confident about — say so when you are uncertain.";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct ScanSettings {
     pub max_file_size_kb: u64,
     pub follow_symlinks: bool,
@@ -343,11 +389,11 @@ pub fn default_ignored_dirs() -> Vec<String> {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
     pub ai: AiSettings,
     pub scan: ScanSettings,
-    pub nvd_api_key: Option<String>,
+    pub credentials: CredentialPresence,
     pub theme: String,
     /// Explicit path to a cve-bin-tool executable. Empty means "find it on
     /// PATH". Defaulted so settings files written before binary scanning
@@ -368,7 +414,7 @@ impl Default for AppSettings {
         Self {
             ai: AiSettings::default(),
             scan: ScanSettings::default(),
-            nvd_api_key: None,
+            credentials: CredentialPresence::default(),
             theme: "dark".into(),
             binary_scanner_path: None,
             binary_scanner_runtime: None,

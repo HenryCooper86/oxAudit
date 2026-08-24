@@ -4,11 +4,13 @@ mod ai;
 pub mod binscan;
 mod commands;
 pub mod compliance;
+mod credentials;
 pub mod cve;
 mod deps;
 pub mod exploit;
 pub mod findings;
 mod fs_utils;
+mod migration;
 mod models;
 mod presentation;
 mod scanners;
@@ -23,6 +25,7 @@ use findings::{
     repository::FindingsRepository,
     service::{FindingsService, FindingsState},
 };
+use models::AppSettings;
 
 pub(crate) fn initialize_findings_state(
     app_data_root: &std::path::Path,
@@ -58,6 +61,10 @@ pub fn run() {
         .manage(state)
         .manage(cve_state)
         .setup(|app| {
+            let app_state = app
+                .try_state::<AppState>()
+                .ok_or_else(findings::error::CommandError::migration_failed)?;
+            migration::migrate_legacy_profile(app.handle(), app_state.credentials.as_ref())?;
             let findings_state = match app.path().app_data_dir() {
                 Ok(data_dir) => initialize_findings_state(&data_dir, chrono::Utc::now()),
                 Err(_) => FindingsState::unavailable(
@@ -65,15 +72,19 @@ pub fn run() {
                 ),
             };
             app.manage(findings_state);
-            // Load persisted settings, apply NVD key
-            let settings = settings::load(app.handle());
+            // Load public settings after the identity/credential migration.
+            let settings = if let Some(app_state) = app.try_state::<AppState>() {
+                settings::load(app.handle(), app_state.credentials.as_ref()).unwrap_or_else(
+                    |error| {
+                        log::warn!("persisted settings could not be loaded: {error}");
+                        AppSettings::default()
+                    },
+                )
+            } else {
+                AppSettings::default()
+            };
             if let Some(app_state) = app.try_state::<AppState>() {
                 *app_state.settings.lock().unwrap() = settings.clone();
-            }
-            if let Some(cve) = app.try_state::<cve::CveState>() {
-                if let Ok(mut key) = cve.api_key.lock() {
-                    *key = settings.nvd_api_key.clone();
-                }
             }
             Ok(())
         })
@@ -98,6 +109,7 @@ pub fn run() {
             commands::load_inventory,
             commands::preview_report_import,
             commands::import_inventory_report,
+            commands::import_external_report,
             commands::preview_run_export,
             commands::write_run_export,
             commands::list_verification_claims,
@@ -136,7 +148,6 @@ pub fn run() {
             commands::session_truncate,
             commands::load_settings,
             commands::save_settings,
-            commands::get_ai_settings,
             compliance::list_compliance_profiles,
             compliance::run_compliance_assessment,
             compliance::list_compliance_assessments,

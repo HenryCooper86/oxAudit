@@ -39,7 +39,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   ai: {
     enabled: false,
     baseUrl: "https://api.openai.com/v1",
-    apiKey: "",
     model: "gpt-4o-mini",
     temperature: 0.2,
     timeoutSecs: 120,
@@ -61,7 +60,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     scanSecrets: true,
     scanVulnerabilities: true,
   },
-  nvdApiKey: null,
+  credentials: { aiApiKey: false, nvdApiKey: false },
   theme: "dark",
   binaryScannerPath: null,
   binaryScannerRuntime: "auto",
@@ -72,6 +71,7 @@ function cloneSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     ai: { ...settings.ai },
+    credentials: { ...settings.credentials },
     scan: {
       ...settings.scan,
       ignoredDirs: [...settings.scan.ignoredDirs],
@@ -93,6 +93,10 @@ export function SettingsPage() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [aiApiKeyDraft, setAiApiKeyDraft] = useState("");
+  const [nvdApiKeyDraft, setNvdApiKeyDraft] = useState("");
+  const [removeAiApiKey, setRemoveAiApiKey] = useState(false);
+  const [removeNvdApiKey, setRemoveNvdApiKey] = useState(false);
   const [draftStatus, setDraftStatus] = useState<AiStatus | null>(null);
   const [saveState, setSaveState] = useState<
     { tone: "success" | "error"; message: string } | null
@@ -216,6 +220,24 @@ export function SettingsPage() {
     setSaveState(null);
   };
 
+  const publishCredentialDraft = () => {
+    editRevisionRef.current += 1;
+    setDirty(true);
+    draftRequests.invalidate();
+    testPendingRef.current = false;
+    setTesting(false);
+    setDraftStatus(null);
+    setSaveState(null);
+  };
+
+  const credentialMutation = (draft: string, remove: boolean) => {
+    if (remove) return { action: "delete" } as const;
+    const value = draft.trim();
+    return value
+      ? ({ action: "replace", value } as const)
+      : ({ action: "unchanged" } as const);
+  };
+
   const applyTheme = (preference: ThemePreference) => {
     const current = formRef.current ?? form;
     if (!current || current.theme === preference) return;
@@ -250,6 +272,10 @@ export function SettingsPage() {
     const current = formRef.current;
     if (!current || savePendingRef.current) return;
     const snapshot = cloneSettings(current);
+    const credentials = {
+      aiApiKey: credentialMutation(aiApiKeyDraft, removeAiApiKey),
+      nvdApiKey: credentialMutation(nvdApiKeyDraft, removeNvdApiKey),
+    };
     const submittedRevision = editRevisionRef.current;
     savePendingRef.current = true;
     setSaving(true);
@@ -259,6 +285,8 @@ export function SettingsPage() {
         snapshot,
         setSettings,
         setAiReadiness,
+        {},
+        credentials,
       );
       if (!publication) return;
       setSettingsLoadError(false);
@@ -266,6 +294,15 @@ export function SettingsPage() {
 
       if (mountedRef.current) {
         const hasNewerEdits = editRevisionRef.current !== submittedRevision;
+        if (!hasNewerEdits) {
+          const persisted = cloneSettings(publication.settings);
+          formRef.current = persisted;
+          setForm(persisted);
+          setAiApiKeyDraft("");
+          setNvdApiKeyDraft("");
+          setRemoveAiApiKey(false);
+          setRemoveNvdApiKey(false);
+        }
         setDirty(hasNewerEdits);
         setSaveState({
           tone: "success",
@@ -286,9 +323,11 @@ export function SettingsPage() {
   };
 
   const reset = () => {
+    const current = formRef.current ?? form;
     publishDraft({
       ...DEFAULT_SETTINGS,
       ai: { ...DEFAULT_SETTINGS.ai },
+      credentials: { ...current.credentials },
       scan: { ...DEFAULT_SETTINGS.scan, ignoredDirs: [...DEFAULT_SETTINGS.scan.ignoredDirs] },
     });
   };
@@ -297,12 +336,13 @@ export function SettingsPage() {
     const current = formRef.current;
     if (!current || testPendingRef.current) return;
     const snapshot = { ...current.ai };
+    const aiApiKey = credentialMutation(aiApiKeyDraft, removeAiApiKey);
     const token = draftRequests.begin();
     testPendingRef.current = true;
     setTesting(true);
     setDraftStatus(null);
     try {
-      const result = await api.testAiWith(snapshot);
+      const result = await api.testAiWith({ settings: snapshot, aiApiKey });
       if (mountedRef.current && draftRequests.isCurrent(token)) {
         setDraftStatus(result);
       }
@@ -410,17 +450,43 @@ export function SettingsPage() {
             <Field
               label="API key"
               htmlFor="ai-api-key"
-              hint="Stored in the local app configuration and sent only to this endpoint."
+              hint={
+                removeAiApiKey
+                  ? "The saved key will be removed when you save."
+                  : form.credentials.aiApiKey
+                    ? "A key is stored in your operating system credential manager. Leave blank to keep it."
+                    : "Stored in your operating system credential manager and sent only to this endpoint."
+              }
             >
-              <Input
-                id="ai-api-key"
-                aria-describedby="ai-api-key-hint"
-                type="password"
-                autoComplete="off"
-                value={form.ai.apiKey}
-                onChange={(event) => updateAi({ apiKey: event.target.value })}
-                placeholder="sk-…"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="ai-api-key"
+                  aria-describedby="ai-api-key-hint"
+                  type="password"
+                  autoComplete="new-password"
+                  value={aiApiKeyDraft}
+                  disabled={removeAiApiKey}
+                  onChange={(event) => {
+                    setAiApiKeyDraft(event.target.value);
+                    setRemoveAiApiKey(false);
+                    publishCredentialDraft();
+                  }}
+                  placeholder={form.credentials.aiApiKey ? "Stored key unchanged" : "sk-…"}
+                />
+                {form.credentials.aiApiKey && (
+                  <button
+                    type="button"
+                    className={secondaryButtonCls}
+                    onClick={() => {
+                      setRemoveAiApiKey((value) => !value);
+                      setAiApiKeyDraft("");
+                      publishCredentialDraft();
+                    }}
+                  >
+                    {removeAiApiKey ? "Keep" : "Remove"}
+                  </button>
+                )}
+              </div>
             </Field>
             <Field label="Timeout (seconds)" htmlFor="ai-timeout">
               <Input
@@ -623,21 +689,47 @@ export function SettingsPage() {
             <Field
               label="NVD API key"
               htmlFor="nvd-api-key"
-              hint="Optional. Raises the NVD rate limit from 5 to 50 requests per 30 seconds."
+              hint={
+                removeNvdApiKey
+                  ? "The saved key will be removed when you save."
+                  : form.credentials.nvdApiKey
+                    ? "A key is stored in your operating system credential manager. Leave blank to keep it."
+                    : "Optional. Raises the NVD rate limit and is stored in your credential manager."
+              }
             >
-              <Input
-                id="nvd-api-key"
-                aria-describedby="nvd-api-key-hint"
-                type="password"
-                autoComplete="off"
-                value={form.nvdApiKey ?? ""}
-                onChange={(event) => update("nvdApiKey", event.target.value || null)}
-                placeholder="Get a key at nvd.nist.gov/developers"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="nvd-api-key"
+                  aria-describedby="nvd-api-key-hint"
+                  type="password"
+                  autoComplete="new-password"
+                  value={nvdApiKeyDraft}
+                  disabled={removeNvdApiKey}
+                  onChange={(event) => {
+                    setNvdApiKeyDraft(event.target.value);
+                    setRemoveNvdApiKey(false);
+                    publishCredentialDraft();
+                  }}
+                  placeholder={form.credentials.nvdApiKey ? "Stored key unchanged" : "Get a key at nvd.nist.gov/developers"}
+                />
+                {form.credentials.nvdApiKey && (
+                  <button
+                    type="button"
+                    className={secondaryButtonCls}
+                    onClick={() => {
+                      setRemoveNvdApiKey((value) => !value);
+                      setNvdApiKeyDraft("");
+                      publishCredentialDraft();
+                    }}
+                  >
+                    {removeNvdApiKey ? "Keep" : "Remove"}
+                  </button>
+                )}
+              </div>
             </Field>
           </div>
           <p className="mt-3 text-[11px] leading-relaxed text-text-muted">
-            Scanning stays on this machine. Keys are stored in the app configuration directory and sent only to the services you configure.
+            Scanning stays on this machine. Keys are stored by the operating system credential manager and sent only to the services you configure.
           </p>
         </section>
 

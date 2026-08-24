@@ -10,14 +10,13 @@ import {
   SerializedSettingsWrites,
   savePersistedThemePreference,
 } from "../src/lib/settingsRequests";
-import type { AppSettings } from "../src/lib/types";
+import type { AppSettings, SaveSettingsRequest } from "../src/lib/types";
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
     ai: {
       enabled: false,
       baseUrl: "",
-      apiKey: "",
       model: "",
       temperature: 0.2,
       timeoutSecs: 60,
@@ -33,7 +32,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
       scanSecrets: true,
       scanVulnerabilities: true,
     },
-    nvdApiKey: null,
+    credentials: { aiApiKey: false, nvdApiKey: false },
     theme: "dark",
     ...overrides,
   };
@@ -116,7 +115,7 @@ test("a theme write never persists a snapshot that a queued save has already sup
   const written: AppSettings[] = [];
   let stored = settings({ theme: "dark" });
 
-  const saveSettings = async (next: AppSettings) => {
+  const saveSettings = async ({ settings: next }: SaveSettingsRequest) => {
     written.push(next);
     stored = next;
   };
@@ -124,7 +123,11 @@ test("a theme write never persists a snapshot that a queued save has already sup
   // A full save is queued first and changes an unrelated field. The theme
   // write must observe that result, not the snapshot from before it ran.
   const fullSave = saveRequests.run(async () => {
-    await saveSettings({ ...stored, nvdApiKey: "key-from-full-save" });
+    await saveSettings({
+      settings: { ...stored, ai: { ...stored.ai, model: "model-from-full-save" } },
+      aiApiKey: { action: "unchanged" },
+      nvdApiKey: { action: "unchanged" },
+    });
   });
 
   const themeWrite = savePersistedThemePreference(
@@ -141,8 +144,8 @@ test("a theme write never persists a snapshot that a queued save has already sup
   assert.equal(written.length, 2);
   assert.equal(stored.theme, "light");
   assert.equal(
-    stored.nvdApiKey,
-    "key-from-full-save",
+    stored.ai.model,
+    "model-from-full-save",
     "the theme write must not clobber the save queued ahead of it",
   );
 });

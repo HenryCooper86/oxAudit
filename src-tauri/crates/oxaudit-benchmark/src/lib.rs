@@ -30,6 +30,13 @@ pub struct BenchmarkTarget {
     pub input_sha256: String,
     pub platform: String,
     pub architecture: String,
+    /// Scanner families evaluated for this target (for example
+    /// `source-pattern` or `secret`). Empty preserves the v1 source default.
+    #[serde(default)]
+    pub scanner_families: Vec<String>,
+    /// Language selector used by source-pattern scanners.
+    #[serde(default)]
+    pub language: Option<String>,
     pub expected: Vec<ExpectedObservation>,
     #[serde(default)]
     pub expected_absent: Vec<ObservationIdentity>,
@@ -377,6 +384,27 @@ fn validate_suite(suite: &BenchmarkSuite) -> Result<(), BenchmarkError> {
                 target.id
             )));
         }
+        if target.input_path.trim().is_empty()
+            || std::path::Path::new(&target.input_path).is_absolute()
+            || std::path::Path::new(&target.input_path)
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(BenchmarkError::InvalidSuite(format!(
+                "target {} has an unsafe input path",
+                target.id
+            )));
+        }
+        if target
+            .scanner_families
+            .iter()
+            .any(|family| !matches!(family.as_str(), "source-pattern" | "secret"))
+        {
+            return Err(BenchmarkError::InvalidSuite(format!(
+                "target {} names an unsupported scanner family",
+                target.id
+            )));
+        }
     }
     Ok(())
 }
@@ -392,7 +420,7 @@ fn ensure_compatible(state: &BenchmarkState, suite: &BenchmarkSuite) -> Result<(
     }
 }
 
-fn judge(target: &BenchmarkTarget, execution: ExecutionResult) -> TargetResult {
+pub fn judge(target: &BenchmarkTarget, execution: ExecutionResult) -> TargetResult {
     let canonical_identity = |actual: &ObservationIdentity| {
         target
             .allowed_variants
@@ -524,6 +552,8 @@ mod tests {
                 input_sha256: "b".repeat(64),
                 platform: "any".into(),
                 architecture: "any".into(),
+                scanner_families: vec!["source-pattern".into()],
+                language: Some("javascript".into()),
                 expected: vec![ExpectedObservation {
                     identity: ObservationIdentity {
                         rule_id: "js-eval".into(),
