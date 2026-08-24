@@ -473,6 +473,8 @@ export interface ScanSummary {
   rulesFired: Record<string, number>;
 }
 
+export type AnalysisTier = "text" | "syntax";
+
 export interface Finding {
   id: string;
   category: "secret" | "vulnerability";
@@ -496,6 +498,12 @@ export interface Finding {
   recommendation: string;
   entropy: number | null;
   verified: boolean | null;
+  /**
+   * How far oxAudit could qualify this match. `syntax` means a grammar parsed
+   * the file and the match sits in code; `text` means the rule matched raw file
+   * text with no grammar available for the language.
+   */
+  analysis: AnalysisTier;
   observationRunId: string;
   resolvedByRunId: string | null;
   fingerprintVersion: number;

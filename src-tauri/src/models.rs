@@ -53,6 +53,27 @@ pub struct ScanSummary {
     pub rules_fired: std::collections::BTreeMap<String, usize>,
 }
 
+/// How far oxAudit could qualify a pattern match.
+///
+/// A regex over raw text cannot tell code from a sentence about code. When a
+/// grammar is available the match is checked against the parse tree and this is
+/// `Syntax`; when it is not, the match stands on text alone and this is `Text`.
+///
+/// Reported rather than hidden, because a reviewer deciding how much to trust a
+/// finding should be told which of the two produced it. Defaults to `Text` so
+/// findings persisted before the distinction existed do not claim a
+/// verification that never happened.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AnalysisTier {
+    /// The rule matched file text; no grammar was available for the language.
+    #[default]
+    Text,
+    /// A grammar parsed the file and the match sits in code, not in a comment
+    /// or a string literal.
+    Syntax,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Finding {
@@ -89,6 +110,9 @@ pub struct Finding {
     pub entropy: Option<f32>,
     /// reserved for live verification (None = not verified)
     pub verified: Option<bool>,
+    /// Whether a grammar qualified this match or it stands on text alone.
+    #[serde(default)]
+    pub analysis: AnalysisTier,
     #[serde(default)]
     pub observation_run_id: String,
     #[serde(default)]

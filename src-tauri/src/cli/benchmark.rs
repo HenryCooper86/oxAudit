@@ -121,6 +121,10 @@ pub struct BenchmarkReport {
     pub rules: Vec<RuleReport>,
     pub collateral: Vec<Collateral>,
     pub misses: Vec<String>,
+    /// How many fixtures a grammar could parse. A precision figure means
+    /// something different when part of the corpus was measured on text alone,
+    /// so the split is reported rather than left implicit.
+    pub syntax_analyzed_fixtures: u32,
     pub runtime_ms: u64,
 }
 
@@ -166,6 +170,7 @@ pub fn run(corpus_root: &Path, suite: &CorpusSuite) -> Result<BenchmarkReport, C
     let mut totals = Counts::default();
     let mut collateral = Vec::new();
     let mut misses = Vec::new();
+    let mut syntax_analyzed_fixtures = 0u32;
 
     // Only rules the corpus actually covers can be scored. A rule firing
     // outside that set is still recorded as collateral, but it is not silently
@@ -190,6 +195,9 @@ pub fn run(corpus_root: &Path, suite: &CorpusSuite) -> Result<BenchmarkReport, C
         }
 
         let text = String::from_utf8_lossy(&content);
+        if crate::scanners::syntax::is_supported(target.language.as_deref().unwrap_or("")) {
+            syntax_analyzed_fixtures += 1;
+        }
         let hits = observe(&text, target);
 
         per_rule.entry(target.rule_id.clone()).or_default();
@@ -278,6 +286,7 @@ pub fn run(corpus_root: &Path, suite: &CorpusSuite) -> Result<BenchmarkReport, C
         rules,
         collateral,
         misses,
+        syntax_analyzed_fixtures,
         runtime_ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -333,8 +342,13 @@ pub fn render_text(report: &BenchmarkReport) -> String {
     );
     let _ = writeln!(
         out,
-        "  {} true positive(s), {} false positive(s), {} false negative(s)\n",
+        "  {} true positive(s), {} false positive(s), {} false negative(s)",
         report.totals.true_positives, report.totals.false_positives, report.totals.false_negatives
+    );
+    let _ = writeln!(
+        out,
+        "  {} of {} fixtures had a grammar; the rest were measured on text alone\n",
+        report.syntax_analyzed_fixtures, report.fixtures
     );
 
     let _ = writeln!(
