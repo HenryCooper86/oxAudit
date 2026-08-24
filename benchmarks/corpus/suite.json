@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 28,
-    "positives": 7,
-    "negatives": 21,
-    "rules": 7
+    "fixtures": 37,
+    "positives": 11,
+    "negatives": 26,
+    "rules": 8
   },
   "targets": [
     {
@@ -327,6 +327,22 @@
       "expectedAbsent": []
     },
     {
+      "id": "js-eval.negative.constant-binding",
+      "inputPath": "source/js-eval__negative__constant-binding.js",
+      "inputSha256": "d2124a999472a14e3ea42142177289381294ddb23e559baa4d5c06e612a9a561",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-eval"
+        }
+      ]
+    },
+    {
       "id": "js-eval.negative.in-comment",
       "inputPath": "source/js-eval__negative__in-comment.js",
       "inputSha256": "1e867d4a97a2239cc8c66c65ccc5a4cd63cb53842d442939c2cb7753053320b6",
@@ -359,9 +375,41 @@
       ]
     },
     {
+      "id": "js-eval.negative.literal-argument",
+      "inputPath": "source/js-eval__negative__literal-argument.js",
+      "inputSha256": "8b514c171842f9804dbdefb6ea7ff779190d0411302b0805c7418800f884178a",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-eval"
+        }
+      ]
+    },
+    {
       "id": "js-eval.negative.method-named-eval",
       "inputPath": "source/js-eval__negative__method-named-eval.js",
       "inputSha256": "6ec3f54c1d32afa48f079c650f1b65bd93b6c1795215c026387c4b8f55aef0db",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-eval"
+        }
+      ]
+    },
+    {
+      "id": "js-eval.negative.template-no-interpolation",
+      "inputPath": "source/js-eval__negative__template-no-interpolation.js",
+      "inputSha256": "611c271390ecf9dfd1e5ff8c1e6820c137a8a1c968f23194de234349eccc2569",
       "language": "javascript",
       "scannerFamilies": [
         "source-pattern"
@@ -392,9 +440,59 @@
       "expectedAbsent": []
     },
     {
+      "id": "js-eval.positive.parameter-argument",
+      "inputPath": "source/js-eval__positive__parameter-argument.js",
+      "inputSha256": "d598510fd1926c41d1547619a36dd0b7ee202ce6617e2578b8414151fc85d354",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [
+        {
+          "ruleId": "js-eval",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "js-eval.positive.request-argument",
+      "inputPath": "source/js-eval__positive__request-argument.js",
+      "inputSha256": "ec15da472aee0d23b4581fafe7936d760434b6ea1f4ec9459bc718f76400ad56",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-eval",
+      "expected": [
+        {
+          "ruleId": "js-eval",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "py-eval.negative.dataframe-method",
       "inputPath": "source/py-eval__negative__dataframe-method.py",
       "inputSha256": "7e7031619f4c6a01c26ec018df737b49347e8deea8bcd27837953042352adbe0",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-eval"
+        }
+      ]
+    },
+    {
+      "id": "py-eval.negative.literal-argument",
+      "inputPath": "source/py-eval__negative__literal-argument.py",
+      "inputSha256": "c417ca15704b789ce03aaa68b2244e8800a26551235f3f4cc3809d9d836b8e39",
       "language": "python",
       "scannerFamilies": [
         "source-pattern"
@@ -425,9 +523,59 @@
       "expectedAbsent": []
     },
     {
+      "id": "py-eval.positive.parameter-argument",
+      "inputPath": "source/py-eval__positive__parameter-argument.py",
+      "inputSha256": "b9fc5d45101f20ddcd197146174a1a11313130bda630030475d0cc5caf359365",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-eval",
+      "expected": [
+        {
+          "ruleId": "py-eval",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "py-sql-fstring.positive.interpolated-query",
+      "inputPath": "source/py-sql-fstring__positive__interpolated-query.py",
+      "inputSha256": "07cf3573e55331c6537a471b4e6c61b0fec939f26e692c4db94f8e24b88c2aab",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-sql-fstring",
+      "expected": [
+        {
+          "ruleId": "py-sql-fstring",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "py-subprocess-shell.negative.argument-list",
       "inputPath": "source/py-subprocess-shell__negative__argument-list.py",
       "inputSha256": "74a3f4fba58fe928b3245871d5ae736d7c24837f205a210d0b7aecb58f124cc8",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-subprocess-shell",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-subprocess-shell"
+        }
+      ]
+    },
+    {
+      "id": "py-subprocess-shell.negative.literal-command",
+      "inputPath": "source/py-subprocess-shell__negative__literal-command.py",
+      "inputSha256": "52c7646fa8923aa6014b97633d994da557d133a13dfbd5e22969107ea471a316",
       "language": "python",
       "scannerFamilies": [
         "source-pattern"

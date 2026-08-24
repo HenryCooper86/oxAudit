@@ -242,6 +242,38 @@ Syntax analysis is roughly 40× more expensive than rule matching and dominates
 scan time — it is the entire cost of the precision improvement above. End to
 end, this repository (329 files, 5.1 MB) scans in about 2.2 seconds.
 
+### Dataflow
+
+A pattern rule can say "this is `eval(`". It cannot say whether the argument is
+a string literal or something a request body controls — and that is the whole
+difference between a finding and a nuisance.
+
+For the supported languages, oxAudit now traces the value reaching a sink within
+its enclosing function:
+
+```js
+eval("2 + 2")               // constant — not reported
+const E = "1 + 1"; eval(E)  // resolves to a literal — not reported
+eval(userInput)             // parameter — reported
+eval(req.body.expr)         // request data — reported
+```
+
+Three limits, stated because they bound what the result means:
+
+- **Intraprocedural.** Analysis stops at the enclosing function. Following a
+  value across call boundaries needs a call graph, and a wrong one produces
+  confident nonsense.
+- **Undetermined keeps the finding.** Only a value *positively shown* to be
+  constant is suppressed. Every case the analysis cannot decide is still
+  reported — a false negative in a security scanner costs more than a false
+  positive.
+- **Not flow-sensitive.** A variable reassigned in a branch counts as tainted if
+  any reaching definition is tainted, which over-approximates toward reporting.
+
+Adding the constant-argument cases to the corpus dropped precision from 100% to
+71.4% without changing a single rule. Dataflow returns it to 100% with recall
+unchanged.
+
 ### Confidence tiers
 
 Every finding records how far oxAudit could qualify it:

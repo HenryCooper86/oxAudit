@@ -194,11 +194,16 @@ mod tests {
 
     #[test]
     fn scanner_context_fingerprint_preserves_internal_source_whitespace() {
+        // The sink takes an identifier rather than a literal: a constant
+        // argument is no longer a finding, and this test is about fingerprint
+        // stability rather than about what eval detects. The whitespace that
+        // must change the fingerprint sits on an adjacent line, inside the
+        // context the fingerprint covers.
         let first = scanned_eval_finding(
-            "beforeOne();\nbeforeTwo();\neval(\"alpha beta\");\nafterOne();\nafterTwo();\n",
+            "beforeOne();\nconst label = \"alpha beta\";\neval(userInput);\nafterOne();\nafterTwo();\n",
         );
         let changed = scanned_eval_finding(
-            "beforeOne();\nbeforeTwo();\neval(\"alpha  beta\");\nafterOne();\nafterTwo();\n",
+            "beforeOne();\nconst label = \"alpha  beta\";\neval(userInput);\nafterOne();\nafterTwo();\n",
         );
 
         assert_ne!(fingerprint_base(&first), fingerprint_base(&changed));
