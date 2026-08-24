@@ -795,6 +795,7 @@ mod tests {
             recommendation: "Validate input".into(),
             entropy: None,
             verified: None,
+            analysis: Default::default(),
             observation_run_id: "run-1".into(),
             resolved_by_run_id: None,
             fingerprint_version: FINGERPRINT_VERSION,

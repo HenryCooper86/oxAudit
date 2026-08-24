@@ -2937,6 +2937,7 @@ fn finding_from_raw_project_observation(
         recommendation: payload.recommendation,
         entropy: payload.entropy,
         verified: payload.verified,
+        analysis: payload.analysis,
         observation_run_id: observation.run_id,
         resolved_by_run_id: None,
         fingerprint_version: observation.fingerprint_version,
@@ -3162,6 +3163,10 @@ struct StoredFindingPayload {
     recommendation: String,
     entropy: Option<f32>,
     verified: Option<bool>,
+    /// Absent in rows written before the tier existed; those default to `Text`
+    /// so a stored finding never claims a verification that did not run.
+    #[serde(default)]
+    analysis: crate::models::AnalysisTier,
 }
 
 impl From<&Finding> for StoredFindingPayload {
@@ -3183,6 +3188,7 @@ impl From<&Finding> for StoredFindingPayload {
             recommendation: finding.recommendation.clone(),
             entropy: finding.entropy,
             verified: finding.verified,
+            analysis: finding.analysis,
         }
     }
 }
@@ -3413,6 +3419,7 @@ fn load_findings(
                 recommendation: payload.recommendation,
                 entropy: payload.entropy,
                 verified: payload.verified,
+                analysis: payload.analysis,
                 observation_run_id: run_id.to_owned(),
                 resolved_by_run_id: None,
                 fingerprint_version: observation.fingerprint_version,
@@ -3991,6 +3998,9 @@ mod tests {
             recommendation: "Move the credential to protected storage.".into(),
             entropy: Some(4.25),
             verified: None,
+            // Rows written before the tier existed read back as Text: a stored
+            // finding must not claim a verification that never ran.
+            analysis: crate::models::AnalysisTier::default(),
             observation_run_id: "dynamic-run-id-must-not-be-persisted-in-payload".into(),
             resolved_by_run_id: Some("dynamic-resolution-must-not-be-persisted".into()),
             fingerprint_version: FINGERPRINT_VERSION,

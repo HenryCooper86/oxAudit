@@ -336,7 +336,7 @@ pub static SECRET_RULES: Lazy<Vec<SecretRule>> = Lazy::new(|| {
         rule!(
             "generic-api-key",
             "Generic API Key / Secret",
-            r#"(?i)\b(?:api[_-]?key|apikey|access[_-]?key|auth[_-]?token|client[_-]?secret|app[_-]?secret|consumer[_-]?secret|secret[_-]?key|private[_-]?key|token|credential)\b[^A-Za-z0-9]{0,10}['"]?([A-Za-z0-9_\-\.=+/]{16,64})"#,
+            r#"(?i)(?:^|[^A-Za-z0-9])(?:api[_-]?key|apikey|access[_-]?key|auth[_-]?token|client[_-]?secret|app[_-]?secret|consumer[_-]?secret|secret[_-]?key|private[_-]?key|token|credential)(?:$|[^A-Za-z0-9])[^A-Za-z0-9\r\n]{0,10}['"]([A-Za-z0-9_\-\.=+/]{16,200})"#,
             &[],
             3.5,
             1,
@@ -347,7 +347,7 @@ pub static SECRET_RULES: Lazy<Vec<SecretRule>> = Lazy::new(|| {
         rule!(
             "generic-password",
             "Generic Password",
-            r#"(?i)\b(?:password|passwd|pwd|secret)\b[^A-Za-z0-9]{0,10}['"]?([^'"\s]{8,64})['"]?"#,
+            r#"(?i)(?:^|[^A-Za-z0-9])(?:password|passwd|pwd|secret)[^A-Za-z0-9\r\n]{1,10}['"]([^'"\r\n]{8,64})['"]"#,
             &["password", "passwd", "pwd", "secret"],
             2.8,
             1,

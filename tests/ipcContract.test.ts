@@ -3,18 +3,21 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 /**
- * The Rust `AppSettings` struct and the TypeScript `AppSettings` interface are
- * two halves of one wire format. Nothing enforced that, and the failure mode is
- * silent rather than loud:
+ * A Rust struct and its TypeScript interface are two halves of one wire format.
+ * Nothing enforced that, and the failure mode is silent rather than loud:
  *
- *   1. A field is added to the Rust struct with `#[serde(default)]`, which every
- *      field there needs so older settings files still load.
- *   2. The TypeScript interface is not updated, so the Settings screen builds a
- *      save payload without it.
+ *   1. A field is added to the Rust struct with `#[serde(default)]`, which it
+ *      needs so records written before the field existed still load.
+ *   2. The TypeScript interface is not updated, so the GUI builds a payload
+ *      without it.
  *   3. Rust deserializes the payload, applies the default, and writes it back.
  *
- * The user's value is gone, no error is raised anywhere, and the only symptom is
- * a setting that will not stick. This test makes step 2 impossible.
+ * The value is gone, no error is raised anywhere, and the only symptom is a
+ * field that will not stick. This makes step 2 impossible.
+ *
+ * `AppSettings` is where it was first caught. `Finding` matters for the same
+ * reason: it carries the analysis tier, and a finding that loses it silently
+ * downgrades to claiming no syntax verification ran.
  */
 
 const RUST_MODELS = "src-tauri/src/models.rs";
@@ -103,22 +106,25 @@ function toCamelCase(name: string): string {
   return name.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
 }
 
-test("every Rust AppSettings field is declared in the TypeScript interface", () => {
-  const rust = rustFieldNames(rustStructBody(readFileSync(RUST_MODELS, "utf8"), "AppSettings"));
-  const typescript = new Set(
-    tsPropertyNames(tsInterfaceBody(readFileSync(TS_TYPES, "utf8"), "AppSettings")),
-  );
+/** Structs that cross the IPC boundary and must mirror each other exactly. */
+const MIRRORED = ["AppSettings", "Finding"];
 
-  assert.ok(rust.length > 0, "no fields parsed from the Rust struct");
-
-  const missing = rust.map(toCamelCase).filter((field) => !typescript.has(field));
-  assert.deepEqual(
-    missing,
-    [],
-    `AppSettings fields exist in Rust but not in ${TS_TYPES}: ${missing.join(", ")}. ` +
-      "A save from the Settings screen would drop them and reset them to their serde default.",
-  );
-});
+for (const name of MIRRORED) {
+  test(`every Rust ${name} field is declared in the TypeScript interface`, () => {
+    const rust = rustFieldNames(rustStructBody(readFileSync(RUST_MODELS, "utf8"), name));
+    const typescript = new Set(
+      tsPropertyNames(tsInterfaceBody(readFileSync(TS_TYPES, "utf8"), name)),
+    );
+    assert.ok(rust.length > 0, `no fields parsed from the Rust ${name} struct`);
+    const missing = rust.map(toCamelCase).filter((field) => !typescript.has(field));
+    assert.deepEqual(
+      missing,
+      [],
+      `${name} fields exist in Rust but not in ${TS_TYPES}: ${missing.join(", ")}. ` +
+        "A value crossing the IPC boundary would drop them.",
+    );
+  });
+}
 
 test("the TypeScript AppSettings interface declares nothing Rust will not accept", () => {
   const rust = new Set(
