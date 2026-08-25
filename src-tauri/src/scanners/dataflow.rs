@@ -89,6 +89,10 @@ pub enum Origin {
 /// listed. Sibling numbers for one weakness belong here together.
 const CALL_IS_THE_DEFECT: &[&str] = &[
     "CWE-330", "CWE-338", "CWE-611", "CWE-327", "CWE-328", "CWE-295",
+    // `cookie.setSecure(false)` is the defect *because* its argument is the
+    // constant false. Reading that as "nobody can choose this value" would
+    // suppress every instance of it.
+    "CWE-614",
 ];
 
 /// Is this weakness about the call itself rather than its input?
