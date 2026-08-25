@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 144,
-    "positives": 63,
-    "negatives": 81,
-    "rules": 53
+    "fixtures": 151,
+    "positives": 66,
+    "negatives": 85,
+    "rules": 56
   },
   "targets": [
     {
@@ -806,6 +806,39 @@
       "expectedAbsent": []
     },
     {
+      "id": "java-ldap-injection.negative.placeholder-filter",
+      "inputPath": "source/java-ldap-injection__negative__placeholder-filter.java",
+      "inputSha256": "221ed0d577708b7191b6258fddf8a082de79813efdc76f05c717539723270bef",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-ldap-injection",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-ldap-injection"
+        }
+      ]
+    },
+    {
+      "id": "java-ldap-injection.positive.concatenated-filter",
+      "inputPath": "source/java-ldap-injection__positive__concatenated-filter.java",
+      "inputSha256": "e41b202b8d6601054e08f29f7aa0e4f22943aa90dd35c3e023704a0ba7edc58a",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-ldap-injection",
+      "expected": [
+        {
+          "ruleId": "java-ldap-injection",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "java-path-traversal.negative.caller-supplied-path",
       "inputPath": "source/java-path-traversal__negative__caller-supplied-path.java",
       "inputSha256": "56c123eb0498fe981eb1c1d4e7c1cfc3a0a9493f4edc4c9a082027bd7bdc7b93",
@@ -1145,6 +1178,88 @@
       "expected": [
         {
           "ruleId": "java-weak-prng",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-xpath-injection.negative.constant-expression",
+      "inputPath": "source/java-xpath-injection__negative__constant-expression.java",
+      "inputSha256": "f0bdef03498aea3296818b41d84b6117ce8890751dba8ef61fdfc433d5a61c49",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xpath-injection",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-xpath-injection"
+        }
+      ]
+    },
+    {
+      "id": "java-xpath-injection.positive.concatenated-expression",
+      "inputPath": "source/java-xpath-injection__positive__concatenated-expression.java",
+      "inputSha256": "87e355d954e7c5c5b3d789c4b8f458129fc769a16dbda8ffb08c75cf2bfa3cc8",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xpath-injection",
+      "expected": [
+        {
+          "ruleId": "java-xpath-injection",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-xss-response.negative.constant-text",
+      "inputPath": "source/java-xss-response__negative__constant-text.java",
+      "inputSha256": "940c78161511f7a1bb8511dd1cf48613d92f048310f24a4e0726465c110f0efe",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xss-response",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-xss-response"
+        }
+      ]
+    },
+    {
+      "id": "java-xss-response.negative.encoded-value",
+      "inputPath": "source/java-xss-response__negative__encoded-value.java",
+      "inputSha256": "8f638c93bdc15a542e8356f061cbccd889490f7a7d0e72baa5ffc8003627ef47",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xss-response",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-xss-response"
+        }
+      ]
+    },
+    {
+      "id": "java-xss-response.positive.request-value",
+      "inputPath": "source/java-xss-response__positive__request-value.java",
+      "inputSha256": "8541df7b52eaa10210fd9138f7f71566b2d00da2c444bd74f33c50f05ca2a04e",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xss-response",
+      "expected": [
+        {
+          "ruleId": "java-xss-response",
           "minimum": 1
         }
       ],

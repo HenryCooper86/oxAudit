@@ -110,7 +110,10 @@ fn assess_sink(
         }
     }
 
-    let taint = parsed.taint_at(content, hit.offset, sink_cwe);
+    let taint = match patterns::sink_argument(rule_id) {
+        Some(index) => parsed.taint_of_argument(content, hit.offset, sink_cwe, index),
+        None => parsed.taint_at(content, hit.offset, sink_cwe),
+    };
 
     // Cleared outright: nobody can choose the value, or a transform covering
     // this weakness already neutralized it.
@@ -1008,6 +1011,102 @@ mod tests {
         );
         assert!(
             rules.iter().any(|rule| rule == "java-sql-concat"),
+            "{rules:?}"
+        );
+    }
+
+    // ------------------------------------------- XSS, LDAP, and XPath
+
+    #[test]
+    fn an_unescaped_value_written_to_the_response_is_reported() {
+        let rules = rules_firing(
+            "S.java",
+            "class S {\n  void f(javax.servlet.http.HttpServletRequest request, javax.servlet.http.HttpServletResponse response) throws Exception {\n    response.getWriter().println(request.getParameter(\"q\"));\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-xss-response"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn an_html_encoder_clears_the_response_sink() {
+        // encodeForHTML escapes markup and nothing else, so it excuses this
+        // sink and would not excuse a command or a query.
+        let rules = rules_firing(
+            "S.java",
+            "class S {\n  void f(javax.servlet.http.HttpServletRequest request, javax.servlet.http.HttpServletResponse response) throws Exception {\n    response.getWriter().println(org.owasp.esapi.ESAPI.encoder().encodeForHTML(request.getParameter(\"q\")));\n  }\n}\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-xss-response"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn every_argument_to_a_writer_counts() {
+        // `format(Locale.US, param, obj)` puts the format string second, and
+        // an attacker-controlled format string reads the argument list. Fixing
+        // this rule to a single argument position cost 71 true positives.
+        let rules = rules_firing(
+            "S.java",
+            "class S {\n  void f(javax.servlet.http.HttpServletRequest request, javax.servlet.http.HttpServletResponse response) throws Exception {\n    Object[] obj = {\"a\", \"b\"};\n    response.getWriter().format(java.util.Locale.US, request.getParameter(\"q\"), obj);\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-xss-response"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_ldap_filter_is_not_the_defect() {
+        // The remediation this rule recommends. The value bound to {0} is
+        // attacker-controlled exactly as it should be, so reading every
+        // argument reported the fix.
+        let rules = rules_firing(
+            "D.java",
+            "class D {\n  void f(javax.naming.directory.DirContext ctx, javax.servlet.http.HttpServletRequest request) throws Exception {\n    String filter = \"(&(objectclass=person)(uid={0}))\";\n    Object[] args = {request.getParameter(\"uid\")};\n    ctx.search(\"dc=example,dc=com\", filter, args, new javax.naming.directory.SearchControls());\n  }\n}\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-ldap-injection"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_concatenated_ldap_filter_is_reported() {
+        let rules = rules_firing(
+            "D.java",
+            "class D {\n  void f(javax.naming.directory.DirContext ctx, javax.servlet.http.HttpServletRequest request) throws Exception {\n    String filter = \"(&(objectclass=person)(uid=\" + request.getParameter(\"uid\") + \"))\";\n    ctx.search(\"dc=example,dc=com\", filter, new javax.naming.directory.SearchControls());\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-ldap-injection"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_constant_xpath_expression_survives_a_document_parameter() {
+        // The document is a parameter and so not constant, but it is not the
+        // injection vector — the expression is.
+        let rules = rules_firing(
+            "E.java",
+            "class E {\n  void f(org.w3c.dom.Document document) throws Exception {\n    javax.xml.xpath.XPath xpath = javax.xml.xpath.XPathFactory.newInstance().newXPath();\n    String expression = \"/Employees/Employee[@id='fixed']\";\n    xpath.evaluate(expression, document);\n  }\n}\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-xpath-injection"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_concatenated_xpath_expression_is_reported() {
+        let rules = rules_firing(
+            "E.java",
+            "class E {\n  void f(javax.servlet.http.HttpServletRequest request, org.w3c.dom.Document document) throws Exception {\n    javax.xml.xpath.XPath xpath = javax.xml.xpath.XPathFactory.newInstance().newXPath();\n    String expression = \"/Employees/Employee[@id='\" + request.getParameter(\"id\") + \"']\";\n    xpath.evaluate(expression, document);\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-xpath-injection"),
             "{rules:?}"
         );
     }

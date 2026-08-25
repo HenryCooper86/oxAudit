@@ -51,6 +51,39 @@ impl FileSyntax {
         &self.spans
     }
 
+    /// Classify one argument of the call at `offset`, by position.
+    ///
+    /// For a sink where only one argument is the injection vector, reading the
+    /// others answers a question nobody asked — and answers it wrongly, since
+    /// a bound parameter beside a parameterised query is attacker-controlled
+    /// exactly as it should be.
+    pub fn taint_of_argument(
+        &self,
+        content: &str,
+        offset: usize,
+        sink_cwe: Option<&str>,
+        index: usize,
+    ) -> super::dataflow::Taint {
+        use super::dataflow::{self, Taint};
+        let Some(tree) = &self.tree else {
+            return Taint::Unknown;
+        };
+        let root = tree.root_node();
+        let Some(call) = dataflow::enclosing_call(root, offset) else {
+            return Taint::Unknown;
+        };
+        if !dataflow::names_the_call(call, offset) {
+            return Taint::Unknown;
+        }
+        let arguments = dataflow::own_arguments(call);
+        // A call that was not given this argument tells us nothing about it.
+        let Some(argument) = arguments.get(index) else {
+            return Taint::Unknown;
+        };
+        let function = dataflow::enclosing_function(root, offset);
+        dataflow::classify_expression(*argument, content, function, sink_cwe)
+    }
+
     /// How many arguments the call at `offset` was given, when the finding
     /// names a call at all.
     ///

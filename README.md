@@ -93,7 +93,7 @@ with a reason, an expiry, and a pull request.
 
 | Capability | What it does |
 |---|---|
-| **Source code scanning** | 74 dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, C#, Kotlin, Swift, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
+| **Source code scanning** | 77 dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, C#, Kotlin, Swift, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
 | **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
 | **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by CISA KEV and EPSS — same exploitation signal as the binary scanner |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
@@ -198,11 +198,11 @@ rule.
 |---|---|---|
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
-| Corpus size | 26 fixtures | **144 fixtures** |
+| Corpus size | 26 fixtures | **151 fixtures** |
 | Findings on this repository | 142 | **32** |
 | …still shown after scope triage | 142 | **5** |
 
-The corpus is 144 fixtures, 81 of them negatives, and none of the negatives were
+The corpus is 151 fixtures, 85 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
 source or a real dependency tree — type declarations, prose in Markdown,
 comments, environment lookups, function parameters, JSON schemas, UI labels,
@@ -210,7 +210,7 @@ hardened XML parsers, non-security uses of `Math.random()`, and the detector
 code that searches for PEM headers.
 
 The corpus is deliberately vulnerable, so it is excluded from the repository
-figure above: a full scan of this checkout returns 101 findings, 69 of which are
+figure above: a full scan of this checkout returns 104 findings, 72 of which are
 the fixtures doing their job.
 
 A corpus you tuned against proves little, so the last two rows are the ones that
@@ -245,10 +245,17 @@ Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
 
 | | First run | After acting on it |
 |---|---|---|
-| Precision | 67.0% | 72.8% |
-| Recall | 6.1% | **73.1%** |
-| False positive rate | 3.0% | 27.8% |
-| Youden index (recall − FPR) | 0.030 | **0.453** |
+| Cases with a rule to score | 1,998 of 2,740 | **2,547 of 2,740** |
+| Precision | 67.0% | 66.5% |
+| Recall | 6.1% | **78.4%** |
+| False positive rate | 3.0% | 40.9% |
+| Youden index (recall − FPR) | 0.030 | 0.375 |
+
+The two columns do not measure the same population. Adding XSS, LDAP, and
+XPath rules moved 549 cases *into* the scored set, and they arrived carrying
+the same false positives as everything else here, so the Youden index reads
+lower than an intermediate run that covered fewer categories. Coverage went
+from 73% of the benchmark to 93%; that is the row to read.
 
 The first column is what a corpus written by the rules' own authors had been
 reporting as 100%. Four rules were wrong in ways no internal fixture caught,
@@ -256,6 +263,9 @@ and the two columns are the before and after of fixing them:
 
 | Category | First run | Now | What was wrong |
 |---|---|---|---|
+| `xss` | no rule | **237 / 246** | Nothing was written for it |
+| `ldapi` | no rule | **27 / 27** | Nothing was written for it |
+| `xpathi` | no rule | **15 / 15** | Nothing was written for it |
 | `crypto` | 0 / 130 | **130 / 130** | The rule read the *mode*, so `DES/CBC/PKCS5Padding` passed |
 | `weakrand` | 0 / 218 | **218 / 218** | The rule needed a secret-ish variable name nearby |
 | `cmdi` | 33 / 126 | **126 / 126** | The rule needed the whole `Runtime.getRuntime().exec(` chain in one expression |
@@ -320,10 +330,14 @@ Taking the trade follows from a principle stated further up rather than from
 the score: undetermined keeps the finding, because a false negative in a
 security scanner costs more than a false positive.
 
-Categories with no Java rule at all — XSS, LDAP injection, XPath injection,
-trust boundary, secure cookie: 742 cases, 407 of them vulnerable — are counted
-and reported **separately**. They measure absent rules rather than inaccurate
-ones, and averaging the two together would hide which is which.
+Categories with no Java rule at all — now trust boundary and secure cookie,
+193 cases, 119 of them vulnerable — are counted and reported **separately**.
+They measure absent rules rather than inaccurate ones, and averaging the two
+together would hide which is which. Which categories those are is read from
+the rule table rather than listed here, so writing a rule moves one without
+anyone remembering to update the scorer; adding the XPath rule did exactly
+that, and the test that had asserted CWE-643 was uncovered failed as it
+should.
 
 Three limits are worth naming as limits rather than as work outstanding. The 40
 `hash` cases still missed read their algorithm out of a properties file, so the
