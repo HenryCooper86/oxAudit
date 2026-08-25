@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 130,
-    "positives": 57,
-    "negatives": 73,
-    "rules": 49
+    "fixtures": 132,
+    "positives": 58,
+    "negatives": 74,
+    "rules": 50
   },
   "targets": [
     {
@@ -915,6 +915,39 @@
       "expected": [
         {
           "ruleId": "java-runtime-exec",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-sql-concat.negative.variable-parameterized-query",
+      "inputPath": "source/java-sql-concat__negative__variable-parameterized-query.java",
+      "inputSha256": "8f1eed4b291ad93b06387ef2eaa552cd607399f3bae9167e131c5d88caf139e9",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-concat",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-sql-concat"
+        }
+      ]
+    },
+    {
+      "id": "java-sql-concat.positive.variable-built-query",
+      "inputPath": "source/java-sql-concat__positive__variable-built-query.java",
+      "inputSha256": "83ddd1252dd131ebf4715608afa4b58de50ebbc20b1281e25b4aa91ea72dbe30",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-concat",
+      "expected": [
+        {
+          "ruleId": "java-sql-concat",
           "minimum": 1
         }
       ],

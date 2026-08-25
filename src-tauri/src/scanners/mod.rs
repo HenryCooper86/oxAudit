@@ -762,4 +762,36 @@ mod tests {
             "{rules:?}"
         );
     }
+
+    #[test]
+    fn sql_built_into_a_variable_is_still_sql_injection() {
+        // Found by the OWASP Benchmark, not by the corpus: java-sql-concat
+        // required the concatenation to sit inside the execute call, so it
+        // scored zero true positives across 272 labelled SQL injection cases.
+        // Every fixture written for it beforehand happened to use the inline
+        // shape, because they were written by someone who knew the pattern.
+        let rules = rules_firing(
+            "R.java",
+            "class R {\n  void f(java.sql.Connection db, javax.servlet.http.HttpServletRequest request) throws Exception {\n    String id = request.getParameter(\"id\");\n    String sql = \"SELECT * FROM users WHERE id = \" + id;\n    db.prepareStatement(sql).executeQuery();\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-sql-concat"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_constant_query_in_a_variable_is_not_reported() {
+        // The widened rule matches any prepare/execute taking an identifier,
+        // so what keeps it usable is dataflow resolving that identifier. If
+        // this ever regresses, the rule fires on every prepared statement
+        // ever written.
+        for source in [
+            "class R {\n  void f(java.sql.Connection db, String id) throws Exception {\n    String sql = \"SELECT * FROM users WHERE id = ?\";\n    java.sql.PreparedStatement st = db.prepareStatement(sql);\n    st.setString(1, id);\n    st.executeQuery();\n  }\n}\n",
+            "class R {\n  void f(java.sql.Connection db) throws Exception {\n    db.prepareStatement(\"SELECT 1\").executeQuery();\n  }\n}\n",
+        ] {
+            let rules = rules_firing("R.java", source);
+            assert!(!rules.iter().any(|rule| rule == "java-sql-concat"), "{rules:?}");
+        }
+    }
 }
