@@ -62,6 +62,9 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         srule!("java-runtime-exec", "Runtime.exec()", &["java", "kotlin"], "high", "CWE-78", r"(?s)\bRuntime\b\s*(?:\.\s*getRuntime\s*\(\s*\)|\w+\s*=).{0,200}?(\.\s*exec\s*\()", "Runtime.exec() runs a system command; with user input it becomes command injection.", "Avoid external commands; if required use ProcessBuilder with an argument list and validate inputs."),
         srule!("java-process-builder", "ProcessBuilder usage", &["java", "kotlin"], "medium", "CWE-78", r"(?:new\s+)?ProcessBuilder\s*\(", "ProcessBuilder launches external processes. It is safe with static arguments but becomes dangerous when arguments include untrusted input.", "Pass arguments as a List (never concatenate into a shell string) and validate/whitelist inputs."),
         srule!("java-sql-concat", "SQL built with concatenation", &["java", "kotlin"], "high", "CWE-89", r"(?:Statement|PreparedStatement)[^;]{0,80}\s*\.\s*(?:executeQuery|executeUpdate|execute)\s*\(\s*[^)]*(?:\+|String\.format)|(\.\s*(?:prepareStatement|prepareCall|executeQuery|executeUpdate|execute)\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\s*[,)])", "SQL statements built with + or String.format are SQL-injection sinks.", "Always use PreparedStatement with ? placeholders and bind parameters."),
+        srule!("java-xss-response", "Unescaped value written to the response", &["java", "kotlin"], "high", "CWE-79", r"(?:getWriter|getOutputStream)\s*\(\s*\)\s*(\.\s*(?:print|println|printf|write|format|append)\s*\()", "Writing an untrusted value into the response body without escaping it lets a crafted value close the surrounding markup and run as script in the victim's browser. A format method is worse still: an attacker-controlled format string reads the argument list.", "Escape on output for the context you are writing into — ESAPI's encodeForHTML for element text, encodeForHTMLAttribute inside an attribute — and never pass an untrusted value as a format string."),
+        srule!("java-ldap-injection", "LDAP filter built by concatenation", &["java", "kotlin"], "high", "CWE-90", r"(?s)\bDirContext\b.{0,800}?(\.\s*search\s*\()", "An LDAP filter assembled by concatenation cannot separate the value from the filter syntax, so a crafted value rewrites the query — `*)(uid=*` turns an authentication check into a match on every entry.", "Use a parameterised filter with {0} placeholders and pass the values as the filterArgs array, or escape with ESAPI's encodeForLDAP."),
+        srule!("java-xpath-injection", "XPath expression built by concatenation", &["java", "kotlin"], "high", "CWE-643", r"(?s)\bXPath\b.{0,300}?(\.\s*(?:evaluate|compile)\s*\()", "An XPath expression assembled by concatenation cannot separate the value from the query syntax, so a crafted value selects nodes the query was never meant to return.", "Bind values with XPathVariableResolver and reference them as $name, or escape with ESAPI's encodeForXPath."),
         srule!("java-deserialization", "Unsafe deserialization", &["java", "kotlin"], "high", "CWE-502", r"(?:ObjectInputStream|XMLDecoder|ObjectInput)[^;]{0,80}\s*readObject\s*\(", "readObject()/XMLDecoder deserialization of untrusted data can lead to RCE via gadget chains.", "Do not deserialize untrusted data; use safe formats (JSON) with strict schemas, or an allow-listed deserialization filter."),
         srule!("java-cipher-ecb", "Cipher in ECB mode", &["java"], "medium", "CWE-327", r#"Cipher\s*\.\s*getInstance\s*\(\s*['"][^'"]*\/ECB\/"#, "ECB mode leaks patterns in ciphertext and is not semantically secure.", "Use AES-GCM (or CBC with HMAC) and a random IV."),
         srule!("java-weak-cipher", "Broken cipher algorithm", &["java", "kotlin"], "high", "CWE-327", r#"(?:Cipher|KeyGenerator|SecretKeyFactory)\s*\.\s*getInstance\s*\(\s*['"](?:DES|DESede|TripleDES|RC2|RC4|ARCFOUR|Blowfish)\b"#, "DES and Triple DES have key sizes small enough to brute force, and RC2, RC4, and Blowfish have structural weaknesses. The mode does not matter: `DES/CBC/PKCS5Padding` is broken because DES is broken.", "Use AES-256 in GCM mode. For key derivation use PBKDF2, scrypt, or Argon2."),
@@ -192,6 +195,30 @@ static COMPILED_GUARDS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
 /// real depends on it being code: a comment explaining that `defusedxml`
 /// exists is not the same as importing it, and matching raw text could not
 /// tell the two apart.
+/// Rules where exactly one argument is the injection vector.
+///
+/// The default is that any tainted argument taints the call, which is right
+/// for `exec(a, b)` where every argument reaches the shell. It is wrong where
+/// one argument is the query and the rest are not:
+/// `xp.evaluate(expression, document)` was reported for a constant expression
+/// because the document beside it is a parameter, and `ctx.search(base,
+/// filter, args, controls)` was reported for a parameterised filter because
+/// the values bound to its placeholders are — correctly — attacker-controlled.
+/// The second case flagged this rule's own remediation.
+/// Deliberately not `java-xss-response`. Every argument to a writer reaches
+/// the output, and the position varies with the overload —
+/// `format(Locale.US, param, obj)` puts the format string second. Pinning it
+/// to the first argument cost 71 true positives on the Benchmark.
+const SINK_ARGUMENT: &[(&str, usize)] = &[("java-ldap-injection", 1), ("java-xpath-injection", 0)];
+
+/// Which argument carries the injection, when only one of them does.
+pub fn sink_argument(rule_id: &str) -> Option<usize> {
+    SINK_ARGUMENT
+        .iter()
+        .find(|(id, _)| *id == rule_id)
+        .map(|(_, index)| *index)
+}
+
 /// Rules whose sink is only a shell sink in its single-string form.
 ///
 /// Ruby's `system`, `exec`, and `spawn` run a command through the shell when

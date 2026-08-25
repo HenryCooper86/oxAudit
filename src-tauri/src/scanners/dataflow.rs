@@ -173,6 +173,37 @@ const SANITIZERS: &[Sanitizer] = &[
         name: "sanitize",
         neutralizes: &["CWE-79"],
     },
+    // The encoders a Java web application actually reaches for. Each escapes
+    // markup and nothing else, so none of them excuses a command or a query.
+    Sanitizer {
+        name: "encodeForHTML",
+        neutralizes: &["CWE-79"],
+    },
+    Sanitizer {
+        name: "encodeForHTMLAttribute",
+        neutralizes: &["CWE-79"],
+    },
+    Sanitizer {
+        name: "escapeHtml4",
+        neutralizes: &["CWE-79"],
+    },
+    Sanitizer {
+        name: "htmlEscape",
+        neutralizes: &["CWE-79"],
+    },
+    // LDAP and XPath each have one encoder that covers their own syntax.
+    Sanitizer {
+        name: "encodeForLDAP",
+        neutralizes: &["CWE-90"],
+    },
+    Sanitizer {
+        name: "encodeForDN",
+        neutralizes: &["CWE-90"],
+    },
+    Sanitizer {
+        name: "encodeForXPath",
+        neutralizes: &["CWE-643"],
+    },
 ];
 
 /// Does this call neutralize `sink_cwe`, or something else?

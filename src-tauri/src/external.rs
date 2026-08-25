@@ -350,19 +350,25 @@ mod tests {
         // about something it never claimed to detect.
         let dir = corpus(&[
             ("BenchmarkTest00001", "cmdi", true, 78, VULNERABLE_EXEC),
-            ("BenchmarkTest00003", "xpathi", true, 643, "class T {}\n"),
+            (
+                "BenchmarkTest00003",
+                "securecookie",
+                true,
+                614,
+                "class T {}\n",
+            ),
         ]);
         let cases = load_expectations(dir.path()).expect("expectations");
         let report = score(dir.path(), &cases).expect("score");
         assert_eq!(report.covered_totals.cases(), 1);
         assert_eq!(report.uncovered_totals.cases(), 1);
         assert_eq!(report.uncovered_totals.false_negatives, 1);
-        let xpath = report
+        let uncovered = report
             .categories
             .iter()
-            .find(|score| score.category == "xpathi")
-            .expect("xpathi scored");
-        assert!(!xpath.covered);
+            .find(|score| score.category == "securecookie")
+            .expect("securecookie scored");
+        assert!(!uncovered.covered);
     }
 
     #[test]
@@ -401,7 +407,11 @@ mod tests {
         // remembering to edit this file.
         assert!(covered(89), "oxAudit has a Java SQL rule");
         assert!(covered(78), "oxAudit has Java command-execution rules");
-        assert!(!covered(643), "oxAudit has no XPath rule");
+        // Adding java-xpath-injection moved CWE-643 from uncovered to covered
+        // without this file being edited, which is the point of reading the
+        // rule table. CWE-614 is the next one to move when a rule arrives.
+        assert!(covered(643), "oxAudit has a Java XPath rule");
+        assert!(!covered(614), "oxAudit has no secure-cookie rule");
     }
 
     #[test]
