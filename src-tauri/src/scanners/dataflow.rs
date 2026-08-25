@@ -286,6 +286,24 @@ fn is_literal_kind(kind: &str) -> bool {
 }
 
 /// Node kinds that name a value rather than being one.
+/// The part of a dotted path after the last separator.
+fn final_segment(path: &str) -> &str {
+    path.rsplit(['.', ':']).next().unwrap_or(path).trim()
+}
+
+/// Does this name follow the universal convention for a compile-time constant?
+///
+/// Deliberately strict: at least two characters, and nothing but uppercase,
+/// digits, and underscores. `userInput`, `body`, and `data` cannot match, so a
+/// member access that might hold attacker data keeps its Unknown.
+fn is_screaming_case(name: &str) -> bool {
+    name.len() >= 2
+        && name.chars().any(|c| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 fn is_identifier_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -466,6 +484,33 @@ fn argument_list<'tree>(call: Node<'tree>) -> Option<Node<'tree>> {
     None
 }
 
+/// The arguments of one call, not of the chain it belongs to.
+pub fn own_arguments<'tree>(call: Node<'tree>) -> Vec<Node<'tree>> {
+    let Some(list) = argument_list(call) else {
+        return Vec::new();
+    };
+    let mut arguments = Vec::new();
+    let mut cursor = list.walk();
+    for child in list.children(&mut cursor) {
+        if !child.is_named() || child.kind() == "comment" {
+            continue;
+        }
+        // Kotlin, Swift, and PHP wrap each argument in a node of its own; the
+        // expression is inside it.
+        if matches!(child.kind(), "value_argument" | "argument") {
+            let mut inner = child.walk();
+            arguments.extend(
+                child
+                    .children(&mut inner)
+                    .filter(|node| node.is_named() && node.kind() != "comment"),
+            );
+        } else {
+            arguments.push(child);
+        }
+    }
+    arguments
+}
+
 /// Every argument passed anywhere in a call chain.
 ///
 /// A fluent chain is one expression as far as an attacker is concerned: if any
@@ -475,26 +520,7 @@ pub fn chain_arguments<'tree>(call: Node<'tree>) -> Vec<Node<'tree>> {
     let mut stack = vec![call];
     while let Some(node) = stack.pop() {
         if is_call_kind(node.kind()) {
-            if let Some(list) = argument_list(node) {
-                let mut cursor = list.walk();
-                for child in list.children(&mut cursor) {
-                    if !child.is_named() || child.kind() == "comment" {
-                        continue;
-                    }
-                    // Kotlin, Swift, and PHP wrap each argument in a node of
-                    // its own; the expression is inside it.
-                    if matches!(child.kind(), "value_argument" | "argument") {
-                        let mut inner = child.walk();
-                        arguments.extend(
-                            child
-                                .children(&mut inner)
-                                .filter(|node| node.is_named() && node.kind() != "comment"),
-                        );
-                    } else {
-                        arguments.push(child);
-                    }
-                }
-            }
+            arguments.extend(own_arguments(node));
         }
         // Descend the callee only: arguments are collected, not walked into,
         // so a nested call stays one argument rather than contributing its own.
@@ -579,6 +605,37 @@ fn classify_with_depth(
         };
     }
 
+    // A literal collection is as constant as the things in it.
+    //
+    // `new String[] {"username", "password"}` read as Unknown, and one Unknown
+    // argument makes the whole call Unknown — so an unrelated constant array
+    // beside the argument a rule cares about flipped the verdict, the same way
+    // a static constant did. Unlike the naming convention above this needs no
+    // heuristic: if every element is constant, the collection is.
+    if matches!(
+        kind,
+        "array_creation_expression" | "array_initializer" | "array" | "list" | "tuple" | "set"
+    ) {
+        // For `new T[] {..}` the elements hang off a `value` child; the type
+        // and dimensions are siblings that are not values at all.
+        let elements = node.child_by_field_name("value").unwrap_or(node);
+        let mut cursor = elements.walk();
+        let items: Vec<_> = elements
+            .children(&mut cursor)
+            .filter(|child| child.is_named() && child.kind() != "comment")
+            .collect();
+        // `new String[10]` has no elements to reason about, and whatever is
+        // written into it later is not visible here.
+        if items.is_empty() {
+            return Taint::Unknown;
+        }
+        return combine_all(
+            items
+                .into_iter()
+                .map(|item| classify_with_depth(item, source, function, sink_cwe, depth + 1)),
+        );
+    }
+
     // A binary expression is constant only if both sides are.
     if matches!(kind, "binary_expression" | "binary_operator") {
         let left = node.child_by_field_name("left");
@@ -601,6 +658,21 @@ fn classify_with_depth(
                     origin: Origin::External,
                 };
             }
+        }
+        // `java.sql.Statement.RETURN_GENERATED_KEYS`, `StandardCharsets.UTF_8`.
+        //
+        // A SCREAMING_SNAKE_CASE final segment names a compile-time constant
+        // by a convention every language here shares, and reading one as
+        // Unknown is not merely imprecise: one Unknown argument makes the
+        // whole call Unknown, so a flags constant sitting beside the argument
+        // a rule actually cares about was flipping the verdict.
+        // `statement.execute(sql, RETURN_GENERATED_KEYS)` reported where
+        // `statement.execute(sql)` did not, for no difference in the SQL.
+        //
+        // Checked after the tainted roots above, so `REQUEST.BODY` — however
+        // unlikely — still loses to being rooted at a request.
+        if is_screaming_case(final_segment(text(node, source))) {
+            return Taint::Constant;
         }
         return Taint::Unknown;
     }
@@ -631,6 +703,23 @@ fn classify_with_depth(
                 };
             }
         }
+        // An unmodelled callee stays Unknown, which keeps the finding.
+        //
+        // Treating it as a function of its arguments is the standard taint
+        // approximation and it was tried here: it removed 28 false SQL
+        // injection reports on the OWASP Benchmark, all of them a constant
+        // handed to a helper and concatenated into a query. It also introduced
+        // 11 false negatives, and they are the shape that matters:
+        //
+        //     String param = scr.getTheParameter("BenchmarkTest00043");
+        //     String sql = "INSERT INTO users ... '" + param + "'";
+        //
+        // An accessor taking a constant key and returning request data is not
+        // a corner case — `getProperty`, `config.get`, and every framework's
+        // parameter helper have that shape. Suppressing those hides real
+        // injections to remove reports that a person would dismiss in a
+        // second, which is the wrong direction for this tool. The measured
+        // trade was 28 fewer false positives for 11 hidden vulnerabilities.
         return Taint::Unknown;
     }
 

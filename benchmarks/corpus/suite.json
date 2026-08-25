@@ -12,9 +12,9 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 141,
-    "positives": 62,
-    "negatives": 79,
+    "fixtures": 144,
+    "positives": 63,
+    "negatives": 81,
     "rules": 53
   },
   "targets": [
@@ -855,6 +855,22 @@
       "expectedAbsent": []
     },
     {
+      "id": "java-runtime-exec.negative.constant-argument-vector",
+      "inputPath": "source/java-runtime-exec__negative__constant-argument-vector.java",
+      "inputSha256": "a0cf2bff5420ad2aff08a587ee6ec2e9c98a53fb4151020068aa753aa3f6c84e",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-runtime-exec"
+        }
+      ]
+    },
+    {
       "id": "java-runtime-exec.negative.kotlin-literal-command",
       "inputPath": "source/java-runtime-exec__negative__kotlin-literal-command.kt",
       "inputSha256": "5723d8b429d8fd96e772f22761ebd87d8d84e9ee56943f8ea963731276d4ddbd",
@@ -970,6 +986,22 @@
       "expectedAbsent": []
     },
     {
+      "id": "java-sql-concat.negative.constant-query-with-flags",
+      "inputPath": "source/java-sql-concat__negative__constant-query-with-flags.java",
+      "inputSha256": "f77d2e6a0417d552a6b9f8f64f3709555ef691dd55ade03db7f410e97e957518",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-concat",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-sql-concat"
+        }
+      ]
+    },
+    {
       "id": "java-sql-concat.negative.variable-parameterized-query",
       "inputPath": "source/java-sql-concat__negative__variable-parameterized-query.java",
       "inputSha256": "8f1eed4b291ad93b06387ef2eaa552cd607399f3bae9167e131c5d88caf139e9",
@@ -984,6 +1016,23 @@
           "ruleId": "java-sql-concat"
         }
       ]
+    },
+    {
+      "id": "java-sql-concat.positive.accessor-supplied-value",
+      "inputPath": "source/java-sql-concat__positive__accessor-supplied-value.java",
+      "inputSha256": "a255436bd118d77f0b139cdd80805f9a334ce1f521e964d0745e6d4c40674e5b",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-concat",
+      "expected": [
+        {
+          "ruleId": "java-sql-concat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
     },
     {
       "id": "java-sql-concat.positive.variable-built-query",
