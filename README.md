@@ -198,11 +198,11 @@ rule.
 |---|---|---|
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
-| Corpus size | 26 fixtures | **130 fixtures** |
+| Corpus size | 26 fixtures | **132 fixtures** |
 | Findings on this repository | 142 | **32** |
 | …still shown after scope triage | 142 | **5** |
 
-The corpus is 130 fixtures, 73 of them negatives, and none of the negatives were
+The corpus is 132 fixtures, 74 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
 source or a real dependency tree — type declarations, prose in Markdown,
 comments, environment lookups, function parameters, JSON schemas, UI labels,
@@ -210,7 +210,7 @@ hardened XML parsers, non-security uses of `Math.random()`, and the detector
 code that searches for PEM headers.
 
 The corpus is deliberately vulnerable, so it is excluded from the repository
-figure above: a full scan of this checkout returns 95 findings, 63 of which are
+figure above: a full scan of this checkout returns 96 findings, 64 of which are
 the fixtures doing their job.
 
 A corpus you tuned against proves little, so the last two rows are the ones that
@@ -243,15 +243,15 @@ cargo run --release --bin oxaudit-cli -- external-benchmark
 
 Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
 
-| | |
-|---|---|
-| Precision | 67.0% |
-| Recall | 6.1% |
-| False positive rate | 3.0% |
-| Youden index (recall − FPR) | **0.030** |
+| | Before the benchmark existed | After acting on it |
+|---|---|---|
+| Precision | 67.0% | 56.6% |
+| Recall | 6.1% | **23.3%** |
+| False positive rate | 3.0% | 18.2% |
+| Youden index (recall − FPR) | 0.030 | **0.051** |
 
-That recall figure is bad, and it is the honest one. Two separate things
-produce it, and they deserve to be told apart.
+Both columns are honest and neither is good. Two separate things produce them,
+and they deserve to be told apart.
 
 **The benchmark is built to require what oxAudit deliberately does not do.**
 Its safe and vulnerable cases are frequently identical in the file being
@@ -278,10 +278,27 @@ builds one.
 
 **The rest is real, and worth having found.** `sqli` scored 0 true positives
 out of 272, because `java-sql-concat` required the concatenation to appear
-*inside* the execute call and the benchmark builds the query into a variable
-first — which is how most code is actually written. That is a recall hole in
-the flagship Java rule that the internal corpus never revealed, because every
-fixture in it was written by someone who already knew what the rule matched.
+*inside* the execute call while the benchmark — like most code — builds the
+query into a variable first. That is a recall hole in the flagship Java rule
+that the internal corpus never revealed, because every fixture written for it
+happened to use the inline shape: they were written by someone who already knew
+what the rule matched. Widening it to any prepare-or-execute taking a variable,
+and letting dataflow resolve what that variable holds, took sqli from 0 to 174
+true positives and the overall recall from 6.1% to 23.3%.
+
+That is the second column, and it cost precision. The rule now also reports 150
+of the benchmark's safe cases — the ones whose safety is a constant returned
+from another file. On ordinary code it still discriminates, and there are
+fixtures and tests holding that line:
+
+```java
+String sql = "SELECT * FROM users WHERE id = ?";   // not reported
+String sql = "SELECT * FROM users WHERE id = " + request.getParameter("id");  // reported
+```
+
+Taking the trade follows from a principle stated further up rather than from
+the score: undetermined keeps the finding, because a false negative in a
+security scanner costs more than a false positive.
 
 Categories with no Java rule at all — XSS, LDAP injection, XPath injection,
 trust boundary, secure cookie: 742 cases, 407 of them vulnerable — are counted
