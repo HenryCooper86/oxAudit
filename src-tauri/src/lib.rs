@@ -9,6 +9,7 @@ mod credentials;
 pub mod cve;
 mod deps;
 pub mod exploit;
+pub mod external;
 pub mod findings;
 mod fs_utils;
 mod migration;

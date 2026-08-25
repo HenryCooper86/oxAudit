@@ -77,6 +77,27 @@ enum Command {
     Benchmark(BenchmarkArgs),
     /// List the language grammars compiled into this binary.
     Languages,
+    /// Score against the OWASP Benchmark: ground truth oxAudit did not write.
+    ExternalBenchmark(ExternalBenchmarkArgs),
+}
+
+#[derive(Args, Debug)]
+struct ExternalBenchmarkArgs {
+    /// Directory holding the fetched OWASP Benchmark checkout.
+    #[arg(long, default_value = "benchmarks/external/owasp-benchmark")]
+    path: PathBuf,
+
+    /// Emit the full report as JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+
+    /// Write the report here instead of stdout.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// Exit 1 if the Youden index over covered categories falls below this.
+    #[arg(long, value_name = "INDEX")]
+    min_score: Option<f64>,
 }
 
 #[derive(Args, Debug)]
@@ -388,6 +409,7 @@ pub fn run() -> i32 {
         Command::Runs(args) => run_runs(args),
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
         Command::Languages => run_languages(),
+        Command::ExternalBenchmark(args) => run_external_benchmark(args),
     };
 
     match result {
@@ -1001,6 +1023,122 @@ fn render_deps_text(
     }
     let _ = writeln!(out, "\n{} vulnerability(ies).", vulnerabilities.len());
     out.into_bytes()
+}
+
+fn percent(value: Option<f64>) -> String {
+    match value {
+        Some(value) => format!("{:.1}%", value * 100.0),
+        None => "  —  ".to_string(),
+    }
+}
+
+/// Score oxAudit against the OWASP Benchmark.
+///
+/// Reported apart from `benchmark` because the two answer different questions.
+/// The committed corpus asks "does it still do what we meant?" and is written
+/// by the same people who write the rules. This asks "is it any good?" against
+/// 2,740 cases labelled by somebody else, and the honest answer is lower.
+fn run_external_benchmark(args: &ExternalBenchmarkArgs) -> CliResult {
+    let cases =
+        crate::external::load_expectations(&args.path).map_err(|error| usage(error.to_string()))?;
+    let report =
+        crate::external::score(&args.path, &cases).map_err(|error| failure(error.to_string()))?;
+
+    let rendered = if args.json {
+        serde_json::to_string_pretty(&report).map_err(|error| failure(error.to_string()))? + "\n"
+    } else {
+        render_external(&report)
+    };
+
+    match &args.output {
+        Some(path) => {
+            std::fs::write(path, &rendered).map_err(|error| failure(error.to_string()))?;
+        }
+        None => print!("{rendered}"),
+    }
+
+    if let Some(minimum) = args.min_score {
+        let achieved = report.covered_totals.youden_index().unwrap_or(0.0);
+        if achieved < minimum {
+            return Err(failure(format!(
+                "Youden index {achieved:.3} is below the required {minimum:.3}"
+            )));
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn render_external(report: &crate::external::ExternalReport) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{}  —  {} cases in {} ms\n",
+        report.suite, report.cases, report.runtime_ms
+    );
+
+    let covered = &report.covered_totals;
+    let _ = writeln!(
+        out,
+        "  Categories oxAudit has Java rules for: {} cases",
+        covered.cases()
+    );
+    let _ = writeln!(
+        out,
+        "    precision {}   recall {}   false positive rate {}",
+        percent(covered.precision()),
+        percent(covered.recall()),
+        percent(covered.false_positive_rate())
+    );
+    // Recall alone is not a result here: flagging every file scores 100%
+    // recall and a Youden index of zero, the same as flagging nothing.
+    let _ = writeln!(
+        out,
+        "    Youden index (recall − false positive rate): {}\n",
+        match covered.youden_index() {
+            Some(value) => format!("{value:.3}"),
+            None => "  —  ".to_string(),
+        }
+    );
+
+    let uncovered = &report.uncovered_totals;
+    if uncovered.cases() > 0 {
+        let _ = writeln!(
+            out,
+            "  Categories with no Java rule: {} cases, {} of them vulnerable and\n\
+             \x20   necessarily missed. Absent rules, not inaccurate ones — kept out of\n\
+             \x20   the figures above so an average cannot blend the two.\n",
+            uncovered.cases(),
+            uncovered.true_positives + uncovered.false_negatives
+        );
+    }
+
+    let _ = writeln!(
+        out,
+        "{:<14} {:>5} {:>5} {:>5} {:>5}  {:>8} {:>8} {:>8} {:>7}",
+        "CATEGORY", "TP", "FP", "TN", "FN", "PREC", "RECALL", "FPR", "YOUDEN"
+    );
+    for score in &report.categories {
+        let counts = &score.counts;
+        let _ = writeln!(
+            out,
+            "{:<14} {:>5} {:>5} {:>5} {:>5}  {:>8} {:>8} {:>8} {:>7}{}",
+            score.category,
+            counts.true_positives,
+            counts.false_positives,
+            counts.true_negatives,
+            counts.false_negatives,
+            percent(counts.precision()),
+            percent(counts.recall()),
+            percent(counts.false_positive_rate()),
+            match counts.youden_index() {
+                Some(value) => format!("{value:.3}"),
+                None => "  —  ".to_string(),
+            },
+            if score.covered { "" } else { "   (no rule)" }
+        );
+    }
+    out
 }
 
 #[cfg(test)]

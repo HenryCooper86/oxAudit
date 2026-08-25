@@ -176,10 +176,6 @@ pub fn run(corpus_root: &Path, suite: &CorpusSuite) -> Result<BenchmarkReport, C
     })
 }
 
-/// Score a suite against fixtures supplied by `read_fixture`.
-///
-/// The indirection is what lets the packaged app score the same corpus as the
-/// command line without shipping the repository alongside it.
 /// Grammars oxAudit has rules for but this build did not compile in.
 ///
 /// Only the languages the corpus actually exercises, so the note names the
@@ -206,6 +202,10 @@ fn missing_grammars() -> Vec<&'static str> {
         .collect()
 }
 
+/// Score a suite against fixtures supplied by `read_fixture`.
+///
+/// The indirection is what lets the packaged app score the same corpus as the
+/// command line without shipping the repository alongside it.
 pub fn score(
     suite: &CorpusSuite,
     mut read_fixture: impl FnMut(&str) -> Result<Vec<u8>, CorpusError>,
