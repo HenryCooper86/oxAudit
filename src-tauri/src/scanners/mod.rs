@@ -70,11 +70,33 @@ fn assess_sink(
     let cwe = patterns::SOURCE_RULES[hit.rule_index].cwe;
     let sink_cwe = (!cwe.is_empty()).then_some(cwe);
     let taint = parsed.taint_at(content, hit.offset, sink_cwe);
-    SinkAssessment {
-        reportable: !matches!(
+
+    // Cleared outright: nobody can choose the value, or a transform covering
+    // this weakness already neutralized it.
+    let cleared = matches!(
+        taint,
+        dataflow::Taint::Constant | dataflow::Taint::Sanitized { .. }
+    );
+
+    // For a few weakness classes, taking a caller-supplied value is the
+    // ordinary case rather than the defect — an HTTP wrapper takes a URL, a
+    // file helper takes a path. Reporting those on any parameter made js-ssrf
+    // fire 148 times across one dependency tree, half of every finding. Those
+    // classes need the value to come from outside the program.
+    //
+    // Whether a parameter is reachable from a request handler needs a call
+    // graph, so this is a deliberate trade of recall for a rule somebody will
+    // leave switched on.
+    let insufficient_origin = dataflow::requires_external_origin(sink_cwe)
+        && !matches!(
             taint,
-            dataflow::Taint::Constant | dataflow::Taint::Sanitized { .. }
-        ),
+            dataflow::Taint::Tainted {
+                origin: dataflow::Origin::External
+            }
+        );
+
+    SinkAssessment {
+        reportable: !cleared && !insufficient_origin,
         gates: dataflow::gate_notes(taint, sink_cwe),
     }
 }

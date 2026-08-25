@@ -93,7 +93,7 @@ with a reason, an expiry, and a pull request.
 
 | Capability | What it does |
 |---|---|
-| **Source code scanning** | 50+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
+| **Source code scanning** | 55+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
 | **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
 | **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by CISA KEV and EPSS — same exploitation signal as the binary scanner |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
@@ -300,6 +300,26 @@ useful than either hiding the finding or reporting it bare.
 dismissal, and the review model requires a person to make one — the same line
 the assistant is held to. A recorded human answer is never overwritten by a
 machine one.
+
+### Known limitation: caller-supplied values
+
+For two weakness classes, a caller-supplied value is the ordinary case rather
+than the defect. An HTTP helper takes a URL; a path helper takes a name.
+
+```js
+async function get(url) { return fetch(url); }        // NOT reported
+app.get("/p", (req) => fetch(req.query.url));         // reported
+```
+
+Path traversal (CWE-22) and SSRF (CWE-918) are therefore reported only when the
+value traces to an inbound source — a request, argv, an environment read —
+rather than to any parameter. Whether a parameter is reachable from a request
+handler needs a call graph oxAudit does not build.
+
+This is a deliberate trade of recall for usability, and it is a large one:
+reporting these on any parameter fired 148 times across a single dependency
+tree, half of every finding. A rule nobody leaves switched on catches nothing.
+Every other weakness class still reports on any non-constant value.
 
 Three limits, stated because they bound what the result means:
 

@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 50,
-    "positives": 18,
-    "negatives": 32,
-    "rules": 12
+    "fixtures": 66,
+    "positives": 24,
+    "negatives": 42,
+    "rules": 18
   },
   "targets": [
     {
@@ -360,6 +360,104 @@
       "expectedAbsent": []
     },
     {
+      "id": "go-ssrf.negative.caller-supplied-url",
+      "inputPath": "source/go-ssrf__negative__caller-supplied-url.go",
+      "inputSha256": "475aba85d60d13c870b3c177bfa24fbd3a931dae3d42413a2a5ff6e2e31b2e31",
+      "language": "go",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "go-ssrf",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "go-ssrf"
+        }
+      ]
+    },
+    {
+      "id": "go-ssrf.negative.fixed-url",
+      "inputPath": "source/go-ssrf__negative__fixed-url.go",
+      "inputSha256": "f8d88caca9d88cbe6cee9331fbb96b46f8b55ffb84033a9bbd50e4f56f34834d",
+      "language": "go",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "go-ssrf",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "go-ssrf"
+        }
+      ]
+    },
+    {
+      "id": "go-ssrf.positive.request-url",
+      "inputPath": "source/go-ssrf__positive__request-url.go",
+      "inputSha256": "bdd27eb1602f9fc34c895816fd424b9e797df556621d931eacc4bd0abeac0af4",
+      "language": "go",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "go-ssrf",
+      "expected": [
+        {
+          "ruleId": "go-ssrf",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-path-traversal.negative.caller-supplied-path",
+      "inputPath": "source/java-path-traversal__negative__caller-supplied-path.java",
+      "inputSha256": "56c123eb0498fe981eb1c1d4e7c1cfc3a0a9493f4edc4c9a082027bd7bdc7b93",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-path-traversal",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-path-traversal"
+        }
+      ]
+    },
+    {
+      "id": "java-path-traversal.negative.fixed-path",
+      "inputPath": "source/java-path-traversal__negative__fixed-path.java",
+      "inputSha256": "1aa3f188603d81b1fb8e412dcca5bc0df26e27be21f65ebd4d2f92771b359a5c",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-path-traversal",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-path-traversal"
+        }
+      ]
+    },
+    {
+      "id": "java-path-traversal.positive.request-path",
+      "inputPath": "source/java-path-traversal__positive__request-path.java",
+      "inputSha256": "f7be8479b7fb3a0a0a830e37afb1fb0a16a682e414e750bb132f1a7f53b0ac24",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-path-traversal",
+      "expected": [
+        {
+          "ruleId": "java-path-traversal",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "java-runtime-exec.negative.literal-command",
       "inputPath": "source/java-runtime-exec__negative__literal-command.java",
       "inputSha256": "71ff8e44ecf4be0924e08ebdac92c017b6255cc28b1b5840f761744197be6db7",
@@ -573,6 +671,72 @@
       "expectedAbsent": []
     },
     {
+      "id": "js-path-traversal.negative.fixed-path",
+      "inputPath": "source/js-path-traversal__negative__fixed-path.js",
+      "inputSha256": "db85e84683281a9d583f1d946ae50b1f571ff03006adfc60adf64d2d0fd8c68b",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-path-traversal",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-path-traversal"
+        }
+      ]
+    },
+    {
+      "id": "js-path-traversal.positive.joined-request-path",
+      "inputPath": "source/js-path-traversal__positive__joined-request-path.js",
+      "inputSha256": "da7bcfe7b710eb5b8a4cb9a7aea447b87896607c9c9cae91ef0d1f4ac7943492",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-path-traversal",
+      "expected": [
+        {
+          "ruleId": "js-path-traversal",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "js-ssrf.negative.fixed-url",
+      "inputPath": "source/js-ssrf__negative__fixed-url.js",
+      "inputSha256": "6496d990dfb4c289269d5090149121cd7109b57244663979a5125534111792c0",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-ssrf",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-ssrf"
+        }
+      ]
+    },
+    {
+      "id": "js-ssrf.positive.request-url",
+      "inputPath": "source/js-ssrf__positive__request-url.js",
+      "inputSha256": "dc1ae4f9f2a3002a060194545c78db0a34f3e664ec34a7178b7e696a7929a11f",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-ssrf",
+      "expected": [
+        {
+          "ruleId": "js-ssrf",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "py-eval.negative.dataframe-method",
       "inputPath": "source/py-eval__negative__dataframe-method.py",
       "inputSha256": "7e7031619f4c6a01c26ec018df737b49347e8deea8bcd27837953042352adbe0",
@@ -655,6 +819,55 @@
       "expectedAbsent": []
     },
     {
+      "id": "py-path-traversal.negative.caller-supplied-path",
+      "inputPath": "source/py-path-traversal__negative__caller-supplied-path.py",
+      "inputSha256": "ca9894bde849c2c88dae223c2500fcd48cfd06c747a0a50ac7fe90e0515401ce",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-path-traversal",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-path-traversal"
+        }
+      ]
+    },
+    {
+      "id": "py-path-traversal.negative.fixed-path",
+      "inputPath": "source/py-path-traversal__negative__fixed-path.py",
+      "inputSha256": "410b60e646b5d1d938b44c8fe37bbd9db8a56bac6c792641ce2569fde59130dd",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-path-traversal",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-path-traversal"
+        }
+      ]
+    },
+    {
+      "id": "py-path-traversal.positive.request-path",
+      "inputPath": "source/py-path-traversal__positive__request-path.py",
+      "inputSha256": "b3e8982b464b062fce5338bad007d76406583227786f7ee1ad6df65a55dc8557",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-path-traversal",
+      "expected": [
+        {
+          "ruleId": "py-path-traversal",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "py-sql-fstring.positive.interpolated-query",
       "inputPath": "source/py-sql-fstring__positive__interpolated-query.py",
       "inputSha256": "07cf3573e55331c6537a471b4e6c61b0fec939f26e692c4db94f8e24b88c2aab",
@@ -666,6 +879,55 @@
       "expected": [
         {
           "ruleId": "py-sql-fstring",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "py-ssrf.negative.caller-supplied-url",
+      "inputPath": "source/py-ssrf__negative__caller-supplied-url.py",
+      "inputSha256": "742913d0bba464b96d0a780e96cfeecfb0ee0d8b75110b739117ae33cf290d8c",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-ssrf",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-ssrf"
+        }
+      ]
+    },
+    {
+      "id": "py-ssrf.negative.fixed-url",
+      "inputPath": "source/py-ssrf__negative__fixed-url.py",
+      "inputSha256": "9dce6916db61fd047aa567a6f61d325b6c78171655508d4a0dfb03029a6dcc1b",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-ssrf",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-ssrf"
+        }
+      ]
+    },
+    {
+      "id": "py-ssrf.positive.request-url",
+      "inputPath": "source/py-ssrf__positive__request-url.py",
+      "inputSha256": "423186f7775d0fdd1ad6cf54e20715825698e0b9a0178d860550977995494ad0",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-ssrf",
+      "expected": [
+        {
+          "ruleId": "py-ssrf",
           "minimum": 1
         }
       ],
