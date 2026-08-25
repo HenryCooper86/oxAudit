@@ -44,10 +44,47 @@ pub enum Taint {
         /// What that call does cover.
         covers: &'static str,
     },
-    /// Traces to a parameter or a known external source.
-    Tainted,
+    /// Traces to a value an attacker can choose.
+    Tainted {
+        /// Where it entered. The distinction decides whether some weakness
+        /// classes are worth reporting at all — see [`Origin`].
+        origin: Origin,
+    },
     /// Undetermined. The finding stands.
     Unknown,
+}
+
+/// How an attacker-chosen value entered the function.
+///
+/// The difference is not cosmetic. `eval(x)` is dangerous whatever `x` is,
+/// because evaluating anything dynamic is the defect. `fetch(url)` is a
+/// library's entire purpose, and only becomes a vulnerability when the URL
+/// comes from an inbound request rather than from whoever called the function.
+///
+/// Intraprocedural analysis cannot tell whether a parameter is reachable from
+/// a request handler — that needs a call graph. So for weakness classes where
+/// a caller-supplied value is the ordinary case, only `External` counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// A parameter of the enclosing function. Attacker-controlled only if some
+    /// caller passes attacker data, which is not visible from here.
+    Parameter,
+    /// A request, argv, an environment read, or another inbound source.
+    /// Attacker-controlled by construction.
+    External,
+}
+
+/// Weakness classes where a caller-supplied value is the ordinary case.
+///
+/// Reporting these on any parameter made `js-ssrf` fire 148 times across a
+/// dependency tree — half of every finding — because taking a URL is what an
+/// HTTP wrapper does. Requiring an inbound source trades recall for a rule
+/// somebody will actually leave switched on.
+const REQUIRES_EXTERNAL_ORIGIN: &[&str] = &["CWE-918", "CWE-22"];
+
+/// Does this weakness class need the value to come from outside the program?
+pub fn requires_external_origin(sink_cwe: Option<&str>) -> bool {
+    sink_cwe.is_some_and(|cwe| REQUIRES_EXTERNAL_ORIGIN.contains(&cwe))
 }
 
 /// A transform that neutralizes specific weakness classes.
@@ -162,7 +199,24 @@ const TAINTED_ROOTS: &[&str] = &[
 
 /// Calls that return attacker-controlled data.
 const TAINTED_CALLS: &[&str] = &[
-    "input", "getenv", "get_json", "read", "readline", "recv", "prompt",
+    "input",
+    "getenv",
+    "get_json",
+    "read",
+    "readline",
+    "recv",
+    "prompt",
+    // Framework reads of inbound request data, named rather than inferred from
+    // a receiver: the conventional receiver names — `r` in Go, `ctx` in several
+    // frameworks — are far too common to treat as request objects on sight.
+    // Go net/http
+    "FormValue",
+    "PostFormValue",
+    // Java servlets and Spring
+    "getParameter",
+    "getParameterValues",
+    "getHeader",
+    "getQueryString",
 ];
 
 /// Node kinds that are literal values in the supported grammars.
@@ -251,7 +305,12 @@ fn is_member_kind(kind: &str) -> bool {
 fn is_call_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "call_expression" | "call" | "new_expression" | "method_invocation"
+        "call_expression"
+            | "call"
+            | "new_expression"
+            | "method_invocation"
+            // Java
+            | "object_creation_expression"
     )
 }
 
@@ -330,6 +389,32 @@ pub fn chain_arguments<'tree>(call: Node<'tree>) -> Vec<Node<'tree>> {
     arguments
 }
 
+/// Look through nodes that only wrap a single expression.
+///
+/// Go puts both sides of `a := b` inside an `expression_list`, so the value
+/// being classified was the wrapper rather than the call, and every Go binding
+/// resolved to Unknown.
+fn unwrap_expression<'tree>(node: Node<'tree>) -> Node<'tree> {
+    let mut current = node;
+    loop {
+        if !matches!(
+            current.kind(),
+            "expression_list" | "parenthesized_expression" | "expression_statement" | "group"
+        ) {
+            return current;
+        }
+        let mut cursor = current.walk();
+        let named: Vec<_> = current
+            .children(&mut cursor)
+            .filter(Node::is_named)
+            .collect();
+        match named.as_slice() {
+            [only] => current = *only,
+            _ => return current,
+        }
+    }
+}
+
 /// Classify the value an expression evaluates to.
 pub fn classify_expression(
     node: Node<'_>,
@@ -351,6 +436,7 @@ fn classify_with_depth(
         return Taint::Unknown;
     }
 
+    let node = unwrap_expression(node);
     let kind = node.kind();
 
     if matches!(kind, "keyword_argument" | "labeled_argument") {
@@ -390,13 +476,27 @@ fn classify_with_depth(
     if is_member_kind(kind) || kind == "subscript" {
         if let Some(root) = leftmost_identifier(node, source) {
             if TAINTED_ROOTS.contains(&root) {
-                return Taint::Tainted;
+                return Taint::Tainted {
+                    origin: Origin::External,
+                };
             }
         }
         return Taint::Unknown;
     }
 
-    if matches!(kind, "call_expression" | "call") {
+    if is_call_kind(kind) {
+        // `request.args.get(...)` — the call is rooted at a request object, so
+        // whatever it returns came from outside. Checked before the name list
+        // because no list of method names covers every framework accessor.
+        if let Some(callee) = node.child_by_field_name("function") {
+            if let Some(root) = leftmost_identifier(callee, source) {
+                if TAINTED_ROOTS.contains(&root) {
+                    return Taint::Tainted {
+                        origin: Origin::External,
+                    };
+                }
+            }
+        }
         if let Some(name) = called_name(node, source) {
             // Checked before the source list: a value read from input and then
             // coerced to a number is no longer dangerous for this sink.
@@ -405,7 +505,9 @@ fn classify_with_depth(
                 assessed => return assessed,
             }
             if TAINTED_CALLS.contains(&name) {
-                return Taint::Tainted;
+                return Taint::Tainted {
+                    origin: Origin::External,
+                };
             }
         }
         return Taint::Unknown;
@@ -417,7 +519,9 @@ fn classify_with_depth(
             return Taint::Unknown;
         };
         if is_parameter(function, source, name) {
-            return Taint::Tainted;
+            return Taint::Tainted {
+                origin: Origin::Parameter,
+            };
         }
         return resolve_binding(function, source, name, node.start_byte(), sink_cwe, depth);
     }
@@ -436,8 +540,15 @@ pub fn combine_all(assessments: impl Iterator<Item = Taint>) -> Taint {
             None => assessment,
             Some(previous) => combine(previous, assessment),
         });
-        if matches!(folded, Some(Taint::Tainted)) {
-            return Taint::Tainted;
+        if matches!(
+            folded,
+            Some(Taint::Tainted {
+                origin: Origin::External
+            })
+        ) {
+            return Taint::Tainted {
+                origin: Origin::External,
+            };
         }
     }
     folded.unwrap_or(Taint::Unknown)
@@ -446,7 +557,22 @@ pub fn combine_all(assessments: impl Iterator<Item = Taint>) -> Taint {
 /// Two operands combine to constant only when both are constant.
 fn combine(left: Taint, right: Taint) -> Taint {
     match (left, right) {
-        (Taint::Tainted, _) | (_, Taint::Tainted) => Taint::Tainted,
+        // An external source anywhere in the expression decides it.
+        (
+            Taint::Tainted {
+                origin: Origin::External,
+            },
+            _,
+        )
+        | (
+            _,
+            Taint::Tainted {
+                origin: Origin::External,
+            },
+        ) => Taint::Tainted {
+            origin: Origin::External,
+        },
+        (tainted @ Taint::Tainted { .. }, _) | (_, tainted @ Taint::Tainted { .. }) => tainted,
         (Taint::Constant, Taint::Constant) => Taint::Constant,
         // A sanitized value concatenated with a constant is still safe for this
         // sink; anything less certain falls back to reporting.
@@ -476,17 +602,29 @@ fn leftmost_identifier<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
 
 /// The name being called, for `input()` or `os.getenv(...)`.
 fn called_name<'a>(call: Node<'_>, source: &'a str) -> Option<&'a str> {
-    let function = call.child_by_field_name("function")?;
-    match function.kind() {
-        kind if is_identifier_kind(kind) => Some(text(function, source)),
-        "member_expression" | "attribute" => {
-            let property = function
-                .child_by_field_name("property")
-                .or_else(|| function.child_by_field_name("attribute"))?;
-            Some(text(property, source))
-        }
-        _ => None,
+    // Java names the method directly on the invocation; there is no callee
+    // node to walk into.
+    if let Some(name) = call.child_by_field_name("name") {
+        return Some(text(name, source));
     }
+    let function = call
+        .child_by_field_name("function")
+        .or_else(|| call.child_by_field_name("constructor"))?;
+    if is_identifier_kind(function.kind()) {
+        return Some(text(function, source));
+    }
+    if is_member_kind(function.kind()) {
+        // `property` in JavaScript, `attribute` in Python, `field` in Go,
+        // `name` in Rust's field expressions. Looking for only one of them
+        // meant Go and Java method names never resolved at all.
+        let member = function
+            .child_by_field_name("property")
+            .or_else(|| function.child_by_field_name("attribute"))
+            .or_else(|| function.child_by_field_name("field"))
+            .or_else(|| function.child_by_field_name("name"))?;
+        return Some(text(member, source));
+    }
+    None
 }
 
 /// The function enclosing an offset, which bounds the analysis.
@@ -585,11 +723,18 @@ fn resolve_binding(
         } = *query;
         walk(scope, &mut |node| {
             let assigned = match node.kind() {
+                // JavaScript, Java
                 "variable_declarator" => node
                     .child_by_field_name("name")
                     .filter(|target| text(*target, source) == name)
                     .and(node.child_by_field_name("value")),
-                "assignment" | "assignment_expression" => node
+                // Rust
+                "let_declaration" => node
+                    .child_by_field_name("pattern")
+                    .filter(|target| text(*target, source) == name)
+                    .and(node.child_by_field_name("value")),
+                // Python, Go (`=` and `:=`)
+                "assignment" | "assignment_expression" | "short_var_declaration" => node
                     .child_by_field_name("left")
                     .filter(|target| text(*target, source) == name)
                     .and(node.child_by_field_name("right")),
@@ -603,7 +748,8 @@ fn resolve_binding(
                     // Any tainted reaching definition wins: over-approximating
                     // toward reporting is the safe direction.
                     *result = Some(match *result {
-                        Some(Taint::Tainted) => Taint::Tainted,
+                        // A tainted reaching definition already wins; keep it.
+                        Some(existing @ Taint::Tainted { .. }) => existing,
                         Some(previous) => combine(previous, taint),
                         None => taint,
                     });
@@ -645,12 +791,18 @@ pub fn gate_notes(taint: Taint, sink_cwe: Option<&str>) -> Vec<crate::triage::ga
     use crate::triage::gates::{Gate, GateNote, GateVerdict};
 
     match taint {
-        Taint::Tainted => vec![GateNote {
+        Taint::Tainted { origin } => vec![GateNote {
             gate: Gate::AttackerControlled,
             verdict: GateVerdict::Survives,
-            evidence: "The value reaching this sink traces to a parameter or an external \
-                       input within the same function."
-                .to_string(),
+            evidence: match origin {
+                Origin::External => "The value reaching this sink traces to a request, argv, or \
+                                     another inbound source within the same function."
+                    .to_string(),
+                Origin::Parameter => "The value reaching this sink traces to a parameter of the \
+                                      enclosing function. Whether a caller supplies attacker data \
+                                      is not visible from here."
+                    .to_string(),
+            },
         }],
         Taint::SanitizedElsewhere { by, covers } => vec![GateNote {
             gate: Gate::Sanitized,
@@ -743,35 +895,65 @@ mod tests {
     #[test]
     fn a_parameter_is_tainted() {
         let source = "function render(userInput) { return eval(userInput); }\n";
-        assert_eq!(taint_of(source, "javascript", "eval("), Taint::Tainted);
+        assert_eq!(
+            taint_of(source, "javascript", "eval("),
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
+        );
 
         let python = "def compute(expression):\n    return eval(expression)\n";
-        assert_eq!(taint_of(python, "python", "eval("), Taint::Tainted);
+        assert_eq!(
+            taint_of(python, "python", "eval("),
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
+        );
     }
 
     #[test]
     fn request_data_is_tainted() {
         let source = "function h(req) { return eval(req.body.expr); }\n";
-        assert_eq!(taint_of(source, "javascript", "eval("), Taint::Tainted);
+        assert_eq!(
+            taint_of(source, "javascript", "eval("),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        );
     }
 
     #[test]
     fn a_name_bound_to_request_data_is_tainted() {
         let source = "function h(req) { const e = req.body.expr; return eval(e); }\n";
-        assert_eq!(taint_of(source, "javascript", "eval("), Taint::Tainted);
+        assert_eq!(
+            taint_of(source, "javascript", "eval("),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        );
     }
 
     #[test]
     fn a_reading_call_is_tainted() {
         let python = "def f():\n    return eval(input())\n";
-        assert_eq!(taint_of(python, "python", "eval("), Taint::Tainted);
+        assert_eq!(
+            taint_of(python, "python", "eval("),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        );
     }
 
     #[test]
     fn a_constant_combined_with_a_parameter_is_tainted() {
         // Concatenating a literal onto attacker input does not sanitize it.
         let source = "function f(userInput) { return eval(\"x = \" + userInput); }\n";
-        assert_eq!(taint_of(source, "javascript", "eval("), Taint::Tainted);
+        assert_eq!(
+            taint_of(source, "javascript", "eval("),
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
+        );
     }
 
     // -------------------------------------------------------------- unknown
@@ -937,7 +1119,9 @@ mod tests {
         let source = "function f(u) { return eval(parseInt(u) + u); }\n";
         assert_eq!(
             taint_for_cwe(source, "javascript", "eval(", Some("CWE-95")),
-            Taint::Tainted
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
         );
     }
 
@@ -1007,7 +1191,12 @@ mod tests {
     #[test]
     fn tainted_input_answers_the_attacker_controlled_gate() {
         use crate::triage::gates::{Gate, GateVerdict};
-        let notes = gate_notes(Taint::Tainted, Some("CWE-95"));
+        let notes = gate_notes(
+            Taint::Tainted {
+                origin: Origin::Parameter,
+            },
+            Some("CWE-95"),
+        );
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].gate, Gate::AttackerControlled);
         assert_eq!(notes[0].verdict, GateVerdict::Survives);
@@ -1034,7 +1223,9 @@ mod tests {
         // The machine argues; the human decides. An eliminating verdict is a
         // dismissal, and the review model requires a person to make one.
         for taint in [
-            Taint::Tainted,
+            Taint::Tainted {
+                origin: Origin::Parameter,
+            },
             Taint::Unknown,
             Taint::Constant,
             Taint::Sanitized { by: "parseInt" },
@@ -1064,7 +1255,9 @@ mod tests {
             "fn run(user: &str) {\n    Command::new(\"sh\").arg(\"-lc\").arg(user).status();\n}\n";
         assert_eq!(
             taint_for_cwe(tainted, "rust", "Command::new", Some("CWE-78")),
-            Taint::Tainted
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
         );
 
         let fixed = "fn run() {\n    Command::new(\"sh\").arg(\"-lc\").arg(\"ls\").status();\n}\n";
@@ -1080,7 +1273,9 @@ mod tests {
             "class A { void f(String userInput) { Runtime.getRuntime().exec(userInput); } }";
         assert_eq!(
             taint_for_cwe(tainted, "java", "Runtime.getRuntime", Some("CWE-78")),
-            Taint::Tainted
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
         );
 
         let fixed = "class A { void f() { Runtime.getRuntime().exec(\"ls -la\"); } }";
@@ -1096,7 +1291,9 @@ mod tests {
         let tainted = "package main\nfunc f(user string) { exec.Command(\"sh\", \"-c\", user) }\n";
         assert_eq!(
             taint_for_cwe(tainted, "go", "exec.Command", Some("CWE-78")),
-            Taint::Tainted
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
         );
 
         let fixed = "package main\nfunc f() { exec.Command(\"sh\", \"-c\", \"ls\") }\n";
@@ -1133,7 +1330,9 @@ mod tests {
         let source = "function f(u) { return exec(\"prefix\", u, \"suffix\"); }\n";
         assert_eq!(
             taint_for_cwe(source, "javascript", "exec(", Some("CWE-78")),
-            Taint::Tainted
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
         );
     }
 
@@ -1144,7 +1343,99 @@ mod tests {
         let source = "class A { void f(String userInput) { exec(String); } }";
         assert_ne!(
             taint_for_cwe(source, "java", "exec(", Some("CWE-78")),
-            Taint::Tainted
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
+        );
+    }
+
+    // ---------------------------------------------------------------- origin
+
+    #[test]
+    fn a_parameter_and_a_request_are_distinguished() {
+        // The distinction that decides whether SSRF and path traversal are
+        // reportable at all.
+        let parameter = "function f(url) { return fetch(url); }\n";
+        assert_eq!(
+            taint_for_cwe(parameter, "javascript", "fetch(", Some("CWE-918")),
+            Taint::Tainted {
+                origin: Origin::Parameter
+            }
+        );
+
+        let request = "function f(req) { return fetch(req.query.target); }\n";
+        assert_eq!(
+            taint_for_cwe(request, "javascript", "fetch(", Some("CWE-918")),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        );
+    }
+
+    #[test]
+    fn only_some_weakness_classes_need_an_external_origin() {
+        // Evaluating a caller-supplied string is the defect whoever calls it.
+        // Fetching a caller-supplied URL is an HTTP helper's whole purpose.
+        assert!(requires_external_origin(Some("CWE-918")));
+        assert!(requires_external_origin(Some("CWE-22")));
+        assert!(!requires_external_origin(Some("CWE-95")));
+        assert!(!requires_external_origin(Some("CWE-78")));
+        assert!(!requires_external_origin(None));
+    }
+
+    #[test]
+    fn an_external_source_beats_a_parameter_when_combined() {
+        let source = "function f(req, prefix) { return fetch(prefix + req.query.p); }\n";
+        assert_eq!(
+            taint_for_cwe(source, "javascript", "fetch(", Some("CWE-918")),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        );
+    }
+
+    #[test]
+    fn a_framework_request_read_is_external() {
+        // Named methods rather than receiver names: `r` in Go and `ctx` in
+        // several frameworks are far too common to treat as request objects.
+        let go = "package main\nfunc p(r *http.Request) { t := r.FormValue(\"t\"); http.Get(t) }\n";
+        assert_eq!(
+            taint_for_cwe(go, "go", "http.Get(", Some("CWE-918")),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        );
+
+        let java = "class D { void f(HttpServletRequest request) { new File(\"/d/\" + request.getParameter(\"n\")); } }";
+        assert_eq!(
+            taint_for_cwe(java, "java", "new File", Some("CWE-22")),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        );
+    }
+
+    #[test]
+    fn a_call_rooted_at_a_request_object_is_external() {
+        // `request.args.get(...)` is a call, so the member branch never sees
+        // it; the root of the callee chain is what carries the meaning.
+        let source = "from flask import request\ndef f():\n    return requests.get(request.args.get(\"t\"))\n";
+        assert_eq!(
+            taint_for_cwe(source, "python", "requests.get(", Some("CWE-918")),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        );
+    }
+
+    #[test]
+    fn a_go_binding_resolves_through_its_expression_list() {
+        // Go wraps both sides of `a := b` in an expression_list, so every Go
+        // binding resolved to Unknown until that wrapper was looked through.
+        let source = "package main\nfunc f() { x := \"literal\"; eval(x) }\n";
+        assert_eq!(
+            taint_for_cwe(source, "go", "eval(", Some("CWE-95")),
+            Taint::Constant
         );
     }
 }
