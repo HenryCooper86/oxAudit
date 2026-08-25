@@ -202,6 +202,9 @@ fn language_for(language: &str) -> Option<tree_sitter::Language> {
         "ruby" => Some(tree_sitter_ruby::LANGUAGE.into()),
         "c" => Some(tree_sitter_c::LANGUAGE.into()),
         "cpp" => Some(tree_sitter_cpp::LANGUAGE.into()),
+        "csharp" => Some(tree_sitter_c_sharp::LANGUAGE.into()),
+        "kotlin" => Some(tree_sitter_kotlin_ng::LANGUAGE.into()),
+        "swift" => Some(tree_sitter_swift::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -223,6 +226,8 @@ fn is_comment_kind(kind: &str) -> bool {
             | "doc_comment"
             | "outer_doc_comment_marker"
             | "inner_doc_comment_marker"
+            // Swift names its block comment separately.
+            | "multiline_comment"
     )
 }
 
@@ -262,6 +267,18 @@ fn is_string_kind(kind: &str) -> bool {
             // Java, and C++ raw strings carry their content in a child.
             | "char_literal"
             | "raw_string_content"
+            // C#: verbatim (@"..") and interpolated ($"..") strings are
+            // distinct node kinds from the plain literal.
+            | "string_literal_content"
+            | "verbatim_string_literal"
+            | "interpolated_string_expression"
+            | "character_literal_content"
+            // Kotlin and Swift triple-quoted strings.
+            | "multiline_string_literal"
+            | "multi_line_str_text"
+            // Swift's ordinary "..." literal and its text.
+            | "line_string_literal"
+            | "line_str_text"
     )
 }
 

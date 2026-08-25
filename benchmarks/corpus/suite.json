@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 105,
-    "positives": 45,
-    "negatives": 60,
-    "rules": 39
+    "fixtures": 130,
+    "positives": 57,
+    "negatives": 73,
+    "rules": 49
   },
   "targets": [
     {
@@ -493,6 +493,204 @@
       "expectedAbsent": []
     },
     {
+      "id": "cs-deserialization.negative.system-text-json",
+      "inputPath": "source/cs-deserialization__negative__system-text-json.cs",
+      "inputSha256": "09b4ddeffa4341a62551e8fc3f0848527876088f7738882aca6f7c93a9dd98c4",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-deserialization",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "cs-deserialization"
+        }
+      ]
+    },
+    {
+      "id": "cs-deserialization.positive.binary-formatter",
+      "inputPath": "source/cs-deserialization__positive__binary-formatter.cs",
+      "inputSha256": "d03329d0fddc27aaf8801bf1de853bb7a51c6efa3a4a6e6f4f6bf12ee318b753",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-deserialization",
+      "expected": [
+        {
+          "ruleId": "cs-deserialization",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "cs-insecure-random.negative.retry-jitter",
+      "inputPath": "source/cs-insecure-random__negative__retry-jitter.cs",
+      "inputSha256": "9694c26e7457e18c6ee77f36251498d147d5ee060bd28aea9899563ef0322776",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-insecure-random",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "cs-insecure-random"
+        }
+      ]
+    },
+    {
+      "id": "cs-insecure-random.positive.session-token",
+      "inputPath": "source/cs-insecure-random__positive__session-token.cs",
+      "inputSha256": "8d9ebab182bb91e8e6c9b33a95bce7d1503ed8f49b1a1011df1b485aa3f368ab",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-insecure-random",
+      "expected": [
+        {
+          "ruleId": "cs-insecure-random",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "cs-process-start.negative.argument-list",
+      "inputPath": "source/cs-process-start__negative__argument-list.cs",
+      "inputSha256": "ab7d68290a076fcccbca93ac421d781bbe5e087098d170f7024b046486d770e4",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-process-start",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "cs-process-start"
+        }
+      ]
+    },
+    {
+      "id": "cs-process-start.positive.request-command",
+      "inputPath": "source/cs-process-start__positive__request-command.cs",
+      "inputSha256": "3aef9c48467477530fa75ed23e384d419e82395346c281147b11ae05b4811f3b",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-process-start",
+      "expected": [
+        {
+          "ruleId": "cs-process-start",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "cs-sql-concat.negative.parameterized",
+      "inputPath": "source/cs-sql-concat__negative__parameterized.cs",
+      "inputSha256": "d36bc3dfc93914c37f9fdf2b6ca9c491c05c4736050bc271db7609c778d742fd",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-sql-concat",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "cs-sql-concat"
+        }
+      ]
+    },
+    {
+      "id": "cs-sql-concat.positive.concatenated-id",
+      "inputPath": "source/cs-sql-concat__positive__concatenated-id.cs",
+      "inputSha256": "04d3322d677a37ecce4006f86de399a353159340c19ef18dc828584a927f77f6",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-sql-concat",
+      "expected": [
+        {
+          "ruleId": "cs-sql-concat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "cs-weak-crypto.negative.sha256-hash",
+      "inputPath": "source/cs-weak-crypto__negative__sha256-hash.cs",
+      "inputSha256": "d8ce25698c5522c7050ff22d42be7ce5df3dc02a73198c1c52acc380a6b551e0",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-weak-crypto",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "cs-weak-crypto"
+        }
+      ]
+    },
+    {
+      "id": "cs-weak-crypto.positive.md5-hash",
+      "inputPath": "source/cs-weak-crypto__positive__md5-hash.cs",
+      "inputSha256": "661e956c2324e25ff9ae1d56cc5848e3be3fae02ea30356b6d06dccfa49b7d6a",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-weak-crypto",
+      "expected": [
+        {
+          "ruleId": "cs-weak-crypto",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "cs-xxe.negative.dtd-prohibited",
+      "inputPath": "source/cs-xxe__negative__dtd-prohibited.cs",
+      "inputSha256": "afb8fece8e775cec5fa11b733c25d8b1fbdb687c53eb3b3ea78f9d358f5d2016",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-xxe",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "cs-xxe"
+        }
+      ]
+    },
+    {
+      "id": "cs-xxe.positive.dtd-parse",
+      "inputPath": "source/cs-xxe__positive__dtd-parse.cs",
+      "inputSha256": "a6450245fd267195d5eb9e156ebb4087fe7bf51ad4e4244756b2bdc1eb3c2cc9",
+      "language": "csharp",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "cs-xxe",
+      "expected": [
+        {
+          "ruleId": "cs-xxe",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "go-exec-shell.negative.literal-argument",
       "inputPath": "source/go-exec-shell__negative__literal-argument.go",
       "inputSha256": "f0c5f81e058aa63181f28f498e4bd97c6d47d71e6f84fb035b7e71980dbaee57",
@@ -657,6 +855,22 @@
       "expectedAbsent": []
     },
     {
+      "id": "java-runtime-exec.negative.kotlin-literal-command",
+      "inputPath": "source/java-runtime-exec__negative__kotlin-literal-command.kt",
+      "inputSha256": "5723d8b429d8fd96e772f22761ebd87d8d84e9ee56943f8ea963731276d4ddbd",
+      "language": "kotlin",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-runtime-exec"
+        }
+      ]
+    },
+    {
       "id": "java-runtime-exec.negative.literal-command",
       "inputPath": "source/java-runtime-exec__negative__literal-command.java",
       "inputSha256": "71ff8e44ecf4be0924e08ebdac92c017b6255cc28b1b5840f761744197be6db7",
@@ -671,6 +885,23 @@
           "ruleId": "java-runtime-exec"
         }
       ]
+    },
+    {
+      "id": "java-runtime-exec.positive.kotlin-parameter-command",
+      "inputPath": "source/java-runtime-exec__positive__kotlin-parameter-command.kt",
+      "inputSha256": "27b93a654feefbb8456303793de6e2e9c71226c8c12c933c1345f50d88628169",
+      "language": "kotlin",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [
+        {
+          "ruleId": "java-runtime-exec",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
     },
     {
       "id": "java-runtime-exec.positive.parameter-command",
@@ -720,6 +951,39 @@
           "ruleId": "java-xxe"
         }
       ]
+    },
+    {
+      "id": "java-xxe.negative.kotlin-hardened-parser",
+      "inputPath": "source/java-xxe__negative__kotlin-hardened-parser.kt",
+      "inputSha256": "1e4bd02a3d29539b9cb56718a8e40c842953461578ac1530990ae1174ec07159",
+      "language": "kotlin",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xxe",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-xxe"
+        }
+      ]
+    },
+    {
+      "id": "java-xxe.positive.kotlin-unhardened-parser",
+      "inputPath": "source/java-xxe__positive__kotlin-unhardened-parser.kt",
+      "inputSha256": "0bf2cb370cbee62bdb2348b5fe656926eb009a9bca6de2bb93ff417d7c529444",
+      "language": "kotlin",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xxe",
+      "expected": [
+        {
+          "ruleId": "java-xxe",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
     },
     {
       "id": "java-xxe.positive.unhardened-parser",
@@ -1012,6 +1276,55 @@
       "expected": [
         {
           "ruleId": "js-ssrf",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "kt-insecure-random.negative.animation-jitter",
+      "inputPath": "source/kt-insecure-random__negative__animation-jitter.kt",
+      "inputSha256": "a4bc9e588dd0262168871a0c1fa570598efb775df769614fe8f02fb7340e6c23",
+      "language": "kotlin",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "kt-insecure-random",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "kt-insecure-random"
+        }
+      ]
+    },
+    {
+      "id": "kt-insecure-random.negative.prose-in-comment",
+      "inputPath": "source/kt-insecure-random__negative__prose-in-comment.kt",
+      "inputSha256": "4b605da21d0a976ba3c96bf04d06692a7bd624d03da168bd2188900ae4c836da",
+      "language": "kotlin",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "kt-insecure-random",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "kt-insecure-random"
+        }
+      ]
+    },
+    {
+      "id": "kt-insecure-random.positive.session-token",
+      "inputPath": "source/kt-insecure-random__positive__session-token.kt",
+      "inputSha256": "69ade3942f41be79050871705fda62bf5ea793e8669f35a78a4d24d2c2c88b3a",
+      "language": "kotlin",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "kt-insecure-random",
+      "expected": [
+        {
+          "ruleId": "kt-insecure-random",
           "minimum": 1
         }
       ],
@@ -1738,6 +2051,105 @@
       "expected": [
         {
           "ruleId": "rs-sql-format",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "swift-insecure-random.negative.animation-jitter",
+      "inputPath": "source/swift-insecure-random__negative__animation-jitter.swift",
+      "inputSha256": "53b7f1c6aa3a5aa7d7495ae49e2f7944f41933c5a5da6b655feed63a7f4a8974",
+      "language": "swift",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "swift-insecure-random",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "swift-insecure-random"
+        }
+      ]
+    },
+    {
+      "id": "swift-insecure-random.positive.session-token",
+      "inputPath": "source/swift-insecure-random__positive__session-token.swift",
+      "inputSha256": "a5e53dd1636c8c633ac287e67bc12e9840f891602acfde6af5729be2b9d3442f",
+      "language": "swift",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "swift-insecure-random",
+      "expected": [
+        {
+          "ruleId": "swift-insecure-random",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "swift-trust-bypass.negative.system-evaluation",
+      "inputPath": "source/swift-trust-bypass__negative__system-evaluation.swift",
+      "inputSha256": "49d6fd1525809b14ea11f8b4f90850b66f583b839bc8a31e504bd090c1cb6b97",
+      "language": "swift",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "swift-trust-bypass",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "swift-trust-bypass"
+        }
+      ]
+    },
+    {
+      "id": "swift-trust-bypass.positive.accept-any-certificate",
+      "inputPath": "source/swift-trust-bypass__positive__accept-any-certificate.swift",
+      "inputSha256": "caa26f1cca4eb79595f5fd2e53079b00650e86efa122cfcff0d0aae03d4f7c2e",
+      "language": "swift",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "swift-trust-bypass",
+      "expected": [
+        {
+          "ruleId": "swift-trust-bypass",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "swift-weak-crypto.negative.sha256",
+      "inputPath": "source/swift-weak-crypto__negative__sha256.swift",
+      "inputSha256": "9c34e88de265be0007c67ed29020a221f055ee232d4724dd9ddcae0f72284ac5",
+      "language": "swift",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "swift-weak-crypto",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "swift-weak-crypto"
+        }
+      ]
+    },
+    {
+      "id": "swift-weak-crypto.positive.insecure-md5",
+      "inputPath": "source/swift-weak-crypto__positive__insecure-md5.swift",
+      "inputSha256": "09a472888067b47168cc3f8701a595e75c17b660cb467bfbc46fe835eeacf021",
+      "language": "swift",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "swift-weak-crypto",
+      "expected": [
+        {
+          "ruleId": "swift-weak-crypto",
           "minimum": 1
         }
       ],
