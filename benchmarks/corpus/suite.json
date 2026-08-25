@@ -12,9 +12,9 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 138,
-    "positives": 61,
-    "negatives": 77,
+    "fixtures": 141,
+    "positives": 62,
+    "negatives": 79,
     "rules": 53
   },
   "targets": [
@@ -887,6 +887,38 @@
       ]
     },
     {
+      "id": "java-runtime-exec.negative.split-chain-literal",
+      "inputPath": "source/java-runtime-exec__negative__split-chain-literal.java",
+      "inputSha256": "9289fed896fb2aba7163948a978bbe5668129f6d0cbba7e3c9707c5eec56ef3c",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-runtime-exec"
+        }
+      ]
+    },
+    {
+      "id": "java-runtime-exec.negative.unrelated-exec",
+      "inputPath": "source/java-runtime-exec__negative__unrelated-exec.java",
+      "inputSha256": "24a9cbe43354aeb63be48cc5b634d146b8cbcbb76a5cbeeabc546e85827578af",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-runtime-exec"
+        }
+      ]
+    },
+    {
       "id": "java-runtime-exec.positive.kotlin-parameter-command",
       "inputPath": "source/java-runtime-exec__positive__kotlin-parameter-command.kt",
       "inputSha256": "27b93a654feefbb8456303793de6e2e9c71226c8c12c933c1345f50d88628169",
@@ -907,6 +939,23 @@
       "id": "java-runtime-exec.positive.parameter-command",
       "inputPath": "source/java-runtime-exec__positive__parameter-command.java",
       "inputSha256": "db23b661a9dd72669e6bac1f51acd3259062a1ed5c65977aed9e686434ea1b84",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [
+        {
+          "ruleId": "java-runtime-exec",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-runtime-exec.positive.split-chain-command",
+      "inputPath": "source/java-runtime-exec__positive__split-chain-command.java",
+      "inputSha256": "90f9028d0b445774b694b1b92f9cac218215e226e69141a6ff80d9d39e27d912",
       "language": "java",
       "scannerFamilies": [
         "source-pattern"

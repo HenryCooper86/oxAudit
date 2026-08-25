@@ -198,11 +198,11 @@ rule.
 |---|---|---|
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
-| Corpus size | 26 fixtures | **138 fixtures** |
+| Corpus size | 26 fixtures | **141 fixtures** |
 | Findings on this repository | 142 | **32** |
 | …still shown after scope triage | 142 | **5** |
 
-The corpus is 138 fixtures, 77 of them negatives, and none of the negatives were
+The corpus is 141 fixtures, 79 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
 source or a real dependency tree — type declarations, prose in Markdown,
 comments, environment lookups, function parameters, JSON schemas, UI labels,
@@ -210,7 +210,7 @@ hardened XML parsers, non-security uses of `Math.random()`, and the detector
 code that searches for PEM headers.
 
 The corpus is deliberately vulnerable, so it is excluded from the repository
-figure above: a full scan of this checkout returns 99 findings, 67 of which are
+figure above: a full scan of this checkout returns 100 findings, 68 of which are
 the fixtures doing their job.
 
 A corpus you tuned against proves little, so the last two rows are the ones that
@@ -245,10 +245,10 @@ Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
 
 | | First run | After acting on it |
 |---|---|---|
-| Precision | 67.0% | **78.2%** |
-| Recall | 6.1% | **63.9%** |
-| False positive rate | 3.0% | 18.2% |
-| Youden index (recall − FPR) | 0.030 | **0.457** |
+| Precision | 67.0% | 72.8% |
+| Recall | 6.1% | **73.1%** |
+| False positive rate | 3.0% | 27.8% |
+| Youden index (recall − FPR) | 0.030 | **0.453** |
 
 The first column is what a corpus written by the rules' own authors had been
 reporting as 100%. Four rules were wrong in ways no internal fixture caught,
@@ -258,8 +258,14 @@ and the two columns are the before and after of fixing them:
 |---|---|---|---|
 | `crypto` | 0 / 130 | **130 / 130** | The rule read the *mode*, so `DES/CBC/PKCS5Padding` passed |
 | `weakrand` | 0 / 218 | **218 / 218** | The rule needed a secret-ish variable name nearby |
+| `cmdi` | 33 / 126 | **126 / 126** | The rule needed the whole `Runtime.getRuntime().exec(` chain in one expression |
 | `sqli` | 0 / 272 | 174 / 272 | The rule needed the concatenation *inside* the execute call |
 | `hash` | 28 / 129 | 89 / 129 | `SHA1` and `SHA-1` name the same hash; only one was matched |
+
+Every one of those is the same kind of mistake: a rule written against the
+shape its author pictured, and a fixture written by the same person to match.
+`Runtime r = Runtime.getRuntime(); r.exec(cmd)` is not an exotic way to write
+Java, and oxAudit missed 100% of command injections written that way.
 
 `crypto` and `weakrand` reached 100% precision *and* 100% recall — those
 discriminators are exact (an algorithm name, a class name), so there was
@@ -318,11 +324,35 @@ trust boundary, secure cookie: 742 cases, 407 of them vulnerable — are counted
 and reported **separately**. They measure absent rules rather than inaccurate
 ones, and averaging the two together would hide which is which.
 
-Two limits are worth naming as limits rather than as work outstanding. The 40
+Three limits are worth naming as limits rather than as work outstanding. The 40
 `hash` cases still missed read their algorithm out of a properties file, so the
-weak value is never in the source at all. And `pathtraver` reports nothing by
+weak value is never in the source at all. `pathtraver` reports nothing by
 design: CWE-22 is one of the two classes that require an inbound origin, for
 the reason given under *Known limitation* below.
+
+And `cmdi` now scores a Youden index of **0.000** — it finds all 126
+vulnerable cases and flags all 125 safe ones. That is worth being plain about
+rather than burying, because it looks like the rule discriminates nothing. On
+ordinary code it does: a literal command is suppressed and a request-derived
+one is reported, and there are fixtures for both. What defeats it here is how
+the Benchmark builds a safe case:
+
+```java
+int num = 86;
+if ((7 * 42) - num > 200) bar = "This_should_always_happen";
+else bar = param;                    // dead: 294 − 86 is always > 200
+String[] args = {a1, a2, "echo " + bar};
+```
+
+Separating that from the vulnerable version needs constant folding and
+dead-branch elimination. oxAudit's documented behaviour is the exact opposite
+— *a variable reassigned in a branch counts as tainted if any reaching
+definition is tainted* — chosen deliberately to over-approximate toward
+reporting. So these are the stated design producing the result it was designed
+to produce, and the fix is not a better `cmdi` rule.
+
+Taking the recall was still right. Missing every command injection written in
+two statements is a hole no amount of benchmark score justifies keeping.
 
 Whether a weak generator matters is a question the tool refuses to answer on
 its own. `java-insecure-random` asks whether a *secret* came from one and is
