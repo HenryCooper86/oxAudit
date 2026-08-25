@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 151,
-    "positives": 66,
-    "negatives": 85,
-    "rules": 56
+    "fixtures": 155,
+    "positives": 68,
+    "negatives": 87,
+    "rules": 58
   },
   "targets": [
     {
@@ -773,6 +773,39 @@
       "expectedAbsent": []
     },
     {
+      "id": "java-insecure-cookie.negative.secure-enabled",
+      "inputPath": "source/java-insecure-cookie__negative__secure-enabled.java",
+      "inputSha256": "04be0a7c1f3702da076ae0be8e32d112b00d1c456ebbe64385457c49bc9057c6",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-insecure-cookie",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-insecure-cookie"
+        }
+      ]
+    },
+    {
+      "id": "java-insecure-cookie.positive.secure-disabled",
+      "inputPath": "source/java-insecure-cookie__positive__secure-disabled.java",
+      "inputSha256": "dcf82c84a019b3e8b442bcef804a12f7ad0dc4322a0314b74e8d5ed4622f98ca",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-insecure-cookie",
+      "expected": [
+        {
+          "ruleId": "java-insecure-cookie",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "java-insecure-random.negative.secure-random",
       "inputPath": "source/java-insecure-random__negative__secure-random.java",
       "inputSha256": "d1cb339ce32cf0d0c99ff2e2323f20be6ffe27389887df30319fbdcd351cd380",
@@ -1079,6 +1112,39 @@
       "expected": [
         {
           "ruleId": "java-sql-concat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-trust-boundary.negative.fixed-key",
+      "inputPath": "source/java-trust-boundary__negative__fixed-key.java",
+      "inputSha256": "44b6728ce690cb31b668fb842d505530f63456c5598adee44bc5c4d56fc1af9a",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-trust-boundary",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-trust-boundary"
+        }
+      ]
+    },
+    {
+      "id": "java-trust-boundary.positive.request-chosen-key",
+      "inputPath": "source/java-trust-boundary__positive__request-chosen-key.java",
+      "inputSha256": "011d39dcf6bcbfd1a9067709612320dffcaa88c0625c43cd02196902309b98ef",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-trust-boundary",
+      "expected": [
+        {
+          "ruleId": "java-trust-boundary",
           "minimum": 1
         }
       ],

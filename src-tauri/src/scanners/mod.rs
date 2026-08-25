@@ -1110,4 +1110,60 @@ mod tests {
             "{rules:?}"
         );
     }
+
+    // ------------------------------- secure cookies and trust boundaries
+
+    #[test]
+    fn a_cookie_with_secure_switched_off_is_reported() {
+        // The constant `false` is the whole finding, so CWE-614 has to be
+        // exempt from argument-based clearing. It was not, and the rule
+        // scored zero on all 36 labelled cases until it was.
+        let rules = rules_firing(
+            "S.java",
+            "class S {\n  void f(javax.servlet.http.HttpServletResponse response) {\n    javax.servlet.http.Cookie c = new javax.servlet.http.Cookie(\"sid\", \"x\");\n    c.setSecure(false);\n    response.addCookie(c);\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-insecure-cookie"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_secure_cookie_is_not_reported() {
+        let rules = rules_firing(
+            "S.java",
+            "class S {\n  void f(javax.servlet.http.HttpServletResponse response) {\n    javax.servlet.http.Cookie c = new javax.servlet.http.Cookie(\"sid\", \"x\");\n    c.setSecure(true);\n    c.setHttpOnly(true);\n    response.addCookie(c);\n  }\n}\n",
+        );
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn a_request_chosen_session_key_is_reported() {
+        let rules = rules_firing(
+            "P.java",
+            "class P {\n  void f(javax.servlet.http.HttpServletRequest request) {\n    request.getSession().setAttribute(request.getParameter(\"key\"), \"10340\");\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-trust-boundary"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_request_value_under_a_fixed_key_is_not_reported() {
+        // The Benchmark labels this vulnerable and oxAudit deliberately does
+        // not report it. Storing a request value in the session under a key
+        // the application chose is what every login form does; reporting it
+        // costs 50 true positives there and would produce a rule nobody
+        // leaves switched on, which is the same trade already made for
+        // path traversal and SSRF.
+        let rules = rules_firing(
+            "P.java",
+            "class P {\n  void f(javax.servlet.http.HttpServletRequest request) {\n    request.getSession().setAttribute(\"userId\", request.getParameter(\"id\"));\n  }\n}\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-trust-boundary"),
+            "{rules:?}"
+        );
+    }
 }

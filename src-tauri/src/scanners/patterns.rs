@@ -65,6 +65,8 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         srule!("java-xss-response", "Unescaped value written to the response", &["java", "kotlin"], "high", "CWE-79", r"(?:getWriter|getOutputStream)\s*\(\s*\)\s*(\.\s*(?:print|println|printf|write|format|append)\s*\()", "Writing an untrusted value into the response body without escaping it lets a crafted value close the surrounding markup and run as script in the victim's browser. A format method is worse still: an attacker-controlled format string reads the argument list.", "Escape on output for the context you are writing into — ESAPI's encodeForHTML for element text, encodeForHTMLAttribute inside an attribute — and never pass an untrusted value as a format string."),
         srule!("java-ldap-injection", "LDAP filter built by concatenation", &["java", "kotlin"], "high", "CWE-90", r"(?s)\bDirContext\b.{0,800}?(\.\s*search\s*\()", "An LDAP filter assembled by concatenation cannot separate the value from the filter syntax, so a crafted value rewrites the query — `*)(uid=*` turns an authentication check into a match on every entry.", "Use a parameterised filter with {0} placeholders and pass the values as the filterArgs array, or escape with ESAPI's encodeForLDAP."),
         srule!("java-xpath-injection", "XPath expression built by concatenation", &["java", "kotlin"], "high", "CWE-643", r"(?s)\bXPath\b.{0,300}?(\.\s*(?:evaluate|compile)\s*\()", "An XPath expression assembled by concatenation cannot separate the value from the query syntax, so a crafted value selects nodes the query was never meant to return.", "Bind values with XPathVariableResolver and reference them as $name, or escape with ESAPI's encodeForXPath."),
+        srule!("java-insecure-cookie", "Cookie sent without the Secure flag", &["java", "kotlin"], "medium", "CWE-614", r"\.\s*setSecure\s*\(\s*false\s*\)", "A cookie without the Secure attribute is sent over plain HTTP as well as HTTPS, so anyone on the network path can read it. For a session cookie that is the session.", "Call setSecure(true), and set HttpOnly and SameSite while you are there. Prefer configuring this once for the whole application rather than per cookie."),
+        srule!("java-trust-boundary", "Untrusted value used as a session attribute name", &["java", "kotlin"], "medium", "CWE-501", r"(?s)\bgetSession\s*\(\s*\).{0,200}?(\.\s*(?:setAttribute|putValue)\s*\()", "The session is trusted storage and a request value is not. Letting an attacker choose the attribute name lets them overwrite entries the application later reads back as its own — a role, a user id, an authentication flag.", "Use a fixed set of attribute names chosen by the application, and validate any request value before it is stored."),
         srule!("java-deserialization", "Unsafe deserialization", &["java", "kotlin"], "high", "CWE-502", r"(?:ObjectInputStream|XMLDecoder|ObjectInput)[^;]{0,80}\s*readObject\s*\(", "readObject()/XMLDecoder deserialization of untrusted data can lead to RCE via gadget chains.", "Do not deserialize untrusted data; use safe formats (JSON) with strict schemas, or an allow-listed deserialization filter."),
         srule!("java-cipher-ecb", "Cipher in ECB mode", &["java"], "medium", "CWE-327", r#"Cipher\s*\.\s*getInstance\s*\(\s*['"][^'"]*\/ECB\/"#, "ECB mode leaks patterns in ciphertext and is not semantically secure.", "Use AES-GCM (or CBC with HMAC) and a random IV."),
         srule!("java-weak-cipher", "Broken cipher algorithm", &["java", "kotlin"], "high", "CWE-327", r#"(?:Cipher|KeyGenerator|SecretKeyFactory)\s*\.\s*getInstance\s*\(\s*['"](?:DES|DESede|TripleDES|RC2|RC4|ARCFOUR|Blowfish)\b"#, "DES and Triple DES have key sizes small enough to brute force, and RC2, RC4, and Blowfish have structural weaknesses. The mode does not matter: `DES/CBC/PKCS5Padding` is broken because DES is broken.", "Use AES-256 in GCM mode. For key derivation use PBKDF2, scrypt, or Argon2."),
@@ -209,7 +211,15 @@ static COMPILED_GUARDS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
 /// the output, and the position varies with the overload —
 /// `format(Locale.US, param, obj)` puts the format string second. Pinning it
 /// to the first argument cost 71 true positives on the Benchmark.
-const SINK_ARGUMENT: &[(&str, usize)] = &[("java-ldap-injection", 1), ("java-xpath-injection", 0)];
+const SINK_ARGUMENT: &[(&str, usize)] = &[
+    ("java-ldap-injection", 1),
+    ("java-xpath-injection", 0),
+    // The *name*, not the value. Storing a request value in the session under
+    // a fixed key is what every login form does; letting an attacker choose
+    // the key is what lets them overwrite `isAdmin`. Judging this call by
+    // every argument reports the first and buries the second.
+    ("java-trust-boundary", 0),
+];
 
 /// Which argument carries the injection, when only one of them does.
 pub fn sink_argument(rule_id: &str) -> Option<usize> {

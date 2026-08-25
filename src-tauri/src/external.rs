@@ -350,13 +350,10 @@ mod tests {
         // about something it never claimed to detect.
         let dir = corpus(&[
             ("BenchmarkTest00001", "cmdi", true, 78, VULNERABLE_EXEC),
-            (
-                "BenchmarkTest00003",
-                "securecookie",
-                true,
-                614,
-                "class T {}\n",
-            ),
+            // CWE-1004 is not a category the Benchmark scores and oxAudit
+            // has no rule for it, so it stands in for "no rule" now that every
+            // category the Benchmark does score has one.
+            ("BenchmarkTest00003", "httponly", true, 1004, "class T {}\n"),
         ]);
         let cases = load_expectations(dir.path()).expect("expectations");
         let report = score(dir.path(), &cases).expect("score");
@@ -366,8 +363,8 @@ mod tests {
         let uncovered = report
             .categories
             .iter()
-            .find(|score| score.category == "securecookie")
-            .expect("securecookie scored");
+            .find(|score| score.category == "httponly")
+            .expect("httponly scored");
         assert!(!uncovered.covered);
     }
 
@@ -405,13 +402,15 @@ mod tests {
     fn coverage_is_read_from_the_rule_table_not_hard_coded() {
         // So that adding a Java LDAP rule moves the category without anyone
         // remembering to edit this file.
-        assert!(covered(89), "oxAudit has a Java SQL rule");
-        assert!(covered(78), "oxAudit has Java command-execution rules");
-        // Adding java-xpath-injection moved CWE-643 from uncovered to covered
-        // without this file being edited, which is the point of reading the
-        // rule table. CWE-614 is the next one to move when a rule arrives.
-        assert!(covered(643), "oxAudit has a Java XPath rule");
-        assert!(!covered(614), "oxAudit has no secure-cookie rule");
+        // Every category the Benchmark scores now has a rule, and each of
+        // these moved from uncovered to covered without this file being
+        // edited — which is the point of reading the rule table.
+        for cwe in [22, 78, 79, 89, 90, 327, 328, 330, 501, 614, 643] {
+            assert!(covered(cwe), "CWE-{cwe} should have a Java rule");
+        }
+        // A weakness oxAudit carries no rule for still reads as uncovered, so
+        // the lookup is discriminating rather than answering yes to anything.
+        assert!(!covered(1004), "oxAudit has no HttpOnly rule");
     }
 
     #[test]
