@@ -38,6 +38,10 @@ const LANGUAGE_BY_EXTENSION = {
   ".rs": "rust",
   ".php": "php",
   ".rb": "ruby",
+  ".cs": "csharp",
+  ".kt": "kotlin",
+  ".kts": "kotlin",
+  ".swift": "swift",
 };
 
 function walk(directory) {
@@ -93,6 +97,24 @@ const fixtures = walk(CORPUS).map((path) => {
     expectedAbsent: polarity === "negative" ? [{ ruleId }] : [],
   };
 });
+
+// A fixture whose extension is not in the map above still gets written, with a
+// null language — and then scores as a miss for a reason that has nothing to do
+// with the scanner. Twelve fixtures for three new languages did exactly that,
+// and the benchmark reported it as a recall failure rather than a missing map
+// entry. Fail loudly instead.
+const unmapped = fixtures.filter(
+  (fixture) => fixture.language === null && !fixture.inputPath.startsWith("secrets/"),
+);
+if (unmapped.length > 0) {
+  console.error("Fixtures whose extension has no language mapping:\n");
+  for (const fixture of unmapped) console.error(`  - ${fixture.inputPath}`);
+  console.error(
+    "\nAdd the extension to LANGUAGE_BY_EXTENSION, or these score as misses " +
+      "for a reason that is not the scanner's.\n",
+  );
+  process.exit(1);
+}
 
 if (fixtures.length === 0) {
   console.error(`No fixtures found under ${CORPUS}.`);

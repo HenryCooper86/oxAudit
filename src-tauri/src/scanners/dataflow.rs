@@ -73,6 +73,20 @@ pub enum Origin {
     /// Attacker-controlled by construction.
     External,
 }
+/// Weakness classes where the *call* is the defect rather than the value
+/// reaching it.
+///
+/// `Math.random()` is not made unpredictable by `.toString(36).slice(2)`, and
+/// an XML parser left at its defaults is not hardened by the filename it is
+/// handed. For these, argument taint answers a question nobody asked, and
+/// letting it clear the finding is how `Math.random()` came to be suppressed
+/// by the constant `2` in a downstream `.slice(2)`.
+const CALL_IS_THE_DEFECT: &[&str] = &["CWE-338", "CWE-611", "CWE-327", "CWE-295"];
+
+/// Is this weakness about the call itself rather than its input?
+pub fn call_is_the_defect(sink_cwe: Option<&str>) -> bool {
+    sink_cwe.is_some_and(|cwe| CALL_IS_THE_DEFECT.contains(&cwe))
+}
 
 /// Weakness classes where a caller-supplied value is the ordinary case.
 ///
@@ -299,6 +313,10 @@ fn is_member_kind(kind: &str) -> bool {
             // Rust
             | "field_expression"
             | "scoped_identifier"
+            // C#
+            | "member_access_expression"
+            // Kotlin and Swift
+            | "navigation_expression"
     )
 }
 
@@ -311,6 +329,8 @@ fn is_call_kind(kind: &str) -> bool {
             | "method_invocation"
             // Java
             | "object_creation_expression"
+            // C#
+            | "invocation_expression"
     )
 }
 
@@ -372,6 +392,38 @@ pub fn names_the_call(call: Node<'_>, offset: usize) -> bool {
         .any(|argument| argument.byte_range().contains(&offset))
 }
 
+/// The node holding a call's arguments.
+///
+/// Most grammars label it as a field. Kotlin and Swift do not: both spell it
+/// `value_arguments` as an ordinary child, and Swift puts that inside a
+/// `call_suffix`. Missing this made every Kotlin call look like it took no
+/// arguments, so `exec("ls -la")` came back Unknown instead of Constant.
+fn argument_list<'tree>(call: Node<'tree>) -> Option<Node<'tree>> {
+    if let Some(list) = call
+        .child_by_field_name("arguments")
+        .or_else(|| call.child_by_field_name("argument"))
+    {
+        return Some(list);
+    }
+    let mut cursor = call.walk();
+    for child in call.children(&mut cursor) {
+        match child.kind() {
+            "value_arguments" => return Some(child),
+            "call_suffix" => {
+                let mut inner = child.walk();
+                let list = child
+                    .children(&mut inner)
+                    .find(|node| node.kind() == "value_arguments");
+                if let Some(list) = list {
+                    return Some(list);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Every argument passed anywhere in a call chain.
 ///
 /// A fluent chain is one expression as far as an attacker is concerned: if any
@@ -381,13 +433,22 @@ pub fn chain_arguments<'tree>(call: Node<'tree>) -> Vec<Node<'tree>> {
     let mut stack = vec![call];
     while let Some(node) = stack.pop() {
         if is_call_kind(node.kind()) {
-            if let Some(list) = node
-                .child_by_field_name("arguments")
-                .or_else(|| node.child_by_field_name("argument"))
-            {
+            if let Some(list) = argument_list(node) {
                 let mut cursor = list.walk();
                 for child in list.children(&mut cursor) {
-                    if child.is_named() && child.kind() != "comment" {
+                    if !child.is_named() || child.kind() == "comment" {
+                        continue;
+                    }
+                    // Kotlin and Swift wrap each argument in a node of its
+                    // own; the expression is inside it.
+                    if child.kind() == "value_argument" {
+                        let mut inner = child.walk();
+                        arguments.extend(
+                            child
+                                .children(&mut inner)
+                                .filter(|node| node.is_named() && node.kind() != "comment"),
+                        );
+                    } else {
                         arguments.push(child);
                     }
                 }

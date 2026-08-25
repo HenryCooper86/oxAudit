@@ -93,7 +93,7 @@ with a reason, an expiry, and a pull request.
 
 | Capability | What it does |
 |---|---|
-| **Source code scanning** | 60+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
+| **Source code scanning** | 70+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, C#, Kotlin, Swift, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
 | **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
 | **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by CISA KEV and EPSS — same exploitation signal as the binary scanner |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
@@ -198,10 +198,11 @@ rule.
 |---|---|---|
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
+| Corpus size | 26 fixtures | **130 fixtures** |
 | Findings on this repository | 142 | **32** |
 | …still shown after scope triage | 142 | **5** |
 
-The corpus is 77 fixtures, 48 of them negatives, and none of the negatives were
+The corpus is 130 fixtures, 73 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
 source or a real dependency tree — type declarations, prose in Markdown,
 comments, environment lookups, function parameters, JSON schemas, UI labels,
@@ -209,7 +210,7 @@ hardened XML parsers, non-security uses of `Math.random()`, and the detector
 code that searches for PEM headers.
 
 The corpus is deliberately vulnerable, so it is excluded from the repository
-figure above: a full scan of this checkout returns 66 findings, 34 of which are
+figure above: a full scan of this checkout returns 95 findings, 63 of which are
 the fixtures doing their job.
 
 A corpus you tuned against proves little, so the last two rows are the ones that
@@ -354,6 +355,29 @@ prove, then a hardened-parser fixture that passed only because it happened to
 call `setExpandEntityReferences(false)` as well, masking a guard that could
 never fire on the commonest spelling of the fix.
 
+### When the call is the defect, restated
+
+The XXE and weak-randomness work above established that some weaknesses are
+about the call rather than its input. Adding three languages showed that the
+same idea has a second half: for those classes, argument taint must not be
+allowed to *clear* a finding either.
+
+```js
+crypto.createHash("md5")                      // reported
+Math.random().toString(36).slice(2)           // reported
+```
+
+Both were being suppressed. `createHash("md5")` takes one argument and it is
+the constant naming the broken hash — read as "nobody can choose this value,
+so nothing can go wrong". `Math.random()` was cleared by the constant `2` in a
+downstream `.slice(2)`, because the chain it sits in is what supplies the
+arguments.
+
+Neither is subtle once stated, and both hid for the same reason: the first only
+misreported when the call stood alone, since a chained `.update(data)` made the
+chain tainted and reported it anyway. Weakness classes CWE-338, CWE-611,
+CWE-327, and CWE-295 are now exempt from argument-based clearing.
+
 ### What the analysis tells a reviewer
 
 The review model treats a finding as a *candidate* until something tries to
@@ -398,9 +422,9 @@ Every other weakness class still reports on any non-constant value.
 
 Three limits, stated because they bound what the result means:
 
-- **Nine languages.** JavaScript/TypeScript, Python, Java, Rust, Go, PHP,
-  Ruby, C, and C++. A language without a grammar is never suppressed on a
-  guess — it is scanned on text alone, and every match stands.
+- **Twelve languages.** JavaScript/TypeScript, Python, Java, Rust, Go, PHP,
+  Ruby, C, C++, C#, Kotlin, and Swift. A language without a grammar is never
+  suppressed on a guess — it is scanned on text alone, and every match stands.
 - **Intraprocedural.** Analysis stops at the enclosing function. Following a
   value across call boundaries needs a call graph, and a wrong one produces
   confident nonsense.

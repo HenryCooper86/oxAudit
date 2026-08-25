@@ -114,10 +114,15 @@ fn assess_sink(
 
     // Cleared outright: nobody can choose the value, or a transform covering
     // this weakness already neutralized it.
-    let cleared = matches!(
-        taint,
-        dataflow::Taint::Constant | dataflow::Taint::Sanitized { .. }
-    );
+    //
+    // Not for the classes where the call itself is the defect. Nothing done to
+    // the result of `Math.random()` makes it unpredictable, so reading the
+    // arguments of the chain it sits in only finds reasons to hide it.
+    let cleared = !dataflow::call_is_the_defect(sink_cwe)
+        && matches!(
+            taint,
+            dataflow::Taint::Constant | dataflow::Taint::Sanitized { .. }
+        );
 
     // For a few weakness classes, taking a caller-supplied value is the
     // ordinary case rather than the defect — an HTTP wrapper takes a URL, a
@@ -659,5 +664,102 @@ mod tests {
             "#include <stdlib.h>\nvoid f(char **v) { system(v[1]); }\n",
         );
         assert!(rules.iter().any(|rule| rule == "c-system"), "{rules:?}");
+    }
+
+    // ------------------------------------------------ C#, Kotlin, and Swift
+
+    #[test]
+    fn prose_about_a_sink_is_not_a_sink_in_the_newest_languages() {
+        let cases = [
+            (
+                "A.cs",
+                "// Never call Process.Start(userInput) here.\n/// <summary>MD5.Create() is banned.</summary>\nclass A { string N = @\"no BinaryFormatter()\"; }\n",
+            ),
+            (
+                "A.kt",
+                "// Runtime.getRuntime().exec(cmd) is banned.\n/* DocumentBuilderFactory.newInstance() needs hardening. */\nval note = \"\"\"never call exec(cmd)\"\"\"\n",
+            ),
+            (
+                "A.swift",
+                "// URLCredential(trust: t) accepts any certificate.\n/* Insecure.MD5 is broken. */\nlet note = \"do not call arc4random()\"\n",
+            ),
+        ];
+        for (name, source) in cases {
+            assert_eq!(rules_firing(name, source), Vec::<String>::new(), "{name}");
+        }
+    }
+
+    #[test]
+    fn kotlin_reuses_the_jvm_rules() {
+        // Kotlin calls the same APIs, so the Java rules apply verbatim rather
+        // than being duplicated under new ids.
+        let rules = rules_firing(
+            "A.kt",
+            "class A {\n    fun run(command: String) {\n        Runtime.getRuntime().exec(command)\n    }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-runtime-exec"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_kotlin_literal_argument_is_recognised_as_constant() {
+        // Kotlin spells its argument list `value_arguments` with no field
+        // label, so every call looked argument-less until that was handled —
+        // and a literal command came back Unknown instead of Constant.
+        let rules = rules_firing(
+            "A.kt",
+            "class A {\n    fun listing() {\n        Runtime.getRuntime().exec(\"ls -la\")\n    }\n}\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-runtime-exec"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn formatting_a_weak_random_value_does_not_excuse_it() {
+        // `.toString(36).slice(2)` supplies constant arguments to the chain,
+        // and reading them cleared the finding. Nothing done to the output of
+        // Math.random() makes it unpredictable.
+        let rules = rules_firing(
+            "a.js",
+            "function createSession(user) {\n  const sessionToken = Math.random().toString(36).slice(2);\n  return sessionToken;\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "js-insecure-random"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn naming_the_broken_algorithm_is_not_proof_of_safety() {
+        // `createHash("md5")` takes exactly one argument, and it is the
+        // constant naming the broken hash. Reading that as "nobody can choose
+        // this value, so it is safe" suppressed the canonical weak-hash
+        // finding — but only when the call stood alone, since a chained
+        // `.update(data)` made the chain tainted and reported it anyway.
+        let rules = rules_firing(
+            "h.js",
+            "const crypto = require(\"crypto\");\nfunction f() {\n  return crypto.createHash(\"md5\");\n}\n",
+        );
+        assert!(rules.iter().any(|rule| rule == "js-weak-hash"), "{rules:?}");
+    }
+
+    #[test]
+    fn a_generator_named_only_in_a_comment_is_not_a_finding() {
+        // These rules match a secret-ish name and then a generator up to 160
+        // characters later, so the match *starts* in code while the generator
+        // it found sits in a comment. Capture group one moves the finding to
+        // the generator, which is what suppression then checks.
+        let rules = rules_firing(
+            "A.kt",
+            "class Tokens {\n    /* Historical: this used Random() to build a session token. */\n    private val generator = java.security.SecureRandom()\n}\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "kt-insecure-random"),
+            "{rules:?}"
+        );
     }
 }
