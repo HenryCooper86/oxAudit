@@ -901,4 +901,47 @@ mod tests {
             "{rules:?}"
         );
     }
+
+    #[test]
+    fn taking_the_runtime_once_and_using_it_later_is_still_command_injection() {
+        // The rule required `Runtime.getRuntime().exec(` as a single chain, so
+        // the ordinary two-statement form went undetected — 93 of the OWASP
+        // Benchmark's 126 labelled cases, and none of them exotic.
+        let rules = rules_firing(
+            "A.java",
+            "class A {\n  void f(javax.servlet.http.HttpServletRequest request) throws Exception {\n    Runtime r = Runtime.getRuntime();\n    r.exec(request.getParameter(\"cmd\"));\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-runtime-exec"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_literal_command_through_a_held_runtime_is_not_reported() {
+        let rules = rules_firing(
+            "A.java",
+            "class A {\n  void f() throws Exception {\n    Runtime r = Runtime.getRuntime();\n    r.exec(\"ls -la\");\n  }\n}\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-runtime-exec"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn the_rule_anchors_on_acquiring_a_runtime_not_on_the_word() {
+        // Widening this to proximity risks turning any nearby `.exec(` into a
+        // command-injection finding. `RuntimeException` in a catch clause is
+        // the shape that would do it, so the anchor requires a Runtime to
+        // actually be obtained.
+        let rules = rules_firing(
+            "A.java",
+            "class A {\n  void f(QueryEngine engine, String query) {\n    try { engine.start(); }\n    catch (RuntimeException error) { engine.exec(query); }\n  }\n}\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-runtime-exec"),
+            "{rules:?}"
+        );
+    }
 }
