@@ -209,6 +209,14 @@ const TAINTED_ROOTS: &[&str] = &[
     "flask_request",
     "argv",
     "environ",
+    // PHP superglobals. The grammar names these without the leading `$`,
+    // which is what a variable's root resolves to.
+    "_GET",
+    "_POST",
+    "_REQUEST",
+    "_COOKIE",
+    "_FILES",
+    "_SERVER",
 ];
 
 /// Calls that return attacker-controlled data.
@@ -263,12 +271,22 @@ fn is_literal_kind(kind: &str) -> bool {
             | "integer_literal"
             | "float_literal_rs"
             | "boolean_literal"
+            // PHP: the double-quoted form, which may interpolate — that is
+            // decided separately by is_interpolated.
+            | "encapsed_string"
     )
 }
 
 /// Node kinds that name a value rather than being one.
 fn is_identifier_kind(kind: &str) -> bool {
-    matches!(kind, "identifier" | "shorthand_property_identifier")
+    matches!(
+        kind,
+        "identifier"
+            | "shorthand_property_identifier"
+            // PHP calls a bare identifier a `name`; Swift a `simple_identifier`.
+            | "name"
+            | "simple_identifier"
+    )
 }
 
 /// The text of a node.
@@ -287,7 +305,13 @@ fn is_interpolated(node: Node<'_>) -> bool {
     let interpolated = node.children(&mut cursor).any(|child| {
         matches!(
             child.kind(),
-            "template_substitution" | "interpolation" | "string_interpolation"
+            "template_substitution"
+                | "interpolation"
+                | "string_interpolation"
+                // PHP embeds the variable straight into the string, and Swift
+                // names its interpolation differently again.
+                | "variable_name"
+                | "interpolated_expression"
         )
     });
     interpolated
@@ -301,6 +325,11 @@ fn member_object<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
     node.child_by_field_name("object")
         .or_else(|| node.child_by_field_name("operand"))
         .or_else(|| node.child_by_field_name("value"))
+        .or_else(|| {
+            // PHP labels neither side of `$_GET['x']`, so the thing being
+            // indexed is simply the first child.
+            (node.kind() == "subscript_expression").then(|| node.named_child(0))?
+        })
 }
 
 fn is_member_kind(kind: &str) -> bool {
@@ -331,6 +360,11 @@ fn is_call_kind(kind: &str) -> bool {
             | "object_creation_expression"
             // C#
             | "invocation_expression"
+            // PHP
+            | "function_call_expression"
+            | "member_call_expression"
+            | "scoped_call_expression"
+            | "nullsafe_member_call_expression"
     )
 }
 
@@ -439,9 +473,9 @@ pub fn chain_arguments<'tree>(call: Node<'tree>) -> Vec<Node<'tree>> {
                     if !child.is_named() || child.kind() == "comment" {
                         continue;
                     }
-                    // Kotlin and Swift wrap each argument in a node of its
-                    // own; the expression is inside it.
-                    if child.kind() == "value_argument" {
+                    // Kotlin, Swift, and PHP wrap each argument in a node of
+                    // its own; the expression is inside it.
+                    if matches!(child.kind(), "value_argument" | "argument") {
                         let mut inner = child.walk();
                         arguments.extend(
                             child
@@ -552,7 +586,7 @@ fn classify_with_depth(
     }
 
     // `req.body.expression` — the root decides.
-    if is_member_kind(kind) || kind == "subscript" {
+    if is_member_kind(kind) || matches!(kind, "subscript" | "subscript_expression") {
         if let Some(root) = leftmost_identifier(node, source) {
             if TAINTED_ROOTS.contains(&root) {
                 return Taint::Tainted {
@@ -670,8 +704,14 @@ fn leftmost_identifier<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
     let mut current = node;
     loop {
         match current.kind() {
-            kind if is_member_kind(kind) || kind == "subscript" => {
+            kind if is_member_kind(kind)
+                || matches!(kind, "subscript" | "subscript_expression") =>
+            {
                 current = member_object(current)?;
+            }
+            // PHP wraps a variable's name: `$_GET` is variable_name(name).
+            "variable_name" => {
+                current = current.named_child(0)?;
             }
             kind if is_identifier_kind(kind) => return Some(text(current, source)),
             _ => return None,
@@ -1578,5 +1618,43 @@ mod tests {
                 origin: Origin::External
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod php_taint_tests {
+    use super::*;
+    use crate::scanners::syntax;
+
+    fn taint_of(source: &str, language: &str, needle: &str) -> Taint {
+        let offset = source.find(needle).expect("needle present in fixture");
+        syntax::parse(source, language).taint_at(source, offset, None)
+    }
+
+    #[test]
+    fn php_superglobals_are_external_input() {
+        // Without these, every PHP request value read as merely Unknown, so
+        // the attacker-control gate had nothing to say about the one language
+        // where the source of untrusted data is spelled unambiguously.
+        assert!(matches!(
+            taint_of("<?php\neval($_GET['x']);\n", "php", "eval("),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        ));
+        assert!(matches!(
+            taint_of("<?php\nunserialize($_POST['s']);\n", "php", "unserialize("),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        ));
+    }
+
+    #[test]
+    fn a_php_literal_is_still_constant() {
+        assert_eq!(
+            taint_of("<?php\neval(\"2 + 2\");\n", "php", "eval("),
+            Taint::Constant
+        );
     }
 }
