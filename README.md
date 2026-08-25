@@ -225,6 +225,69 @@ two UI labels, the corpus builder's own detector strings, and the code that
 searches for PEM headers. A scanner that looks for credential shapes will always
 contain credential shapes.
 
+### Measured against ground truth nobody here wrote
+
+The corpus above is written by the same people who write the rules. It answers
+*"does it still do what we meant?"* and cannot answer *"is it any good?"* — so
+100% on it proves less than the number looks like.
+
+The [OWASP Benchmark](https://owasp.org/www-project-benchmark/) is the
+counterweight: 2,740 generated Java servlets, each labelled vulnerable or safe
+by the project that generated them. It is fetched rather than vendored, because
+it is GPL-2.0 (oxAudit is Apache-2.0) and 239MB.
+
+```bash
+node tools/fetch-external-benchmark.mjs
+cargo run --release --bin oxaudit-cli -- external-benchmark
+```
+
+Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
+
+| | |
+|---|---|
+| Precision | 67.0% |
+| Recall | 6.1% |
+| False positive rate | 3.0% |
+| Youden index (recall − FPR) | **0.030** |
+
+That recall figure is bad, and it is the honest one. Two separate things
+produce it, and they deserve to be told apart.
+
+**The benchmark is built to require what oxAudit deliberately does not do.**
+Its safe and vulnerable cases are frequently identical in the file being
+scanned. This pair differs in nothing a reader of either file could see:
+
+```java
+// BenchmarkTest00008 — labelled vulnerable
+String param = request.getHeader("BenchmarkTest00008");
+String sql = "{call " + param + "}";
+connection.prepareCall(sql);
+
+// BenchmarkTest00052 — labelled safe
+String param = scr.getTheValue("BenchmarkTest00052");   // returns "bar",
+String sql = "{call " + param + "}";                    // in another file
+connection.prepareCall(sql, TYPE_FORWARD_ONLY, ...);
+```
+
+Telling those apart requires a cross-file call graph. oxAudit is
+intraprocedural on purpose — the limitation is stated above, and the reason is
+that a wrong call graph produces confident nonsense. So a share of this
+benchmark is not measuring accuracy oxAudit lacks; it is measuring an analysis
+oxAudit declines to attempt. Scores here are not comparable with a tool that
+builds one.
+
+**The rest is real, and worth having found.** `sqli` scored 0 true positives
+out of 272, because `java-sql-concat` required the concatenation to appear
+*inside* the execute call and the benchmark builds the query into a variable
+first — which is how most code is actually written. That is a recall hole in
+the flagship Java rule that the internal corpus never revealed, because every
+fixture in it was written by someone who already knew what the rule matched.
+
+Categories with no Java rule at all — XSS, LDAP injection, XPath injection,
+trust boundary, secure cookie: 742 cases, 407 of them vulnerable — are counted
+and reported **separately**. They measure absent rules rather than inaccurate
+ones, and averaging the two together would hide which is which.
+
 ### Scope: which files, and where inside them
 
 Scope ranks and annotates rather than deleting, because "usually noise" is not
