@@ -199,6 +199,7 @@ rule.
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
 | Findings on this repository | 142 | **32** |
+| …still shown after scope triage | 142 | **5** |
 
 The corpus is 77 fixtures, 48 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
@@ -211,13 +212,51 @@ The corpus is deliberately vulnerable, so it is excluded from the repository
 figure above: a full scan of this checkout returns 66 findings, 34 of which are
 the fixtures doing their job.
 
-A corpus you tuned against proves little, so the second row is the one that
-matters: this repository is held-out data, and the fixtures that were tuned
-against are excluded from it. All 32 findings that remain are secrets, and 25 of
-them sit inside oxAudit's own `#[cfg(test)]` modules — deliberately fake
-credentials in test fixtures, a real finding class that belongs in a suppression
-file rather than in the scanner. The other seven are prose in a planning
-document, a UI label, and the detector code that searches for PEM headers.
+A corpus you tuned against proves little, so the last two rows are the ones that
+matter: this repository is held-out data, and the fixtures that were tuned
+against are excluded from it.
+
+All 32 findings that remain are secrets. Twenty-five are deliberately fake
+credentials in oxAudit's own tests and two are prose in a planning document.
+None of those are suppressed — they are *classified*, and the difference is the
+point of the next section. What is left in the default view is five findings:
+two UI labels, the corpus builder's own detector strings, and the code that
+searches for PEM headers. A scanner that looks for credential shapes will always
+contain credential shapes.
+
+### Scope: which files, and where inside them
+
+Scope ranks and annotates rather than deleting, because "usually noise" is not
+"always noise". A hardcoded credential in a fixture is nearly always benign; a
+misconfigured `nginx.conf` under `test/` is not, so infrastructure outranks
+every exclusion.
+
+Path answers *which file*, and it is right about files. It is silent about
+*position*, and in Rust that silence was most of the noise: `#[cfg(test)]`
+modules sit at the bottom of the production file they exercise, so their fixture
+credentials were reported at full production priority — 20 of 32 findings here,
+the largest single category of benign results and indistinguishable from real
+ones. A further five sit in `*_tests.rs` files, where the `#[cfg(test)]` marker
+is in the *parent* module and the file name is the only local evidence.
+
+Reclassifying hides findings from the default view, so every position signal is
+one a compiler or test framework enforces, never a naming habit:
+
+| Language | Signal |
+|---|---|
+| Rust | `#[cfg(test)]`, `#[test]` — not compiled into a release binary at all |
+| Java | JUnit's `@Test` family, including lifecycle annotations that build fixtures |
+| Python | `def test_*`, `class Test*` — what pytest and unittest collect on |
+| Go | `func TestXxx(t *testing.T)`, keyed on the `testing` parameter, not the name |
+
+`#[cfg(not(test))]` is the opposite claim and is explicitly not matched: it marks
+code that exists *only* in release builds, which is the last place to hide a
+finding.
+
+JavaScript and TypeScript are deliberately absent. `describe`, `it`, and `test`
+are ordinary identifiers an application file may legitimately define, and the
+path rules already cover `.test.ts`, `.spec.ts`, and `__tests__/`. The marginal
+recall was not worth a rule that could hide a real finding in shipped code.
 
 Two defects the corpus found on its first run:
 

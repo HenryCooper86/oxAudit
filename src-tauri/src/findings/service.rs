@@ -584,7 +584,7 @@ impl FindingsService {
                 .map_err(|_| CommandError::persistence_unavailable())?;
             assign_fingerprints(&mut findings);
             for finding in &mut findings {
-                let decision = scope::classify(&finding.file_path);
+                let decision = scope::classify_at(&finding.file_path, finding.in_test_region);
                 finding.scope = Some(decision.scope);
                 finding.scope_reason = Some(decision.reason);
                 finding.observation_run_id = run_id.clone();

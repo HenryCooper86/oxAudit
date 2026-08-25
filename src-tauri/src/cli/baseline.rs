@@ -146,6 +146,7 @@ mod tests {
             resolved_by_run_id: None,
             fingerprint_version: 1,
             fingerprint: fingerprint.into(),
+            in_test_region: false,
             scope: None,
             scope_reason: None,
             review: None,

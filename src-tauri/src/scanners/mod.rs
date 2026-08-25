@@ -2,6 +2,7 @@ pub mod dataflow;
 pub mod patterns;
 pub mod secrets;
 pub mod syntax;
+pub mod testscope;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -213,6 +214,16 @@ pub fn scan_file_with_relative_path(
         .filter(|hit| spans.allows_secret_match(hit.offset))
         .collect();
     let secret_values = secret_redaction_values(&secret_hits);
+    // Walked once, and only for a file that actually produced a finding: the
+    // tree walk is wasted on the overwhelming majority of files that yield
+    // nothing.
+    let test_regions = std::cell::OnceCell::new();
+    let in_test_region = |offset: usize| -> bool {
+        test_regions
+            .get_or_init(|| parsed.test_regions(&content, detected_language))
+            .iter()
+            .any(|region| region.contains(&offset))
+    };
 
     if scan_secrets {
         covered_families.push("secret".to_string());
@@ -259,6 +270,7 @@ pub fn scan_file_with_relative_path(
                 resolved_by_run_id: None,
                 fingerprint_version: 0,
                 fingerprint: String::new(),
+                in_test_region: in_test_region(hit.offset),
                 scope: None,
                 scope_reason: None,
                 review: None,
@@ -322,6 +334,7 @@ pub fn scan_file_with_relative_path(
                     resolved_by_run_id: None,
                     fingerprint_version: 0,
                     fingerprint: String::new(),
+                    in_test_region: in_test_region(hit.offset),
                     scope: None,
                     scope_reason: None,
                     review: None,

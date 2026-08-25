@@ -240,6 +240,7 @@ fn finding(category: &str) -> Finding {
         resolved_by_run_id: None,
         fingerprint_version: FINGERPRINT_VERSION,
         fingerprint: "abcdef0123456789".into(),
+        in_test_region: false,
         scope: Some(FindingScope::Production),
         scope_reason: Some("source directory".into()),
         review: None,

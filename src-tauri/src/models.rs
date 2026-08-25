@@ -120,6 +120,19 @@ pub struct Finding {
     /// person submits it. Empty when the analysis had nothing to contribute.
     #[serde(default)]
     pub analysis_gates: Vec<crate::triage::gates::GateNote>,
+    /// The finding sits inside a region the language marks as test-only — a
+    /// Rust `#[cfg(test)]` module, a JUnit `@Test` method, a `def test_*`.
+    ///
+    /// Recorded by the scanner because it is the only stage holding the parse
+    /// tree; the path classifier consumes it. Separate from `scope` so that
+    /// precedence stays in one place: a `#[cfg(test)]` module inside
+    /// `node_modules` is still somebody else's code first.
+    ///
+    /// Not serialized: it is an in-process hand-off, and by the time a finding
+    /// reaches the UI or a report the answer has already been folded into
+    /// `scope` and `scope_reason`, which say the same thing more usefully.
+    #[serde(skip)]
+    pub in_test_region: bool,
     #[serde(default)]
     pub observation_run_id: String,
     #[serde(default)]
