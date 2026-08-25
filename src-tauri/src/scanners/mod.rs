@@ -94,6 +94,22 @@ fn assess_sink(
         };
     }
 
+    // Some command sinks stop being shell sinks the moment they are handed an
+    // argument vector: the OS receives argv directly and no shell ever parses
+    // it, so metacharacters are inert. `system("tar", "-czf", dir)` is exactly
+    // what this rule's own remediation text tells you to write, and reporting
+    // it means reporting the fix.
+    if patterns::argv_form_is_safe(rule_id) {
+        if let Some(count) = parsed.argument_count_at(hit.offset) {
+            if count > 1 {
+                return SinkAssessment {
+                    reportable: false,
+                    gates: Vec::new(),
+                };
+            }
+        }
+    }
+
     let taint = parsed.taint_at(content, hit.offset, sink_cwe);
 
     // Cleared outright: nobody can choose the value, or a transform covering
@@ -572,5 +588,76 @@ mod tests {
             "import defusedxml.ElementTree as ET\nET.parse(path)\n",
         );
         assert!(!rules.iter().any(|rule| rule == "py-xxe"), "{rules:?}");
+    }
+
+    // --------------------------------------------- newly grammared languages
+
+    #[test]
+    fn prose_about_a_sink_is_not_a_sink_in_php_ruby_and_c() {
+        // These four languages shipped rules with no grammar behind them, so
+        // every one of these fired. None of these files contain a live call.
+        let cases = [
+            (
+                "a.php",
+                "<?php\n// Never call eval($_GET['x']) here.\n# exec($cmd) was removed.\n$n = \"do not use system($cmd)\";\n",
+            ),
+            (
+                "b.rb",
+                "# Avoid eval(params[:x]).\n=begin\nMarshal.load(untrusted) was removed.\n=end\nN = \"never call system(cmd)\"\n",
+            ),
+            (
+                "c.c",
+                "/* strcpy(dst, src) is banned. */\n// gets(buf) must never appear.\nconst char *N = \"no sprintf(buf, fmt)\";\n",
+            ),
+            (
+                "d.cpp",
+                "// strcat(a, b) is banned.\nauto n = R\"(never call gets(buf))\";\n",
+            ),
+        ];
+        for (name, source) in cases {
+            assert_eq!(rules_firing(name, source), Vec::<String>::new(), "{name}");
+        }
+    }
+
+    #[test]
+    fn real_calls_in_those_languages_are_still_reported() {
+        // The counterpart: suppression must not have swallowed the language.
+        assert!(
+            rules_firing("a.php", "<?php\nfunction f($r) { return eval($r['x']); }\n")
+                .iter()
+                .any(|rule| rule == "php-eval")
+        );
+        assert!(
+            rules_firing("b.rb", "def f(params)\n  eval(params[:x])\nend\n")
+                .iter()
+                .any(|rule| rule == "rb-eval")
+        );
+        assert!(
+            rules_firing("c.c", "void f(char *d, char **v) { strcpy(d, v[1]); }\n")
+                .iter()
+                .any(|rule| rule == "c-strcpy")
+        );
+    }
+
+    #[test]
+    fn an_argument_vector_is_not_a_shell_sink() {
+        // The rule's own remediation says to use an argument array. Reporting
+        // that form reports the fix as the defect.
+        let argv = rules_firing("r.rb", "def f(d)\n  system(\"tar\", \"-czf\", d)\nend\n");
+        assert!(!argv.iter().any(|rule| rule == "rb-system"), "{argv:?}");
+
+        let shell = rules_firing("r.rb", "def f(d)\n  system(\"tar -czf #{d}\")\nend\n");
+        assert!(shell.iter().any(|rule| rule == "rb-system"), "{shell:?}");
+    }
+
+    #[test]
+    fn the_argv_exemption_does_not_leak_to_other_languages() {
+        // C's system() takes exactly one argument and is a shell sink whatever
+        // it is given, so nothing about argument shape may excuse it.
+        let rules = rules_firing(
+            "c.c",
+            "#include <stdlib.h>\nvoid f(char **v) { system(v[1]); }\n",
+        );
+        assert!(rules.iter().any(|rule| rule == "c-system"), "{rules:?}");
     }
 }

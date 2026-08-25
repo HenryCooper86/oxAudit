@@ -82,6 +82,10 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.5"
 include_dir = "0.7.4"
+tree-sitter-php = "0.24"
+tree-sitter-ruby = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }

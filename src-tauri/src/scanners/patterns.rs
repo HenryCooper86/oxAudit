@@ -178,6 +178,23 @@ static COMPILED_GUARDS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
 /// real depends on it being code: a comment explaining that `defusedxml`
 /// exists is not the same as importing it, and matching raw text could not
 /// tell the two apart.
+/// Rules whose sink is only a shell sink in its single-string form.
+///
+/// Ruby's `system`, `exec`, and `spawn` run a command through the shell when
+/// given one string and hand the OS an argv when given several. The rules
+/// recommend the argv form as the remediation, so firing on it reports the fix
+/// as the defect.
+///
+/// Deliberately not a general rule about argument counts: C's `system()` takes
+/// exactly one argument and is a shell sink regardless, and Python's
+/// `subprocess` family is keyed on `shell=True` rather than on shape.
+const ARGV_SAFE_RULES: &[&str] = &["rb-system"];
+
+/// Does an argument vector take this rule's sink out of the shell?
+pub fn argv_form_is_safe(rule_id: &str) -> bool {
+    ARGV_SAFE_RULES.contains(&rule_id)
+}
+
 pub fn guard_pattern(rule_id: &str) -> Option<&'static Regex> {
     COMPILED_GUARDS
         .iter()
