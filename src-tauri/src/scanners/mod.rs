@@ -53,6 +53,20 @@ pub fn benchmark_observations(
 ///
 /// Rules that are not about a call argument are unaffected: they have no
 /// enclosing call, so the analysis returns `Unknown` and the finding stands.
+/// Has this file applied the hardening a guarded rule looks for?
+///
+/// Only hardening that is *code* counts. A comment saying "use defusedxml"
+/// documents the problem; it does not fix it, and matching raw text cannot
+/// tell the difference.
+fn hardening_present(rule_id: &str, content: &str, spans: &syntax::SyntaxSpans) -> bool {
+    let Some(pattern) = patterns::guard_pattern(rule_id) else {
+        return false;
+    };
+    pattern
+        .find_iter(content)
+        .any(|found| spans.allows_hardening_match(found.start()))
+}
+
 /// What the dataflow analysis concluded about one pattern match.
 struct SinkAssessment {
     /// False when the value is provably beyond an attacker's choosing.
@@ -69,6 +83,16 @@ fn assess_sink(
     // The rule's weakness class decides which transforms count as sanitizing.
     let cwe = patterns::SOURCE_RULES[hit.rule_index].cwe;
     let sink_cwe = (!cwe.is_empty()).then_some(cwe);
+    // A defect that is the absence of hardening is disproved by the hardening
+    // appearing anywhere in the file, as code.
+    let rule_id = patterns::SOURCE_RULES[hit.rule_index].id;
+    if hardening_present(rule_id, content, parsed.spans()) {
+        return SinkAssessment {
+            reportable: false,
+            gates: Vec::new(),
+        };
+    }
+
     let taint = parsed.taint_at(content, hit.offset, sink_cwe);
 
     // Cleared outright: nobody can choose the value, or a transform covering
@@ -480,5 +504,60 @@ mod tests {
         let serialized = serde_json::to_string(&outcome.findings).expect("serializable findings");
         assert!(!serialized.contains(PASSWORD_CANARY));
         assert!(serialized.contains("[REDACTED]"));
+    }
+
+    /// Scan one source string and list the rules that fired.
+    fn rules_firing(name: &str, source: &str) -> Vec<String> {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let path = directory.path().join(name);
+        std::fs::write(&path, source).expect("fixture");
+        let outcome = scan_file_with_relative_path(&path, name, 64, false, true);
+        let mut rules: Vec<String> = outcome
+            .findings
+            .iter()
+            .map(|finding| finding.rule_id.clone())
+            .collect();
+        rules.sort();
+        rules
+    }
+
+    #[test]
+    fn xxe_is_reported_when_the_parser_is_left_at_its_defaults() {
+        let rules = rules_firing(
+            "Parse.java",
+            "class Parse {\n  void go() throws Exception {\n    var f = DocumentBuilderFactory.newInstance();\n    f.newDocumentBuilder().parse(input);\n  }\n}\n",
+        );
+        assert!(rules.iter().any(|rule| rule == "java-xxe"), "{rules:?}");
+    }
+
+    #[test]
+    fn xxe_is_not_reported_once_the_parser_is_hardened() {
+        let rules = rules_firing(
+            "Parse.java",
+            "class Parse {\n  void go() throws Exception {\n    var f = DocumentBuilderFactory.newInstance();\n    f.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true);\n    f.newDocumentBuilder().parse(input);\n  }\n}\n",
+        );
+        assert!(!rules.iter().any(|rule| rule == "java-xxe"), "{rules:?}");
+    }
+
+    #[test]
+    fn a_comment_naming_the_fix_does_not_count_as_the_fix() {
+        // The guard asks whether the hardening is *in the code*. A comment
+        // mentioning `defusedxml` is a plan, not a mitigation — and this is
+        // exactly how the mechanism first went wrong: a fixture's own comment
+        // suppressed the finding it was written to prove.
+        let rules = rules_firing(
+            "parse.py",
+            "# TODO: switch to defusedxml\nimport xml.etree.ElementTree as ET\nET.parse(path)\n",
+        );
+        assert!(rules.iter().any(|rule| rule == "py-xxe"), "{rules:?}");
+    }
+
+    #[test]
+    fn importing_the_safe_parser_does_count_as_the_fix() {
+        let rules = rules_firing(
+            "parse.py",
+            "import defusedxml.ElementTree as ET\nET.parse(path)\n",
+        );
+        assert!(!rules.iter().any(|rule| rule == "py-xxe"), "{rules:?}");
     }
 }

@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 66,
-    "positives": 24,
-    "negatives": 42,
-    "rules": 18
+    "fixtures": 77,
+    "positives": 29,
+    "negatives": 48,
+    "rules": 23
   },
   "targets": [
     {
@@ -409,6 +409,39 @@
       "expectedAbsent": []
     },
     {
+      "id": "java-insecure-random.negative.secure-random",
+      "inputPath": "source/java-insecure-random__negative__secure-random.java",
+      "inputSha256": "d1cb339ce32cf0d0c99ff2e2323f20be6ffe27389887df30319fbdcd351cd380",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-insecure-random",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-insecure-random"
+        }
+      ]
+    },
+    {
+      "id": "java-insecure-random.positive.api-key",
+      "inputPath": "source/java-insecure-random__positive__api-key.java",
+      "inputSha256": "62982bde62939f851ddd87bf7dfdaefa7fdb9237f1f3da345203147d565bd875",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-insecure-random",
+      "expected": [
+        {
+          "ruleId": "java-insecure-random",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "java-path-traversal.negative.caller-supplied-path",
       "inputPath": "source/java-path-traversal__negative__caller-supplied-path.java",
       "inputSha256": "56c123eb0498fe981eb1c1d4e7c1cfc3a0a9493f4edc4c9a082027bd7bdc7b93",
@@ -485,6 +518,55 @@
       "expected": [
         {
           "ruleId": "java-runtime-exec",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-xxe.negative.feature-uri-only",
+      "inputPath": "source/java-xxe__negative__feature-uri-only.java",
+      "inputSha256": "0bc59d7f2d9914a30ec315f0d9adb0ec24d5f9c9be0ebdaf61ee93be76c8074d",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xxe",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-xxe"
+        }
+      ]
+    },
+    {
+      "id": "java-xxe.negative.hardened-parser",
+      "inputPath": "source/java-xxe__negative__hardened-parser.java",
+      "inputSha256": "6686425b986cab34c301e62e8ce56597e9be05616905bf616ed7e1c1e77e9b9d",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xxe",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-xxe"
+        }
+      ]
+    },
+    {
+      "id": "java-xxe.positive.unhardened-parser",
+      "inputPath": "source/java-xxe__positive__unhardened-parser.java",
+      "inputSha256": "226c7c59cc470eb9a2e9c2b3866058f8c5011ca3696a89005f4add2093a68e59",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-xxe",
+      "expected": [
+        {
+          "ruleId": "java-xxe",
           "minimum": 1
         }
       ],
@@ -671,6 +753,39 @@
       "expectedAbsent": []
     },
     {
+      "id": "js-insecure-random.negative.animation-jitter",
+      "inputPath": "source/js-insecure-random__negative__animation-jitter.js",
+      "inputSha256": "7cc0a1244998fe56143bb9a2977d76b07ce179f93d03ba59697dc191002e7288",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-insecure-random",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-insecure-random"
+        }
+      ]
+    },
+    {
+      "id": "js-insecure-random.positive.session-token",
+      "inputPath": "source/js-insecure-random__positive__session-token.js",
+      "inputSha256": "d49d8b91bee134b24f8f900564d7e842563536f18a1d5d5d84a0fce761cb287c",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-insecure-random",
+      "expected": [
+        {
+          "ruleId": "js-insecure-random",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "js-path-traversal.negative.fixed-path",
       "inputPath": "source/js-path-traversal__negative__fixed-path.js",
       "inputSha256": "db85e84683281a9d583f1d946ae50b1f571ff03006adfc60adf64d2d0fd8c68b",
@@ -813,6 +928,39 @@
       "expected": [
         {
           "ruleId": "py-eval",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "py-insecure-random.negative.sample-selection",
+      "inputPath": "source/py-insecure-random__negative__sample-selection.py",
+      "inputSha256": "f33020a405633e0c8c6913e72b6e2d83888989d13a51503482e586ea0a05697d",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-insecure-random",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-insecure-random"
+        }
+      ]
+    },
+    {
+      "id": "py-insecure-random.positive.reset-token",
+      "inputPath": "source/py-insecure-random__positive__reset-token.py",
+      "inputSha256": "460a14fb4d622a5d3c1a1f50f3c9a629609ca04f8e4a50f46996e1d4255fc755",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-insecure-random",
+      "expected": [
+        {
+          "ruleId": "py-insecure-random",
           "minimum": 1
         }
       ],
@@ -1031,6 +1179,39 @@
           "ruleId": "py-weak-hash"
         }
       ]
+    },
+    {
+      "id": "py-xxe.negative.defused-parser",
+      "inputPath": "source/py-xxe__negative__defused-parser.py",
+      "inputSha256": "9cd77a21df88f05169ea0fcde14d4eb4e27d62b1e9cc4a7920c4f66f0036c245",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-xxe",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "py-xxe"
+        }
+      ]
+    },
+    {
+      "id": "py-xxe.positive.stdlib-parser",
+      "inputPath": "source/py-xxe__positive__stdlib-parser.py",
+      "inputSha256": "30acc42de3524346dccc463c62e7a4dc8a1f94663b9f65b43bce746a0910ce45",
+      "language": "python",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "py-xxe",
+      "expected": [
+        {
+          "ruleId": "py-xxe",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
     },
     {
       "id": "rs-command-sh.negative.literal-program",

@@ -100,6 +100,23 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         srule!("py-ssrf", "Request to a caller-supplied URL", &["python"], "high", "CWE-918", r#"(?:requests|httpx)\s*\.\s*(?:get|post|put|delete|patch|head|request)\s*\(\s*[A-Za-z_]|urlopen\s*\(\s*[A-Za-z_]"#, "The destination of this request is not a fixed literal. If a caller can choose it, the server can be aimed at internal services and cloud metadata endpoints.", "Validate the URL against an allow-list of hosts and block private, loopback, and link-local addresses after resolution."),
         srule!("go-ssrf", "Request to a caller-supplied URL", &["go"], "high", "CWE-918", r#"(?:http|client)\s*\.\s*(?:Get|Post|Head)\s*\(\s*[A-Za-z_]"#, "The destination of this request is not a fixed literal. If a caller can choose it, the server can be aimed at internal services and cloud metadata endpoints.", "Validate the URL against an allow-list of hosts and block private, loopback, and link-local addresses after resolution."),
 
+        // --------------------------------------------------- CWE-611 XXE
+        //
+        // Guarded rules: the defect is that entity resolution was left on, so
+        // the fix living elsewhere in the file disproves the finding. See
+        // RULE_GUARDS.
+        srule!("java-xxe", "XML parser resolves external entities", &["java"], "high", "CWE-611", r"\b(?:DocumentBuilderFactory|SAXParserFactory|XMLInputFactory|TransformerFactory|SchemaFactory)\s*\.\s*newInstance\s*\(|\bnew\s+SAXReader\s*\(", "An XML parser left at its default configuration resolves external entities, so a crafted document can read local files, reach internal network services, or exhaust memory through entity expansion.", "Disable DOCTYPE declarations: factory.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true), and switch off external general and parameter entities."),
+        srule!("py-xxe", "XML parser resolves external entities", &["python"], "high", "CWE-611", r"\b(?:xml\s*\.\s*etree\s*\.\s*ElementTree|xml\s*\.\s*dom\s*\.\s*minidom|xml\s*\.\s*sax|ET)\s*\.\s*(?:parse|fromstring|parseString)\s*\(", "Python's standard-library XML parsers resolve external entities, so a crafted document can read local files or reach internal network services.", "Use the defusedxml package, which provides drop-in replacements with entity resolution disabled."),
+
+        // ----------------------------- CWE-338 weak randomness for security
+        //
+        // Intent is the whole difficulty: Math.random() for animation jitter
+        // is fine and for a session token is not. Matched on what the value is
+        // called, within a bounded window, rather than on the call alone.
+        srule!("js-insecure-random", "Predictable randomness for a secret", &["javascript"], "high", "CWE-338", r"(?i)(?:^|[^A-Za-z0-9])(?:token|secret|api[_-]?key|nonce|salt|password|session|csrf|otp|uuid|verifier)\w*\s*[:=][^;\n]{0,80}?Math\s*\.\s*random\s*\(", "Math.random() is a fast pseudo-random generator, not a cryptographic one. Its output is predictable from previous values, so anything derived from it can be guessed.", "Use crypto.randomUUID() or crypto.getRandomValues() in the browser, or crypto.randomBytes() in Node."),
+        srule!("py-insecure-random", "Predictable randomness for a secret", &["python"], "high", "CWE-338", r"(?is)(?:^|[^A-Za-z0-9])(?:token|secret|api[_-]?key|nonce|salt|password|session|csrf|otp|verifier)\w*[\s\S]{0,160}?\brandom\s*\.\s*(?:random|randint|choice|choices|randrange|getrandbits|shuffle)\s*\(", "The random module is a Mersenne Twister, not a cryptographic generator. Its output is predictable from previous values, so anything derived from it can be guessed.", "Use the secrets module: secrets.token_urlsafe(), secrets.token_hex(), or secrets.choice()."),
+        srule!("java-insecure-random", "Predictable randomness for a secret", &["java"], "high", "CWE-338", r"(?is)(?:^|[^A-Za-z0-9])(?:token|secret|api[_-]?key|nonce|salt|password|session|csrf|otp|verifier)\w*[\s\S]{0,160}?\bnew\s+Random\s*\(", "java.util.Random is a linear congruential generator, not a cryptographic one. Its output is predictable from previous values, so anything derived from it can be guessed.", "Use java.security.SecureRandom, and prefer SecureRandom.getInstanceStrong() where blocking is acceptable."),
+
         // ---------------------------------------------------------------- PHP
         srule!("php-eval", "eval() usage", &["php"], "high", "CWE-95", r"\beval\s*\(", "eval() executes PHP code strings — a direct RCE sink when anything is dynamic.", "Remove eval(); use static code and data structures."),
         srule!("php-shell", "Shell execution functions", &["php"], "high", "CWE-78", r"\b(?:shell_exec|passthru|proc_open|popen|system)\s*\(", "These functions execute shell commands; untrusted input is command injection.", "Avoid shell calls; validate/whitelist inputs and use escapeshellarg for arguments."),
@@ -126,6 +143,48 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
 });
 
 /// A single pattern hit.
+/// Patterns that, present anywhere in the file, disprove a rule.
+///
+/// Some defects are the *absence* of hardening rather than the presence of a
+/// call. An XML parser resolves external entities unless it is told not to, so
+/// a rule for that has to be able to see the fix — and the fix is usually
+/// several lines from the construction it protects, which a single regex over
+/// one match cannot reach.
+///
+/// Deliberately file-scoped and deliberately blunt. A file that disables
+/// entity resolution anywhere is treated as having done so everywhere, which
+/// can hide a second unhardened parser in the same file. The alternative —
+/// reporting every parser in every file that ever hardens one — is the noise
+/// that gets a rule switched off.
+const RULE_GUARDS: &[(&str, &str)] = &[
+    (
+        "java-xxe",
+        r"(?:disallow-doctype-decl|external-general-entities|external-parameter-entities|setExpandEntityReferences\s*\(\s*false|FEATURE_SECURE_PROCESSING|setXIncludeAware\s*\(\s*false)",
+    ),
+    ("py-xxe", r"\bdefusedxml\b"),
+];
+
+/// Compiled once; a guard is checked for every file a guarded rule matches in.
+static COMPILED_GUARDS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
+    RULE_GUARDS
+        .iter()
+        .map(|(rule, pattern)| (*rule, Regex::new(pattern).expect("invalid guard pattern")))
+        .collect()
+});
+
+/// The guard for a rule, if it has one.
+///
+/// Evaluated by the caller rather than here, because whether the hardening is
+/// real depends on it being code: a comment explaining that `defusedxml`
+/// exists is not the same as importing it, and matching raw text could not
+/// tell the two apart.
+pub fn guard_pattern(rule_id: &str) -> Option<&'static Regex> {
+    COMPILED_GUARDS
+        .iter()
+        .find(|(guarded, _)| *guarded == rule_id)
+        .map(|(_, pattern)| pattern)
+}
+
 pub struct PatternHit {
     pub rule_index: usize,
     pub offset: usize,

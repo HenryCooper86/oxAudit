@@ -93,7 +93,7 @@ with a reason, an expiry, and a pull request.
 
 | Capability | What it does |
 |---|---|
-| **Source code scanning** | 55+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
+| **Source code scanning** | 60+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
 | **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
 | **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by CISA KEV and EPSS — same exploitation signal as the binary scanner |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
@@ -198,20 +198,26 @@ rule.
 |---|---|---|
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
-| Findings on this repository | 142 | **34** |
+| Findings on this repository | 142 | **32** |
 
-The corpus is 26 fixtures, 19 of them negatives, and none of the negatives were
+The corpus is 77 fixtures, 48 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
-source — type declarations, prose in Markdown, comments, environment lookups,
-function parameters, JSON schemas, UI labels, and the detector code that
-searches for PEM headers.
+source or a real dependency tree — type declarations, prose in Markdown,
+comments, environment lookups, function parameters, JSON schemas, UI labels,
+hardened XML parsers, non-security uses of `Math.random()`, and the detector
+code that searches for PEM headers.
+
+The corpus is deliberately vulnerable, so it is excluded from the repository
+figure above: a full scan of this checkout returns 66 findings, 34 of which are
+the fixtures doing their job.
 
 A corpus you tuned against proves little, so the second row is the one that
 matters: this repository is held-out data, and the fixtures that were tuned
-against are excluded from it. Of the 34 findings that remain, 21 sit inside
-oxAudit's own `#[cfg(test)]` modules and are deliberately fake credentials in
-test fixtures — a real finding class that belongs in a suppression file rather
-than in the scanner.
+against are excluded from it. All 32 findings that remain are secrets, and 25 of
+them sit inside oxAudit's own `#[cfg(test)]` modules — deliberately fake
+credentials in test fixtures, a real finding class that belongs in a suppression
+file rather than in the scanner. The other seven are prose in a planning
+document, a UI label, and the detector code that searches for PEM headers.
 
 Two defects the corpus found on its first run:
 
@@ -278,6 +284,36 @@ generically. `escapeHtml` clears an XSS sink and nothing else; `shlex.quote`
 clears command injection and nothing else. A transform that is merely *named*
 like a sanitizer counts for nothing — guessing there produces a false negative,
 which is the expensive direction.
+
+### When the weakness is the call, not its input
+
+Two classes added in this round are not about a value flowing into a sink at
+all, which is what makes them worth stating separately.
+
+**XXE (CWE-611)** is a property of how a parser was *configured*.
+`DocumentBuilderFactory.newInstance()` takes no arguments; there is no input to
+trace. What decides it is whether the hardening appears anywhere in the file:
+
+```java
+var factory = DocumentBuilderFactory.newInstance();                  // reported
+factory.setFeature(DISALLOW_DOCTYPE_DECL, true);                     // not reported
+```
+
+**Weak randomness (CWE-338)** depends on what the value is *for*, not where it
+came from. `Math.random()` is correct for animation jitter and wrong for a
+session token, and the same call site is both.
+
+Rule guards are matched against code **and string literals, but never
+comments**. The distinction is load-bearing in both directions: a
+`// TODO: switch to defusedxml` is a plan rather than a mitigation, while
+`setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)` puts
+the only evidence of the real fix inside a quoted feature URI.
+
+Both directions were caught by fixtures rather than by reasoning — first a
+fixture whose own explanatory comment suppressed the finding it existed to
+prove, then a hardened-parser fixture that passed only because it happened to
+call `setExpandEntityReferences(false)` as well, masking a guard that could
+never fire on the commonest spelling of the fix.
 
 ### What the analysis tells a reviewer
 
