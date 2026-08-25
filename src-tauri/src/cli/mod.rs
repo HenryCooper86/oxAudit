@@ -75,6 +75,8 @@ enum Command {
     Runs(RunsArgs),
     /// Measure the scanners against the committed ground-truth corpus.
     Benchmark(BenchmarkArgs),
+    /// List the language grammars compiled into this binary.
+    Languages,
 }
 
 #[derive(Args, Debug)]
@@ -385,6 +387,7 @@ pub fn run() -> i32 {
         Command::Export(args) => run_export(args),
         Command::Runs(args) => run_runs(args),
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
+        Command::Languages => run_languages(),
     };
 
     match result {
@@ -680,6 +683,30 @@ fn run_runs(args: &RunsArgs) -> CliResult {
 }
 
 // ---------------------------------------------------------------- benchmark
+
+/// Report which grammars this build carries.
+///
+/// Grammars are selected by Cargo feature, so two oxAudit binaries of the same
+/// version can disagree about how precisely they read a language. A build
+/// without a grammar scans that language on text alone: nothing can prove a
+/// match sits in a comment, so every match stands. That costs precision and
+/// never recall, but a benchmark run against such a build scores differently
+/// for a reason that is not the scanner, and this is how you tell.
+fn run_languages() -> CliResult {
+    let compiled = crate::scanners::syntax::compiled_grammars();
+    println!("Grammars compiled into this build ({}):", compiled.len());
+    for language in compiled {
+        println!("  {language}");
+    }
+    if compiled.is_empty() {
+        println!("  (none — every file is scanned on text alone)");
+    }
+    println!(
+        "\nA language without a grammar is scanned on text alone: matches in \n\
+         comments and string literals are reported rather than suppressed."
+    );
+    Ok(EXIT_OK)
+}
 
 fn run_benchmark(args: &BenchmarkArgs, quiet: bool) -> CliResult {
     let suite =

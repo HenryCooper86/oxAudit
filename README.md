@@ -425,6 +425,8 @@ Three limits, stated because they bound what the result means:
 - **Twelve languages.** JavaScript/TypeScript, Python, Java, Rust, Go, PHP,
   Ruby, C, C++, C#, Kotlin, and Swift. A language without a grammar is never
   suppressed on a guess — it is scanned on text alone, and every match stands.
+  Grammars are selected at build time, so `oxaudit-cli languages` tells you
+  which ones are in the binary you are holding.
 - **Intraprocedural.** Analysis stops at the enclosing function. Following a
   value across call boundaries needs a call graph, and a wrong one produces
   confident nonsense.
@@ -575,6 +577,44 @@ npm run build            # type-check + build the frontend
 cd src-tauri && cargo test --workspace --all-features  # run every Rust package
 npm run tauri build      # produce a distributable bundle
 ```
+
+### Choosing grammars at build time
+
+Each language grammar is an optional dependency behind a Cargo feature. The
+default is every grammar, which is what a release ships; a size-constrained
+build can take fewer.
+
+```bash
+cargo build --release --bin oxaudit-cli                        # all twelve
+cargo build --release --bin oxaudit-cli \
+  --no-default-features --features grammars-core               # the original five
+cargo build --release --bin oxaudit-cli \
+  --no-default-features --features grammar-python,grammar-go   # pick your own
+```
+
+Leaving a grammar out does not make oxAudit quieter about that language — it
+makes it **louder**. With no grammar, nothing can prove a match sits in a
+comment or a string, so every match stands and the analysis answers Unknown
+rather than suppressing on a guess. The trade is precision for size, never
+recall — and the corpus measures that rather than asserting it:
+
+| Build | CLI binary | Corpus precision | Corpus recall |
+|---|---|---|---|
+| `default` — all twelve | 29.2 MB | 100% | 100% |
+| `grammars-core` — the original five | 10.2 MB | 82.6% | **100%** |
+| `--no-default-features` | 7.6 MB | text tier throughout | **100%** |
+
+Recall does not move. Kotlin, Swift, and C# account for most of the difference;
+the original five grammars cost 2.6 MB between them.
+
+Because two binaries of the same version can therefore disagree about how
+precisely they read a language, `oxaudit-cli languages` prints what is
+compiled in, and `oxaudit-cli benchmark` names any grammar it is missing
+rather than letting the score be read as a rule regression.
+
+`cargo test` expects the default feature set — most of the suite asserts what a
+grammar does with a language. CI checks that the reduced configurations still
+compile.
 
 ## Configuring the AI
 

@@ -185,28 +185,81 @@ impl SyntaxSpans {
     }
 }
 
-/// The grammar for a language, if oxAudit carries one.
+/// The grammar for a language, if this build carries one.
 ///
 /// Returning `None` is a normal outcome, not a failure: it means matches in
-/// this file are reported without syntax filtering.
+/// this file are reported without syntax filtering. That is also what a build
+/// compiled without a grammar's feature does, so a stripped binary loses
+/// precision and never recall — see [`compiled_grammars`] for what is present.
 fn language_for(language: &str) -> Option<tree_sitter::Language> {
     match language {
+        #[cfg(feature = "grammar-javascript")]
         "javascript" | "typescript" => Some(tree_sitter_javascript::LANGUAGE.into()),
+        #[cfg(feature = "grammar-python")]
         "python" => Some(tree_sitter_python::LANGUAGE.into()),
+        #[cfg(feature = "grammar-java")]
         "java" => Some(tree_sitter_java::LANGUAGE.into()),
+        #[cfg(feature = "grammar-rust")]
         "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
+        #[cfg(feature = "grammar-go")]
         "go" => Some(tree_sitter_go::LANGUAGE.into()),
         // PHP's crate ships two grammars: the full one expects `<?php` tags,
         // which is what a scanned `.php` file actually contains.
+        #[cfg(feature = "grammar-php")]
         "php" => Some(tree_sitter_php::LANGUAGE_PHP.into()),
+        #[cfg(feature = "grammar-ruby")]
         "ruby" => Some(tree_sitter_ruby::LANGUAGE.into()),
+        #[cfg(feature = "grammar-c")]
         "c" => Some(tree_sitter_c::LANGUAGE.into()),
+        #[cfg(feature = "grammar-cpp")]
         "cpp" => Some(tree_sitter_cpp::LANGUAGE.into()),
+        #[cfg(feature = "grammar-csharp")]
         "csharp" => Some(tree_sitter_c_sharp::LANGUAGE.into()),
+        #[cfg(feature = "grammar-kotlin")]
         "kotlin" => Some(tree_sitter_kotlin_ng::LANGUAGE.into()),
+        #[cfg(feature = "grammar-swift")]
         "swift" => Some(tree_sitter_swift::LANGUAGE.into()),
         _ => None,
     }
+}
+
+/// Every language this build can parse, in a stable order.
+///
+/// Reported rather than assumed: a binary built without a grammar scans that
+/// language on text alone, and a benchmark run against it will score
+/// differently for a reason that is not the scanner. The corpus builder
+/// already learned that lesson the expensive way — twelve fixtures scored as
+/// misses because an extension map was missing three entries, and the report
+/// blamed recall.
+pub fn compiled_grammars() -> &'static [&'static str] {
+    &[
+        #[cfg(feature = "grammar-javascript")]
+        "javascript",
+        #[cfg(feature = "grammar-javascript")]
+        "typescript",
+        #[cfg(feature = "grammar-python")]
+        "python",
+        #[cfg(feature = "grammar-java")]
+        "java",
+        #[cfg(feature = "grammar-rust")]
+        "rust",
+        #[cfg(feature = "grammar-go")]
+        "go",
+        #[cfg(feature = "grammar-php")]
+        "php",
+        #[cfg(feature = "grammar-ruby")]
+        "ruby",
+        #[cfg(feature = "grammar-c")]
+        "c",
+        #[cfg(feature = "grammar-cpp")]
+        "cpp",
+        #[cfg(feature = "grammar-csharp")]
+        "csharp",
+        #[cfg(feature = "grammar-kotlin")]
+        "kotlin",
+        #[cfg(feature = "grammar-swift")]
+        "swift",
+    ]
 }
 
 /// Languages that get syntax filtering, for reporting a rule's confidence.
@@ -482,6 +535,35 @@ mod tests {
         let spans = analyze("", "python");
         assert!(spans.analyzed());
         assert_eq!(spans.context_at(0), Context::Code);
+    }
+
+    #[test]
+    fn the_test_suite_assumes_every_grammar_is_compiled_in() {
+        // Most of this suite asserts what a grammar does with a language, and
+        // those tests cannot pass without it. Rather than let a reduced build
+        // produce dozens of confusing failures, say the one true thing once.
+        //
+        // `cargo build --no-default-features` is supported and checked in CI;
+        // `cargo test` is not, and expects the default feature set.
+        assert_eq!(
+            compiled_grammars().len(),
+            13,
+            "the test suite expects every grammar; run `cargo test` without \
+             --no-default-features or a reduced --features set"
+        );
+    }
+
+    #[test]
+    fn every_compiled_grammar_actually_parses() {
+        // A feature that adds a dependency but no match arm would leave the
+        // language listed and unparsed, which is the one inconsistency the
+        // listing itself cannot reveal.
+        for language in compiled_grammars() {
+            assert!(
+                is_supported(language),
+                "{language} is listed but not parsed"
+            );
+        }
     }
 
     #[test]

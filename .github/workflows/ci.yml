@@ -108,6 +108,19 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 
+      # Each language grammar is an optional dependency behind a `grammar-*`
+      # feature, so a size-constrained build can leave some out. Nothing in the
+      # test suite exercises those configurations — the tests assume every
+      # grammar — so the guarantee CI has to hold is that they still compile.
+      # A `#[cfg]` that referenced a crate not in the feature's dependency list
+      # would break only here.
+      - name: Reduced grammar builds compile
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli --no-default-features
+          cargo build --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli \
+            --no-default-features --features grammars-core
+
       # The corpus is the only defensible answer to "how accurate is it?", so a
       # change that drops precision or recall has to fail rather than quietly
       # move the number the README publishes.

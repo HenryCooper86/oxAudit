@@ -27,6 +27,57 @@ publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+# Every grammar, which is what a released build ships. Dropping one does not
+# make oxAudit quieter about that language — it makes it *louder*: with no
+# grammar there is nothing to prove a match sits in a comment or a string, so
+# every match stands and the analysis reports Unknown rather than suppressing
+# on a guess. A stripped build trades binary size for precision, never for
+# recall, and `oxaudit-cli languages` prints exactly which grammars are in the
+# binary you are holding.
+#
+# The Kotlin, Swift, C#, and C++ grammars are the large ones; dropping all four
+# is most of the saving.
+default = ["grammars-all"]
+
+grammars-all = [
+  "grammar-javascript",
+  "grammar-python",
+  "grammar-java",
+  "grammar-rust",
+  "grammar-go",
+  "grammar-php",
+  "grammar-ruby",
+  "grammar-c",
+  "grammar-cpp",
+  "grammar-csharp",
+  "grammar-kotlin",
+  "grammar-swift",
+]
+
+# The five oxAudit shipped with, and the five its dataflow analysis is tuned
+# for. A reasonable floor for a size-constrained build.
+grammars-core = [
+  "grammar-javascript",
+  "grammar-python",
+  "grammar-java",
+  "grammar-rust",
+  "grammar-go",
+]
+
+grammar-javascript = ["dep:tree-sitter-javascript"]
+grammar-python = ["dep:tree-sitter-python"]
+grammar-java = ["dep:tree-sitter-java"]
+grammar-rust = ["dep:tree-sitter-rust"]
+grammar-go = ["dep:tree-sitter-go"]
+grammar-php = ["dep:tree-sitter-php"]
+grammar-ruby = ["dep:tree-sitter-ruby"]
+grammar-c = ["dep:tree-sitter-c"]
+grammar-cpp = ["dep:tree-sitter-cpp"]
+grammar-csharp = ["dep:tree-sitter-c-sharp"]
+grammar-kotlin = ["dep:tree-sitter-kotlin-ng"]
+grammar-swift = ["dep:tree-sitter-swift"]
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
@@ -73,22 +124,24 @@ keyring = { version = "3.6.3", default-features = false }
 zeroize = "1.8"
 clap = { version = "4", features = ["derive"] }
 tree-sitter = "0.26.13"
-tree-sitter-javascript = "0.25.0"
-tree-sitter-python = "0.25.0"
-tree-sitter-java = "0.23.5"
-tree-sitter-rust = "0.24.2"
-tree-sitter-go = "0.25.0"
+# Each grammar is optional and selected by a `grammar-*` feature. See the
+# [features] section for what a build without one actually does.
+tree-sitter-javascript = { version = "0.25.0", optional = true }
+tree-sitter-python = { version = "0.25.0", optional = true }
+tree-sitter-java = { version = "0.23.5", optional = true }
+tree-sitter-rust = { version = "0.24.2", optional = true }
+tree-sitter-go = { version = "0.25.0", optional = true }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.5"
 include_dir = "0.7.4"
-tree-sitter-php = "0.24"
-tree-sitter-ruby = "0.23"
-tree-sitter-c = "0.24"
-tree-sitter-cpp = "0.23"
-tree-sitter-c-sharp = "0.23"
-tree-sitter-kotlin-ng = "1.1"
-tree-sitter-swift = "0.7"
+tree-sitter-php = { version = "0.24", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "0.23", optional = true }
+tree-sitter-kotlin-ng = { version = "1.1", optional = true }
+tree-sitter-swift = { version = "0.7", optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
