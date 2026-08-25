@@ -231,7 +231,7 @@ fn sanitizes(name: &str, sink_cwe: Option<&str>) -> Taint {
 /// A bound rather than a preference: a scan target can define a chain of
 /// assignments as long as it likes, and the walk must terminate on hostile
 /// input the same way the parsers do.
-const MAX_RESOLUTION_DEPTH: usize = 8;
+const MAX_RESOLUTION_DEPTH: usize = 16;
 
 /// Identifiers whose members are attacker-controlled by construction.
 ///
@@ -391,6 +391,23 @@ fn member_object<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
             // indexed is simply the first child.
             (node.kind() == "subscript_expression").then(|| node.named_child(0))?
         })
+}
+
+/// What a method was called *on*, when it was called on something.
+///
+/// `cookie.getValue()` -> `cookie`. `URLDecoder.decode(..)` -> the type name,
+/// which resolves to nothing and is harmless to ask about.
+fn call_receiver<'tree>(call: Node<'tree>) -> Option<Node<'tree>> {
+    // Java names the receiver directly on the invocation.
+    if let Some(object) = call.child_by_field_name("object") {
+        return Some(object);
+    }
+    let function = call
+        .child_by_field_name("function")
+        .or_else(|| call.child_by_field_name("constructor"))?;
+    is_member_kind(function.kind())
+        .then(|| member_object(function))
+        .flatten()
 }
 
 fn is_member_kind(kind: &str) -> bool {
@@ -562,6 +579,15 @@ pub fn chain_arguments<'tree>(call: Node<'tree>) -> Vec<Node<'tree>> {
         if let Some(callee) = node.child_by_field_name("function") {
             stack.push(callee);
         }
+        // Java embeds the receiver in the invocation itself rather than in a
+        // member node, so a chain like `new FileInputStream(path).close()`
+        // left nothing behind to descend into and the whole chain read as
+        // having no arguments at all.
+        if is_call_kind(node.kind()) {
+            if let Some(object) = node.child_by_field_name("object") {
+                stack.push(object);
+            }
+        }
         if is_member_kind(node.kind()) {
             if let Some(object) = member_object(node) {
                 stack.push(object);
@@ -620,6 +646,18 @@ fn classify_with_depth(
 
     let node = unwrap_expression(node);
     let kind = node.kind();
+
+    // `(String) names.nextElement()`. A cast restates the type of a value
+    // without changing who chose it, and `unwrap_expression` cannot fold it
+    // away because the type sits beside the value as a second named child.
+    if matches!(
+        kind,
+        "cast_expression" | "type_conversion_expression" | "as_expression"
+    ) {
+        if let Some(value) = node.child_by_field_name("value") {
+            return classify_with_depth(value, source, function, sink_cwe, depth + 1);
+        }
+    }
 
     if matches!(kind, "keyword_argument" | "labeled_argument") {
         return match node.child_by_field_name("value") {
@@ -686,12 +724,30 @@ fn classify_with_depth(
     }
 
     // `req.body.expression` — the root decides.
-    if is_member_kind(kind) || matches!(kind, "subscript" | "subscript_expression") {
+    if is_member_kind(kind) || matches!(kind, "subscript" | "subscript_expression" | "array_access")
+    {
         if let Some(root) = leftmost_identifier(node, source) {
             if TAINTED_ROOTS.contains(&root) {
                 return Taint::Tainted {
                     origin: Origin::External,
                 };
+            }
+        }
+        // Reaching into a value the attacker chose yields a value the attacker
+        // chose. `map.get(k)` gets there through the receiver rule below, but
+        // the subscript forms are syntax rather than calls: `param = values[0]`
+        // where `values` came from `request.getParameterMap()` is how 35 of the
+        // OWASP Benchmark path traversals read their input.
+        //
+        // Only a tainted base decides anything. A constant or unresolvable one
+        // falls through to the naming convention below, so this can reveal a
+        // finding but never hide one.
+        let base = member_object(node).or_else(|| node.child_by_field_name("array"));
+        if let Some(base) = base {
+            if let tainted @ Taint::Tainted { .. } =
+                classify_with_depth(base, source, function, sink_cwe, depth + 1)
+            {
+                return tainted;
             }
         }
         // `java.sql.Statement.RETURN_GENERATED_KEYS`, `StandardCharsets.UTF_8`.
@@ -738,28 +794,52 @@ fn classify_with_depth(
                 };
             }
         }
-        // An unmodelled callee stays Unknown, which keeps the finding.
+        // An unmodelled call carries whatever it was handed, but only when
+        // that is taint. `cookie.getValue()`, `names.nextElement()`,
+        // `URLDecoder.decode(param, "UTF-8")`, `new File(fileName)` — a
+        // wrapper does not un-choose a value somebody else chose, and no list
+        // of accessor names covers every container and codec.
         //
-        // Treating it as a function of its arguments is the standard taint
-        // approximation and it was tried here: it removed 28 false SQL
-        // injection reports on the OWASP Benchmark, all of them a constant
-        // handed to a helper and concatenated into a query. It also introduced
-        // 11 false negatives, and they are the shape that matters:
+        // The direction is what makes this safe. Folding the operands and
+        // returning the fold — the standard taint approximation — was tried
+        // here and reverted: it removed 28 false SQL injection reports on the
+        // OWASP Benchmark and introduced 11 false negatives, because
         //
         //     String param = scr.getTheParameter("BenchmarkTest00043");
-        //     String sql = "INSERT INTO users ... '" + param + "'";
         //
-        // An accessor taking a constant key and returning request data is not
-        // a corner case — `getProperty`, `config.get`, and every framework's
-        // parameter helper have that shape. Suppressing those hides real
-        // injections to remove reports that a person would dismiss in a
-        // second, which is the wrong direction for this tool. The measured
-        // trade was 28 fewer false positives for 11 hidden vulnerabilities.
+        // folds to Constant and hides a real injection. An accessor taking a
+        // constant key and returning request data is not a corner case.
+        //
+        // So only a tainted operand returns anything. A constant or
+        // unresolvable one falls through to Unknown below, exactly as before,
+        // which makes this strictly additive: it can reveal a finding, never
+        // hide one.
+        let operands = call_receiver(node).into_iter().chain(own_arguments(node));
+        for operand in operands {
+            if let tainted @ Taint::Tainted { .. } =
+                classify_with_depth(operand, source, function, sink_cwe, depth + 1)
+            {
+                return tainted;
+            }
+        }
+
         return Taint::Unknown;
     }
 
     if is_identifier_kind(kind) {
         let name = text(node, source);
+        // A value named `request` is a request however it arrived. The member
+        // branch above already reads `request.body` as external; a servlet
+        // writes `request.getCookies()` instead, where `request` reaches the
+        // classifier on its own — and being a method parameter of `doPost` is
+        // how a request object always arrives. Reading that as
+        // `Origin::Parameter` cost every CWE-22 finding in Java, because that
+        // class requires a proven external origin.
+        if TAINTED_ROOTS.contains(&name) {
+            return Taint::Tainted {
+                origin: Origin::External,
+            };
+        }
         let Some(function) = function else {
             return Taint::Unknown;
         };
@@ -989,6 +1069,23 @@ fn resolve_binding(
                     .child_by_field_name("left")
                     .filter(|target| text(*target, source) == name)
                     .and(node.child_by_field_name("right")),
+                // A loop variable is bound to an element of what it iterates.
+                // `for (Cookie c : request.getCookies())` makes `c` as
+                // attacker-chosen as the array it was drawn from. Java's
+                // C-style `for_statement` labels neither side, so it falls
+                // through this arm without matching.
+                "enhanced_for_statement"
+                | "for_in_statement"
+                | "for_each_statement"
+                | "for_statement"
+                | "range_clause" => node
+                    .child_by_field_name("name")
+                    .or_else(|| node.child_by_field_name("left"))
+                    .filter(|target| text(*target, source) == name)
+                    .and(
+                        node.child_by_field_name("value")
+                            .or_else(|| node.child_by_field_name("right")),
+                    ),
                 _ => None,
             };
             if let Some(value) = assigned {

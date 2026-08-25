@@ -26,9 +26,10 @@ pub fn benchmark_observations(
     let parsed = syntax::parse(content, language);
     let spans = parsed.spans();
     if source_patterns {
+        let mut hits = patterns::scan_content(content, language);
+        parsed.drop_nested_duplicates(&mut hits);
         observations.extend(
-            patterns::scan_content(content, language)
-                .into_iter()
+            hits.into_iter()
                 .filter(|hit| spans.allows_code_match(hit.offset))
                 .filter(|hit| assess_sink(&parsed, content, hit).reportable)
                 .map(|hit| (patterns::SOURCE_RULES[hit.rule_index].id, "file_location")),
@@ -307,7 +308,9 @@ pub fn scan_file_with_relative_path(
     if scan_vulnerabilities {
         if let Some(lang) = fs_utils::detect_language(path) {
             covered_families.push("vulnerability".to_string());
-            let hits = patterns::scan_content(&content, lang);
+            let mut hits = patterns::scan_content(&content, lang);
+            // One nested expression is one defect, not one per constructor.
+            parsed.drop_nested_duplicates(&mut hits);
             for hit in hits {
                 // A rule matching inside a comment or a string literal is
                 // describing code rather than being it — the single largest
@@ -556,6 +559,82 @@ mod tests {
             .collect();
         rules.sort();
         rules
+    }
+
+    #[test]
+    fn a_nested_sink_of_one_rule_is_reported_once() {
+        let rules = rules_firing(
+            "Read.java",
+            "import javax.servlet.http.HttpServletRequest;\n\
+             class Read {\n\
+             \x20 void go(HttpServletRequest request) throws Exception {\n\
+             \x20   String path = \"/data/\" + request.getParameter(\"name\");\n\
+             \x20   new java.io.FileInputStream(new java.io.File(path)).close();\n\
+             \x20 }\n\
+             }\n",
+        );
+        let reported = rules
+            .iter()
+            .filter(|rule| *rule == "java-path-traversal")
+            .count();
+        assert_eq!(reported, 1, "one statement, one finding: {rules:?}");
+    }
+
+    #[test]
+    fn the_outer_call_is_the_one_kept_when_sinks_nest() {
+        // The inner constructor takes the constant root and the outer takes
+        // the attacker's segment. Keeping the inner hit would report the safe
+        // half of the expression and drop the unsafe one.
+        let rules = rules_firing(
+            "Read.java",
+            "import javax.servlet.http.HttpServletRequest;\n\
+             class Read {\n\
+             \x20 java.io.File go(HttpServletRequest request) {\n\
+             \x20   return new java.io.File(new java.io.File(\"/data\"), request.getParameter(\"n\"));\n\
+             \x20 }\n\
+             }\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-path-traversal"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_path_that_survives_a_containment_check_is_not_reported() {
+        let rules = rules_firing(
+            "Read.java",
+            "import javax.servlet.http.HttpServletRequest;\n\
+             class Read {\n\
+             \x20 java.io.File go(HttpServletRequest request) throws Exception {\n\
+             \x20   java.io.File f = new java.io.File(\"/data\", request.getParameter(\"n\"));\n\
+             \x20   if (!f.getCanonicalPath().startsWith(\"/data/\")) throw new RuntimeException();\n\
+             \x20   return f;\n\
+             \x20 }\n\
+             }\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-path-traversal"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_path_reached_only_through_a_parameter_is_not_reported() {
+        // CWE-22 requires an inbound origin. Taking a path is what a file
+        // helper does, and this is the trade that keeps the rule usable.
+        let rules = rules_firing(
+            "Read.java",
+            "class Read {\n\
+             \x20 java.io.File go(String name) {\n\
+             \x20   return new java.io.File(\"/data/\" + name);\n\
+             \x20 }\n\
+             }\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-path-traversal"),
+            "{rules:?}"
+        );
     }
 
     #[test]

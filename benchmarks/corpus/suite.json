@@ -12,9 +12,9 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 155,
-    "positives": 68,
-    "negatives": 87,
+    "fixtures": 158,
+    "positives": 70,
+    "negatives": 88,
     "rules": 58
   },
   "targets": [
@@ -888,6 +888,22 @@
       ]
     },
     {
+      "id": "java-path-traversal.negative.canonical-containment-check",
+      "inputPath": "source/java-path-traversal__negative__canonical-containment-check.java",
+      "inputSha256": "db7f06669a001915a37a16109d07d0d2ba96403da5933e5b2f205860372b7301",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-path-traversal",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-path-traversal"
+        }
+      ]
+    },
+    {
       "id": "java-path-traversal.negative.fixed-path",
       "inputPath": "source/java-path-traversal__negative__fixed-path.java",
       "inputSha256": "1aa3f188603d81b1fb8e412dcca5bc0df26e27be21f65ebd4d2f92771b359a5c",
@@ -902,6 +918,40 @@
           "ruleId": "java-path-traversal"
         }
       ]
+    },
+    {
+      "id": "java-path-traversal.positive.decoded-cookie-path",
+      "inputPath": "source/java-path-traversal__positive__decoded-cookie-path.java",
+      "inputSha256": "7d6e8450bc9525bea4c62b3007beaf0d03610353a1fa67e0eac6fcb0a62a2d95",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-path-traversal",
+      "expected": [
+        {
+          "ruleId": "java-path-traversal",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-path-traversal.positive.parent-and-child-path",
+      "inputPath": "source/java-path-traversal__positive__parent-and-child-path.java",
+      "inputSha256": "22d3f63def1b379e043f16be4332831ef8459ede6037611a024fb88c208f0fc1",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-path-traversal",
+      "expected": [
+        {
+          "ruleId": "java-path-traversal",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
     },
     {
       "id": "java-path-traversal.positive.request-path",

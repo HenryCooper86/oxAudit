@@ -246,10 +246,10 @@ Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
 | | First run | After acting on it |
 |---|---|---|
 | Cases with a rule to score | 1,998 of 2,740 | **2,740 of 2,740** |
-| Precision | 67.0% | 67.3% |
-| Recall | 6.1% | **76.7%** |
-| False positive rate | 3.0% | 39.8% |
-| Youden index (recall − FPR) | 0.030 | 0.368 |
+| Precision | 67.0% | 65.3% |
+| Recall | 6.1% | **85.4%** |
+| False positive rate | 3.0% | 48.5% |
+| Youden index (recall − FPR) | 0.030 | 0.369 |
 
 The two columns do not measure the same population. Rules were written for all
 five categories that had none, moving 742 cases *into* the scored set, and they
@@ -259,7 +259,7 @@ categories. Coverage went from 73% of the benchmark to all of it; that is the
 row to read.
 
 The first column is what a corpus written by the rules' own authors had been
-reporting as 100%. Four rules were wrong in ways no internal fixture caught,
+reporting as 100%. Five rules were wrong in ways no internal fixture caught,
 and the two columns are the before and after of fixing them:
 
 | Category | First run | Now | What was wrong |
@@ -274,6 +274,7 @@ and the two columns are the before and after of fixing them:
 | `cmdi` | 33 / 126 | **126 / 126** | The rule needed the whole `Runtime.getRuntime().exec(` chain in one expression |
 | `sqli` | 0 / 272 | 174 / 272 | The rule needed the concatenation *inside* the execute call |
 | `hash` | 28 / 129 | 89 / 129 | `SHA1` and `SHA-1` name the same hash; only one was matched |
+| `pathtraver` | 0 / 133 | **123 / 133** | The rule needed the concatenation *inside* the constructor, and could not match `new java.io.File` at all |
 
 Every one of those is the same kind of mistake: a rule written against the
 shape its author pictured, and a fixture written by the same person to match.
@@ -356,11 +357,32 @@ That costs 50 true positives here. It is the same trade already made for path
 traversal and SSRF, for the same reason: a rule nobody leaves switched on
 catches nothing.
 
-Three limits are worth naming as limits rather than as work outstanding. The 40
+`pathtraver` went from 0 true positives to 123 of 133, and the whole of that
+came from finding out that the rule could not fire at all. It matched
+`new File(` and a `+` in the same parentheses; a servlet writes the
+concatenation a statement earlier and spells the type `new java.io.File`, so
+the pattern was unfirable on every one of the 133 vulnerable cases. Rewriting
+it to match the sink and let the dataflow analysis decide exposed four things
+the analysis could not follow — a loop variable bound by `for (Cookie c :
+request.getCookies())`, a value read back out of an array or a cast, a method
+called on tainted data, and a value handed through any unmodelled call at all.
+Each is now followed, and the last one only in the direction that adds taint:
+a tainted operand makes the call tainted, while a constant one still leaves it
+`Unknown`. Folding the operands and returning the fold is the textbook version
+and it stays refused, for the reason under *A trade that was measured and
+refused*.
+
+The cost is 114 false positives out of 135 safe cases, and they are the same
+dead-branch puzzles that defeat `cmdi` below — a `switch` on `"ABC".charAt(1)`,
+a `list.remove(0)` before a `get(1)`. Not one of the 135 uses a real defense;
+the rule's own remediation, canonicalise and check containment, is recognised
+and suppresses the finding when it appears. What keeps the rule usable on
+ordinary code is unchanged: CWE-22 still requires an inbound origin, so a path
+that merely arrives as a parameter is not reported.
+
+One limit is worth naming as a limit rather than as work outstanding: the 40
 `hash` cases still missed read their algorithm out of a properties file, so the
-weak value is never in the source at all. `pathtraver` reports nothing by
-design: CWE-22 is one of the two classes that require an inbound origin, for
-the reason given under *Known limitation* below.
+weak value is never in the source at all.
 
 And `cmdi` now scores a Youden index of **0.000** — it finds all 126
 vulnerable cases and flags all 125 safe ones. That is worth being plain about
