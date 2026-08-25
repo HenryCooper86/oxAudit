@@ -456,6 +456,21 @@ fn is_call_kind(kind: &str) -> bool {
 /// Climbing continues only while the sink sits in the *callee* of the parent
 /// call, which is exactly what a fluent chain looks like. A call in argument
 /// position is a different expression and is classified on its own.
+/// The call whose own syntax the offset sits in, without following a chain.
+///
+/// `enclosing_call` deliberately climbs to the outermost call of a fluent
+/// chain, which is what taint wants: every argument in the chain reaches the
+/// same expression. A rule asking about *one* call's own argument needs the
+/// opposite — `MessageDigest.getInstance(alg).digest(data)` has `alg` as
+/// argument 0 of `getInstance` and `data` as argument 0 of the chain.
+pub fn innermost_call<'tree>(root: Node<'tree>, offset: usize) -> Option<Node<'tree>> {
+    let mut node = root.descendant_for_byte_range(offset, offset)?;
+    while !is_call_kind(node.kind()) {
+        node = node.parent()?;
+    }
+    Some(node)
+}
+
 pub fn enclosing_call<'tree>(root: Node<'tree>, offset: usize) -> Option<Node<'tree>> {
     let mut node = root.descendant_for_byte_range(offset, offset)?;
     while !is_call_kind(node.kind()) {
@@ -1024,6 +1039,167 @@ fn is_parameter(function: Node<'_>, source: &str, name: &str) -> bool {
 /// A module-level `const X = "..."` is the common shape for a constant used
 /// inside a function, so the search widens rather than giving up at the
 /// function boundary.
+/// The literal string an expression evaluates to, when one can be named.
+///
+/// A narrower question than taint, and answered narrowly: a literal, a name
+/// bound to one, or a configuration lookup the target's own `.properties`
+/// files answer. Anything else is `None`, and `None` means the caller must
+/// not claim to know the value.
+///
+/// This exists because some rules are about *which* value reached the sink
+/// rather than who chose it. `MessageDigest.getInstance(algorithm)` is a
+/// defect when `algorithm` is MD5 and correct when it is SHA-256, and the
+/// name is frequently not written at the call site at all.
+pub fn resolve_string_value(
+    node: Node<'_>,
+    source: &str,
+    function: Option<Node<'_>>,
+    config: &super::config_values::ProjectConfig,
+) -> Option<String> {
+    resolve_string_with_depth(node, source, function, config, 0)
+}
+
+/// Property accessors whose first argument names a configuration key.
+///
+/// `getProperty` is `java.util.Properties` and `System`; `getString` is
+/// `ResourceBundle` and Commons Configuration. Both take the key first and an
+/// optional fallback second, which is the shape this reads.
+const CONFIG_LOOKUPS: &[&str] = &["getProperty", "getString", "getRequiredProperty"];
+
+fn resolve_string_with_depth(
+    node: Node<'_>,
+    source: &str,
+    function: Option<Node<'_>>,
+    config: &super::config_values::ProjectConfig,
+    depth: usize,
+) -> Option<String> {
+    if depth > MAX_RESOLUTION_DEPTH {
+        return None;
+    }
+    let node = unwrap_expression(node);
+    let kind = node.kind();
+
+    if is_literal_kind(kind) && !is_interpolated(node) {
+        return unquote(text(node, source));
+    }
+
+    if is_call_kind(kind) {
+        let name = called_name(node, source)?;
+        if !CONFIG_LOOKUPS.contains(&name) {
+            return None;
+        }
+        let arguments = own_arguments(node);
+        let key =
+            resolve_string_with_depth(*arguments.first()?, source, function, config, depth + 1)?;
+        // The file wins over the literal default, because the file is what
+        // runs. Reading the default as the answer is how a scanner reports
+        // SHA-512 for an application that ships MD5.
+        if let Some(configured) = config.get(&key) {
+            return Some(configured.to_string());
+        }
+        // No file defines it, so the default is what the call returns.
+        return arguments.get(1).and_then(|fallback| {
+            resolve_string_with_depth(*fallback, source, function, config, depth + 1)
+        });
+    }
+
+    if is_identifier_kind(kind) {
+        let name = text(node, source);
+        let function = function?;
+        // Exactly one reaching definition, or the value is not knowable: a
+        // name assigned on two branches has two values and this answers with
+        // neither.
+        let mut definitions = Vec::new();
+        collect_definitions(function, source, name, node.start_byte(), &mut definitions);
+        if definitions.is_empty() {
+            let mut root = function;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            collect_definitions(root, source, name, node.start_byte(), &mut definitions);
+        }
+        let [only] = definitions.as_slice() else {
+            return None;
+        };
+        return resolve_string_with_depth(*only, source, Some(function), config, depth + 1);
+    }
+
+    None
+}
+
+fn collect_definitions<'tree>(
+    scope: Node<'tree>,
+    source: &str,
+    name: &str,
+    before: usize,
+    found: &mut Vec<Node<'tree>>,
+) {
+    walk(scope, &mut |node| {
+        if let Some(value) = bound_value(node, source, name) {
+            if value.start_byte() <= before {
+                found.push(value);
+            }
+        }
+    });
+}
+
+/// A string literal's contents, or `None` when it is not one.
+///
+/// Escapes are left as written. An algorithm name has none, and inventing an
+/// unescaping would mean claiming to know a value the source did not spell.
+fn unquote(literal: &str) -> Option<String> {
+    let mut chars = literal.chars();
+    let open = chars.next()?;
+    if !matches!(open, '"' | '\'') {
+        return None;
+    }
+    let rest = chars.as_str();
+    let inner = rest.strip_suffix(open)?;
+    (!inner.contains('\\')).then(|| inner.to_string())
+}
+
+/// The expression this node binds to `name`, if it binds one.
+///
+/// One place for every way the supported grammars write "this name now holds
+/// this value", so taint resolution and value resolution cannot drift apart
+/// about what counts as a definition.
+fn bound_value<'tree>(node: Node<'tree>, source: &str, name: &str) -> Option<Node<'tree>> {
+    match node.kind() {
+        // JavaScript, Java
+        "variable_declarator" => node
+            .child_by_field_name("name")
+            .filter(|target| text(*target, source) == name)
+            .and(node.child_by_field_name("value")),
+        // Rust
+        "let_declaration" => node
+            .child_by_field_name("pattern")
+            .filter(|target| text(*target, source) == name)
+            .and(node.child_by_field_name("value")),
+        // Python, Go (`=` and `:=`)
+        "assignment" | "assignment_expression" | "short_var_declaration" => node
+            .child_by_field_name("left")
+            .filter(|target| text(*target, source) == name)
+            .and(node.child_by_field_name("right")),
+        // A loop variable is bound to an element of what it iterates.
+        // `for (Cookie c : request.getCookies())` makes `c` as attacker-chosen
+        // as the array it was drawn from. Java's C-style `for_statement` labels
+        // neither side, so it falls through this arm without matching.
+        "enhanced_for_statement"
+        | "for_in_statement"
+        | "for_each_statement"
+        | "for_statement"
+        | "range_clause" => node
+            .child_by_field_name("name")
+            .or_else(|| node.child_by_field_name("left"))
+            .filter(|target| text(*target, source) == name)
+            .and(
+                node.child_by_field_name("value")
+                    .or_else(|| node.child_by_field_name("right")),
+            ),
+        _ => None,
+    }
+}
+
 fn resolve_binding(
     function: Node<'_>,
     source: &str,
@@ -1053,42 +1229,7 @@ fn resolve_binding(
             depth,
         } = *query;
         walk(scope, &mut |node| {
-            let assigned = match node.kind() {
-                // JavaScript, Java
-                "variable_declarator" => node
-                    .child_by_field_name("name")
-                    .filter(|target| text(*target, source) == name)
-                    .and(node.child_by_field_name("value")),
-                // Rust
-                "let_declaration" => node
-                    .child_by_field_name("pattern")
-                    .filter(|target| text(*target, source) == name)
-                    .and(node.child_by_field_name("value")),
-                // Python, Go (`=` and `:=`)
-                "assignment" | "assignment_expression" | "short_var_declaration" => node
-                    .child_by_field_name("left")
-                    .filter(|target| text(*target, source) == name)
-                    .and(node.child_by_field_name("right")),
-                // A loop variable is bound to an element of what it iterates.
-                // `for (Cookie c : request.getCookies())` makes `c` as
-                // attacker-chosen as the array it was drawn from. Java's
-                // C-style `for_statement` labels neither side, so it falls
-                // through this arm without matching.
-                "enhanced_for_statement"
-                | "for_in_statement"
-                | "for_each_statement"
-                | "for_statement"
-                | "range_clause" => node
-                    .child_by_field_name("name")
-                    .or_else(|| node.child_by_field_name("left"))
-                    .filter(|target| text(*target, source) == name)
-                    .and(
-                        node.child_by_field_name("value")
-                            .or_else(|| node.child_by_field_name("right")),
-                    ),
-                _ => None,
-            };
-            if let Some(value) = assigned {
+            if let Some(value) = bound_value(node, source, name) {
                 // A definition after the use cannot be the one that reaches it.
                 if value.start_byte() <= before {
                     let taint =
@@ -1170,7 +1311,11 @@ pub fn gate_notes(taint: Taint, sink_cwe: Option<&str>) -> Vec<crate::triage::ga
 }
 
 /// Depth-first walk, iterative so a deeply nested file cannot exhaust the stack.
-fn walk(root: Node<'_>, visit: &mut impl FnMut(Node<'_>)) {
+/// Visit every node under `root`.
+///
+/// Generic in the tree's lifetime so a caller may keep the nodes it finds;
+/// `Node<'_>` on both sides would tie them to the closure body.
+fn walk<'tree>(root: Node<'tree>, visit: &mut impl FnMut(Node<'tree>)) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         visit(node);

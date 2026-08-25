@@ -136,6 +136,30 @@ impl FileSyntax {
         hits.retain(|_| *alive.next().unwrap_or(&true));
     }
 
+    /// The literal value one argument of the call at `offset` resolves to.
+    ///
+    /// `None` whenever it cannot be named — no grammar, no call, no such
+    /// argument, or a value the resolver will not guess at. Callers treat that
+    /// as "do not claim to know".
+    pub fn resolved_argument(
+        &self,
+        content: &str,
+        offset: usize,
+        index: usize,
+        config: &super::config_values::ProjectConfig,
+    ) -> Option<String> {
+        use super::dataflow;
+        let tree = self.tree.as_ref()?;
+        let root = tree.root_node();
+        let call = dataflow::innermost_call(root, offset)?;
+        if !dataflow::names_the_call(call, offset) {
+            return None;
+        }
+        let argument = *dataflow::own_arguments(call).get(index)?;
+        let function = dataflow::enclosing_function(root, offset);
+        dataflow::resolve_string_value(argument, content, function, config)
+    }
+
     /// How many arguments the call at `offset` was given, when the finding
     /// names a call at all.
     ///

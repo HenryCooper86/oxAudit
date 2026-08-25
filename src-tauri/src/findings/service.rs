@@ -536,6 +536,14 @@ impl FindingsService {
                 serde_json::json!({"total": total, "done": 0, "phase": "scanning"}),
             );
             let processed = AtomicUsize::new(0);
+            // Read once, before the parallel walk, so every file is assessed
+            // against the same view of what the project configures.
+            let project_config = scanners::config_values::ProjectConfig::from_paths(
+                collection
+                    .files
+                    .iter()
+                    .map(|file| file.canonical_path.as_path()),
+            );
             let outcomes = collection
                 .files
                 .par_iter()
@@ -547,12 +555,13 @@ impl FindingsService {
                         .project_relative_path
                         .to_string_lossy()
                         .replace('\\', "/");
-                    let outcome = scanners::scan_file_with_relative_path(
+                    let outcome = scanners::scan_file_in_project(
                         &file.canonical_path,
                         &relative,
                         options.max_file_size_kb.max(1),
                         options.scan_secrets,
                         options.scan_vulnerabilities,
+                        &project_config,
                     );
                     let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
                     if done % 25 == 0 || done == total {

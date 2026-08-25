@@ -1,3 +1,4 @@
+pub mod config_values;
 pub mod dataflow;
 pub mod patterns;
 pub mod secrets;
@@ -31,7 +32,15 @@ pub fn benchmark_observations(
         observations.extend(
             hits.into_iter()
                 .filter(|hit| spans.allows_code_match(hit.offset))
-                .filter(|hit| assess_sink(&parsed, content, hit).reportable)
+                .filter(|hit| {
+                    assess_sink(
+                        &parsed,
+                        content,
+                        hit,
+                        &config_values::ProjectConfig::default(),
+                    )
+                    .reportable
+                })
                 .map(|hit| (patterns::SOURCE_RULES[hit.rule_index].id, "file_location")),
         );
     }
@@ -81,6 +90,7 @@ fn assess_sink(
     parsed: &syntax::FileSyntax,
     content: &str,
     hit: &patterns::PatternHit,
+    config: &config_values::ProjectConfig,
 ) -> SinkAssessment {
     // The rule's weakness class decides which transforms count as sanitizing.
     let cwe = patterns::SOURCE_RULES[hit.rule_index].cwe;
@@ -108,6 +118,19 @@ fn assess_sink(
                     gates: Vec::new(),
                 };
             }
+        }
+    }
+
+    // A few rules are about *which* value reached the sink rather than who
+    // chose it. An algorithm name that cannot be resolved is not evidence of
+    // anything, so these stay silent rather than reporting on suspicion.
+    if let Some((index, values)) = patterns::resolved_argument_values(rule_id) {
+        let resolved = parsed.resolved_argument(content, hit.offset, index, config);
+        if !resolved.is_some_and(|value| patterns::names_algorithm(&value, values)) {
+            return SinkAssessment {
+                reportable: false,
+                gates: Vec::new(),
+            };
         }
     }
 
@@ -220,6 +243,30 @@ pub fn scan_file_with_relative_path(
     scan_secrets: bool,
     scan_vulnerabilities: bool,
 ) -> ScanFileOutcome {
+    scan_file_in_project(
+        path,
+        relative_path,
+        max_file_size_kb,
+        scan_secrets,
+        scan_vulnerabilities,
+        &config_values::ProjectConfig::default(),
+    )
+}
+
+/// Scan one file with the target's own configuration available.
+///
+/// Some rules cannot decide from the file in front of them: the digest
+/// algorithm a servlet uses is frequently a key in a `.properties` file
+/// somewhere else in the same project. `config` carries what those files say;
+/// an empty one simply means no rule that needs it will fire.
+pub fn scan_file_in_project(
+    path: &Path,
+    relative_path: &str,
+    max_file_size_kb: u64,
+    scan_secrets: bool,
+    scan_vulnerabilities: bool,
+    config: &config_values::ProjectConfig,
+) -> ScanFileOutcome {
     let max_bytes = max_file_size_kb.saturating_mul(1024);
     let content = match fs_utils::read_text_file(path, max_bytes) {
         Some(c) => c,
@@ -321,7 +368,7 @@ pub fn scan_file_with_relative_path(
                 // A sink whose argument is provably a constant, or sanitized
                 // for this weakness, is not a finding: nobody can choose the
                 // value that reaches it.
-                let assessment = assess_sink(&parsed, &content, &hit);
+                let assessment = assess_sink(&parsed, &content, &hit, config);
                 if !assessment.reportable {
                     continue;
                 }
@@ -380,7 +427,8 @@ pub fn scan_file_with_relative_path(
 
 #[cfg(test)]
 mod tests {
-    use super::scan_file_with_relative_path;
+    use super::config_values::ProjectConfig;
+    use super::{scan_file_in_project, scan_file_with_relative_path};
 
     const CANARY: &str = "oxaudit-secret-canary-7D4zP9q2";
 
@@ -559,6 +607,74 @@ mod tests {
             .collect();
         rules.sort();
         rules
+    }
+
+    /// Scan one source file beside one properties file, and list the rules
+    /// that fired.
+    fn rules_firing_with_config(name: &str, source: &str, properties: &str) -> Vec<String> {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let path = directory.path().join(name);
+        std::fs::write(&path, source).expect("fixture");
+        let config_path = directory.path().join("application.properties");
+        std::fs::write(&config_path, properties).expect("properties");
+        let config = ProjectConfig::from_paths([path.as_path(), config_path.as_path()]);
+        let outcome = scan_file_in_project(&path, name, 64, false, true, &config);
+        let mut rules: Vec<String> = outcome
+            .findings
+            .iter()
+            .map(|finding| finding.rule_id.clone())
+            .collect();
+        rules.sort();
+        rules
+    }
+
+    const DIGEST_FROM_CONFIG: &str = "import java.security.MessageDigest;\n\
+        class Digest {\n\
+        \x20 byte[] hash(java.util.Properties props, byte[] data) throws Exception {\n\
+        \x20   String algorithm = props.getProperty(\"digest\", \"SHA-512\");\n\
+        \x20   return MessageDigest.getInstance(algorithm).digest(data);\n\
+        \x20 }\n\
+        }\n";
+
+    #[test]
+    fn the_configured_algorithm_wins_over_the_default_written_in_the_source() {
+        // This is the whole point of reading configuration: the source says
+        // SHA-512 and the application computes MD5.
+        let rules = rules_firing_with_config("Digest.java", DIGEST_FROM_CONFIG, "digest=MD5\n");
+        assert!(
+            rules.iter().any(|rule| rule == "java-configured-weak-hash"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_strong_configured_algorithm_is_not_reported() {
+        let rules = rules_firing_with_config("Digest.java", DIGEST_FROM_CONFIG, "digest=SHA-256\n");
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn an_algorithm_no_configuration_names_is_not_reported() {
+        // Without the key, the literal default is what the call returns, and
+        // SHA-512 is not a finding. Nothing here may be guessed at.
+        let rules = rules_firing_with_config("Digest.java", DIGEST_FROM_CONFIG, "other=MD5\n");
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn a_literal_weak_digest_is_reported_once_not_twice() {
+        // `java-weak-hash` and `java-configured-weak-hash` match at the same
+        // offset; the literal form supersedes.
+        let rules = rules_firing(
+            "Digest.java",
+            "import java.security.MessageDigest;\n\
+             class Digest {\n\
+             \x20 byte[] hash(byte[] data) throws Exception {\n\
+             \x20   return MessageDigest.getInstance(\"MD5\").digest(data);\n\
+             \x20 }\n\
+             }\n",
+        );
+        assert_eq!(rules, vec!["java-weak-hash".to_string()], "{rules:?}");
     }
 
     #[test]

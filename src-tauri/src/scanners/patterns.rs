@@ -70,8 +70,18 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         srule!("java-deserialization", "Unsafe deserialization", &["java", "kotlin"], "high", "CWE-502", r"(?:ObjectInputStream|XMLDecoder|ObjectInput)[^;]{0,80}\s*readObject\s*\(", "readObject()/XMLDecoder deserialization of untrusted data can lead to RCE via gadget chains.", "Do not deserialize untrusted data; use safe formats (JSON) with strict schemas, or an allow-listed deserialization filter."),
         srule!("java-cipher-ecb", "Cipher in ECB mode", &["java"], "medium", "CWE-327", r#"Cipher\s*\.\s*getInstance\s*\(\s*['"][^'"]*\/ECB\/"#, "ECB mode leaks patterns in ciphertext and is not semantically secure.", "Use AES-GCM (or CBC with HMAC) and a random IV."),
         srule!("java-weak-cipher", "Broken cipher algorithm", &["java", "kotlin"], "high", "CWE-327", r#"(?:Cipher|KeyGenerator|SecretKeyFactory)\s*\.\s*getInstance\s*\(\s*['"](?:DES|DESede|TripleDES|RC2|RC4|ARCFOUR|Blowfish)\b"#, "DES and Triple DES have key sizes small enough to brute force, and RC2, RC4, and Blowfish have structural weaknesses. The mode does not matter: `DES/CBC/PKCS5Padding` is broken because DES is broken.", "Use AES-256 in GCM mode. For key derivation use PBKDF2, scrypt, or Argon2."),
+        // As with the digest above, the algorithm is often a configuration key
+        // rather than a literal. Firing only on a resolved value keeps this
+        // from reporting every `Cipher.getInstance(alg)` in a codebase.
+        srule!("java-configured-weak-cipher", "Broken cipher algorithm named in configuration", &["java", "kotlin"], "high", "CWE-327", r"(?:Cipher|KeyGenerator|SecretKeyFactory)\s*\.\s*getInstance\s*\(", "The cipher this call is given resolves to DES, Triple DES, RC2, RC4, or Blowfish. The mode does not matter: `DES/CBC/PKCS5Padding` is broken because DES is broken.", "Use AES-256 in GCM mode, and change the configured value as well as the code."),
         srule!("java-weak-prng", "Non-cryptographic random number generator", &["java", "kotlin"], "low", "CWE-330", r#"new\s+(?:java\s*\.\s*util\s*\.\s*)?\bRandom\s*\(|\bMath\s*\.\s*random\s*\(|\bThreadLocalRandom\s*\.\s*current\s*\("#, "java.util.Random is a linear congruential generator: its entire future output is derivable from a couple of observed values. This does not say the value is security-relevant — it says nothing here proves it is not, and that is a question only a person can answer.", "If this value is a token, key, nonce, salt, or session identifier, use java.security.SecureRandom. If it is a simulation, sample, or animation, dismiss this with a reason."),
         srule!("java-weak-hash", "Weak hash (MD5/SHA-1)", &["java"], "medium", "CWE-327", r#"(?i)MessageDigest\s*\.\s*getInstance\s*\(\s*['"](?:MD[245]|SHA-?1)['"]"#, "MD5 and SHA-1 are cryptographically broken.", "Use SHA-256+ or a password hasher (BCrypt/Argon2)."),
+        // The literal form above and this one match at the same offset, so
+        // `SUPERSEDES` keeps `getInstance("MD5")` from being reported twice.
+        // This one carries the finding when the name is not written at the
+        // call: it fires only when the value resolves, and only when what it
+        // resolves to is broken.
+        srule!("java-configured-weak-hash", "Weak hash (MD5/SHA-1) named in configuration", &["java"], "medium", "CWE-327", r"MessageDigest\s*\.\s*getInstance\s*\(", "The digest algorithm this call is given resolves to MD5 or SHA-1, which are cryptographically broken.", "Use SHA-256+ or a password hasher (BCrypt/Argon2), and change the configured value as well as the code."),
 
         // ----------------------------------------------------------------- Go
         srule!("go-exec-shell", "exec.Command with a shell", &["go"], "high", "CWE-78", r#"exec\.Command\s*\(\s*['"](?:sh|bash)['"]"#, "exec.Command launching sh/bash to build commands from strings is a command-injection sink.", "Invoke the target binary directly with an argument slice; avoid shell interpreters."),
@@ -248,6 +258,63 @@ pub fn sink_argument(rule_id: &str) -> Option<usize> {
         .map(|(_, index)| *index)
 }
 
+/// Algorithm names that are broken for the uses these rules are about.
+///
+/// Compared after normalising away case and separators, so `SHA-1`, `SHA1`
+/// and `sha_1` are one entry.
+const BROKEN_DIGESTS: &[&str] = &["md2", "md4", "md5", "sha0", "sha1"];
+
+/// Ciphers that are broken whatever mode is bolted onto them.
+const BROKEN_CIPHERS: &[&str] = &[
+    "des",
+    "desede",
+    "tripledes",
+    "rc2",
+    "rc4",
+    "arcfour",
+    "blowfish",
+];
+
+/// Rules whose finding depends on the *value* of one argument, not its taint.
+///
+/// `MessageDigest.getInstance(algorithm)` is a defect when `algorithm` is MD5
+/// and correct when it is SHA-256, and the name is frequently not written at
+/// the call. 40 of the OWASP Benchmark's hash cases read it out of
+/// `benchmark.properties`, where the literal in the source is a strong default
+/// that the file overrides with MD5 — so the source read on its own gets the
+/// answer exactly backwards.
+///
+/// Unresolvable means silent, which is the opposite of this scanner's usual
+/// direction. The finding asserts that a broken algorithm is in use; asserting
+/// that without knowing the algorithm would be making it up. A tainted or
+/// merely unknown argument is a different weakness and would need its own
+/// rule to say so.
+const RESOLVED_ARGUMENT_VALUES: &[(&str, usize, &[&str])] = &[
+    ("java-configured-weak-hash", 0, BROKEN_DIGESTS),
+    ("java-configured-weak-cipher", 0, BROKEN_CIPHERS),
+];
+
+/// The argument whose value decides a rule, and the values that make it fire.
+pub fn resolved_argument_values(rule_id: &str) -> Option<(usize, &'static [&'static str])> {
+    RESOLVED_ARGUMENT_VALUES
+        .iter()
+        .find(|(id, _, _)| *id == rule_id)
+        .map(|(_, index, values)| (*index, *values))
+}
+
+/// Case and separators carry no meaning in an algorithm name.
+pub fn names_algorithm(value: &str, candidates: &[&str]) -> bool {
+    let normalized: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    // `DES/ECB/PKCS5Padding` names its algorithm before the first slash; a
+    // digest name has no slash and is unaffected.
+    let head = normalized.split('/').next().unwrap_or(&normalized);
+    candidates.contains(&head)
+}
+
 /// Rules whose sink is only a shell sink in its single-string form.
 ///
 /// Ruby's `system`, `exec`, and `spawn` run a command through the shell when
@@ -317,6 +384,10 @@ pub fn scan_content(content: &str, language: &str) -> Vec<PatternHit> {
 const SUPERSEDES: &[(&str, &str)] = &[
     ("java-insecure-random", "java-weak-prng"),
     ("kt-insecure-random", "java-weak-prng"),
+    // Both match at `MessageDigest`. The literal form names the algorithm in
+    // its own match text, which is the more useful of two identical findings.
+    ("java-weak-hash", "java-configured-weak-hash"),
+    ("java-weak-cipher", "java-configured-weak-cipher"),
 ];
 
 /// Remove a broad hit wherever the specific rule already fired at that offset.

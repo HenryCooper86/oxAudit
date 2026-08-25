@@ -246,10 +246,10 @@ Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
 | | First run | After acting on it |
 |---|---|---|
 | Cases with a rule to score | 1,998 of 2,740 | **2,740 of 2,740** |
-| Precision | 67.0% | 65.3% |
-| Recall | 6.1% | **85.4%** |
+| Precision | 67.0% | 66.0% |
+| Recall | 6.1% | **88.2%** |
 | False positive rate | 3.0% | 48.5% |
-| Youden index (recall − FPR) | 0.030 | 0.369 |
+| Youden index (recall − FPR) | 0.030 | 0.397 |
 
 The two columns do not measure the same population. Rules were written for all
 five categories that had none, moving 742 cases *into* the scored set, and they
@@ -273,7 +273,7 @@ and the two columns are the before and after of fixing them:
 | `weakrand` | 0 / 218 | **218 / 218** | The rule needed a secret-ish variable name nearby |
 | `cmdi` | 33 / 126 | **126 / 126** | The rule needed the whole `Runtime.getRuntime().exec(` chain in one expression |
 | `sqli` | 0 / 272 | 174 / 272 | The rule needed the concatenation *inside* the execute call |
-| `hash` | 28 / 129 | 89 / 129 | `SHA1` and `SHA-1` name the same hash; only one was matched |
+| `hash` | 28 / 129 | **129 / 129** | `SHA1` and `SHA-1` name the same hash; only one was matched, and the algorithm is often not in the source at all |
 | `pathtraver` | 0 / 133 | **123 / 133** | The rule needed the concatenation *inside* the constructor, and could not match `new java.io.File` at all |
 
 Every one of those is the same kind of mistake: a rule written against the
@@ -380,9 +380,33 @@ and suppresses the finding when it appears. What keeps the rule usable on
 ordinary code is unchanged: CWE-22 still requires an inbound origin, so a path
 that merely arrives as a parameter is not reported.
 
-One limit is worth naming as a limit rather than as work outstanding: the 40
-`hash` cases still missed read their algorithm out of a properties file, so the
-weak value is never in the source at all.
+`hash` reached 129 of 129 at 100% precision by reading the properties file.
+The 40 cases that were missed all say
+
+```java
+String algorithm = props.getProperty("hashAlg1", "SHA512");
+MessageDigest.getInstance(algorithm);
+```
+
+and `benchmark.properties` says `hashAlg1=MD5`. The literal in the source is
+the value that applies only when the key is *absent*, so reading the source
+alone gets the answer exactly backwards — it reports SHA-512 for an
+application that ships MD5. 33 safe cases have the identical shape with a key
+that resolves to SHA-256, and they stay silent.
+
+So oxAudit now indexes the `.properties` files in the scan target and resolves
+`getProperty` against them. Three rules follow from that, and the direction is
+the opposite of this scanner's usual one: an algorithm name that cannot be
+resolved produces no finding at all, because the finding asserts that a broken
+algorithm is in use and asserting that without knowing the algorithm would be
+making it up. A key two files disagree about resolves to nothing, for the same
+reason — which one runs is a deployment decision.
+
+The same mechanism now covers ciphers. `crypto` was already at 130 of 130, but
+by luck: the vulnerable cases happen to write `DESede/ECB/PKCS5Padding` as the
+literal default beside the configuration key. An application whose code
+defaults to AES and whose properties file says DES was being missed, and is
+not any more.
 
 And `cmdi` now scores a Youden index of **0.000** — it finds all 126
 vulnerable cases and flags all 125 safe ones. That is worth being plain about

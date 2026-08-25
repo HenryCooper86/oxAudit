@@ -228,6 +228,18 @@ pub fn load_expectations(root: &Path) -> Result<Vec<ExpectedCase>, ExternalError
     Ok(cases)
 }
 
+/// Every `.properties` file directly inside `directory`.
+fn properties_files(directory: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "properties"))
+        .collect()
+}
+
 /// Score every labelled case by running the real scanner over its source.
 pub fn score(root: &Path, cases: &[ExpectedCase]) -> Result<ExternalReport, ExternalError> {
     let started = std::time::Instant::now();
@@ -236,6 +248,16 @@ pub fn score(root: &Path, cases: &[ExpectedCase]) -> Result<ExternalReport, Exte
         return Err(ExternalError::Missing(root.to_path_buf()));
     }
 
+    // The benchmark's servlets read algorithm names out of
+    // `src/main/resources/benchmark.properties`, which is part of the
+    // application being scored. A real scan indexes whatever the target
+    // configures; this indexes the same thing for the same reason.
+    let config = crate::scanners::config_values::ProjectConfig::from_paths(
+        properties_files(&root.join("src/main/resources"))
+            .iter()
+            .map(PathBuf::as_path),
+    );
+
     let mut per_category: BTreeMap<String, CategoryScore> = BTreeMap::new();
 
     for case in cases {
@@ -243,13 +265,14 @@ pub fn score(root: &Path, cases: &[ExpectedCase]) -> Result<ExternalReport, Exte
         if !path.exists() {
             return Err(ExternalError::Missing(path));
         }
-        let outcome = crate::scanners::scan_file_with_relative_path(
+        let outcome = crate::scanners::scan_file_in_project(
             &path,
             &format!("{}.java", case.name),
             // The generated servlets are a few kilobytes; this is headroom.
             1024,
             false,
             true,
+            &config,
         );
         let flagged = outcome.findings.iter().any(|finding| {
             finding
