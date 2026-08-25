@@ -198,11 +198,11 @@ rule.
 |---|---|---|
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
-| Corpus size | 26 fixtures | **141 fixtures** |
+| Corpus size | 26 fixtures | **144 fixtures** |
 | Findings on this repository | 142 | **32** |
 | …still shown after scope triage | 142 | **5** |
 
-The corpus is 141 fixtures, 79 of them negatives, and none of the negatives were
+The corpus is 144 fixtures, 81 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
 source or a real dependency tree — type declarations, prose in Markdown,
 comments, environment lookups, function parameters, JSON schemas, UI labels,
@@ -210,7 +210,7 @@ hardened XML parsers, non-security uses of `Math.random()`, and the detector
 code that searches for PEM headers.
 
 The corpus is deliberately vulnerable, so it is excluded from the repository
-figure above: a full scan of this checkout returns 100 findings, 68 of which are
+figure above: a full scan of this checkout returns 101 findings, 69 of which are
 the fixtures doing their job.
 
 A corpus you tuned against proves little, so the last two rows are the ones that
@@ -306,9 +306,10 @@ and letting dataflow resolve what that variable holds, took sqli from 0 to 174
 true positives and the overall recall from 6.1% to 23.3%.
 
 That is the second column, and it cost precision. The rule now also reports 150
-of the benchmark's safe cases — the ones whose safety is a constant returned
-from another file. On ordinary code it still discriminates, and there are
-fixtures and tests holding that line:
+of the benchmark's safe cases, and those false positives turned out not to be
+fixable — an attempt and what it cost is written up under *A trade that was
+measured and refused* below. On ordinary code it still discriminates, and there
+are fixtures and tests holding that line:
 
 ```java
 String sql = "SELECT * FROM users WHERE id = ?";   // not reported
@@ -353,6 +354,44 @@ to produce, and the fix is not a better `cmdi` rule.
 
 Taking the recall was still right. Missing every command injection written in
 two statements is a hole no amount of benchmark score justifies keeping.
+
+#### A trade that was measured and refused
+
+The 150 false SQL reports break down as 105 values passed through a helper
+resolved by reflection, 33 carried through a `HashMap` or `StringBuilder` and
+back out, and the rest dead branches guarded by arithmetic that is always true.
+
+The first group has an obvious fix, and it is the standard one: treat an
+unmodelled callee as a function of its arguments, so `doSomething("literal")`
+is constant and `doSomething(param)` is not. Implemented and measured, that
+removed **28 false positives** — and introduced **11 false negatives**:
+
+```java
+String param = scr.getTheParameter("BenchmarkTest00043");   // request data
+String sql = "INSERT INTO users ... '" + param + "'";       // no longer reported
+```
+
+An accessor taking a constant key and returning request data is not a corner
+case; `getProperty`, `config.get`, and every framework's parameter helper have
+that shape. The trade was 28 reports a reviewer dismisses in a second against
+11 hidden SQL injections, so it was reverted. A test pins the shape, and names
+the measurement, so the same trade cannot be made again by accident.
+
+Two smaller findings from the same investigation *were* sound, and both fix
+real code even though the Benchmark cannot show it — its SQL values are never
+constant, so an unresolved argument beside them changes nothing there:
+
+```java
+statement.execute(sql, Statement.RETURN_GENERATED_KEYS);  // was reported
+runtime.exec(new String[] {"ls", "-la"});                 // was reported
+```
+
+One unresolved argument makes a whole call unresolved, so a flags constant or
+a literal array sitting *next to* the argument a rule cares about was deciding
+the outcome. A SCREAMING_SNAKE_CASE member now reads as the compile-time
+constant it is, and a collection of literals as the constant it is. The second
+needs no convention; the first is drawn tightly enough that `config.userInput`
+cannot qualify, and there is a test for that.
 
 Whether a weak generator matters is a question the tool refuses to answer on
 its own. `java-insecure-random` asks whether a *secret* came from one and is

@@ -944,4 +944,71 @@ mod tests {
             "{rules:?}"
         );
     }
+
+    // ------------------------------------ values the analysis can settle
+
+    #[test]
+    fn a_flags_constant_beside_the_argument_does_not_flip_the_verdict() {
+        // One unresolved argument makes a whole call unresolved, so a static
+        // constant sitting next to the argument a rule cares about used to
+        // decide the outcome: `execute(sql, RETURN_GENERATED_KEYS)` reported
+        // where `execute(sql)` did not, for no difference in the SQL.
+        let rules = rules_firing(
+            "R.java",
+            "class R {\n  void f(java.sql.Statement st) throws Exception {\n    String sql = \"SELECT * FROM users WHERE id = 1\";\n    st.execute(sql, java.sql.Statement.RETURN_GENERATED_KEYS);\n  }\n}\n",
+        );
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn a_member_that_could_hold_input_keeps_its_unknown() {
+        // The constant rule is a naming convention, so it is drawn tightly:
+        // only SCREAMING_SNAKE_CASE. `config.userInput` must not qualify.
+        let rules = rules_firing(
+            "R.java",
+            "class R {\n  void f(java.sql.Statement st, Config config) throws Exception {\n    String sql = \"SELECT * FROM users WHERE id = \" + config.userInput;\n    st.execute(sql);\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-sql-concat"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn an_array_of_literals_is_a_constant() {
+        let rules = rules_firing(
+            "R.java",
+            "class R {\n  void f() throws Exception {\n    Runtime r = Runtime.getRuntime();\n    r.exec(new String[] {\"ls\", \"-la\"});\n  }\n}\n",
+        );
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn an_array_holding_one_tainted_element_is_tainted() {
+        let rules = rules_firing(
+            "R.java",
+            "class R {\n  void f(javax.servlet.http.HttpServletRequest request) throws Exception {\n    Runtime r = Runtime.getRuntime();\n    r.exec(new String[] {\"sh\", \"-c\", request.getParameter(\"cmd\")});\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-runtime-exec"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn an_accessor_taking_a_constant_key_is_not_a_constant() {
+        // The guard on a change that was tried and reverted. Treating an
+        // unmodelled callee as a function of its arguments removes 28 false
+        // SQL reports from the OWASP Benchmark and hides 11 real injections,
+        // because `get("id")` takes a constant key and returns request data.
+        // If this test ever starts failing, that trade has been made again.
+        let rules = rules_firing(
+            "R.java",
+            "class R {\n  void f(java.sql.Statement st, Params params) throws Exception {\n    String sql = \"SELECT * FROM users WHERE id = \" + params.get(\"id\");\n    st.execute(sql);\n  }\n}\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-sql-concat"),
+            "{rules:?}"
+        );
+    }
 }
