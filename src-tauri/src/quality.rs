@@ -180,6 +180,32 @@ pub fn run(corpus_root: &Path, suite: &CorpusSuite) -> Result<BenchmarkReport, C
 ///
 /// The indirection is what lets the packaged app score the same corpus as the
 /// command line without shipping the repository alongside it.
+/// Grammars oxAudit has rules for but this build did not compile in.
+///
+/// Only the languages the corpus actually exercises, so the note names the
+/// reason these particular numbers are lower rather than listing everything.
+fn missing_grammars() -> Vec<&'static str> {
+    const EXERCISED: [&str; 12] = [
+        "javascript",
+        "python",
+        "java",
+        "rust",
+        "go",
+        "php",
+        "ruby",
+        "c",
+        "cpp",
+        "csharp",
+        "kotlin",
+        "swift",
+    ];
+    let compiled = crate::scanners::syntax::compiled_grammars();
+    EXERCISED
+        .into_iter()
+        .filter(|language| !compiled.contains(language))
+        .collect()
+}
+
 pub fn score(
     suite: &CorpusSuite,
     mut read_fixture: impl FnMut(&str) -> Result<Vec<u8>, CorpusError>,
@@ -395,9 +421,21 @@ pub fn render_text(report: &BenchmarkReport) -> String {
     );
     let _ = writeln!(
         out,
-        "  {} of {} fixtures had a grammar; the rest were measured on text alone\n",
+        "  {} of {} fixtures had a grammar; the rest were measured on text alone",
         report.syntax_analyzed_fixtures, report.fixtures
     );
+    // A grammar left out at build time lowers precision here, and the numbers
+    // alone give no hint that the cause is the binary rather than the rules.
+    let missing = missing_grammars();
+    if missing.is_empty() {
+        let _ = writeln!(out);
+    } else {
+        let _ = writeln!(
+            out,
+            "  built without {}: those fixtures score on text alone\n",
+            missing.join(", ")
+        );
+    }
 
     let _ = writeln!(
         out,
