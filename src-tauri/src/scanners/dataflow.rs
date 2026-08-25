@@ -354,6 +354,24 @@ pub fn enclosing_call<'tree>(root: Node<'tree>, offset: usize) -> Option<Node<'t
     }
 }
 
+/// Does the finding *name* this call, rather than merely sit inside it?
+///
+/// Argument taint only says something about a finding that is the call:
+/// `exec(cmd)` is judged by `cmd`. A finding nested inside an argument —
+/// `element.innerHTML = value` within a callback passed to `useEffect` — has
+/// no relationship to that call's arguments, and judging it by them was
+/// silently suppressing XSS findings for reasons that had nothing to do with
+/// them.
+///
+/// Stated by exclusion rather than by enumerating callee shapes: Java's `new
+/// File(..)`, Go's method values, and Rust's turbofish all spell a callee
+/// differently, but every language agrees on where the arguments are.
+pub fn names_the_call(call: Node<'_>, offset: usize) -> bool {
+    !chain_arguments(call)
+        .iter()
+        .any(|argument| argument.byte_range().contains(&offset))
+}
+
 /// Every argument passed anywhere in a call chain.
 ///
 /// A fluent chain is one expression as far as an attacker is concerned: if any
@@ -1437,5 +1455,67 @@ mod tests {
             taint_for_cwe(source, "go", "eval(", Some("CWE-95")),
             Taint::Constant
         );
+    }
+
+    // ------------------------------------------- what the finding refers to
+
+    #[test]
+    fn a_call_with_no_arguments_is_unknown_not_constant() {
+        // Nothing was passed, so nothing was proven safe. Treating "no
+        // arguments" as "constant arguments" silently suppressed every
+        // `new Random()` and `DocumentBuilderFactory.newInstance()` — the
+        // weaknesses that are *about* the call rather than its inputs.
+        assert_eq!(
+            taint_of("const r = new Random();\n", "javascript", "new Random("),
+            Taint::Unknown
+        );
+        assert_eq!(
+            taint_of(
+                "var f = DocumentBuilderFactory.newInstance();\n",
+                "java",
+                "newInstance("
+            ),
+            Taint::Unknown
+        );
+    }
+
+    #[test]
+    fn a_finding_nested_in_an_argument_is_not_judged_by_that_call() {
+        // The assignment is not the call. Reading `useEffect`'s arguments to
+        // classify `innerHTML` suppressed real XSS findings for a reason that
+        // had nothing to do with them.
+        let source = "useEffect(() => { node.innerHTML = untrusted; }, []);\n";
+        assert_eq!(taint_of(source, "javascript", "innerHTML"), Taint::Unknown);
+    }
+
+    #[test]
+    fn a_finding_that_names_the_call_is_still_judged_by_its_arguments() {
+        // The counterpart: the guard above must not blind the analysis to the
+        // ordinary case, including a constant reached through a chain.
+        assert_eq!(
+            taint_of("wrapper(eval(\"2 + 2\"));\n", "javascript", "eval("),
+            Taint::Constant
+        );
+        assert_eq!(
+            taint_of(
+                "Runtime.getRuntime().exec(\"ls -la\");\n",
+                "java",
+                "Runtime.getRuntime().exec"
+            ),
+            Taint::Constant
+        );
+    }
+
+    #[test]
+    fn a_constructor_argument_is_still_reached_through_the_guard() {
+        // `new File(..)` spells its callee with a type rather than a
+        // `function` field; classifying it by exclusion keeps it working.
+        let source = "class D { File r(HttpServletRequest q) { return new File(\"/var/\" + q.getParameter(\"n\")); } }\n";
+        assert!(matches!(
+            taint_for_cwe(source, "java", "new File(", Some("CWE-22")),
+            Taint::Tainted {
+                origin: Origin::External
+            }
+        ));
     }
 }

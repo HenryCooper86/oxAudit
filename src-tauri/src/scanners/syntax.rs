@@ -73,11 +73,19 @@ impl FileSyntax {
         let Some(call) = dataflow::enclosing_call(root, offset) else {
             return Taint::Unknown;
         };
+        // Argument taint only means something when the finding *is* the call.
+        if !dataflow::names_the_call(call, offset) {
+            return Taint::Unknown;
+        }
         let arguments = dataflow::chain_arguments(call);
         if arguments.is_empty() {
-            // A call with no arguments anywhere in its chain has nothing an
-            // attacker could supply.
-            return Taint::Constant;
+            // Nothing to reason about. Previously this returned Constant on
+            // the grounds that a call taking nothing cannot be fed anything —
+            // true for eval-style sinks, and wrong for the rules where the
+            // call itself is the defect. `DocumentBuilderFactory.newInstance()`
+            // and `new Random()` take no arguments and are exactly the finding,
+            // and both were being suppressed.
+            return Taint::Unknown;
         }
         let function = dataflow::enclosing_function(root, offset);
         // One tainted argument taints the call: a fluent chain is a single
@@ -132,6 +140,19 @@ impl SyntaxSpans {
     /// prose about credentials. Strings are not, because a hardcoded secret is
     /// a string literal by definition.
     pub fn allows_secret_match(&self, offset: usize) -> bool {
+        !matches!(self.context_at(offset), Context::Comment)
+    }
+
+    /// Does hardening at this offset count as actually applied?
+    ///
+    /// Comments are suppressed — `// TODO: switch to defusedxml` is a plan,
+    /// not a mitigation. String literals are *not*, because a string literal
+    /// is how most hardening is spelled:
+    /// `setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)`
+    /// puts the only evidence of the fix inside a quoted feature URI. Reusing
+    /// the stricter code-only test here made the guard unfirable for the
+    /// commonest form of the fix it exists to recognise.
+    pub fn allows_hardening_match(&self, offset: usize) -> bool {
         !matches!(self.context_at(offset), Context::Comment)
     }
 }
