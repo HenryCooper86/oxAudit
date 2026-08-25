@@ -94,7 +94,19 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         // the shape that actually traverses out of it.
         srule!("js-path-traversal", "Path built by concatenation", &["javascript"], "high", "CWE-22", r#"(?:readFile|readFileSync|createReadStream|createWriteStream|writeFile|writeFileSync|unlink|sendFile)\s*\([^)]{0,120}(?:\+|\$\{)|path\s*\.\s*(?:join|resolve)\s*\([^)]{0,120}\b(?:req|request|params|query|body|argv)\b"#, "A filesystem path assembled from untrusted input can be steered out of its intended directory with ../ segments, exposing or overwriting arbitrary files.", "Resolve the path and verify it is still inside the intended root (path.resolve then startsWith), or index into an allow-list instead of accepting a name."),
         srule!("py-path-traversal", "Path built by concatenation", &["python"], "high", "CWE-22", r#"(?:open|os\s*\.\s*remove|os\s*\.\s*unlink|shutil\s*\.\s*(?:copy|move|rmtree)|send_file)\s*\(\s*[^)]{0,120}(?:\+|%\s|\.format\(|f['"])"#, "A filesystem path assembled from untrusted input can be steered out of its intended directory with ../ segments.", "Use os.path.realpath and confirm the result is under the intended root, or map an identifier to a known filename instead of joining input."),
-        srule!("java-path-traversal", "Path built by concatenation", &["java"], "high", "CWE-22", r#"(?:new\s+(?:File|FileInputStream|FileOutputStream)|Paths\s*\.\s*get|Files\s*\.\s*(?:readAllBytes|readString|delete|newInputStream))\s*\(\s*[^)]{0,120}\+"#, "A filesystem path assembled from untrusted input can be steered out of its intended directory with ../ segments.", "Normalize with Path.normalize() and verify the result still startsWith the intended root, or select from an allow-list."),
+        // Matched on the sink alone, not on a visible concatenation. The
+        // concatenation is usually a statement earlier — `fileName = ROOT +
+        // param;` then `new File(fileName)` — and requiring it inside the
+        // parens made this rule unfirable on 133 of the 133 path traversals in
+        // the OWASP Benchmark. What keeps it quiet is the CWE-22 entry in
+        // `REQUIRES_EXTERNAL_ORIGIN`: the path has to trace to a request, argv
+        // or the environment, not merely to a parameter, because taking a path
+        // is what a file helper does.
+        //
+        // Alternatives run longest-first: matching is leftmost-first, so
+        // `File` listed ahead of `FileInputStream` would truncate the reported
+        // text to the shorter name.
+        srule!("java-path-traversal", "File path from untrusted input", &["java"], "high", "CWE-22", r"(?:new\s+(?:[\w.]*\.)?(?:FileInputStream|FileOutputStream|RandomAccessFile|FileReader|FileWriter|File)|(?:[\w.]*\.)?Paths\s*\.\s*get|(?:[\w.]*\.)?Files\s*\.\s*(?:readAllBytes|readAllLines|readString|writeString|write|delete|deleteIfExists|copy|move|newInputStream|newOutputStream|newBufferedReader|newBufferedWriter))\s*\(", "A filesystem path taken from a request, argv, or the environment can be steered out of its intended directory with ../ segments, exposing or overwriting arbitrary files.", "Resolve the path with getCanonicalPath() and verify the result still startsWith the intended root, or index into an allow-list instead of accepting a name."),
         srule!("go-path-traversal", "Path built by concatenation", &["go"], "high", "CWE-22", r#"(?:os\s*\.\s*(?:Open|OpenFile|ReadFile|Remove|Create)|ioutil\s*\.\s*ReadFile)\s*\(\s*[^)]{0,120}(?:\+|fmt\s*\.\s*Sprintf)"#, "A filesystem path assembled from untrusted input can be steered out of its intended directory with ../ segments.", "Use filepath.Clean and confirm the result is still inside the intended root, or accept an identifier rather than a path."),
 
         // ------------------------------------------------------ CWE-918 SSRF
@@ -181,6 +193,13 @@ const RULE_GUARDS: &[(&str, &str)] = &[
     ("py-xxe", r"\bdefusedxml\b"),
     // ArgumentList hands the OS an argv, which is this rule's own remediation.
     ("cs-process-start", r"\bArgumentList\b"),
+    // Canonicalising and then checking containment is exactly what this rule's
+    // remediation text asks for. A file that does it is answering the question
+    // the finding would ask, and reporting it means reporting the fix.
+    (
+        "java-path-traversal",
+        r"(?:getCanonicalPath|toRealPath|normalize)\s*\(\s*\)[\s\S]{0,160}?startsWith\s*\(",
+    ),
 ];
 
 /// Compiled once; a guard is checked for every file a guarded rule matches in.

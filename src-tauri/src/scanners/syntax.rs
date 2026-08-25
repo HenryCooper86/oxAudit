@@ -84,6 +84,58 @@ impl FileSyntax {
         dataflow::classify_expression(*argument, content, function, sink_cwe)
     }
 
+    /// Collapse hits of one rule that describe a single nested expression.
+    ///
+    /// `new FileInputStream(new File(path))` is one defect written with two
+    /// constructors. A rule matching the sink alone matches both, and the
+    /// reviewer clears the same statement twice — 97 of the 268 path traversal
+    /// cases in the OWASP Benchmark are written this way.
+    ///
+    /// The *outer* hit is the one kept: it is the call that actually reaches
+    /// the filesystem, and it is the only one that sees every operand.
+    /// `new File(new File(ROOT), name)` puts the constant on the inner
+    /// constructor and the attacker's string on the outer one, so keeping the
+    /// inner hit reports the half that is safe and drops the half that is not.
+    ///
+    /// Only hits of the same rule collapse. Two different weaknesses on one
+    /// line are two findings, however they nest.
+    pub fn drop_nested_duplicates(&self, hits: &mut Vec<super::patterns::PatternHit>) {
+        use super::dataflow;
+        if hits.len() < 2 {
+            return;
+        }
+        let Some(tree) = &self.tree else {
+            return;
+        };
+        let root = tree.root_node();
+        let calls: Vec<Option<std::ops::Range<usize>>> = hits
+            .iter()
+            .map(|hit| dataflow::enclosing_call(root, hit.offset).map(|call| call.byte_range()))
+            .collect();
+        let mut keep = vec![true; hits.len()];
+        for (outer, outer_call) in calls.iter().enumerate() {
+            let Some(outer_call) = outer_call else {
+                continue;
+            };
+            for (inner, inner_call) in calls.iter().enumerate() {
+                if inner == outer || hits[inner].rule_index != hits[outer].rule_index {
+                    continue;
+                }
+                let Some(inner_call) = inner_call else {
+                    continue;
+                };
+                let contained = outer_call.start <= inner_call.start
+                    && inner_call.end <= outer_call.end
+                    && inner_call != outer_call;
+                if contained {
+                    keep[inner] = false;
+                }
+            }
+        }
+        let mut alive = keep.iter();
+        hits.retain(|_| *alive.next().unwrap_or(&true));
+    }
+
     /// How many arguments the call at `offset` was given, when the finding
     /// names a call at all.
     ///
