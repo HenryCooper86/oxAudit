@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 77,
-    "positives": 29,
-    "negatives": 48,
-    "rules": 23
+    "fixtures": 105,
+    "positives": 45,
+    "negatives": 60,
+    "rules": 39
   },
   "targets": [
     {
@@ -321,6 +321,172 @@
       "expected": [
         {
           "ruleId": "private-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "c-gets.negative.prose-in-comment",
+      "inputPath": "source/c-gets__negative__prose-in-comment.c",
+      "inputSha256": "ace3d97268985de69fd5e6db63458e447f88b46578819bb942c308a52c5a8b9d",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-gets",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "c-gets"
+        }
+      ]
+    },
+    {
+      "id": "c-gets.positive.stdin-read",
+      "inputPath": "source/c-gets__positive__stdin-read.c",
+      "inputSha256": "5e8d2c191214f240c41c12bdbca8b37dad4aa83f7d18239ec4e3c9ae41bcfa10",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-gets",
+      "expected": [
+        {
+          "ruleId": "c-gets",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "c-scanf-unsafe.positive.percent-s",
+      "inputPath": "source/c-scanf-unsafe__positive__percent-s.c",
+      "inputSha256": "fdaf8088ffcfed803a2140d5f4ffe99b7a03a29610261f83b77774940e30b436",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-scanf-unsafe",
+      "expected": [
+        {
+          "ruleId": "c-scanf-unsafe",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "c-sprintf.negative.bounded-format",
+      "inputPath": "source/c-sprintf__negative__bounded-format.c",
+      "inputSha256": "f211292796ef4a4695dc23783158eb6fdc1c14c810e03f853b7dfe5c9281e40c",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-sprintf",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "c-sprintf"
+        }
+      ]
+    },
+    {
+      "id": "c-sprintf.positive.unbounded-format",
+      "inputPath": "source/c-sprintf__positive__unbounded-format.c",
+      "inputSha256": "88a4bb6cb0fdde80c5ce74e284bac4c1816705902198e2c62fae7ac2330dd5ee",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-sprintf",
+      "expected": [
+        {
+          "ruleId": "c-sprintf",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "c-strcat.positive.argv-append",
+      "inputPath": "source/c-strcat__positive__argv-append.c",
+      "inputSha256": "b9f4aafa6c6f910f218e0b6cb78d976834b811212e211d57e46c5dc3c48da5e1",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-strcat",
+      "expected": [
+        {
+          "ruleId": "c-strcat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "c-strcpy.negative.bounded-copy",
+      "inputPath": "source/c-strcpy__negative__bounded-copy.c",
+      "inputSha256": "d1648608d59039f0cc7336afd3aac27d224b3ff9c1903c1e059aaece94227017",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-strcpy",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "c-strcpy"
+        }
+      ]
+    },
+    {
+      "id": "c-strcpy.positive.argv-copy",
+      "inputPath": "source/c-strcpy__positive__argv-copy.c",
+      "inputSha256": "c567b739cbbf95b2cf51bc264a54ff79746bf247eecfdd93931e7b44cebb90ab",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-strcpy",
+      "expected": [
+        {
+          "ruleId": "c-strcpy",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "c-system.negative.literal-command",
+      "inputPath": "source/c-system__negative__literal-command.c",
+      "inputSha256": "0906f5dfc9b07dab2b3cf6f5ff91ac7354fd30562d9a43053c340de31d83e918",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-system",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "c-system"
+        }
+      ]
+    },
+    {
+      "id": "c-system.positive.argv-command",
+      "inputPath": "source/c-system__positive__argv-command.c",
+      "inputSha256": "d693d049c6fc75e06304d24127946ee572fd6b5e2aaea15849e6b2c73aed10da",
+      "language": "c",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "c-system",
+      "expected": [
+        {
+          "ruleId": "c-system",
           "minimum": 1
         }
       ],
@@ -852,6 +1018,172 @@
       "expectedAbsent": []
     },
     {
+      "id": "php-eval.negative.prose-in-comment",
+      "inputPath": "source/php-eval__negative__prose-in-comment.php",
+      "inputSha256": "9c5bd6dda3b619a7bceabe3a35ecda1b880426bd337e6787958cbfd3af8f9864",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "php-eval"
+        }
+      ]
+    },
+    {
+      "id": "php-eval.positive.request-expression",
+      "inputPath": "source/php-eval__positive__request-expression.php",
+      "inputSha256": "d2c91f7b40b800aeeb42125f902c165cbe73b60aed338d0716b07c9ff899e7e7",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-eval",
+      "expected": [
+        {
+          "ruleId": "php-eval",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "php-exec.positive.request-command",
+      "inputPath": "source/php-exec__positive__request-command.php",
+      "inputSha256": "58f046e2a2ac367396b3322df31cfc5dcf66db13f2f255853f07459cf37b609c",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-exec",
+      "expected": [
+        {
+          "ruleId": "php-exec",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "php-file-inclusion.negative.allow-list",
+      "inputPath": "source/php-file-inclusion__negative__allow-list.php",
+      "inputSha256": "ebbfc595fab263ca592baf8af170971b029308f8a7ab5504385c9de48664cc02",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-file-inclusion",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "php-file-inclusion"
+        }
+      ]
+    },
+    {
+      "id": "php-file-inclusion.positive.request-page",
+      "inputPath": "source/php-file-inclusion__positive__request-page.php",
+      "inputSha256": "b1babeef6cb8bd56b49b968b5af2fc8b18619903cfe7d92360840c5c9914796b",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-file-inclusion",
+      "expected": [
+        {
+          "ruleId": "php-file-inclusion",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "php-shell.positive.request-command",
+      "inputPath": "source/php-shell__positive__request-command.php",
+      "inputSha256": "2eadd5ab89e338329a8393008a27b65272f3be97a65e015f7b2274b0afa8fd1b",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-shell",
+      "expected": [
+        {
+          "ruleId": "php-shell",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "php-sql-concat.negative.prepared-statement",
+      "inputPath": "source/php-sql-concat__negative__prepared-statement.php",
+      "inputSha256": "dccc57a0dd43472da03495c2d74194412f58c5deab0ea389bb19cba737708449",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-sql-concat",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "php-sql-concat"
+        }
+      ]
+    },
+    {
+      "id": "php-sql-concat.positive.concatenated-id",
+      "inputPath": "source/php-sql-concat__positive__concatenated-id.php",
+      "inputSha256": "73a0c8dc76e3df3f6e822f681afaba8c8cf0c0122c186bd54a5f76364d35da23",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-sql-concat",
+      "expected": [
+        {
+          "ruleId": "php-sql-concat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "php-unserialize.negative.json-decode",
+      "inputPath": "source/php-unserialize__negative__json-decode.php",
+      "inputSha256": "1249fdb3ae8532d0358cb7fbb420a328c5e380dbb6f275833d8c85b4782d71e0",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-unserialize",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "php-unserialize"
+        }
+      ]
+    },
+    {
+      "id": "php-unserialize.positive.request-payload",
+      "inputPath": "source/php-unserialize__positive__request-payload.php",
+      "inputSha256": "7d4312a36a55ccfc475e7bfe4a6e3e4ff93d93f0fd9f2827bd3e134964dc3ac7",
+      "language": "php",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "php-unserialize",
+      "expected": [
+        {
+          "ruleId": "php-unserialize",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "py-eval.negative.dataframe-method",
       "inputPath": "source/py-eval__negative__dataframe-method.py",
       "inputSha256": "7e7031619f4c6a01c26ec018df737b49347e8deea8bcd27837953042352adbe0",
@@ -1208,6 +1540,138 @@
       "expected": [
         {
           "ruleId": "py-xxe",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "rb-eval.negative.prose-in-comment",
+      "inputPath": "source/rb-eval__negative__prose-in-comment.rb",
+      "inputSha256": "655b216e4e6c65455e2a6b814258c8f53af6d808572aab2fb94d24b3284fd8d3",
+      "language": "ruby",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rb-eval",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "rb-eval"
+        }
+      ]
+    },
+    {
+      "id": "rb-eval.positive.params-expression",
+      "inputPath": "source/rb-eval__positive__params-expression.rb",
+      "inputSha256": "e8238933e04b46cafa7a3b2352b16d4b0c9b6d199610ccb16914e3052ede6fe1",
+      "language": "ruby",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rb-eval",
+      "expected": [
+        {
+          "ruleId": "rb-eval",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "rb-marshal.negative.json-parse",
+      "inputPath": "source/rb-marshal__negative__json-parse.rb",
+      "inputSha256": "3f91849096bcfd9eec8d7a467dc6312dec84fd6c08b6ea5785373639657a0b58",
+      "language": "ruby",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rb-marshal",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "rb-marshal"
+        }
+      ]
+    },
+    {
+      "id": "rb-marshal.positive.params-payload",
+      "inputPath": "source/rb-marshal__positive__params-payload.rb",
+      "inputSha256": "5b729212aac78b98138a66e4eccbe021baab0a93fc9de3f3d0d54672ad6816d2",
+      "language": "ruby",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rb-marshal",
+      "expected": [
+        {
+          "ruleId": "rb-marshal",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "rb-sql-concat.negative.bound-parameter",
+      "inputPath": "source/rb-sql-concat__negative__bound-parameter.rb",
+      "inputSha256": "480398df5a328ba18def14e1573ba37719545c7141354dcd4a043b56d070c3f0",
+      "language": "ruby",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rb-sql-concat",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "rb-sql-concat"
+        }
+      ]
+    },
+    {
+      "id": "rb-sql-concat.positive.interpolated-id",
+      "inputPath": "source/rb-sql-concat__positive__interpolated-id.rb",
+      "inputSha256": "b7e600539d6dbec16627c8037db5a293585e0e26bbba1e6c78ad2259aa331261",
+      "language": "ruby",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rb-sql-concat",
+      "expected": [
+        {
+          "ruleId": "rb-sql-concat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "rb-system.negative.argument-vector",
+      "inputPath": "source/rb-system__negative__argument-vector.rb",
+      "inputSha256": "ef307f6da00c2fa2fc16fd016fdc52ac0e2a3fc0984156882fcbe496e016cd8e",
+      "language": "ruby",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rb-system",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "rb-system"
+        }
+      ]
+    },
+    {
+      "id": "rb-system.positive.params-command",
+      "inputPath": "source/rb-system__positive__params-command.rb",
+      "inputSha256": "29b2cda5765c723df1d7a6a13cc9c5111f6746e39f0fd084c0513903af176c78",
+      "language": "ruby",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rb-system",
+      "expected": [
+        {
+          "ruleId": "rb-system",
           "minimum": 1
         }
       ],

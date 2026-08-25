@@ -51,6 +51,22 @@ impl FileSyntax {
         &self.spans
     }
 
+    /// How many arguments the call at `offset` was given, when the finding
+    /// names a call at all.
+    ///
+    /// `None` when there is no grammar, no enclosing call, or the finding sits
+    /// inside a call rather than naming one — every case where the count would
+    /// be answering a question nobody asked.
+    pub fn argument_count_at(&self, offset: usize) -> Option<usize> {
+        use super::dataflow;
+        let tree = self.tree.as_ref()?;
+        let call = dataflow::enclosing_call(tree.root_node(), offset)?;
+        if !dataflow::names_the_call(call, offset) {
+            return None;
+        }
+        Some(dataflow::chain_arguments(call).len())
+    }
+
     /// Byte ranges of this file that exist only for tests.
     ///
     /// Path classification is right about which files are tests and says
@@ -180,6 +196,12 @@ fn language_for(language: &str) -> Option<tree_sitter::Language> {
         "java" => Some(tree_sitter_java::LANGUAGE.into()),
         "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
         "go" => Some(tree_sitter_go::LANGUAGE.into()),
+        // PHP's crate ships two grammars: the full one expects `<?php` tags,
+        // which is what a scanned `.php` file actually contains.
+        "php" => Some(tree_sitter_php::LANGUAGE_PHP.into()),
+        "ruby" => Some(tree_sitter_ruby::LANGUAGE.into()),
+        "c" => Some(tree_sitter_c::LANGUAGE.into()),
+        "cpp" => Some(tree_sitter_cpp::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -225,6 +247,21 @@ fn is_string_kind(kind: &str) -> bool {
             | "interpreted_string_literal"
             | "raw_string_literal_content"
             | "interpreted_string_literal_content"
+            // PHP: `encapsed_string` is the double-quoted form, which is the
+            // one that carries prose. Heredocs are marked whole so the body
+            // and its delimiters go together.
+            | "encapsed_string"
+            | "heredoc"
+            | "heredoc_body"
+            // Ruby: `%w[..]` word arrays, and a heredoc whose body the grammar
+            // hangs beside the assignment rather than inside it.
+            | "bare_string"
+            | "string_array"
+            | "heredoc_content"
+            // C and C++ spell a character literal differently from Rust and
+            // Java, and C++ raw strings carry their content in a child.
+            | "char_literal"
+            | "raw_string_content"
     )
 }
 
@@ -437,7 +474,14 @@ mod tests {
         assert!(is_supported("java"));
         assert!(is_supported("rust"));
         assert!(is_supported("go"));
-        assert!(!is_supported("php"));
+        assert!(is_supported("php"));
+        assert!(is_supported("ruby"));
+        assert!(is_supported("c"));
+        assert!(is_supported("cpp"));
+        // Detected by extension and scanned on text alone: a language oxAudit
+        // routes findings for but carries no grammar behind.
+        assert!(!is_supported("shell"));
+        assert!(!is_supported("sql"));
         assert!(!is_supported(""));
     }
 

@@ -398,8 +398,9 @@ Every other weakness class still reports on any non-constant value.
 
 Three limits, stated because they bound what the result means:
 
-- **Five languages.** JavaScript/TypeScript, Python, Java, Rust, and Go. A
-  language without a grammar is never suppressed on a guess.
+- **Nine languages.** JavaScript/TypeScript, Python, Java, Rust, Go, PHP,
+  Ruby, C, and C++. A language without a grammar is never suppressed on a
+  guess — it is scanned on text alone, and every match stands.
 - **Intraprocedural.** Analysis stops at the enclosing function. Following a
   value across call boundaries needs a call graph, and a wrong one produces
   confident nonsense.
