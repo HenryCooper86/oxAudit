@@ -55,18 +55,27 @@ function tsInterfaceBody(source: string, name: string): string {
   throw new Error(`unterminated interface ${name}`);
 }
 
-/** Field names declared at the top level of a Rust struct body. */
+/**
+ * Field names declared at the top level of a Rust struct body.
+ *
+ * A `#[serde(skip)]` field is omitted: it does not cross the boundary, so
+ * requiring the TypeScript side to declare it would be demanding a mirror of
+ * something that is never sent.
+ */
 function rustFieldNames(body: string): string[] {
   const names: string[] = [];
   let depth = 0;
+  let skipNext = false;
   for (const rawLine of body.split("\n")) {
     const line = rawLine.trim();
     // Only read declarations at the struct's own level, not inside a nested type.
     const opens = (line.match(/[<({[]/g) ?? []).length;
     const closes = (line.match(/[>)}\]]/g) ?? []).length;
+    if (depth === 0 && /^#\[serde\([^)]*\bskip\b/.test(line)) skipNext = true;
     if (depth === 0 && line.startsWith("pub ")) {
       const match = line.match(/^pub ([a-z0-9_]+)\s*:/);
-      if (match) names.push(match[1]);
+      if (match && !skipNext) names.push(match[1]);
+      if (match) skipNext = false;
     }
     depth += opens - closes;
     if (depth < 0) depth = 0;
@@ -125,6 +134,20 @@ for (const name of MIRRORED) {
     );
   });
 }
+
+test("serde(skip) excludes only the field it annotates", () => {
+  // The skip rule is what lets an in-process field like `in_test_region` stay
+  // out of the TypeScript mirror. If it leaked to the following field the
+  // guard would quietly stop checking real boundary fields, which is the one
+  // failure mode that would not announce itself.
+  const rust = rustFieldNames(rustStructBody(readFileSync(RUST_MODELS, "utf8"), "Finding"));
+  assert.ok(!rust.includes("in_test_region"), "a serde(skip) field must not be required");
+  assert.ok(
+    rust.includes("observation_run_id"),
+    "the field after a serde(skip) one is still part of the contract",
+  );
+  assert.ok(rust.includes("file_path"), "ordinary fields are unaffected");
+});
 
 test("the TypeScript AppSettings interface declares nothing Rust will not accept", () => {
   const rust = new Set(

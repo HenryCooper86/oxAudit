@@ -2943,6 +2943,9 @@ fn finding_from_raw_project_observation(
         resolved_by_run_id: None,
         fingerprint_version: observation.fingerprint_version,
         fingerprint: observation.fingerprint,
+        // Scanner-time signal; the stored row already carries the scope it
+        // produced, so nothing is lost by not persisting it.
+        in_test_region: false,
         scope: Some(parse_scope(&observation.scope)?),
         scope_reason: Some(observation.scope_reason),
         review: None,
@@ -3429,6 +3432,9 @@ fn load_findings(
                 resolved_by_run_id: None,
                 fingerprint_version: observation.fingerprint_version,
                 fingerprint: observation.fingerprint,
+                // Scanner-time signal; the stored row already carries the scope it
+                // produced, so nothing is lost by not persisting it.
+                in_test_region: false,
                 scope: Some(parse_scope(&observation.scope)?),
                 scope_reason: Some(observation.scope_reason),
                 review,

@@ -105,6 +105,7 @@ fn finding(id: &str, fingerprint: &str) -> Finding {
         resolved_by_run_id: Some("dynamic-resolution-must-not-be-persisted".into()),
         fingerprint_version: FINGERPRINT_VERSION,
         fingerprint: fingerprint.into(),
+        in_test_region: false,
         scope: Some(FindingScope::Production),
         scope_reason: Some("source directory".into()),
         review: Some(review("embedded-review-must-not-be-persisted")),

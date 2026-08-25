@@ -88,6 +88,22 @@ fn segments(path: &str) -> Option<Vec<String>> {
 /// gets to be trusted, and a rule that hides it is a rule that hides real
 /// findings.
 pub fn classify(path: &str) -> ScopeDecision {
+    classify_at(path, false)
+}
+
+/// Classify a path, given what the scanner saw at the finding's position.
+///
+/// `in_test_region` is true when the finding sits inside a construct the
+/// language marks as test-only — a Rust `#[cfg(test)]` module, a JUnit `@Test`
+/// method. Path alone cannot see this, and in Rust it is the common case:
+/// `#[cfg(test)]` modules live at the bottom of the production file they
+/// exercise, so their fixture credentials were reported at production
+/// priority.
+///
+/// It is consulted at the same precedence as a test *path*, and deliberately
+/// no higher. A `#[cfg(test)]` module inside `node_modules` is somebody else's
+/// code first, and an `nginx.conf` is infrastructure wherever it sits.
+pub fn classify_at(path: &str, in_test_region: bool) -> ScopeDecision {
     let Some(parts) = segments(path) else {
         return ScopeDecision {
             scope: Scope::Unknown,
@@ -129,10 +145,22 @@ pub fn classify(path: &str) -> ScopeDecision {
         || file_name.contains(".spec.")
         || file_name.starts_with("test_")
         || file_name.ends_with("_test.go")
+        // Rust names a test-only file `foo_test.rs` or `foo_tests.rs` and
+        // declares it `#[cfg(test)] mod foo_tests;` from its parent. The
+        // marker lives in the *other* file, so nothing inside this one can be
+        // seen to be test-only — the name is the only local evidence there is.
+        || file_name.ends_with("_test.rs")
+        || file_name.ends_with("_tests.rs")
     {
         return ScopeDecision {
             scope: Scope::Test,
             reason: "test-name".into(),
+        };
+    }
+    if in_test_region {
+        return ScopeDecision {
+            scope: Scope::Test,
+            reason: "test-module".into(),
         };
     }
     if file_name.ends_with(".min.js") || file_name.ends_with(".pb.go") {
@@ -339,5 +367,92 @@ mod tests {
                 reason: "documentation-directory".into(),
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+
+    #[test]
+    fn a_test_module_in_a_production_file_is_test_scope() {
+        // The gap this exists to close: path says production and is right
+        // about the file, while the finding sits in `#[cfg(test)]`.
+        let decision = classify_at("src-tauri/src/observability.rs", true);
+        assert_eq!(decision.scope, Scope::Test);
+        assert_eq!(decision.reason, "test-module");
+    }
+
+    #[test]
+    fn the_same_file_without_the_signal_is_still_production() {
+        let decision = classify_at("src-tauri/src/observability.rs", false);
+        assert_eq!(decision.scope, Scope::Production);
+        assert_eq!(decision.reason, "production-default");
+    }
+
+    #[test]
+    fn infrastructure_still_outranks_a_test_module() {
+        // A parser generating an nginx.conf inside a test helper does not make
+        // the file's contents stop describing who gets to be trusted.
+        assert_eq!(
+            classify_at("deploy/nginx.conf", true).scope,
+            Scope::Infrastructure
+        );
+    }
+
+    #[test]
+    fn vendored_still_outranks_a_test_module() {
+        let decision = classify_at("node_modules/left-pad/index.rs", true);
+        assert_eq!(decision.scope, Scope::Vendored);
+        assert_eq!(decision.reason, "vendored-directory");
+    }
+
+    #[test]
+    fn a_test_path_keeps_its_own_reason() {
+        // Both signals agree; the more specific explanation is the file name.
+        let decision = classify_at("src/auth/login_test.go", true);
+        assert_eq!(decision.scope, Scope::Test);
+        assert_eq!(decision.reason, "test-name");
+    }
+
+    #[test]
+    fn classify_is_classify_at_without_the_signal() {
+        for path in [
+            "src/auth/login.rs",
+            "node_modules/x/index.js",
+            "docs/guide.md",
+            "deploy/nginx.conf",
+        ] {
+            assert_eq!(classify(path), classify_at(path, false));
+        }
+    }
+}
+
+#[cfg(test)]
+mod rust_test_file_tests {
+    use super::*;
+
+    #[test]
+    fn rust_test_file_suffixes_are_test_scope() {
+        for path in [
+            "src-tauri/src/findings/service_tests.rs",
+            "src-tauri/src/findings/policy_test.rs",
+        ] {
+            assert_eq!(classify(path).scope, Scope::Test, "{path}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_rust_file_is_unaffected() {
+        // The suffix must be a word boundary, not a substring: `latest.rs`
+        // ends in "test" and is ordinary code.
+        for path in [
+            "src/latest.rs",
+            "src/contest.rs",
+            "src/manifest.rs",
+            "src/protests.rs",
+        ] {
+            assert_eq!(classify(path).scope, Scope::Production, "{path}");
+        }
     }
 }

@@ -51,6 +51,18 @@ impl FileSyntax {
         &self.spans
     }
 
+    /// Byte ranges of this file that exist only for tests.
+    ///
+    /// Path classification is right about which files are tests and says
+    /// nothing about position — which is the whole problem for a Rust
+    /// `#[cfg(test)]` module sitting at the bottom of a production file.
+    pub fn test_regions(&self, content: &str, language: &str) -> Vec<std::ops::Range<usize>> {
+        let Some(tree) = &self.tree else {
+            return Vec::new();
+        };
+        super::testscope::test_regions(tree.root_node(), content, language)
+    }
+
     /// Can an attacker choose the value reaching the sink at `offset`?
     ///
     /// `sink_cwe` is the weakness class the matched rule describes. It is what
