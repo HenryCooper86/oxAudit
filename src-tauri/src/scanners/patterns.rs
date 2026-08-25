@@ -43,7 +43,7 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         srule!("js-child-process", "child_process usage", &["javascript"], "high", "CWE-78", r#"(?:child_process|require\s*\(\s*['"]child_process['"]\s*\))[\s\S]{0,240}?\b(?:exec|execSync|spawn|spawnSync|fork)\s*\("#, "The child_process module executes system commands. If arguments include user input, this is OS command injection.", "Prefer execFile/spawn with an argument array (no shell) and validate/whitelist all inputs. Never pass a user-controlled command string to a shell."),
         srule!("js-exec-concat", "exec() with string concat", &["javascript"], "high", "CWE-78", r"\b(?:exec|execSync)\s*\(\s*[^)]*(?:\+|\$\{|`)", "exec()/execSync() run commands through a shell; string concatenation or template literals in the command are classic command-injection sinks.", "Use execFile/spawn with explicit argument arrays and no shell interpretation."),
         srule!("js-sql-concat", "SQL query built by concatenation", &["javascript"], "high", "CWE-89", r"\b(?:query|execute|exec|run)\s*\(\s*[^)]*\+\s*", "SQL strings assembled with + concatenation are a SQL-injection sink.", "Use parameterized queries / prepared statements. Never interpolate values into SQL strings."),
-        srule!("js-weak-hash", "Weak hash (MD5/SHA-1)", &["javascript"], "medium", "CWE-327", r#"createHash\s*\(\s*['"](?:md5|sha1)['"]"#, "MD5 and SHA-1 are cryptographically broken and must not be used for security purposes (passwords, signatures, integrity).", "Use SHA-256/SHA-512 or a dedicated password hasher (bcrypt/argon2/scrypt)."),
+        srule!("js-weak-hash", "Weak hash (MD5/SHA-1)", &["javascript"], "medium", "CWE-327", r#"(?i)createHash\s*\(\s*['"](?:md[245]|sha-?1)['"]"#, "MD5 and SHA-1 are cryptographically broken and must not be used for security purposes (passwords, signatures, integrity).", "Use SHA-256/SHA-512 or a dedicated password hasher (bcrypt/argon2/scrypt)."),
         srule!("js-postmessage-wildcard", "postMessage wildcard origin", &["javascript"], "low", "CWE-345", r#"postMessage\s*\([^)]*,\s*['"]\*['"]"#, "postMessage() with targetOrigin '*' lets any window receive the message, potentially leaking sensitive data.", "Pass the specific expected origin instead of '*'."),
 
         // ------------------------------------------------------------ Python
@@ -64,7 +64,9 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         srule!("java-sql-concat", "SQL built with concatenation", &["java", "kotlin"], "high", "CWE-89", r"(?:Statement|PreparedStatement)[^;]{0,80}\s*\.\s*(?:executeQuery|executeUpdate|execute)\s*\(\s*[^)]*(?:\+|String\.format)|(\.\s*(?:prepareStatement|prepareCall|executeQuery|executeUpdate|execute)\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\s*[,)])", "SQL statements built with + or String.format are SQL-injection sinks.", "Always use PreparedStatement with ? placeholders and bind parameters."),
         srule!("java-deserialization", "Unsafe deserialization", &["java", "kotlin"], "high", "CWE-502", r"(?:ObjectInputStream|XMLDecoder|ObjectInput)[^;]{0,80}\s*readObject\s*\(", "readObject()/XMLDecoder deserialization of untrusted data can lead to RCE via gadget chains.", "Do not deserialize untrusted data; use safe formats (JSON) with strict schemas, or an allow-listed deserialization filter."),
         srule!("java-cipher-ecb", "Cipher in ECB mode", &["java"], "medium", "CWE-327", r#"Cipher\s*\.\s*getInstance\s*\(\s*['"][^'"]*\/ECB\/"#, "ECB mode leaks patterns in ciphertext and is not semantically secure.", "Use AES-GCM (or CBC with HMAC) and a random IV."),
-        srule!("java-weak-hash", "Weak hash (MD5/SHA-1)", &["java"], "medium", "CWE-327", r#"MessageDigest\s*\.\s*getInstance\s*\(\s*['"](?:MD5|SHA-1)['"]"#, "MD5 and SHA-1 are cryptographically broken.", "Use SHA-256+ or a password hasher (BCrypt/Argon2)."),
+        srule!("java-weak-cipher", "Broken cipher algorithm", &["java", "kotlin"], "high", "CWE-327", r#"(?:Cipher|KeyGenerator|SecretKeyFactory)\s*\.\s*getInstance\s*\(\s*['"](?:DES|DESede|TripleDES|RC2|RC4|ARCFOUR|Blowfish)\b"#, "DES and Triple DES have key sizes small enough to brute force, and RC2, RC4, and Blowfish have structural weaknesses. The mode does not matter: `DES/CBC/PKCS5Padding` is broken because DES is broken.", "Use AES-256 in GCM mode. For key derivation use PBKDF2, scrypt, or Argon2."),
+        srule!("java-weak-prng", "Non-cryptographic random number generator", &["java", "kotlin"], "low", "CWE-330", r#"new\s+(?:java\s*\.\s*util\s*\.\s*)?\bRandom\s*\(|\bMath\s*\.\s*random\s*\(|\bThreadLocalRandom\s*\.\s*current\s*\("#, "java.util.Random is a linear congruential generator: its entire future output is derivable from a couple of observed values. This does not say the value is security-relevant — it says nothing here proves it is not, and that is a question only a person can answer.", "If this value is a token, key, nonce, salt, or session identifier, use java.security.SecureRandom. If it is a simulation, sample, or animation, dismiss this with a reason."),
+        srule!("java-weak-hash", "Weak hash (MD5/SHA-1)", &["java"], "medium", "CWE-327", r#"(?i)MessageDigest\s*\.\s*getInstance\s*\(\s*['"](?:MD[245]|SHA-?1)['"]"#, "MD5 and SHA-1 are cryptographically broken.", "Use SHA-256+ or a password hasher (BCrypt/Argon2)."),
 
         // ----------------------------------------------------------------- Go
         srule!("go-exec-shell", "exec.Command with a shell", &["go"], "high", "CWE-78", r#"exec\.Command\s*\(\s*['"](?:sh|bash)['"]"#, "exec.Command launching sh/bash to build commands from strings is a command-injection sink.", "Invoke the target binary directly with an argument slice; avoid shell interpreters."),
@@ -115,7 +117,7 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         // called, within a bounded window, rather than on the call alone.
         srule!("js-insecure-random", "Predictable randomness for a secret", &["javascript"], "high", "CWE-338", r"(?i)(?:^|[^A-Za-z0-9])(?:token|secret|api[_-]?key|nonce|salt|password|session|csrf|otp|uuid|verifier)\w*\s*[:=][^;\n]{0,80}?(Math\s*\.\s*random\s*\()", "Math.random() is a fast pseudo-random generator, not a cryptographic one. Its output is predictable from previous values, so anything derived from it can be guessed.", "Use crypto.randomUUID() or crypto.getRandomValues() in the browser, or crypto.randomBytes() in Node."),
         srule!("py-insecure-random", "Predictable randomness for a secret", &["python"], "high", "CWE-338", r"(?is)(?:^|[^A-Za-z0-9])(?:token|secret|api[_-]?key|nonce|salt|password|session|csrf|otp|verifier)\w*[\s\S]{0,160}?(\brandom\s*\.\s*(?:random|randint|choice|choices|randrange|getrandbits|shuffle)\s*\()", "The random module is a Mersenne Twister, not a cryptographic generator. Its output is predictable from previous values, so anything derived from it can be guessed.", "Use the secrets module: secrets.token_urlsafe(), secrets.token_hex(), or secrets.choice()."),
-        srule!("java-insecure-random", "Predictable randomness for a secret", &["java"], "high", "CWE-338", r"(?is)(?:^|[^A-Za-z0-9])(?:token|secret|api[_-]?key|nonce|salt|password|session|csrf|otp|verifier)\w*[\s\S]{0,160}?(\bnew\s+Random\s*\()", "java.util.Random is a linear congruential generator, not a cryptographic one. Its output is predictable from previous values, so anything derived from it can be guessed.", "Use java.security.SecureRandom, and prefer SecureRandom.getInstanceStrong() where blocking is acceptable."),
+        srule!("java-insecure-random", "Predictable randomness for a secret", &["java"], "high", "CWE-338", r"(?is)(?:^|[^A-Za-z0-9])(?:token|secret|api[_-]?key|nonce|salt|password|session|csrf|otp|verifier)\w*[\s\S]{0,160}?(\bnew\s+(?:java\s*\.\s*util\s*\.\s*)?Random\s*\()", "java.util.Random is a linear congruential generator, not a cryptographic one. Its output is predictable from previous values, so anything derived from it can be guessed.", "Use java.security.SecureRandom, and prefer SecureRandom.getInstanceStrong() where blocking is acceptable."),
         srule!("kt-insecure-random", "Predictable randomness for a secret", &["kotlin"], "high", "CWE-338", r"(?is)(?:^|[^A-Za-z0-9])(?:token|secret|api[_-]?key|nonce|salt|password|session|csrf|otp|verifier)\w*[\s\S]{0,160}?(\bRandom\s*(?:\.\s*\w+)*\s*\(|\bMath\s*\.\s*random\s*\()", "kotlin.random.Random and java.util.Random are linear congruential generators, not cryptographic ones, so a value derived from one is predictable to anybody who has seen earlier output.", "Use java.security.SecureRandom, or SecureRandom().asKotlinRandom() to keep the Kotlin API."),
         srule!("cs-process-start", "Process.Start with a built command", &["csharp"], "high", "CWE-78", r"\bProcess\s*\.\s*Start\s*\(", "Process.Start hands its arguments to the operating system, and with UseShellExecute the string is parsed by a shell first, so untrusted content becomes command injection.", "Pass ProcessStartInfo.ArgumentList rather than a single Arguments string, and leave UseShellExecute false."),
         srule!("cs-sql-concat", "SQL built with concatenation", &["csharp"], "critical", "CWE-89", r#"(?:SqlCommand|OleDbCommand|NpgsqlCommand|MySqlCommand)\s*\(\s*[$@]?"[^"]*"\s*\+|CommandText\s*=\s*[$@]?"[^"]*"\s*\+"#, "A query assembled by concatenation cannot distinguish data from syntax, so a crafted value rewrites the statement.", "Use SqlParameter and placeholders; never concatenate or interpolate values into CommandText."),
@@ -245,5 +247,44 @@ pub fn scan_content(content: &str, language: &str) -> Vec<PatternHit> {
             });
         }
     }
+    drop_superseded(&mut hits);
     hits
+}
+
+/// A specific rule and the broader one it stands in for at the same site.
+///
+/// `java-insecure-random` says a *secret* was built from a weak generator and
+/// is high severity; `java-weak-prng` says only that the generator is weak and
+/// asks a person to decide. Both describe the same call, so reporting both
+/// means the reviewer answers the broad question twice and the precise finding
+/// is diluted by the vague one sitting next to it.
+const SUPERSEDES: &[(&str, &str)] = &[
+    ("java-insecure-random", "java-weak-prng"),
+    ("kt-insecure-random", "java-weak-prng"),
+];
+
+/// Remove a broad hit wherever the specific rule already fired at that offset.
+fn drop_superseded(hits: &mut Vec<PatternHit>) {
+    if hits.len() < 2 {
+        return;
+    }
+    let specific: Vec<(usize, &str)> = hits
+        .iter()
+        .filter_map(|hit| {
+            let id = SOURCE_RULES[hit.rule_index].id;
+            SUPERSEDES
+                .iter()
+                .find(|(precise, _)| *precise == id)
+                .map(|(_, broad)| (hit.offset, *broad))
+        })
+        .collect();
+    if specific.is_empty() {
+        return;
+    }
+    hits.retain(|hit| {
+        let id = SOURCE_RULES[hit.rule_index].id;
+        !specific
+            .iter()
+            .any(|(offset, broad)| *broad == id && *offset == hit.offset)
+    });
 }

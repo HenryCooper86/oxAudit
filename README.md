@@ -93,7 +93,7 @@ with a reason, an expiry, and a pull request.
 
 | Capability | What it does |
 |---|---|
-| **Source code scanning** | 70+ dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, C#, Kotlin, Swift, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
+| **Source code scanning** | 74 dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, C#, Kotlin, Swift, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
 | **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
 | **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by CISA KEV and EPSS — same exploitation signal as the binary scanner |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
@@ -198,11 +198,11 @@ rule.
 |---|---|---|
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
-| Corpus size | 26 fixtures | **132 fixtures** |
+| Corpus size | 26 fixtures | **138 fixtures** |
 | Findings on this repository | 142 | **32** |
 | …still shown after scope triage | 142 | **5** |
 
-The corpus is 132 fixtures, 74 of them negatives, and none of the negatives were
+The corpus is 138 fixtures, 77 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
 source or a real dependency tree — type declarations, prose in Markdown,
 comments, environment lookups, function parameters, JSON schemas, UI labels,
@@ -210,7 +210,7 @@ hardened XML parsers, non-security uses of `Math.random()`, and the detector
 code that searches for PEM headers.
 
 The corpus is deliberately vulnerable, so it is excluded from the repository
-figure above: a full scan of this checkout returns 96 findings, 64 of which are
+figure above: a full scan of this checkout returns 99 findings, 67 of which are
 the fixtures doing their job.
 
 A corpus you tuned against proves little, so the last two rows are the ones that
@@ -243,15 +243,28 @@ cargo run --release --bin oxaudit-cli -- external-benchmark
 
 Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
 
-| | Before the benchmark existed | After acting on it |
+| | First run | After acting on it |
 |---|---|---|
-| Precision | 67.0% | 56.6% |
-| Recall | 6.1% | **23.3%** |
+| Precision | 67.0% | **78.2%** |
+| Recall | 6.1% | **63.9%** |
 | False positive rate | 3.0% | 18.2% |
-| Youden index (recall − FPR) | 0.030 | **0.051** |
+| Youden index (recall − FPR) | 0.030 | **0.457** |
 
-Both columns are honest and neither is good. Two separate things produce them,
-and they deserve to be told apart.
+The first column is what a corpus written by the rules' own authors had been
+reporting as 100%. Four rules were wrong in ways no internal fixture caught,
+and the two columns are the before and after of fixing them:
+
+| Category | First run | Now | What was wrong |
+|---|---|---|---|
+| `crypto` | 0 / 130 | **130 / 130** | The rule read the *mode*, so `DES/CBC/PKCS5Padding` passed |
+| `weakrand` | 0 / 218 | **218 / 218** | The rule needed a secret-ish variable name nearby |
+| `sqli` | 0 / 272 | 174 / 272 | The rule needed the concatenation *inside* the execute call |
+| `hash` | 28 / 129 | 89 / 129 | `SHA1` and `SHA-1` name the same hash; only one was matched |
+
+`crypto` and `weakrand` reached 100% precision *and* 100% recall — those
+discriminators are exact (an algorithm name, a class name), so there was
+nothing to trade. The remaining figures are not good, and two separate things
+produce them.
 
 **The benchmark is built to require what oxAudit deliberately does not do.**
 Its safe and vulnerable cases are frequently identical in the file being
@@ -304,6 +317,19 @@ Categories with no Java rule at all — XSS, LDAP injection, XPath injection,
 trust boundary, secure cookie: 742 cases, 407 of them vulnerable — are counted
 and reported **separately**. They measure absent rules rather than inaccurate
 ones, and averaging the two together would hide which is which.
+
+Two limits are worth naming as limits rather than as work outstanding. The 40
+`hash` cases still missed read their algorithm out of a properties file, so the
+weak value is never in the source at all. And `pathtraver` reports nothing by
+design: CWE-22 is one of the two classes that require an inbound origin, for
+the reason given under *Known limitation* below.
+
+Whether a weak generator matters is a question the tool refuses to answer on
+its own. `java-insecure-random` asks whether a *secret* came from one and is
+high severity when it can tell; `java-weak-prng` says only that the generator
+is not cryptographic, at low severity, and asks a person to decide. The precise
+rule supersedes the broad one at the same site, so a reviewer is never asked
+the vague question and the sharp one about the same line.
 
 ### Scope: which files, and where inside them
 

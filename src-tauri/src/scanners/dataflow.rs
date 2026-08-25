@@ -81,7 +81,15 @@ pub enum Origin {
 /// handed. For these, argument taint answers a question nobody asked, and
 /// letting it clear the finding is how `Math.random()` came to be suppressed
 /// by the constant `2` in a downstream `.slice(2)`.
-const CALL_IS_THE_DEFECT: &[&str] = &["CWE-338", "CWE-611", "CWE-327", "CWE-295"];
+///
+/// The list is keyed on the *rule's* CWE, so a new rule reporting the same
+/// weakness under a sibling number does not inherit the exemption. That cost
+/// 19 findings once already: `new java.util.Random().nextInt(99)` was cleared
+/// by the constant 99 because the rule said CWE-330 and only CWE-338 was
+/// listed. Sibling numbers for one weakness belong here together.
+const CALL_IS_THE_DEFECT: &[&str] = &[
+    "CWE-330", "CWE-338", "CWE-611", "CWE-327", "CWE-328", "CWE-295",
+];
 
 /// Is this weakness about the call itself rather than its input?
 pub fn call_is_the_defect(sink_cwe: Option<&str>) -> bool {
