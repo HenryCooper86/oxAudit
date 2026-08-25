@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 132,
-    "positives": 58,
-    "negatives": 74,
-    "rules": 50
+    "fixtures": 138,
+    "positives": 61,
+    "negatives": 77,
+    "rules": 53
   },
   "targets": [
     {
@@ -948,6 +948,105 @@
       "expected": [
         {
           "ruleId": "java-sql-concat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-weak-cipher.negative.aes-gcm",
+      "inputPath": "source/java-weak-cipher__negative__aes-gcm.java",
+      "inputSha256": "929716689b6f8e5a5aca8cb884874fd641d01e184cad3824a858cd661dc90e39",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-weak-cipher",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-weak-cipher"
+        }
+      ]
+    },
+    {
+      "id": "java-weak-cipher.positive.des-cbc",
+      "inputPath": "source/java-weak-cipher__positive__des-cbc.java",
+      "inputSha256": "c686839dc024bb547b6caf76c3b4d9c2517e778816ecc88f963f491d2608b49f",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-weak-cipher",
+      "expected": [
+        {
+          "ruleId": "java-weak-cipher",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-weak-hash.negative.sha-512",
+      "inputPath": "source/java-weak-hash__negative__sha-512.java",
+      "inputSha256": "48f99c815b68410f565d97d241af2fce7a058ff1c99d3da19ade2964017139ee",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-weak-hash",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-weak-hash"
+        }
+      ]
+    },
+    {
+      "id": "java-weak-hash.positive.unhyphenated-sha1",
+      "inputPath": "source/java-weak-hash__positive__unhyphenated-sha1.java",
+      "inputSha256": "0de8cb831017b5419747976d334e8dd593e591d0f3c492bba9c874975a46fb3f",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-weak-hash",
+      "expected": [
+        {
+          "ruleId": "java-weak-hash",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-weak-prng.negative.secure-random",
+      "inputPath": "source/java-weak-prng__negative__secure-random.java",
+      "inputSha256": "1dbcfccf4ad21079b933f601209e70c15a1a54317621b304fc1867738de5d080",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-weak-prng",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-weak-prng"
+        }
+      ]
+    },
+    {
+      "id": "java-weak-prng.positive.unqualified-random",
+      "inputPath": "source/java-weak-prng__positive__unqualified-random.java",
+      "inputSha256": "bb420de5dcb59b63c7a67d176efaca77c0244f44a91a7b97f2976ab79fb142e2",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-weak-prng",
+      "expected": [
+        {
+          "ruleId": "java-weak-prng",
           "minimum": 1
         }
       ],

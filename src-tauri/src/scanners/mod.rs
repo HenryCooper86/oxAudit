@@ -794,4 +794,111 @@ mod tests {
             assert!(!rules.iter().any(|rule| rule == "java-sql-concat"), "{rules:?}");
         }
     }
+
+    // --------------------------------------- weak crypto and weak randomness
+
+    #[test]
+    fn a_broken_algorithm_is_broken_whatever_the_mode() {
+        // Found by the OWASP Benchmark: java-cipher-ecb reads the *mode*, so
+        // `DES/CBC/PKCS5Padding` passed every check while being 56-bit DES.
+        // Zero true positives across 130 labelled cases.
+        let rules = rules_firing(
+            "E.java",
+            "class E { javax.crypto.Cipher f() throws Exception { return javax.crypto.Cipher.getInstance(\"DES/CBC/PKCS5Padding\"); } }\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-weak-cipher"),
+            "{rules:?}"
+        );
+
+        let strong = rules_firing(
+            "E.java",
+            "class E { javax.crypto.Cipher f() throws Exception { return javax.crypto.Cipher.getInstance(\"AES/GCM/NOPADDING\"); } }\n",
+        );
+        assert!(strong.is_empty(), "{strong:?}");
+    }
+
+    #[test]
+    fn sha1_and_sha_1_name_the_same_broken_hash() {
+        for algorithm in ["SHA1", "SHA-1", "sha1", "MD5"] {
+            let rules = rules_firing(
+                "D.java",
+                &format!("class D {{ java.security.MessageDigest f() throws Exception {{ return java.security.MessageDigest.getInstance(\"{algorithm}\"); }} }}\n"),
+            );
+            assert!(
+                rules.iter().any(|rule| rule == "java-weak-hash"),
+                "{algorithm}: {rules:?}"
+            );
+        }
+        // The optional hyphen must not swallow the strong SHA-2 family.
+        for algorithm in ["SHA-512", "SHA-256", "SHA-384"] {
+            let rules = rules_firing(
+                "D.java",
+                &format!("class D {{ java.security.MessageDigest f() throws Exception {{ return java.security.MessageDigest.getInstance(\"{algorithm}\"); }} }}\n"),
+            );
+            assert!(rules.is_empty(), "{algorithm}: {rules:?}");
+        }
+    }
+
+    #[test]
+    fn a_weak_generator_is_reported_without_a_secret_name_nearby() {
+        // java-insecure-random asks whether a *secret* came from a weak
+        // generator and needs a name to decide. That question has an answer
+        // only sometimes; whether the generator is cryptographic always does.
+        let rules = rules_firing(
+            "L.java",
+            "class L { int f() { return new java.util.Random().nextInt(99); } }\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-weak-prng"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_secure_generator_is_not_reported() {
+        let rules = rules_firing(
+            "L.java",
+            "class L { int f() throws Exception { return java.security.SecureRandom.getInstance(\"SHA1PRNG\").nextInt(99); } }\n",
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-weak-prng"),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn the_precise_randomness_rule_supersedes_the_broad_one() {
+        // Both describe the same call. Reporting both makes the reviewer
+        // answer the broad question twice and dilutes the precise finding
+        // with the vague one beside it.
+        let rules = rules_firing(
+            "S.java",
+            "class S { String sessionToken() { java.util.Random r = new java.util.Random(); return Long.toString(r.nextLong()); } }\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-insecure-random"),
+            "{rules:?}"
+        );
+        assert!(
+            !rules.iter().any(|rule| rule == "java-weak-prng"),
+            "the broad rule should have been superseded: {rules:?}"
+        );
+    }
+
+    #[test]
+    fn a_weak_generator_survives_a_constant_in_its_chain() {
+        // `new java.util.Random().nextInt(99)` was cleared by the constant 99,
+        // because the exemption list named CWE-338 and this rule reports the
+        // sibling number CWE-330. Nineteen findings went missing for a
+        // vocabulary difference.
+        let rules = rules_firing(
+            "L.java",
+            "class L { int f() { int n = new java.util.Random().nextInt(99); return n; } }\n",
+        );
+        assert!(
+            rules.iter().any(|rule| rule == "java-weak-prng"),
+            "{rules:?}"
+        );
+    }
 }
