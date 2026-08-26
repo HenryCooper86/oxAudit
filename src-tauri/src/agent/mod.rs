@@ -1,3 +1,4 @@
+pub mod compaction;
 pub mod egress;
 pub mod guardrails;
 pub mod loop_engine;

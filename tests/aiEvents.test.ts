@@ -346,6 +346,37 @@ test("a todos event carries the whole list so the panel never rebuilds state fro
   await handle.finished;
 });
 
+test("a context compaction event is routed with its summary and folded count", async () => {
+  const compactions: unknown[] = [];
+  const handle = streamChat({ messages: [], conversationId: "session-compact" }, {
+    onContextCompacted: (compaction) => compactions.push(compaction),
+  });
+  await waitFor(() => harness.commandCount("stream_chat") === 1);
+  harness.streamStart.resolve({ runId: handle.runId });
+  await waitFor(() => harness.commandCount("plugin:event|listen") === 4);
+
+  harness.emit("ai://event", {
+    runId: handle.runId,
+    type: "context_compacted",
+    summarizedMessages: 12,
+    summary: "condensed earlier turns",
+  });
+
+  await waitFor(() => compactions.length === 1);
+  assert.deepEqual(compactions[0], {
+    summarizedMessages: 12,
+    summary: "condensed earlier turns",
+  });
+
+  harness.emit("ai://done", {
+    runId: handle.runId,
+    content: "",
+    model: null,
+    usage: null,
+  });
+  await handle.finished;
+});
+
 test("context budget metadata is routed before a model turn", async () => {
   const budgets: unknown[] = [];
   const handle = streamChat({ messages: [], conversationId: "session-context" }, {

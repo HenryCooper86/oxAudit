@@ -101,16 +101,30 @@ Long sessions currently just grow until the provider rejects the request. y-agen
 does a preflight token estimate, summarizes the older half, and marks the seam with
 an undoable divider.
 
-*Foundation shipped:* settings now carry a backward-compatible `context_window`,
-every agent model turn emits estimated input + reserved output metadata, local
-preflight stops requests that cannot fit, and the composer shows a live budget
-meter. Automatic summarization/compaction and its undo seam remain open.
+*Shipped:* settings carry a backward-compatible `context_window`, every agent
+model turn emits estimated input + reserved output metadata, local preflight
+stops requests that cannot fit, and the composer shows a live budget meter.
+Automatic compaction is in: when the conversation exceeds the window, `run_turn`
+summarizes the older turns into one dense system message (`agent/compaction.rs`)
+and keeps the newest turns verbatim. The seam is durable — the answer records a
+`compaction` marker (folded count + summary) in the transcript, so the
+`ContextCompactedNotice` reappears after a reload — and the divider is undoable:
+the most recent turn offers **Retry with full context**, which re-sends the
+question uncompacted (`allowCompaction: false`) after a rewind, so a user who
+raised the window or switched models can get a complete-context answer without
+manual re-prompting. What remains open is only y-agent's heavier scaffolding —
+regeneration/checkpointing beyond the last turn — which the transcript-preserving
+model still does not need.
 
-### 7. Command palette / slash commands · value: medium · effort: M
+### ~~7. Command palette / slash commands~~ — DONE · value: medium · effort: S
 **y-agent:** `input-area/CommandMenu.tsx`, `lib/commandMap.ts` (31KB — most of it is theirs, not ours).
 
-`/scan`, `/cve`, `/resume`, `/clear`, `/copy` typed into the composer. Take the
-menu mechanics and define our own small command map; do not port their command set.
+*Shipped as:* `/scan`, `/cve`, `/resume`, `/clear`, `/copy` typed into the
+composer, with a small listbox menu above the composer (`SlashCommandMenu`) and
+a prefix matcher in `src/lib/slashCommands.ts`. Each command maps onto an action
+that already existed — navigation, session switch, clear, clipboard copy — so a
+slash command is a shortcut, never a second implementation. The global ⌘K
+palette (`commandPalette.ts`) was already shipped separately.
 
 ### 8. Keyboard shortcuts · value: medium · effort: M
 **y-agent:** `shortcuts/shortcutRegistry.ts`, `useKeyboardShortcuts.ts`, `settings/KeyboardShortcutsTab.tsx`.

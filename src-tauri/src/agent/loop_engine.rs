@@ -119,6 +119,9 @@ pub struct RunTurnRequest<'a> {
     pub cancel: Option<Arc<RunCancellation>>,
     pub steer: Option<Arc<SteerQueue>>,
     pub emit: Arc<dyn Fn(AiStreamEvent) + Send + Sync>,
+    /// When false, skip auto-compaction and let the preflight report the true
+    /// error if the conversation does not fit (used by "retry with full context").
+    pub allow_compaction: bool,
 }
 
 pub async fn run_turn(request: RunTurnRequest<'_>) -> Result<(String, Option<Usage>), LlmError> {
@@ -133,6 +136,7 @@ pub async fn run_turn(request: RunTurnRequest<'_>) -> Result<(String, Option<Usa
         cancel,
         steer,
         emit,
+        allow_compaction,
     } = request;
     let hint = "You are running inside oxAudit, a security research desktop app. \
 You have research tools available: read_file, grep_project, glob, run_scan, search_cve, \
@@ -146,6 +150,33 @@ you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Repl
     messages.extend(user_messages);
 
     let tools = registry.openai_definitions();
+
+    // A long conversation no longer fits: summarize the older turns into one
+    // dense message and keep the newest turns verbatim, so the turn can proceed
+    // instead of failing the preflight. A failed summarization falls through
+    // uncompacted — `stream_chat` then reports the real cause.
+    let needs_compaction = AiClient::estimate_context_tokens(&messages, &tools)
+        .saturating_add(settings.max_tokens)
+        > settings.context_window;
+    if allow_compaction && needs_compaction {
+        if let Some(selection) = super::compaction::plan_compaction(
+            &messages,
+            &tools,
+            settings.context_window,
+            settings.max_tokens,
+        ) {
+            let head: Vec<Value> = messages[1..selection.keep_from].to_vec();
+            if let Ok(summary) = super::compaction::summarize_messages(client, settings, &head).await
+            {
+                messages = super::compaction::apply(&messages, selection.keep_from, &summary);
+                emit(AiStreamEvent::ContextCompacted {
+                    summarized_messages: selection.summarized as u32,
+                    summary,
+                });
+            }
+        }
+    }
+
     let mut iterations_left = MAX_ITERATIONS;
     let mut tool_calls_left = MAX_TOOL_CALLS;
     let mut guard = LoopGuard::new();

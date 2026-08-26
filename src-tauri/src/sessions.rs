@@ -32,6 +32,16 @@ pub struct StoredToolRecord {
     pub result_preview: Option<String>,
 }
 
+/// Record of a compaction seam: the turn this message answers was generated
+/// from a summary of `summarized_messages` earlier turns, reproduced verbatim
+/// so the divider can be reconstructed after a reload.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionMarker {
+    pub summarized_messages: u32,
+    pub summary: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredMessage {
@@ -42,6 +52,11 @@ pub struct StoredMessage {
     pub tools: Vec<StoredToolRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Present when the conversation was compacted for the turn this message
+    /// answers; the UI renders it as a seam divider, and it is never replayed
+    /// into the prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionMarker>,
     pub at: String,
 }
 
@@ -252,6 +267,7 @@ mod tests {
             content: content.into(),
             tools: vec![],
             model: None,
+            compaction: None,
             at: "2026-01-01T00:00:00Z".into(),
         }
     }
@@ -325,6 +341,25 @@ mod tests {
         let msgs = store.get_messages(&s.id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "ok");
+    }
+
+    #[test]
+    fn compaction_marker_round_trips_through_the_transcript() {
+        let (store, _d) = temp_store();
+        let s = store.create(None, None).unwrap();
+        store.append(&s.id, &msg("1", "user", "audit this repo")).unwrap();
+        let mut answer = msg("2", "assistant", "here is the analysis");
+        answer.compaction = Some(CompactionMarker {
+            summarized_messages: 1,
+            summary: "earlier turn summarized".into(),
+        });
+        store.append(&s.id, &answer).unwrap();
+
+        let messages = store.get_messages(&s.id).unwrap();
+        assert_eq!(messages.len(), 2);
+        let marker = messages[1].compaction.as_ref().expect("marker survives a reload");
+        assert_eq!(marker.summarized_messages, 1);
+        assert_eq!(marker.summary, "earlier turn summarized");
     }
 
     #[test]

@@ -19,6 +19,10 @@ export interface StreamHandlers {
     contextWindow: number;
     reservedOutputTokens: number;
   }) => void;
+  onContextCompacted?: (compaction: {
+    summarizedMessages: number;
+    summary: string;
+  }) => void;
   onToolStart?: (tc: { toolCallId: string; name: string; arguments: string }) => void;
   onToolResult?: (tr: {
     toolCallId: string;
@@ -154,6 +158,12 @@ export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
                   estimatedTokens: ev.estimatedTokens,
                   contextWindow: ev.contextWindow,
                   reservedOutputTokens: ev.reservedOutputTokens,
+                });
+                break;
+              case "context_compacted":
+                h.onContextCompacted?.({
+                  summarizedMessages: ev.summarizedMessages,
+                  summary: ev.summary,
                 });
                 break;
               case "tool_start":

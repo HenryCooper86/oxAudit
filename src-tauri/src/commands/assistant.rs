@@ -43,6 +43,7 @@ pub async fn analyze_finding(
                 temperature: None,
                 max_tokens: None,
                 conversation_id: None,
+                allow_compaction: true,
             },
         )
         .await
@@ -71,6 +72,7 @@ pub async fn research_cve(
                 temperature: None,
                 max_tokens: None,
                 conversation_id: None,
+                allow_compaction: true,
             },
         )
         .await
@@ -145,6 +147,7 @@ pub async fn stream_chat(
                 cancel: Some(cancel.clone()),
                 steer: Some(steer.clone()),
                 emit: emitter,
+                allow_compaction: request.allow_compaction,
             })
             .await;
         match result {
