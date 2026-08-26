@@ -678,6 +678,35 @@ mod tests {
     }
 
     #[test]
+    fn a_jdbc_template_receiver_makes_update_a_sql_sink() {
+        // `update` alone is too ordinary a name to match on. On a JDBC
+        // template it is a statement.
+        let concatenated = "class Users {\n\
+             \x20 void go(org.springframework.jdbc.core.JdbcTemplate jdbcTemplate,\n\
+             \x20         javax.servlet.http.HttpServletRequest request) {\n\
+             \x20   jdbcTemplate.update(\"DELETE FROM users WHERE n='\" + request.getParameter(\"n\") + \"'\");\n\
+             \x20 }\n\
+             }\n";
+        assert!(
+            rules_firing("Users.java", concatenated)
+                .iter()
+                .any(|rule| rule == "java-sql-helper"),
+            "a template's update is a statement"
+        );
+        let ordinary = "class Users {\n\
+             \x20 void go(Registry registry, javax.servlet.http.HttpServletRequest request) {\n\
+             \x20   registry.update(request.getParameter(\"n\"));\n\
+             \x20 }\n\
+             }\n";
+        assert!(
+            !rules_firing("Users.java", ordinary)
+                .iter()
+                .any(|rule| rule == "java-sql-helper"),
+            "anything else is just a method called update"
+        );
+    }
+
+    #[test]
     fn a_nested_sink_of_one_rule_is_reported_once() {
         let rules = rules_firing(
             "Read.java",

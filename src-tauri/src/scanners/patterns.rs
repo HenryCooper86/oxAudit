@@ -62,6 +62,16 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         srule!("java-runtime-exec", "Runtime.exec()", &["java", "kotlin"], "high", "CWE-78", r"(?s)\bRuntime\b\s*(?:\.\s*getRuntime\s*\(\s*\)|\w+\s*=).{0,200}?(\.\s*exec\s*\()", "Runtime.exec() runs a system command; with user input it becomes command injection.", "Avoid external commands; if required use ProcessBuilder with an argument list and validate inputs."),
         srule!("java-process-builder", "ProcessBuilder usage", &["java", "kotlin"], "medium", "CWE-78", r"(?:new\s+)?ProcessBuilder\s*\(", "ProcessBuilder launches external processes. It is safe with static arguments but becomes dangerous when arguments include untrusted input.", "Pass arguments as a List (never concatenate into a shell string) and validate/whitelist inputs."),
         srule!("java-sql-concat", "SQL built with concatenation", &["java", "kotlin"], "high", "CWE-89", r"(?:Statement|PreparedStatement)[^;]{0,80}\s*\.\s*(?:executeQuery|executeUpdate|execute)\s*\(\s*[^)]*(?:\+|String\.format)|(\.\s*(?:prepareStatement|prepareCall|executeQuery|executeUpdate|execute)\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\s*[,)])", "SQL statements built with + or String.format are SQL-injection sinks.", "Always use PreparedStatement with ? placeholders and bind parameters."),
+        // Spring's `JdbcTemplate`, Hibernate and JPA take the whole statement
+        // as a string, so none of them go anywhere near the `Statement`
+        // receiver the rule above looks for. oxAudit found no SQL injection at
+        // all in the most widely used data-access layer in Java — 98 of the
+        // OWASP Benchmark's 272 injections, every one of them missed.
+        //
+        // `query` and `update` are too ordinary a pair of method names to
+        // match on their own, so those two need a receiver that says JDBC.
+        // The rest name themselves.
+        srule!("java-sql-helper", "SQL text handed to a query helper", &["java", "kotlin"], "high", "CWE-89", r"\.\s*(?:queryForObject|queryForList|queryForMap|queryForRowSet|queryForInt|queryForLong|queryForStream|batchUpdate|addBatch|createNativeQuery|createSQLQuery|createQuery)\s*\(|(?i:[\w.$]*(?:jdbc|template))\s*\.\s*(?:query|update)\s*\(", "The statement text handed to this helper is assembled from attacker-controlled input, so the input is parsed as SQL rather than read as a value.", "Keep the statement text constant and pass values separately: `queryForObject(\"... WHERE id = ?\", Long.class, id)` binds `id` instead of splicing it in."),
         srule!("java-xss-response", "Unescaped value written to the response", &["java", "kotlin"], "high", "CWE-79", r"(?:getWriter|getOutputStream)\s*\(\s*\)\s*(\.\s*(?:print|println|printf|write|format|append)\s*\()", "Writing an untrusted value into the response body without escaping it lets a crafted value close the surrounding markup and run as script in the victim's browser. A format method is worse still: an attacker-controlled format string reads the argument list.", "Escape on output for the context you are writing into — ESAPI's encodeForHTML for element text, encodeForHTMLAttribute inside an attribute — and never pass an untrusted value as a format string."),
         srule!("java-ldap-injection", "LDAP filter built by concatenation", &["java", "kotlin"], "high", "CWE-90", r"(?s)\bDirContext\b.{0,800}?(\.\s*search\s*\()", "An LDAP filter assembled by concatenation cannot separate the value from the filter syntax, so a crafted value rewrites the query — `*)(uid=*` turns an authentication check into a match on every entry.", "Use a parameterised filter with {0} placeholders and pass the values as the filterArgs array, or escape with ESAPI's encodeForLDAP."),
         srule!("java-xpath-injection", "XPath expression built by concatenation", &["java", "kotlin"], "high", "CWE-643", r"(?s)\bXPath\b.{0,300}?(\.\s*(?:evaluate|compile)\s*\()", "An XPath expression assembled by concatenation cannot separate the value from the query syntax, so a crafted value selects nodes the query was never meant to return.", "Bind values with XPathVariableResolver and reference them as $name, or escape with ESAPI's encodeForXPath."),
@@ -241,6 +251,11 @@ static COMPILED_GUARDS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
 /// `format(Locale.US, param, obj)` puts the format string second. Pinning it
 /// to the first argument cost 71 true positives on the Benchmark.
 const SINK_ARGUMENT: &[(&str, usize)] = &[
+    // Every one of these helpers takes the statement first and its bound
+    // values after. Reading the rest is how a rule reports its own
+    // remediation: the values bound beside a `?` placeholder are
+    // attacker-controlled exactly as they should be.
+    ("java-sql-helper", 0),
     ("java-ldap-injection", 1),
     ("java-xpath-injection", 0),
     // The *name*, not the value. Storing a request value in the session under

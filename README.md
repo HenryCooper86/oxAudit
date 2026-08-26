@@ -246,10 +246,10 @@ Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
 | | First run | After acting on it |
 |---|---|---|
 | Cases with a rule to score | 1,998 of 2,740 | **2,740 of 2,740** |
-| Precision | 67.0% | 66.0% |
-| Recall | 6.1% | **88.2%** |
-| False positive rate | 3.0% | 48.5% |
-| Youden index (recall − FPR) | 0.030 | 0.397 |
+| Precision | 67.0% | 65.0% |
+| Recall | 6.1% | **95.1%** |
+| False positive rate | 3.0% | 54.6% |
+| Youden index (recall − FPR) | 0.030 | 0.405 |
 
 The two columns do not measure the same population. Rules were written for all
 five categories that had none, moving 742 cases *into* the scored set, and they
@@ -272,7 +272,7 @@ and the two columns are the before and after of fixing them:
 | `crypto` | 0 / 130 | **130 / 130** | The rule read the *mode*, so `DES/CBC/PKCS5Padding` passed |
 | `weakrand` | 0 / 218 | **218 / 218** | The rule needed a secret-ish variable name nearby |
 | `cmdi` | 33 / 126 | **126 / 126** | The rule needed the whole `Runtime.getRuntime().exec(` chain in one expression |
-| `sqli` | 0 / 272 | 174 / 272 | The rule needed the concatenation *inside* the execute call |
+| `sqli` | 0 / 272 | **272 / 272** | The rule needed the concatenation *inside* the execute call, and knew nothing about Spring |
 | `hash` | 28 / 129 | **129 / 129** | `SHA1` and `SHA-1` name the same hash; only one was matched, and the algorithm is often not in the source at all |
 | `pathtraver` | 0 / 133 | **123 / 133** | The rule needed the concatenation *inside* the constructor, and could not match `new java.io.File` at all |
 
@@ -319,7 +319,26 @@ what the rule matched. Widening it to any prepare-or-execute taking a variable,
 and letting dataflow resolve what that variable holds, took sqli from 0 to 174
 true positives and the overall recall from 6.1% to 23.3%.
 
-That is the second column, and it cost precision. The rule now also reports 150
+The remaining 98 were a second hole of the same kind, and a larger one: the
+rule matched a `Statement` receiver, and Spring's `JdbcTemplate` has none. It
+takes the whole statement as a string —
+
+```java
+jdbcTemplate.queryForObject(sql, Long.class);
+```
+
+— so oxAudit found no SQL injection at all in the most widely used data-access
+layer in Java, along with none in Hibernate or JPA. `java-sql-helper` covers
+those, and pins the statement to the first argument, because the values bound
+beside a `?` are attacker-controlled exactly as they should be and reading them
+would mean reporting the remediation. `query` and `update` are too ordinary a
+pair of method names to match alone, so those two want a receiver that says
+JDBC. sqli is now 272 of 272.
+
+Not one of the 82 safe cases that use these helpers binds a parameter; they are
+the same dead-branch puzzles described below.
+
+That is the second column, and it cost precision. The rule now also reports 232
 of the benchmark's safe cases, and those false positives turned out not to be
 fixable — an attempt and what it cost is written up under *A trade that was
 measured and refused* below. On ordinary code it still discriminates, and there
