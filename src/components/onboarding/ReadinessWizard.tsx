@@ -167,7 +167,7 @@ export function ReadinessWizard() {
         <div className="border-b border-border bg-surface-secondary px-5 py-4 sm:px-6">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-accent-subtle text-accent">
-              <BrandMark className="h-4 w-6" />
+              <BrandMark className="h-4 w-4" />
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-accent">
