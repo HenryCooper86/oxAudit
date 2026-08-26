@@ -1,12 +1,17 @@
 import type { JSX, SVGProps } from "react";
 
+/**
+ * The oxAudit mark: a symmetric bull-head silhouette whose horns double as a
+ * shield cue for protection. Monochrome (`currentColor`) so it inherits the
+ * accent or text color wherever it is used, on either theme.
+ */
 export function BrandMark({
   className,
   ...props
 }: SVGProps<SVGSVGElement>): JSX.Element {
   return (
     <svg
-      viewBox="0 0 96 64"
+      viewBox="0 0 512 512"
       aria-hidden="true"
       focusable="false"
       className={className}
@@ -15,11 +20,18 @@ export function BrandMark({
       <path
         fill="currentColor"
         fillRule="evenodd"
-        d="M31 7C16.6 7 6 17.5 6 32s10.6 25 25 25 25-10.5 25-25S45.4 7 31 7Zm0 10c8.3 0 14 6.1 14 15s-5.7 15-14 15-14-6.1-14-15 5.7-15 14-15Z"
-      />
-      <path
-        fill="currentColor"
-        d="M47 12h14l8 11 8-11h14L76 32l16 20H78L69 41 60 52H46l16-20-15-20Z"
+        d="M 168 208
+           C 138 168 104 132 76 92
+           C 70 150 108 200 156 244
+           C 138 306 160 364 206 402
+           Q 256 436 306 402
+           C 352 364 374 306 356 244
+           C 404 200 442 150 436 92
+           C 408 132 374 168 344 208
+           Q 256 186 168 208
+           Z
+           M 174 268 a 22 14 0 1 0 44 0 a 22 14 0 1 0 -44 0 Z
+           M 294 268 a 22 14 0 1 0 44 0 a 22 14 0 1 0 -44 0 Z"
       />
     </svg>
   );

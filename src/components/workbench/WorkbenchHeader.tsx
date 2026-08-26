@@ -76,7 +76,7 @@ export function WorkbenchHeader({
         aria-label="oxAudit"
         className="flex shrink-0 items-center gap-1.5 pr-0.5 font-display text-[17px] font-medium tracking-[-0.02em] text-text-primary"
       >
-        <BrandMark className="h-[18px] w-[27px] text-accent" />
+        <BrandMark className="h-[18px] w-[18px] text-accent" />
         <span aria-hidden="true">Audit</span>
       </h1>
 

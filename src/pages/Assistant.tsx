@@ -1228,7 +1228,7 @@ export function AssistantPage() {
             {messages.length === 0 && !busy && (
               <div className="flex flex-1 flex-col items-center justify-center gap-5 py-10">
                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-surface-tertiary text-accent">
-                  <BrandMark className="h-[17px] w-[25px]" />
+                  <BrandMark className="h-[17px] w-[17px]" />
                 </div>
                 <div className="text-center">
                   <h2 className="font-display text-[18px] font-normal text-text-primary">
@@ -1297,7 +1297,7 @@ export function AssistantPage() {
                   )}
                   {message.role !== "user" && (
                     <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-accent">
-                      <BrandMark className="h-[11px] w-[17px]" />
+                      <BrandMark className="h-[11px] w-[11px]" />
                     </div>
                   )}
                   <div className={`min-w-0 ${message.role === "user" ? "max-w-[76%]" : "max-w-[720px] flex-1"}`}>
@@ -1356,7 +1356,7 @@ export function AssistantPage() {
               {busy && (
                 <div className="flex gap-3 rounded-sm px-2 py-3">
                   <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-accent">
-                    <BrandMark className="h-[11px] w-[17px]" />
+                    <BrandMark className="h-[11px] w-[11px]" />
                   </div>
                   <div className="min-w-0 max-w-[720px] flex-1">
                     <div className="mb-1 text-[11px] font-medium text-text-muted">
