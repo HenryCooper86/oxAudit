@@ -69,7 +69,11 @@ impl FileSyntax {
             return Taint::Unknown;
         };
         let root = tree.root_node();
-        let Some(call) = dataflow::enclosing_call(root, offset) else {
+        // The call the finding names, not the outermost call of its chain:
+        // `template.queryForObject(sql, Long.class).toString()` has `sql` as
+        // argument 0 of `queryForObject` and nothing at all as argument 0 of
+        // the chain.
+        let Some(call) = dataflow::innermost_call(root, offset) else {
             return Taint::Unknown;
         };
         if !dataflow::names_the_call(call, offset) {

@@ -54,7 +54,11 @@ impl ProjectConfig {
     pub fn from_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Self {
         let mut config = Self::default();
         for path in paths {
-            if path.extension().map(|ext| ext != "properties").unwrap_or(true) {
+            if path
+                .extension()
+                .map(|ext| ext != "properties")
+                .unwrap_or(true)
+            {
                 continue;
             }
             if std::fs::metadata(path).is_ok_and(|meta| meta.len() > MAX_PROPERTIES_BYTES) {

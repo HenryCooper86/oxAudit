@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 161,
-    "positives": 71,
-    "negatives": 90,
-    "rules": 59
+    "fixtures": 164,
+    "positives": 72,
+    "negatives": 92,
+    "rules": 60
   },
   "targets": [
     {
@@ -1211,6 +1211,55 @@
       "expected": [
         {
           "ruleId": "java-sql-concat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-sql-helper.negative.bound-parameter",
+      "inputPath": "source/java-sql-helper__negative__bound-parameter.java",
+      "inputSha256": "4d649d3fc4009bdf0c6c309cbfd1c490bc15f89c3065a5c1f7cf4733844ff63e",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-helper",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-sql-helper"
+        }
+      ]
+    },
+    {
+      "id": "java-sql-helper.negative.ordinary-update-call",
+      "inputPath": "source/java-sql-helper__negative__ordinary-update-call.java",
+      "inputSha256": "d7ce49d5c89b701cc06b36d055dcc4d4a879b447510a0f9afa12c9fd3cf6f7bc",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-helper",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-sql-helper"
+        }
+      ]
+    },
+    {
+      "id": "java-sql-helper.positive.concatenated-template-query",
+      "inputPath": "source/java-sql-helper__positive__concatenated-template-query.java",
+      "inputSha256": "bb37606ed4c32fe7179130e4472b5569515affbb150a0cb5c9c4f0cf357afb9b",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-helper",
+      "expected": [
+        {
+          "ruleId": "java-sql-helper",
           "minimum": 1
         }
       ],
