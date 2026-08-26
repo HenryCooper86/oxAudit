@@ -37,6 +37,13 @@ pub enum AiStreamEvent {
         context_window: u32,
         reserved_output_tokens: u32,
     },
+    /// Older conversation turns were summarized to fit the context window; the
+    /// model now works from `summary` instead of the folded messages. Emitted
+    /// once, before the first `ContextBudget` of the compacted turn.
+    ContextCompacted {
+        summarized_messages: u32,
+        summary: String,
+    },
     /// The model requested a tool call; the loop is about to execute it.
     ToolStart {
         tool_call_id: String,
@@ -127,7 +134,7 @@ impl AiClient {
         })
     }
 
-    fn estimate_context_tokens(messages: &[Value], tools: &[Value]) -> u32 {
+    pub(crate) fn estimate_context_tokens(messages: &[Value], tools: &[Value]) -> u32 {
         let message_chars = messages
             .iter()
             .map(|message| message.to_string().chars().count())

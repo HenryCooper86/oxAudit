@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Ban,
   ClipboardPaste,
@@ -22,8 +22,10 @@ import { ApprovalModal } from "../components/chat/ApprovalModal";
 import { AskUserModal } from "../components/chat/AskUserModal";
 import { ChatSearchToolbar } from "../components/chat/ChatSearchToolbar";
 import { ContextBudgetMeter } from "../components/chat/ContextBudgetMeter";
+import { ContextCompactedNotice } from "../components/chat/ContextCompactedNotice";
 import { HighlightedText, SearchableMarkdown } from "../components/chat/SearchHighlight";
 import { SessionSidebar } from "../components/chat/SessionSidebar";
+import { SlashCommandMenu } from "../components/chat/SlashCommandMenu";
 import { ThinkingCard } from "../components/chat/ThinkingCard";
 import { ToolCallCard } from "../components/chat/ToolCallCard";
 import { streamChat, type StreamHandle } from "../lib/aiEvents";
@@ -34,6 +36,7 @@ import {
   type ContextBudgetMetadata,
 } from "../lib/contextBudget";
 import { planRewind } from "../lib/rewind";
+import { matchingSlashCommands, type SlashCommand } from "../lib/slashCommands";
 import { api } from "../lib/api";
 import {
   loadLatestSessionMessages,
@@ -70,6 +73,8 @@ interface UiMessage {
   /** Submitted mid-run. Live-session styling only; a reload shows a plain turn. */
   steer?: boolean;
   tools?: ToolRecord[];
+  /** This answer was generated from a compacted conversation. */
+  compaction?: { summarizedMessages: number; summary: string };
 }
 
 interface StreamingState {
@@ -110,6 +115,7 @@ function toUiMessages(messages: StoredMessage[]): UiMessage[] {
     role: message.role,
     content: message.content,
     tools: message.tools,
+    compaction: message.compaction,
   }));
 }
 
@@ -167,6 +173,13 @@ export function AssistantPage() {
   const [searchTotal, setSearchTotal] = useState(0);
   const [contextBudgetMetadata, setContextBudgetMetadata] =
     useState<ContextBudgetMetadata | null>(null);
+  /** Older turns summarized for the current turn; null while nothing was folded. */
+  const [compaction, setCompaction] = useState<{
+    summarizedMessages: number;
+    summary: string;
+  } | null>(null);
+  /** Highlighted row in the composer's slash-command menu. */
+  const [slashIndex, setSlashIndex] = useState(0);
 
   const conversationId = useRef<string>(crypto.randomUUID());
   const streamHandleRef = useRef<StreamHandle | null>(null);
@@ -179,6 +192,9 @@ export function AssistantPage() {
   const sessionActivationPendingRef = useRef(false);
   const settledRef = useRef(false);
   const turnToolsRef = useRef<Map<string, ToolRecord>>(new Map());
+  const compactionRef = useRef<{ summarizedMessages: number; summary: string } | null>(
+    null,
+  );
   const [toolRecords, setToolRecords] = useState<ToolRecord[]>([]);
   const streamingRef = useRef(streaming);
   streamingRef.current = streaming;
@@ -301,6 +317,8 @@ export function AssistantPage() {
     setActiveSessionId(info.id);
     setModel(null);
     setContextBudgetMetadata(null);
+    setCompaction(null);
+    compactionRef.current = null;
     setConvUsage(null);
     setUnavailableProject(null);
     setPendingSteers([]);
@@ -520,12 +538,14 @@ export function AssistantPage() {
     if (settledRef.current) return;
     settledRef.current = true;
     const tools = Array.from(turnToolsRef.current.values());
+    const compactionRecord = compactionRef.current;
     const stored: StoredMessage = {
       id: crypto.randomUUID(),
       role: "assistant",
       content,
       tools: tools.length ? tools : undefined,
       model: modelName,
+      compaction: compactionRecord ?? undefined,
       at: new Date().toISOString(),
     };
     setMessages((current) => [
@@ -535,6 +555,7 @@ export function AssistantPage() {
         role: stored.role,
         content: stored.content,
         tools: stored.tools,
+        compaction: compactionRecord ?? undefined,
       },
     ]);
     setModel(modelName);
@@ -554,21 +575,17 @@ export function AssistantPage() {
     }
   };
 
-  const send = async (text?: string) => {
-    const content = (text ?? input).trim();
-    if (
-      !content ||
-      busy ||
-      sessionActivating ||
-      !activeSessionId ||
-      !aiReady
-    ) {
-      return;
-    }
-    const history: ChatMessage[] = messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-    }));
+  /**
+   * Append `content` as a user turn to `history` and stream the agent's reply.
+   * Shared by `send` (full history, compaction allowed) and
+   * `regenerateWithFullContext` (history rebuilt from a truncated transcript,
+   * compaction suppressed).
+   */
+  const runStreamedTurn = async (
+    history: ChatMessage[],
+    content: string,
+    allowCompaction: boolean,
+  ) => {
     const next: ChatMessage[] = [...history, { role: "user", content }];
     const stored: StoredMessage = {
       id: crypto.randomUUID(),
@@ -588,14 +605,22 @@ export function AssistantPage() {
     setToolRecords([]);
     setStreaming({ text: "", reasoning: "", thinking: false });
     setContextBudgetMetadata(null);
+    setCompaction(null);
+    compactionRef.current = null;
 
-    api
-      .sessionAppend(activeSessionId, stored)
-      .then(updateSessionInfo)
-      .catch(() => undefined);
+    if (activeSessionId) {
+      api
+        .sessionAppend(activeSessionId, stored)
+        .then(updateSessionInfo)
+        .catch(() => undefined);
+    }
 
     const handle = streamChat(
-      { messages: next, conversationId: conversationId.current },
+      {
+        messages: next,
+        conversationId: conversationId.current,
+        allowCompaction,
+      },
       {
         onDelta: (chunk) =>
           setStreaming((current) => ({
@@ -611,6 +636,13 @@ export function AssistantPage() {
           })),
         onUsage: () => undefined,
         onContextBudget: setContextBudgetMetadata,
+        onContextCompacted: (compactionEvent) => {
+          compactionRef.current = {
+            summarizedMessages: compactionEvent.summarizedMessages,
+            summary: compactionEvent.summary,
+          };
+          setCompaction(compactionRef.current);
+        },
         onToolStart: (toolCall) =>
           upsertTool({
             toolCallId: toolCall.toolCallId,
@@ -698,6 +730,59 @@ export function AssistantPage() {
     streamHandleRef.current = handle;
     await handle.finished;
     if (streamHandleRef.current === handle) streamHandleRef.current = null;
+  };
+
+  const send = async (text?: string) => {
+    const content = (text ?? input).trim();
+    if (
+      !content ||
+      busy ||
+      sessionActivating ||
+      !activeSessionId ||
+      !aiReady
+    ) {
+      return;
+    }
+    const history: ChatMessage[] = messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+    await runStreamedTurn(history, content, true);
+  };
+
+  /**
+   * Re-answer the question that produced a compacted reply, this time with the
+   * full conversation sent uncompacted. Rewinds to just before that question
+   * (dropping the compacted answer) and re-sends it with compaction suppressed.
+   * Only offered on the most recent turn, so nothing after it is discarded.
+   */
+  const regenerateWithFullContext = async (assistantMessageId: string) => {
+    if (busy || sessionActivating || !activeSessionId || !aiReady) return;
+    const assistantIndex = messages.findIndex(
+      (message) => message.id === assistantMessageId,
+    );
+    if (assistantIndex !== messages.length - 1 || assistantIndex < 1) return;
+    const question = messages[assistantIndex - 1];
+    if (question.role !== "user") return;
+
+    const plan = planRewind(messages, question.id);
+    if (!plan) return;
+
+    try {
+      await api.sessionTruncate(activeSessionId, plan.keepCount);
+    } catch (error) {
+      push("error", `Could not retry with full context: ${String(error)}`);
+      return;
+    }
+
+    const kept = messages.slice(0, plan.keepCount);
+    setMessages(kept);
+    setInput("");
+    const history: ChatMessage[] = kept.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+    await runStreamedTurn(history, question.content, false);
   };
 
   /**
@@ -844,6 +929,45 @@ export function AssistantPage() {
     if (info) updateSessionInfo({ ...info, messageCount: 0 });
   };
 
+  /** Run a composer slash command. Clears the composer first, as a command is a
+   *  shortcut — it never leaves a half-typed `/scan` behind. */
+  const executeSlashCommand = async (command: SlashCommand) => {
+    setInput("");
+    setSlashIndex(0);
+    const action = command.action;
+    switch (action.kind) {
+      case "navigate":
+        setPage(action.page);
+        return;
+      case "clear":
+        await clearConversation();
+        return;
+      case "resume": {
+        const other = sessions.find((session) => session.id !== activeSessionId);
+        if (other) await loadSession(other.id);
+        else push("info", "No other conversations to resume.");
+        return;
+      }
+      case "copy": {
+        const lastAssistant = [...messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        if (!lastAssistant) {
+          push("error", "No assistant reply to copy yet.");
+          return;
+        }
+        try {
+          if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
+          await navigator.clipboard.writeText(lastAssistant.content);
+          push("success", "Last reply copied to clipboard.");
+        } catch (error) {
+          push("error", `Could not copy: ${String(error)}`);
+        }
+        return;
+      }
+    }
+  };
+
   const openManualContext = (event: MouseEvent<HTMLButtonElement>) => {
     contextReturnFocusRef.current = event.currentTarget;
     setContextLabel("Manual context");
@@ -873,6 +997,8 @@ export function AssistantPage() {
       contextBudgetMetadata?.reservedOutputTokens ?? settings?.ai.maxTokens ?? 2048,
     );
   }, [contextBudgetMetadata, messages, settings, streaming.text]);
+  const slashCommands = useMemo(() => matchingSlashCommands(input), [input]);
+  const slashOpen = !busy && slashCommands.length > 0;
   const closeSearch = () => {
     setSearchOpen(false);
     setSearchQuery("");
@@ -1141,10 +1267,23 @@ export function AssistantPage() {
 
             <div className="space-y-1">
               {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`group flex gap-3 rounded-sm px-2 py-3 transition-colors hover:bg-surface-hover ${ message.role === "user" ? "justify-end" : "" }`}
-                >
+                <Fragment key={message.id}>
+                  {message.compaction && (
+                    <div className="px-2 py-1.5">
+                      <ContextCompactedNotice
+                        summarizedMessages={message.compaction.summarizedMessages}
+                        summary={message.compaction.summary}
+                        onRetry={
+                          message.id === messages[messages.length - 1]?.id
+                            ? () => void regenerateWithFullContext(message.id)
+                            : undefined
+                        }
+                      />
+                    </div>
+                  )}
+                  <div
+                    className={`group flex gap-3 rounded-sm px-2 py-3 transition-colors hover:bg-surface-hover ${ message.role === "user" ? "justify-end" : "" }`}
+                  >
                   {message.role === "user" && !busy && (
                     <button
                       type="button"
@@ -1201,8 +1340,18 @@ export function AssistantPage() {
                       />
                     </div>
                   )}
-                </div>
+                  </div>
+                </Fragment>
               ))}
+
+              {busy && compaction && (
+                <div className="px-2 py-1.5">
+                  <ContextCompactedNotice
+                    summarizedMessages={compaction.summarizedMessages}
+                    summary={compaction.summary}
+                  />
+                </div>
+              )}
 
               {busy && (
                 <div className="flex gap-3 rounded-sm px-2 py-3">
@@ -1281,12 +1430,52 @@ export function AssistantPage() {
             <label htmlFor="assistant-composer" className="sr-only">
               Message the AI Assistant
             </label>
+            {slashOpen && (
+              <SlashCommandMenu
+                commands={slashCommands}
+                selectedIndex={slashIndex}
+                onSelect={(command) => void executeSlashCommand(command)}
+                onHighlight={setSlashIndex}
+              />
+            )}
             <div className="overflow-hidden rounded-md border border-border bg-surface-secondary shadow-sm transition-[border-color,box-shadow] focus-within:border-border-focus focus-within:shadow-md">
               <textarea
                 id="assistant-composer"
                 value={input}
-                onChange={(event) => setInput(event.target.value)}
+                onChange={(event) => {
+                  setInput(event.target.value);
+                  setSlashIndex(0);
+                }}
                 onKeyDown={(event) => {
+                  if (slashOpen) {
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setSlashIndex((current) =>
+                        (current + 1) % slashCommands.length,
+                      );
+                      return;
+                    }
+                    if (event.key === "ArrowUp") {
+                      event.preventDefault();
+                      setSlashIndex(
+                        (current) =>
+                          (current - 1 + slashCommands.length) %
+                          slashCommands.length,
+                      );
+                      return;
+                    }
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void executeSlashCommand(slashCommands[slashIndex]);
+                      return;
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setInput("");
+                      setSlashIndex(0);
+                      return;
+                    }
+                  }
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
                     void submit();

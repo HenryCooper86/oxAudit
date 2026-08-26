@@ -492,6 +492,15 @@ pub struct ChatRequest {
     /// Client-chosen id used to aggregate per-conversation token/cost usage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
+    /// When `false`, a turn that would otherwise compact the conversation is
+    /// sent as-is instead, so a "retry with full context" can force the whole
+    /// history through after the user raises the window or switches models.
+    #[serde(default = "default_allow_compaction")]
+    pub allow_compaction: bool,
+}
+
+fn default_allow_compaction() -> bool {
+    true
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -523,4 +532,26 @@ pub struct AiStatus {
     pub message: String,
     pub model: Option<String>,
     pub latency_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_request_defaults_to_allowing_compaction() {
+        // Older clients that never send `allowCompaction` must still get
+        // auto-compaction, so the flag is opt-out rather than opt-in.
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"messages":[{"role":"user","content":"hi"}],"conversationId":"c1"}"#,
+        )
+        .expect("deserialize without allowCompaction");
+        assert!(request.allow_compaction);
+
+        let request: ChatRequest = serde_json::from_str(
+            r#"{"messages":[{"role":"user","content":"hi"}],"allowCompaction":false}"#,
+        )
+        .expect("deserialize with explicit false");
+        assert!(!request.allow_compaction);
+    }
 }

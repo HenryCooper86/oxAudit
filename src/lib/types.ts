@@ -873,6 +873,8 @@ export interface ChatRequest {
   temperature?: number;
   maxTokens?: number;
   conversationId?: string;
+  /** When false, skip auto-compaction and send the full history as-is. */
+  allowCompaction?: boolean;
 }
 
 export interface StreamStarted {
@@ -889,6 +891,11 @@ export type AiStreamEvent = { runId: string } & (
       estimatedTokens: number;
       contextWindow: number;
       reservedOutputTokens: number;
+    }
+  | {
+      type: "context_compacted";
+      summarizedMessages: number;
+      summary: string;
     }
   | { type: "tool_start"; toolCallId: string; name: string; arguments: string }
   | {
@@ -963,6 +970,8 @@ export interface StoredMessage {
   content: string;
   tools?: ToolRecord[];
   model?: string | null;
+  /** Present when this answer was generated from a compacted conversation. */
+  compaction?: { summarizedMessages: number; summary: string };
   at: string;
 }
 
