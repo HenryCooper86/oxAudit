@@ -1,0 +1,1 @@
+COPY .env /app/.env

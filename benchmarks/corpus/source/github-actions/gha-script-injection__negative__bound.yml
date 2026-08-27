@@ -1,0 +1,11 @@
+name: triage
+on: issues
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: bind safely
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        run: echo "$TITLE"
+      - run: echo "${{ github.event.issue.title }}"

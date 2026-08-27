@@ -188,6 +188,41 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
         // ------------------------------------------------------------ Generic
         srule!("gen-hardcoded-password", "Hardcoded password assignment", ANY, "medium", "CWE-259", r#"(?i)\b(?:password|passwd|pwd)\s*=\s*['"][^'"]{4,64}['"]"#, "A password is assigned a literal value in code — hardcoded credentials.", "Store credentials in environment variables / a secrets manager and rotate this one."),
         srule!("gen-weak-crypto", "Weak crypto primitive (md5/sha1)", ANY, "medium", "CWE-327", r"(?i)\b(?:md5|sha1)\s*\(", "Usage of the broken MD5/SHA-1 algorithms for security purposes.", "Use SHA-256/512 or a dedicated KDF/password hasher."),
+
+        // ------------------------------------- Infrastructure as code
+        //
+        // No grammar covers these file kinds yet, so every match stands and is
+        // reported at the text tier. The rules compensate by anchoring on the
+        // structure of the format — line-anchored keys, block windows bounded
+        // by `}`, same-line `run:` scripts — which is what keeps a whole tree
+        // of plausible YAML from being reported as misconfigured
+        // infrastructure.
+
+        // ------------------------------------------------ Dockerfile
+        // `latest` and tagless references are mutable pointers: the same
+        // Dockerfile builds a different image tomorrow. Pinned tags and
+        // digests do not match, and `FROM scratch` is excluded below because
+        // the empty base image is exactly what it claims to be.
+        srule!("dockerfile-unpinned-base", "Unpinned base image", &["dockerfile"], "low", "CWE-1357", r"(?im)^\s*FROM\s+(?:--platform\s*=\s*\S+\s+)?([A-Za-z0-9._/-]+)(?::latest)?(?:\s+AS\s+\S+)?\s*$", "The base image is referenced without a version tag, or with the mutable `latest`, so rebuilding produces a different image than the one reviewed — new vulnerabilities and new behavior arrive without a code change.", "Pin the base image to an exact tag, and prefer a content digest (`image@sha256:…`) so the reference names one immutable image."),
+        srule!("dockerfile-curl-pipe-shell", "Remote script piped to a shell", &["dockerfile"], "high", "CWE-494", r"(?i)\b(?:curl|wget)\b[^|\n]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh)\b", "Downloading a script and piping it straight into a shell executes whatever the network returned, with no integrity check and no record of what ran — a compromised mirror or a hijacked redirect turns the build into an attacker's shell.", "Fetch the script first, verify a checksum or signature, then run it — and copy the verified artifact in rather than re-fetching at build time."),
+        srule!("dockerfile-add-url", "ADD fetches from a URL", &["dockerfile"], "low", "CWE-494", r"(?im)^\s*ADD\s+(?:--\S+\s+)?https?://", "ADD with a URL downloads a remote artifact straight into an image layer. The bytes that land are whatever the server serves that build, so the layer is not reproducible and can change without a code change.", "Download outside the build, verify a checksum, and COPY the verified local file. COPY — not ADD — is the right instruction for local artifacts."),
+        srule!("dockerfile-secret-copy", "Credential material copied into the image", &["dockerfile"], "medium", "CWE-312", r"(?im)^\s*(?:COPY|ADD)\s+(?:--\S+\s+)?\S*(?:\.env|secret|credential|password|id_rsa|\.pem|\.key)\S*\s+", "A credentials file — `.env`, a private key, a secrets directory — is copied into an image layer. Layers are handed to every stage and every registry mirror that touches the image, and they are not reliably erasable.", "Keep credentials out of images: pass them as environment or mounted secrets at run time. If a build-time secret is unavoidable, use a secrets-capable build (`--secret=…` with BuildKit) rather than COPY."),
+
+        // ------------------------------------------------ Terraform
+        srule!("tf-open-s3-bucket", "S3 bucket readable by anyone", &["terraform"], "high", "CWE-284", r#"(?is)\baws_s3_bucket"\s*"[^"]+"\s*\{[^}]{0,400}?acl\s*=\s*"(?:public-read|public-read-write|website)""#, "The bucket ACL grants anonymous read (or write) access, so any object placed in it is downloadable by anyone who can guess or learn its name — the classic exposure of cloud storage contents.", "Use `acl = \"private\"` (or a separate aws_s3_bucket_acl with private) and block public access at the account level; share objects through signed URLs or an explicit IAM policy instead."),
+        srule!("tf-public-rds", "Database instance reachable from the internet", &["terraform"], "high", "CWE-200", r#"(?is)\baws_db_instance"\s*"[^"]+"\s*\{[^}]{0,600}?publicly_accessible\s*=\s*true"#, "The database instance is assigned a public IP and its security group admits the internet, exposing the database service itself to credential-stuffing, brute force, and any new CVE in the engine.", "Set publicly_accessible = false, keep the database in private subnets, and give access only to the application's security group."),
+        srule!("tf-iam-wildcard", "Wildcard IAM action", &["terraform"], "high", "CWE-269", r#"(?is)(?:actions?\s*=\s*\[\s*"|"action"\s*:\s*")\*""#, "The policy grants every action (`*`), which is far more privilege than any workload needs — a compromise of that identity is a compromise of everything the account can do.", "Enumerate the specific actions the workload needs (prefer the least-privilege set per resource), and reserve wildcards for read-only scoped actions like s3:GetObject on one bucket."),
+        srule!("tf-sg-open-cidr", "Security group open to the internet", &["terraform"], "medium", "CWE-284", r"(?is)\bingress\s*\{[^}]{0,400}?cidr_blocks\s*=\s*\[[^\]]*(?:0\.0\.0\.0|::)\/0", "An ingress rule accepts connections from 0.0.0.0/0 (or ::/0), i.e. from the entire internet — management ports, databases, and unauthenticated services should never be reachable this way.", "Restrict cidr_blocks to the networks that actually need access (a VPN range, the office egress IP), and split admin access onto a separate, narrower rule."),
+
+        // ------------------------------------------------ Kubernetes
+        srule!("k8s-privileged-container", "Container runs privileged", &["yaml"], "high", "CWE-250", r"(?im)^\s*privileged\s*:\s*true\s*$", "A privileged container gets every device and capability on the host and runs outside most of the container isolation — a compromise of the workload is a compromise of the node.", "Remove `privileged: true`; grant the specific capabilities (add: [...]) or devices the workload actually needs, and prefer non-root with a read-only root filesystem."),
+        srule!("k8s-host-path", "hostPath volume mounted", &["yaml"], "high", "CWE-668", r"(?im)^\s*hostPath\s*:\s*$", "A hostPath volume binds the container to the node's filesystem, so the workload can read or write host files (Docker socket, ssh keys, kubelet state) and can only ever schedule where that path exists.", "Use a PVC, ConfigMap, Secret, or emptyDir instead of the node filesystem. If hostPath is genuinely required, scope it with an admission policy that allow-lists the path."),
+        srule!("k8s-host-network", "Pod attached to the host network", &["yaml"], "medium", "CWE-668", r"(?im)^\s*hostNetwork\s*:\s*true\s*$", "With hostNetwork the pod shares the node's network namespace, so it can bind the node's ports and reach loopback services that were never meant to be visible from the cluster network.", "Remove hostNetwork: true and expose the workload through a Service. The rare legitimate uses (CNI components, node exporters) belong in namespaces with the tightest admission policy."),
+        srule!("k8s-allow-privilege-escalation", "Privilege escalation allowed", &["yaml"], "high", "CWE-250", r"(?im)^\s*allowPrivilegeEscalation\s*:\s*true\s*$", "allowPrivilegeEscalation: true lets a process in the container gain more privileges than its parent — the no_new_privs guarantee is switched off, undoing part of the container boundary.", "Set allowPrivilegeEscalation: false and runAsNonRoot: true, and enforce both at the namespace level with a Pod Security admission policy so no manifest can forget."),
+
+        // ------------------------------------------------ CI workflows
+        srule!("gha-unpinned-action", "Workflow action referenced by a mutable ref", &["github-actions"], "medium", "CWE-829", r"(?im)^\s*(?:-\s*)?uses\s*:\s*([^@\s]+)(?:@(?:master|main|latest|HEAD))?\s*$", "The action is referenced without a pinned ref, or by a branch, so the workflow runs whatever code that ref points to at run time — a compromise of the action's repository is executed with this workflow's permissions.", "Pin every action to a full-length commit SHA (or at least a version tag, then review and move to the SHA). oxAudit's own CI checks that every action stays pinned."),
+        srule!("gha-script-injection", "Untrusted expression interpolated into a run script", &["github-actions"], "high", "CWE-78", r#"(?is)\brun\s*:[^\n]*[^"\w-]\$\{\{\s*(?:github\s*\.\s*event|inputs)\.[^}]*\}\}"#, "A run: step interpolates github.event.* or inputs.* straight into the shell command. A pull request title or branch name is attacker-chosen, so the expression expands to attacker-controlled text parsed as shell syntax — command injection with the workflow's permissions.", "Bind the expression to an environment variable at the job or step level (`env: TITLE: ${{ github.event.issue.title }}`) and reference `$TITLE` in the script — the value then arrives as data, never as shell syntax."),
     ]
 });
 
@@ -229,6 +264,34 @@ static COMPILED_GUARDS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
         .map(|(rule, pattern)| (*rule, Regex::new(pattern).expect("invalid guard pattern")))
         .collect()
 });
+
+/// Per-rule filters on the *reported match text*.
+///
+/// A few shapes cannot be told apart by the rule's own regex without the
+/// lookaround Rust's regex crate deliberately lacks: `FROM scratch` is a
+/// legitimate untagged base image, `.env.example` is documentation rather than
+/// a credential, and a `./path` action is local rather than unpinned. The
+/// exclusion is evaluated on the match text the finding would report, inside
+/// `scan_content`, so the benchmark and a real scan cannot disagree.
+const MATCH_EXCLUSIONS: &[(&str, &str)] = &[
+    ("dockerfile-unpinned-base", r"^scratch$"),
+    ("dockerfile-secret-copy", r"\.env\.(?:example|sample|template)\b"),
+    ("gha-unpinned-action", r"^(?:\.\.?/|/|docker://)"),
+];
+
+static COMPILED_MATCH_EXCLUSIONS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
+    MATCH_EXCLUSIONS
+        .iter()
+        .map(|(rule, pattern)| (*rule, Regex::new(pattern).expect("invalid exclusion pattern")))
+        .collect()
+});
+
+/// Would this match text be a known-false shape for its rule?
+fn match_is_excluded(rule_id: &str, match_text: &str) -> bool {
+    COMPILED_MATCH_EXCLUSIONS
+        .iter()
+        .any(|(excluded, pattern)| *excluded == rule_id && pattern.is_match(match_text))
+}
 
 /// The guard for a rule, if it has one.
 ///
@@ -385,6 +448,7 @@ pub fn scan_content(content: &str, language: &str) -> Vec<PatternHit> {
             });
         }
     }
+    hits.retain(|hit| !match_is_excluded(SOURCE_RULES[hit.rule_index].id, &hit.match_text));
     drop_superseded(&mut hits);
     hits
 }

@@ -16,8 +16,39 @@ pub fn is_binary(bytes: &[u8]) -> bool {
     probe.contains(&0)
 }
 
+/// Whether the path sits under a CI workflow directory (`.github/workflows`,
+/// `.gitlab/workflows`, …). Workflow files are YAML, but the rules that apply
+/// to them are workflow rules, and a plain `yaml` classification would run
+/// manifest rules over pipeline syntax.
+fn is_workflow_path(path: &Path) -> bool {
+    let mut has_vcs_dir = false;
+    let mut has_workflows = false;
+    for component in path.components() {
+        let Some(text) = component.as_os_str().to_str() else {
+            continue;
+        };
+        let lowered = text.to_ascii_lowercase();
+        if lowered == ".github" || lowered == ".gitlab" || lowered == ".gitea" {
+            has_vcs_dir = true;
+        } else if lowered == "workflows" || lowered == "pipelines" {
+            has_workflows = true;
+        }
+    }
+    has_vcs_dir && has_workflows
+}
+
 /// Detect a human-readable language name from a file extension (for source patterns).
+///
+/// Filenames beat extensions: `Dockerfile` has none, and a workflow file is
+/// YAML whose rules are workflow rules rather than manifest rules.
 pub fn detect_language(path: &Path) -> Option<&'static str> {
+    let file_name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    if file_name.starts_with("dockerfile") || file_name.ends_with(".dockerfile") {
+        return Some("dockerfile");
+    }
+    if is_workflow_path(path) {
+        return Some("github-actions");
+    }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     let lang = match ext.as_str() {
         "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" => "javascript",
@@ -33,6 +64,8 @@ pub fn detect_language(path: &Path) -> Option<&'static str> {
         "cs" => "csharp",
         "kt" | "kts" => "kotlin",
         "swift" => "swift",
+        "tf" | "tfvars" => "terraform",
+        "yaml" | "yml" => "yaml",
         "sh" | "bash" | "zsh" => "shell",
         "ps1" => "powershell",
         "pl" | "pm" => "perl",
@@ -530,7 +563,7 @@ pub fn display_path(root: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_files, collect_source_files, discover_lockfiles, read_text_file,
+        collect_files, collect_source_files, detect_language, discover_lockfiles, read_text_file,
         CollectFilesOptions,
     };
     use std::fs;
@@ -562,6 +595,31 @@ mod tests {
             .into_iter()
             .map(|path| path.strip_prefix(&canonical_root).unwrap().to_path_buf())
             .collect()
+    }
+
+    #[test]
+    fn iac_file_kinds_are_detected_for_scanning() {
+        assert_eq!(detect_language(Path::new("Dockerfile")), Some("dockerfile"));
+        assert_eq!(
+            detect_language(Path::new("deploy/Dockerfile.prod")),
+            Some("dockerfile")
+        );
+        assert_eq!(detect_language(Path::new("build.dockerfile")), Some("dockerfile"));
+        assert_eq!(detect_language(Path::new("main.tf")), Some("terraform"));
+        assert_eq!(detect_language(Path::new("prod.tfvars")), Some("terraform"));
+        assert_eq!(detect_language(Path::new("deployment.yaml")), Some("yaml"));
+        assert_eq!(detect_language(Path::new("k8s/service.yml")), Some("yaml"));
+        assert_eq!(
+            detect_language(Path::new(".github/workflows/build.yml")),
+            Some("github-actions")
+        );
+        // A plain yaml file outside a workflow directory stays a manifest.
+        assert_eq!(detect_language(Path::new("config/application.yml")), Some("yaml"));
+        assert_eq!(
+            detect_language(Path::new("workflows/ingress.yaml")),
+            Some("yaml")
+        );
+        assert_eq!(detect_language(Path::new("notes.txt")), None);
     }
 
     #[test]
