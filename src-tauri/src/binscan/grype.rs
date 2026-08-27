@@ -231,6 +231,7 @@ pub fn parse_report(raw: &str, target: &str, duration_ms: u64) -> Result<BinaryS
             epss_percentile: None,
             known_exploited: false,
             ransomware: false,
+            public_exploit: false,
             fixed_in,
         });
     }

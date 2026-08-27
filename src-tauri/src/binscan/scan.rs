@@ -26,6 +26,8 @@ pub struct ScanContext {
     pub grype_path: Option<String>,
     pub nvd_api_key: Option<zeroize::Zeroizing<String>>,
     pub scratch_dir: PathBuf,
+    /// Where slow-refresh advisory caches (e.g. the Exploit-DB index) live.
+    pub cache_dir: PathBuf,
     pub use_cve_bin_tool: bool,
     pub use_grype: bool,
     /// oxAudit's own scanner. Unlike the other two it needs nothing installed,
@@ -71,6 +73,7 @@ pub async fn run_scan(
         on_progress("starting oxAudit native scanner".into());
         match run_native(
             &target,
+            &context.cache_dir,
             context.nvd_api_key.as_ref().map(|key| key.as_str()),
             cancel.clone(),
             on_progress.clone(),
@@ -172,6 +175,7 @@ pub async fn run_scan(
 /// unreachable would be the wrong trade.
 async fn run_native(
     target: &Path,
+    cache_dir: &Path,
     nvd_api_key: Option<&str>,
     cancel: Arc<AtomicBool>,
     on_progress: Arc<dyn Fn(String) + Send + Sync>,
@@ -197,6 +201,7 @@ listed without vulnerabilities."
     if !scanned.queries.is_empty() {
         let enriched = enrich::enrich(
             cve,
+            cache_dir,
             nvd_api_key,
             &scanned.queries,
             cancel.clone(),

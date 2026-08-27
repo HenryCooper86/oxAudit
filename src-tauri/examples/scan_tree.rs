@@ -35,6 +35,7 @@ async fn main() {
         let state = CveState::new(reqwest::Client::new());
         let enriched = enrich::enrich(
             &state,
+            &std::env::temp_dir(),
             None,
             &scanned.queries,
             Arc::new(AtomicBool::new(false)),

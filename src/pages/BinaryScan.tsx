@@ -579,6 +579,14 @@ export function BinaryScanPage(): JSX.Element {
                             {vulnerability.ransomware ? "KEV · ransomware" : "KEV"}
                           </span>
                         )}
+                        {vulnerability.publicExploit && (
+                          <span
+                            title="Public exploit code exists for this CVE (Exploit-DB)"
+                            className="inline-flex items-center gap-0.5 rounded-full bg-sev-high px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-white"
+                          >
+                            PoC
+                          </span>
+                        )}
                         {vulnerability.score !== null && (
                           <span className="font-mono text-[10px] tabular-nums text-text-muted">
                             {vulnerability.score.toFixed(1)}

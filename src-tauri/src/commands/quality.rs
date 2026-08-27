@@ -15,6 +15,7 @@ pub fn list_data_sources(
 
 #[tauri::command]
 pub async fn refresh_data_source(
+    app: AppHandle,
     provider_id: String,
     state: State<'_, AppState>,
     findings: State<'_, FindingsState>,
@@ -50,16 +51,43 @@ pub async fn refresh_data_source(
     if bytes.len() as u64 > MAX_PROVIDER_BYTES {
         return Err("provider response exceeded the 32 MiB safety limit".into());
     }
-    let content: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("provider JSON is invalid: {error}"))?;
+    // Exploit-DB is a CSV, not JSON. It is validated by the same parser the
+    // scans use, and the refresh also updates the disk cache the exploit
+    // signal reads, so a manual refresh here is the refresh a scan would do.
+    let exploit_db_count = if definition.id == "exploit-db" {
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let set = crate::exploit::PoCSet::parse_csv(&text)
+            .map_err(|error| format!("{} index is not a valid CSV: {error}", definition.name))?;
+        if let Ok(data_dir) = app.path().app_data_dir() {
+            let _ = std::fs::create_dir_all(&data_dir);
+            let cache_path = crate::exploit::poc_cache_path(&data_dir);
+            let temporary = cache_path.with_extension("csv.tmp");
+            if std::fs::write(&temporary, &bytes).is_ok() {
+                let _ = std::fs::rename(&temporary, &cache_path);
+            }
+        }
+        Some(set.len() as u64)
+    } else {
+        None
+    };
+    let content: serde_json::Value = if definition.id == "exploit-db" {
+        serde_json::json!({ "text": String::from_utf8_lossy(&bytes) })
+    } else {
+        serde_json::from_slice(&bytes)
+            .map_err(|error| format!("provider JSON is invalid: {error}"))?
+    };
     let record_count = match definition.id {
         "cisa-kev" => content.get("vulnerabilities"),
         "nvd" => content.get("vulnerabilities"),
         "epss" => content.get("data"),
+        "exploit-db" => None,
         _ => None,
     }
     .and_then(serde_json::Value::as_array)
-    .map_or(1, |records| records.len() as u64);
+    .map_or_else(
+        || exploit_db_count.unwrap_or(1),
+        |records| records.len() as u64,
+    );
     let content_sha256 = {
         use sha2::Digest;
         format!("{:x}", sha2::Sha256::digest(&bytes))

@@ -40,6 +40,9 @@ pub struct BinaryVulnerability {
     /// Named in a ransomware campaign, per KEV. Only set when known_exploited.
     #[serde(default)]
     pub ransomware: bool,
+    /// Public exploit code exists for this CVE (Exploit-DB).
+    #[serde(default)]
+    pub public_exploit: bool,
     /// First version carrying the fix, when the scanner reports one. grype
     /// supplies this; cve-bin-tool does not.
     pub fixed_in: Option<String>,
@@ -265,6 +268,7 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
                 epss_percentile: None,
                 known_exploited: false,
                 ransomware: false,
+                public_exploit: false,
                 fixed_in: None,
             });
         }
@@ -640,6 +644,7 @@ mod tests {
                     epss_percentile: None,
                     known_exploited: false,
                     ransomware: false,
+                    public_exploit: false,
                     fixed_in: None,
                 })
                 .collect(),

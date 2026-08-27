@@ -538,6 +538,22 @@ function VulnerabilityTable({
                         {vulnerability.ransomware ? "KEV · ransomware" : "KEV"}
                       </span>
                     )}
+                    {vulnerability.publicExploit && (
+                      <span
+                        title="Public exploit code exists for this CVE (Exploit-DB)"
+                        className="inline-flex shrink-0 items-center rounded-full bg-sev-high px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-white"
+                      >
+                        PoC
+                      </span>
+                    )}
+                    {vulnerability.directUsage?.referenced === true && (
+                      <span
+                        title={`Directly referenced by this project's source (${vulnerability.directUsage.referencedFiles} file${vulnerability.directUsage.referencedFiles === 1 ? "" : "s"}, e.g. ${vulnerability.directUsage.exampleFile ?? "…"})`}
+                        className="inline-flex shrink-0 items-center rounded-full border border-accent px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-accent"
+                      >
+                        in use
+                      </span>
+                    )}
                     {vulnerability.epss !== null && (
                       <span
                         title={`EPSS: ${(vulnerability.epss * 100).toFixed(1)}% chance of exploitation in 30 days`}
@@ -589,12 +605,17 @@ function AdvisoryDetail({
         <DetailSection label="Details">
           <p className="whitespace-pre-wrap leading-relaxed text-text-secondary">{vulnerability.details || vulnerability.summary || "No additional details provided."}</p>
         </DetailSection>
-        {(vulnerability.knownExploited || vulnerability.epss !== null) && (
+        {(vulnerability.knownExploited || vulnerability.publicExploit || vulnerability.epss !== null) && (
           <DetailSection label="Exploitation">
             <div className="flex flex-wrap items-center gap-2">
               {vulnerability.knownExploited && (
                 <span className="inline-flex items-center rounded-full bg-sev-critical px-2 py-0.5 font-mono text-[11px] font-semibold text-white">
                   {vulnerability.ransomware ? "CISA KEV · ransomware campaign" : "CISA KEV — exploited in the wild"}
+                </span>
+              )}
+              {vulnerability.publicExploit && (
+                <span className="inline-flex items-center rounded-full bg-sev-high px-2 py-0.5 font-mono text-[11px] font-semibold text-white">
+                  Public exploit available
                 </span>
               )}
               {vulnerability.epss !== null && (
@@ -607,6 +628,33 @@ function AdvisoryDetail({
                 </span>
               )}
             </div>
+          </DetailSection>
+        )}
+        {vulnerability.directUsage && (
+          <DetailSection label="Reachability">
+            <p className="leading-relaxed text-text-secondary">
+              {vulnerability.directUsage.referenced === true && (
+                <>
+                  Directly referenced by this project's source —{" "}
+                  <span className="font-mono text-text-primary">{vulnerability.directUsage.referencedFiles}</span>{" "}
+                  file{vulnerability.directUsage.referencedFiles === 1 ? "" : "s"}, e.g.{" "}
+                  <span className="font-mono text-text-primary">{vulnerability.directUsage.exampleFile ?? "…"}</span>.
+                </>
+              )}
+              {vulnerability.directUsage.referenced === false && (
+                <>
+                  No direct reference found in this project's source. The package may still be reachable
+                  through other dependencies — this answers where it is imported from, not whether it can
+                  be reached at all.
+                </>
+              )}
+              {vulnerability.directUsage.referenced === null && (
+                <>
+                  Direct-usage reachability is not mapped for this ecosystem, so oxAudit says nothing
+                  either way.
+                </>
+              )}
+            </p>
           </DetailSection>
         )}
         <div className="grid gap-4 min-[540px]:grid-cols-2">

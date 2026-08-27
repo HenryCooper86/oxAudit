@@ -191,6 +191,7 @@ pub fn parse_nvd(json: &Value) -> Vec<BinaryVulnerability> {
             epss_percentile: None,
             known_exploited: false,
             ransomware: false,
+            public_exploit: false,
             fixed_in: None,
         });
     }
@@ -255,6 +256,7 @@ pub fn from_osv(vulnerability: &crate::models::Vulnerability) -> BinaryVulnerabi
         epss_percentile: None,
         known_exploited: false,
         ransomware: false,
+        public_exploit: false,
         fixed_in: vulnerability.fixed_versions.first().cloned(),
     }
 }
@@ -405,6 +407,7 @@ pub struct Enrichment {
 /// things, so half an answer is worth far more than none.
 pub async fn enrich(
     state: &crate::cve::CveState,
+    cache_dir: &std::path::Path,
     nvd_api_key: Option<&str>,
     queries: &[ComponentQuery],
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -540,11 +543,13 @@ pub async fn enrich(
         .collect();
     if !cve_ids.is_empty() && !cancel.load(Ordering::Relaxed) {
         on_progress(format!(
-            "checking {} CVE(s) against CISA KEV and EPSS",
+            "checking {} CVE(s) against CISA KEV, EPSS, and public exploits",
             cve_ids.len()
         ));
         let (kev, epss, mut signal_notes) = crate::exploit::fetch(&state.http, &cve_ids).await;
         notes.append(&mut signal_notes);
+        let (poc, mut poc_notes) = crate::exploit::fetch_poc_set(&state.http, cache_dir).await;
+        notes.append(&mut poc_notes);
         let mut exploited = 0usize;
         for vulnerability in found.values_mut().flatten() {
             let signal = crate::exploit::combine(&kev, &epss, &vulnerability.cve_id);
@@ -553,6 +558,7 @@ pub async fn enrich(
             vulnerability.epss_probability = signal.epss.or(vulnerability.epss_probability);
             vulnerability.epss_percentile =
                 signal.epss_percentile.or(vulnerability.epss_percentile);
+            vulnerability.public_exploit = poc.has(&vulnerability.cve_id);
             if signal.known_exploited {
                 exploited += 1;
             }
@@ -674,6 +680,8 @@ mod tests {
             epss_percentile: None,
             known_exploited: false,
             ransomware: false,
+            public_exploit: false,
+            direct_usage: Default::default(),
             ecosystem: "Debian".into(),
             package_name: "curl".into(),
             installed_version: "7.88.1-10+deb12u5".into(),
@@ -843,6 +851,7 @@ mod tests {
             epss_percentile: None,
             known_exploited: false,
             ransomware: false,
+            public_exploit: false,
             fixed_in: None,
         }
     }

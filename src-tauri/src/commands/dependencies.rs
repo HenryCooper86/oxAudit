@@ -105,6 +105,10 @@ pub async fn scan_dependencies(
         }
         let deps = crate::deps::lockfiles::dedupe_dependencies(all_deps);
         let packages_queried = deps.len();
+        // Direct-usage reachability: one index over the project's own source,
+        // asked about every vulnerable package later. Purely local, so it runs
+        // regardless of the offline flag.
+        let usage_index = crate::reachability::UsageIndex::for_project(root, &settings.scan.ignored_dirs);
         managed
             .as_mut()
             .expect("managed dependency run exists")
@@ -247,6 +251,27 @@ pub async fn scan_dependencies(
                 .expect("managed dependency run exists")
                 .warning("advisory_enrichment_incomplete", warning);
         }
+
+        // The batch answers *which* advisories affect each package, and nothing
+        // else: its records carry no aliases (so no CVE, and no KEV/EPSS/public-
+        // exploit signal), no severity, no CVSS, and no fixed versions. Full
+        // records are fetched per advisory id, deduplicated, so every finding
+        // carries the data the triage and remediation columns display.
+        let vuln_map = if offline {
+            // Offline reuse of the cached batch receipt is exact by design.
+            vuln_map
+        } else {
+            match state.osv.resolve_full(&vuln_map, &deps).await {
+                Ok(full) => full,
+                Err(error) => {
+                    managed
+                        .as_mut()
+                        .expect("managed dependency run exists")
+                        .warning("advisory_records_incomplete", error);
+                    vuln_map
+                }
+            }
+        };
         if state.cancel_dependency_scan.load(Ordering::SeqCst) {
             return Err("dependency scan cancelled".into());
         }
@@ -260,6 +285,12 @@ pub async fn scan_dependencies(
                 vulnerabilities.push(v);
             }
         }
+        }
+        // Direct usage is local evidence: attach it whether or not the
+        // network sources answered.
+        for vulnerability in &mut vulnerabilities {
+            vulnerability.direct_usage =
+                usage_index.lookup(&vulnerability.ecosystem, &vulnerability.package_name);
         }
     // Exploitation signal: rank these CVEs by CISA KEV and EPSS, the same way
     // the binary scanner does. A dependency vuln's CVE is in its id or aliases.
@@ -279,6 +310,13 @@ pub async fn scan_dependencies(
             serde_json::json!({ "phase": "exploitation-signal", "done": 0, "total": 1 }),
         );
         let (kev, epss, _notes) = crate::exploit::fetch(&state.http, &cve_ids).await;
+        let (poc, _poc_notes) = {
+            let cache_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir());
+            crate::exploit::fetch_poc_set(&state.http, &cache_dir).await
+        };
         for vulnerability in &mut vulnerabilities {
             // A finding's CVE is whichever of its id/aliases is a CVE.
             let cve = crate::exploit::cve_among(
@@ -291,19 +329,28 @@ pub async fn scan_dependencies(
                 vulnerability.ransomware = signal.ransomware;
                 vulnerability.epss = signal.epss;
                 vulnerability.epss_percentile = signal.epss_percentile;
+                vulnerability.public_exploit = poc.has(&cve);
             }
         }
         }
 
-    // Exploited-first, then by EPSS, then by CVSS — the actionable order.
+    // Exploited-first, then public exploit, then EPSS, then direct usage, then
+    // CVSS — the actionable order.
         vulnerabilities.sort_by(|a, b| {
         b.known_exploited
             .cmp(&a.known_exploited)
+            .then(b.public_exploit.cmp(&a.public_exploit))
             .then(
                 b.epss
                     .unwrap_or(0.0)
                     .partial_cmp(&a.epss.unwrap_or(0.0))
                     .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(
+                b.direct_usage
+                    .referenced
+                    .unwrap_or(false)
+                    .cmp(&a.direct_usage.referenced.unwrap_or(false)),
             )
             .then(
                 b.cvss_score

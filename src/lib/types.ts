@@ -637,6 +637,15 @@ export interface Vulnerability {
   knownExploited: boolean;
   /** Named in a ransomware campaign, per KEV. */
   ransomware: boolean;
+  /** Public exploit code exists for this CVE (Exploit-DB). */
+  publicExploit: boolean;
+  /** Whether the project's own source references this package. */
+  directUsage: {
+    /** true = confirmed; false = mapped and not found; null = not mapped. */
+    referenced: boolean | null;
+    referencedFiles: number;
+    exampleFile: string | null;
+  };
   ecosystem: string;
   packageName: string;
   installedVersion: string;
@@ -792,6 +801,8 @@ export interface BinaryVulnerability {
   knownExploited: boolean;
   /** Named in a ransomware campaign, per KEV. */
   ransomware: boolean;
+  /** Public exploit code exists for this CVE (Exploit-DB). */
+  publicExploit: boolean;
   /** First version carrying the fix. grype reports this; cve-bin-tool does not. */
   fixedIn: string | null;
 }

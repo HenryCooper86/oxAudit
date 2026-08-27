@@ -62,6 +62,11 @@ impl OsvClient {
 
     /// Batch query OSV (up to 1000 per request). Returns a map keyed by
     /// "ecosystem\0name\0version" with any found vulnerabilities.
+    ///
+    /// The batch endpoint answers with `id` and `modified` only — no aliases,
+    /// severity, CVSS, fixed versions, or details. Use [`Self::resolve_full`]
+    /// (or [`Self::query_batch_full`]) to turn the candidates into full
+    /// records.
     pub async fn query_batch(
         &self,
         deps: &[Dependency],
@@ -117,6 +122,89 @@ impl OsvClient {
             }
         }
         Ok(out)
+    }
+
+    /// Replace batch-returned skeletons with full OSV records.
+    ///
+    /// The batch answers which advisories affect which packages, and nothing
+    /// else — the skeletons it returns carry no aliases (so no CVE, and no
+    /// KEV/EPSS/public-exploit signal), no severity, no CVSS vector, and no
+    /// fixed versions. Full records are fetched per advisory id, deduplicated
+    /// so a GHSA shared by twenty packages costs one request, with bounded
+    /// concurrency and a hard cap so a pathological result cannot run away.
+    pub async fn resolve_full(
+        &self,
+        candidates: &std::collections::HashMap<String, Vec<Vulnerability>>,
+        deps: &[Dependency],
+    ) -> Result<std::collections::HashMap<String, Vec<Vulnerability>>, String> {
+        const MAX_ADVISORY_IDS: usize = 600;
+        let by_key: std::collections::HashMap<String, &Dependency> = deps
+            .iter()
+            .map(|dep| {
+                (
+                    format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version),
+                    dep,
+                )
+            })
+            .collect();
+        let mut ids = std::collections::BTreeSet::new();
+        for vulns in candidates.values() {
+            for vuln in vulns {
+                ids.insert(vuln.id.clone());
+            }
+            if ids.len() >= MAX_ADVISORY_IDS {
+                break;
+            }
+        }
+
+        let mut records: std::collections::HashMap<String, Value> =
+            std::collections::HashMap::new();
+        let id_list: Vec<&String> = ids.iter().collect();
+        for chunk in id_list.chunks(20) {
+            let fetched = futures::future::join_all(
+                chunk.iter().map(|id| {
+                    let client = self;
+                    async move {
+                        match client.get_vuln(id).await {
+                            Ok(Some(record)) => Some(((*id).clone(), record)),
+                            // A record deleted since the batch still resolves
+                            // for the rest of its package.
+                            _ => None,
+                        }
+                    }
+                }),
+            )
+            .await;
+            for found in fetched.into_iter().flatten() {
+                records.insert(found.0, found.1);
+            }
+        }
+
+        let mut out = std::collections::HashMap::new();
+        for (key, skeletons) in candidates {
+            let Some(dep) = by_key.get(key) else { continue };
+            let full: Vec<Value> = skeletons
+                .iter()
+                .filter_map(|skeleton| records.get(&skeleton.id).cloned())
+                .collect();
+            if !full.is_empty() {
+                out.insert(
+                    key.clone(),
+                    parse_vulns(full, &dep.ecosystem, &dep.name, &dep.version),
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`Self::query_batch`] followed by [`Self::resolve_full`]: one call that
+    /// returns full advisory records for every affected package.
+    pub async fn query_batch_full(
+        &self,
+        deps: &[Dependency],
+    ) -> Result<std::collections::HashMap<String, Vec<Vulnerability>>, String> {
+        let candidates = self.query_batch(deps).await?;
+        self.resolve_full(&candidates, deps).await
     }
 
     /// Fetch the full OSV record for an id (e.g. GHSA-xxxx or CVE-xxxx).
@@ -283,6 +371,8 @@ fn parse_vulns(
             epss_percentile: None,
             known_exploited: false,
             ransomware: false,
+            public_exploit: false,
+            direct_usage: Default::default(),
             ecosystem: ecosystem.to_string(),
             package_name: package_name.to_string(),
             installed_version: installed_version.to_string(),
