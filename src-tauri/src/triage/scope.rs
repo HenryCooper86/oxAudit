@@ -46,6 +46,63 @@ const VENDORED: [&str; 8] = [
     "Pods",
 ];
 
+/// Directories that say a YAML file inside them describes deployed
+/// infrastructure: Kubernetes manifests, Helm charts, deployment trees.
+const K8S_DIRS: [&str; 8] = [
+    "k8s",
+    "kubernetes",
+    "helm",
+    "charts",
+    "manifests",
+    "infra",
+    "infrastructure",
+    "deploy",
+];
+
+/// Kubernetes object kinds a manifest file is commonly named after.
+const K8S_FILES: [&str; 10] = [
+    "deployment",
+    "statefulset",
+    "daemonset",
+    "service",
+    "ingress",
+    "pod",
+    "job",
+    "cronjob",
+    "configmap",
+    "networkpolicy",
+];
+
+/// Is this YAML file plausibly infrastructure rather than application config?
+///
+/// A manifest named `deployment.yaml`, anything under a `k8s/` or `helm/`
+/// directory, and workflow files are the files the misconfiguration rules fire
+/// on; a random application `config.yml` is not infrastructure just because it
+/// is YAML.
+fn is_infrastructure_yaml(parts: &[String]) -> bool {
+    let Some(file_name) = parts.last() else {
+        return false;
+    };
+    let Some(base) = file_name
+        .strip_suffix(".yaml")
+        .or_else(|| file_name.strip_suffix(".yml"))
+    else {
+        return false;
+    };
+    // `.gitlab-ci.yml` loses its dot with the extension.
+    let base = base.trim_start_matches('.');
+    if base == "gitlab-ci" || (parts.len() >= 2 && parts[parts.len() - 2] == "workflows") {
+        return true;
+    }
+    let dirs = &parts[..parts.len() - 1];
+    if K8S_DIRS.iter().any(|dir| dirs.iter().any(|part| part == dir)) {
+        return true;
+    }
+    K8S_FILES.iter().any(|kind| {
+        base == *kind || base.starts_with(&format!("{kind}-")) || base.ends_with(&format!("-{kind}"))
+    })
+}
+
 const FIXTURES: [&str; 3] = ["fixtures", "fixture", "testdata"];
 
 const TESTS: [&str; 5] = ["test", "tests", "spec", "specs", "__tests__"];
@@ -116,6 +173,7 @@ pub fn classify_at(path: &str, in_test_region: bool) -> ScopeDecision {
         || file_name.starts_with("dockerfile")
         || file_name.ends_with(".tf")
         || file_name.ends_with(".tfvars")
+        || is_infrastructure_yaml(&parts)
     {
         return ScopeDecision {
             scope: Scope::Infrastructure,
@@ -230,6 +288,24 @@ mod tests {
         assert_eq!(classify("deploy/Dockerfile").scope, Scope::Infrastructure);
         assert_eq!(classify("infra/main.tf").scope, Scope::Infrastructure);
         assert!(classify("tests/nginx.conf").scope.is_reportable());
+    }
+
+    #[test]
+    fn yaml_is_infrastructure_only_when_it_describes_it() {
+        assert_eq!(classify("k8s/deployment.yaml").scope, Scope::Infrastructure);
+        assert_eq!(
+            classify("charts/app/templates/service.yaml").scope,
+            Scope::Infrastructure
+        );
+        assert_eq!(
+            classify(".github/workflows/build.yml").scope,
+            Scope::Infrastructure
+        );
+        assert_eq!(classify("deployment.yaml").scope, Scope::Infrastructure);
+        assert_eq!(classify(".gitlab-ci.yml").scope, Scope::Infrastructure);
+        // A random application config is YAML but not infrastructure.
+        assert_eq!(classify("config/application.yml").scope, Scope::Production);
+        assert_eq!(classify("src/notes.yaml").scope, Scope::Production);
     }
 
     #[test]

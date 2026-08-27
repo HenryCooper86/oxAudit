@@ -12,10 +12,10 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 164,
-    "positives": 72,
-    "negatives": 92,
-    "rules": 60
+    "fixtures": 192,
+    "positives": 86,
+    "negatives": 106,
+    "rules": 74
   },
   "targets": [
     {
@@ -280,7 +280,7 @@
       "id": "generic-password.positive.yaml-inline",
       "inputPath": "secrets/generic-password__positive__yaml-inline.yml",
       "inputSha256": "cc1908b5facc80757eb78c72d0d346de6795de4a492e7c4697b1455a9eebdb7c",
-      "language": null,
+      "language": "yaml",
       "scannerFamilies": [
         "secret"
       ],
@@ -685,6 +685,204 @@
       "expected": [
         {
           "ruleId": "cs-xxe",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "dockerfile-add-url.negative.local",
+      "inputPath": "source/dockerfile-add-url__negative__local.Dockerfile",
+      "inputSha256": "f93a3c7196aba53457edb9d76fb357df5cab4349049def50e1282a216a075abe",
+      "language": "dockerfile",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "dockerfile-add-url",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "dockerfile-add-url"
+        }
+      ]
+    },
+    {
+      "id": "dockerfile-add-url.positive.remote",
+      "inputPath": "source/dockerfile-add-url__positive__remote.Dockerfile",
+      "inputSha256": "82346cdddddfb29d1a7d661378e5e8d1c8d8b603b631b20ae2eb99cd9f3378bc",
+      "language": "dockerfile",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "dockerfile-add-url",
+      "expected": [
+        {
+          "ruleId": "dockerfile-add-url",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "dockerfile-curl-pipe-shell.negative.no-pipe",
+      "inputPath": "source/dockerfile-curl-pipe-shell__negative__no-pipe.Dockerfile",
+      "inputSha256": "eb002dffbe6266ba434aff748fdc4f6d88046de943ab61378b38df9b2f4bfe68",
+      "language": "dockerfile",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "dockerfile-curl-pipe-shell",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "dockerfile-curl-pipe-shell"
+        }
+      ]
+    },
+    {
+      "id": "dockerfile-curl-pipe-shell.positive.pipe",
+      "inputPath": "source/dockerfile-curl-pipe-shell__positive__pipe.Dockerfile",
+      "inputSha256": "39eaa9427dd7fc7aa6298c90196c651ad9c8a2d7f9417a8cf48d053d9d687b5e",
+      "language": "dockerfile",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "dockerfile-curl-pipe-shell",
+      "expected": [
+        {
+          "ruleId": "dockerfile-curl-pipe-shell",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "dockerfile-secret-copy.negative.example",
+      "inputPath": "source/dockerfile-secret-copy__negative__example.Dockerfile",
+      "inputSha256": "80c40ba5342b51794f2dd9f5d63bb675763b0d5c5daf983599dacd10a52a1052",
+      "language": "dockerfile",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "dockerfile-secret-copy",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "dockerfile-secret-copy"
+        }
+      ]
+    },
+    {
+      "id": "dockerfile-secret-copy.positive.env",
+      "inputPath": "source/dockerfile-secret-copy__positive__env.Dockerfile",
+      "inputSha256": "d147c10977b78dc03316a789f82c94930ac32ed8f46e9810c7f08eb7137c59a0",
+      "language": "dockerfile",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "dockerfile-secret-copy",
+      "expected": [
+        {
+          "ruleId": "dockerfile-secret-copy",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "dockerfile-unpinned-base.negative.pinned",
+      "inputPath": "source/dockerfile-unpinned-base__negative__pinned.Dockerfile",
+      "inputSha256": "28b93768cd5c12a9015d2cefc5307f799df416923d319af07211fba3c3a0f42f",
+      "language": "dockerfile",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "dockerfile-unpinned-base",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "dockerfile-unpinned-base"
+        }
+      ]
+    },
+    {
+      "id": "dockerfile-unpinned-base.positive.untagged",
+      "inputPath": "source/dockerfile-unpinned-base__positive__untagged.Dockerfile",
+      "inputSha256": "06f37a4b21e8a66b1211c6b9a82282b96aae99bd9a3c4f6936391d5b6b20f141",
+      "language": "dockerfile",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "dockerfile-unpinned-base",
+      "expected": [
+        {
+          "ruleId": "dockerfile-unpinned-base",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "gha-script-injection.negative.bound",
+      "inputPath": "source/github-actions/gha-script-injection__negative__bound.yml",
+      "inputSha256": "48be4cd8feb699eaf20974d01b653c10d279b39b49947492e9e4d85a12280fad",
+      "language": "github-actions",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "gha-script-injection",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "gha-script-injection"
+        }
+      ]
+    },
+    {
+      "id": "gha-script-injection.positive.title",
+      "inputPath": "source/github-actions/gha-script-injection__positive__title.yml",
+      "inputSha256": "242b19393ca0df3052082471f398fd63b8a490f8b23bf884ec38eafe07c65b04",
+      "language": "github-actions",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "gha-script-injection",
+      "expected": [
+        {
+          "ruleId": "gha-script-injection",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "gha-unpinned-action.negative.pinned",
+      "inputPath": "source/github-actions/gha-unpinned-action__negative__pinned.yml",
+      "inputSha256": "2e21b0405cf56d3a424402e4969c5bb402883fd5c56850ccef87a6e703c497f1",
+      "language": "github-actions",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "gha-unpinned-action",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "gha-unpinned-action"
+        }
+      ]
+    },
+    {
+      "id": "gha-unpinned-action.positive.branch",
+      "inputPath": "source/github-actions/gha-unpinned-action__positive__branch.yml",
+      "inputSha256": "181778f69ae8de3d6ed04fdb53c2ddf3dc47cb1d3c4593aa1333bc8e54a3f309",
+      "language": "github-actions",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "gha-unpinned-action",
+      "expected": [
+        {
+          "ruleId": "gha-unpinned-action",
           "minimum": 1
         }
       ],
@@ -1841,6 +2039,138 @@
       "expectedAbsent": []
     },
     {
+      "id": "k8s-allow-privilege-escalation.negative.deployment",
+      "inputPath": "source/k8s-allow-privilege-escalation__negative__deployment.yaml",
+      "inputSha256": "5630d9703ea5efc03b8ca71b880b2c65fc38a47a2a36b4eb381c30f3b65d864a",
+      "language": "yaml",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "k8s-allow-privilege-escalation",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "k8s-allow-privilege-escalation"
+        }
+      ]
+    },
+    {
+      "id": "k8s-allow-privilege-escalation.positive.deployment",
+      "inputPath": "source/k8s-allow-privilege-escalation__positive__deployment.yaml",
+      "inputSha256": "39f30e8ed16a52098811a4cb963b8a56e95fbb6e948e5040a76588ba8cb95fc2",
+      "language": "yaml",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "k8s-allow-privilege-escalation",
+      "expected": [
+        {
+          "ruleId": "k8s-allow-privilege-escalation",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "k8s-host-network.negative.disabled",
+      "inputPath": "source/k8s-host-network__negative__disabled.yaml",
+      "inputSha256": "0ff09a1ade4611ab597541ebd764a26d0a7c40b4ba915f6e66af4bd472979410",
+      "language": "yaml",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "k8s-host-network",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "k8s-host-network"
+        }
+      ]
+    },
+    {
+      "id": "k8s-host-network.positive.enabled",
+      "inputPath": "source/k8s-host-network__positive__enabled.yaml",
+      "inputSha256": "3e8dd47faa031e4738bb8f8a02761ff2d4fc5fcc154ae86b4b4cd4359358df21",
+      "language": "yaml",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "k8s-host-network",
+      "expected": [
+        {
+          "ruleId": "k8s-host-network",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "k8s-host-path.negative.configmap",
+      "inputPath": "source/k8s-host-path__negative__configmap.yaml",
+      "inputSha256": "7fb3f35bf0d95e5236e70482ac69124883bfd3c69881b68672b75652a3d6c0bf",
+      "language": "yaml",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "k8s-host-path",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "k8s-host-path"
+        }
+      ]
+    },
+    {
+      "id": "k8s-host-path.positive.docker-sock",
+      "inputPath": "source/k8s-host-path__positive__docker-sock.yaml",
+      "inputSha256": "95e07ffe18cac36b14aacb14daa4ef2d03565841c447ba878a7a90381cc7ccbe",
+      "language": "yaml",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "k8s-host-path",
+      "expected": [
+        {
+          "ruleId": "k8s-host-path",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "k8s-privileged-container.negative.hardened",
+      "inputPath": "source/k8s-privileged-container__negative__hardened.yaml",
+      "inputSha256": "b97a5f8b1c1f3ac24102af27a7cf0d0fa99df80c6bfbe3ddefaa0bf20fb9a856",
+      "language": "yaml",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "k8s-privileged-container",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "k8s-privileged-container"
+        }
+      ]
+    },
+    {
+      "id": "k8s-privileged-container.positive.pod",
+      "inputPath": "source/k8s-privileged-container__positive__pod.yaml",
+      "inputSha256": "e7b20f073d40e7603168c7c348cf780214d6456eedc0deccf2220a14ae7f6822",
+      "language": "yaml",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "k8s-privileged-container",
+      "expected": [
+        {
+          "ruleId": "k8s-privileged-container",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "kt-insecure-random.negative.animation-jitter",
       "inputPath": "source/kt-insecure-random__negative__animation-jitter.kt",
       "inputSha256": "a4bc9e588dd0262168871a0c1fa570598efb775df769614fe8f02fb7340e6c23",
@@ -2709,6 +3039,138 @@
       "expected": [
         {
           "ruleId": "swift-weak-crypto",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "tf-iam-wildcard.negative.scoped",
+      "inputPath": "source/tf-iam-wildcard__negative__scoped.tf",
+      "inputSha256": "89608da384a7503f0fd1df8c6340e6b35dde62bd0b4b1a688ee61787e8f91b42",
+      "language": "terraform",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "tf-iam-wildcard",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "tf-iam-wildcard"
+        }
+      ]
+    },
+    {
+      "id": "tf-iam-wildcard.positive.all-actions",
+      "inputPath": "source/tf-iam-wildcard__positive__all-actions.tf",
+      "inputSha256": "b73c754be48724df0b625d49f129839f02004d7a16fef6fddb3ba829479d5d88",
+      "language": "terraform",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "tf-iam-wildcard",
+      "expected": [
+        {
+          "ruleId": "tf-iam-wildcard",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "tf-open-s3-bucket.negative.private",
+      "inputPath": "source/tf-open-s3-bucket__negative__private.tf",
+      "inputSha256": "1ae37e0d7baa50cdbc78e51ab811a1243d1ed7cb73ffb1cef2bf6a4d3989569d",
+      "language": "terraform",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "tf-open-s3-bucket",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "tf-open-s3-bucket"
+        }
+      ]
+    },
+    {
+      "id": "tf-open-s3-bucket.positive.public",
+      "inputPath": "source/tf-open-s3-bucket__positive__public.tf",
+      "inputSha256": "d59006508f37f1414d6f4ad12e453dfd683aa148ab7046e4765302924b309cdc",
+      "language": "terraform",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "tf-open-s3-bucket",
+      "expected": [
+        {
+          "ruleId": "tf-open-s3-bucket",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "tf-public-rds.negative.private",
+      "inputPath": "source/tf-public-rds__negative__private.tf",
+      "inputSha256": "3c5f6b368496db849c18217830f3d0c721c68d185e669dfda3d01b53e1e97b36",
+      "language": "terraform",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "tf-public-rds",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "tf-public-rds"
+        }
+      ]
+    },
+    {
+      "id": "tf-public-rds.positive.exposed",
+      "inputPath": "source/tf-public-rds__positive__exposed.tf",
+      "inputSha256": "9d3ccebbb385c95ca074761133c65a342b26bc4e550a4672c4b38627cac8718a",
+      "language": "terraform",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "tf-public-rds",
+      "expected": [
+        {
+          "ruleId": "tf-public-rds",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "tf-sg-open-cidr.negative.scoped",
+      "inputPath": "source/tf-sg-open-cidr__negative__scoped.tf",
+      "inputSha256": "41036ef114673110eda63a0cd72bb43c71ec346cd771cc11bf387d56be6bed35",
+      "language": "terraform",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "tf-sg-open-cidr",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "tf-sg-open-cidr"
+        }
+      ]
+    },
+    {
+      "id": "tf-sg-open-cidr.positive.internet",
+      "inputPath": "source/tf-sg-open-cidr__positive__internet.tf",
+      "inputSha256": "cb4304eafb7daeca5e3c7587b717266596014c646fc0ddad7abcb95cb28e96e0",
+      "language": "terraform",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "tf-sg-open-cidr",
+      "expected": [
+        {
+          "ruleId": "tf-sg-open-cidr",
           "minimum": 1
         }
       ],

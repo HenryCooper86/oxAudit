@@ -1390,4 +1390,149 @@ mod tests {
             "{rules:?}"
         );
     }
+
+    // ------------------------------------------------------------ IaC rules
+
+    /// Scan one workflow file under `.github/workflows/` and list the rules
+    /// that fired — `rules_firing` cannot, because workflow detection is
+    /// directory-based and the helper writes into a flat temp dir.
+    fn workflow_rules_firing(name: &str, source: &str) -> Vec<String> {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let workflows = directory.path().join(".github").join("workflows");
+        std::fs::create_dir_all(&workflows).expect("workflow directory");
+        let path = workflows.join(name);
+        std::fs::write(&path, source).expect("fixture");
+        let outcome = scan_file_with_relative_path(&path, name, 64, false, true);
+        let mut rules: Vec<String> = outcome
+            .findings
+            .iter()
+            .map(|finding| finding.rule_id.clone())
+            .collect();
+        rules.sort();
+        rules
+    }
+
+    #[test]
+    fn dockerfile_rules_fire_on_the_dangerous_shapes() {
+        let rules = rules_firing(
+            "Dockerfile",
+            "FROM node AS build\n\
+             RUN curl -sSL https://example.com/install.sh | sh\n\
+             ADD https://example.com/release.tar.gz /opt/app/\n\
+             COPY .env /app/.env\n",
+        );
+        for expected in [
+            "dockerfile-unpinned-base",
+            "dockerfile-curl-pipe-shell",
+            "dockerfile-add-url",
+            "dockerfile-secret-copy",
+        ] {
+            assert!(
+                rules.iter().any(|rule| rule == expected),
+                "missing {expected}: {rules:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dockerfile_rules_stand_down_on_pinned_verified_shapes() {
+        let rules = rules_firing(
+            "Dockerfile",
+            "FROM node:20.11.1-alpine\n\
+             FROM scratch\n\
+             FROM ubuntu@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n\
+             RUN curl --proto '=https' -sSf https://example.com/tool.tar.gz -o tool.tar.gz\n\
+             ADD app.jar /opt/app/app.jar\n\
+             COPY .env.example /app/.env.example\n\
+             COPY package.json /app/package.json\n",
+        );
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn terraform_rules_fire_on_misconfigured_resources() {
+        let rules = rules_firing(
+            "main.tf",
+            "resource \"aws_s3_bucket\" \"uploads\" {\n  acl = \"public-read\"\n}\n\
+             resource \"aws_db_instance\" \"postgres\" {\n  publicly_accessible = true\n}\n\
+             data \"aws_iam_policy_document\" \"d\" {\n  statement {\n    actions = [\"*\"]\n  }\n}\n\
+             resource \"aws_security_group\" \"web\" {\n  ingress {\n    cidr_blocks = [\"0.0.0.0/0\"]\n  }\n}\n",
+        );
+        for expected in [
+            "tf-open-s3-bucket",
+            "tf-public-rds",
+            "tf-iam-wildcard",
+            "tf-sg-open-cidr",
+        ] {
+            assert!(
+                rules.iter().any(|rule| rule == expected),
+                "missing {expected}: {rules:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn terraform_rules_stand_down_on_hardened_resources() {
+        // The egress block carries the open CIDR; only ingress matters, and
+        // the rule must not reach across the block boundary to find it.
+        let rules = rules_firing(
+            "main.tf",
+            "resource \"aws_s3_bucket\" \"uploads\" {\n  acl = \"private\"\n}\n\
+             resource \"aws_db_instance\" \"postgres\" {\n  publicly_accessible = false\n}\n\
+             data \"aws_iam_policy_document\" \"d\" {\n  statement {\n    actions   = [\"s3:GetObject\", \"s3:ListBucket\"]\n    resources = [\"arn:aws:s3:::uploads\"]\n  }\n}\n\
+             resource \"aws_security_group\" \"web\" {\n  ingress {\n    cidr_blocks = [\"10.0.0.0/8\"]\n  }\n  egress {\n    cidr_blocks = [\"0.0.0.0/0\"]\n  }\n}\n",
+        );
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn kubernetes_rules_fire_on_privileged_shapes() {
+        let rules = rules_firing(
+            "deployment.yaml",
+            "spec:\n  containers:\n    - name: app\n      securityContext:\n        privileged: true\n        allowPrivilegeEscalation: true\n  hostNetwork: true\n  volumes:\n    - name: sock\n      hostPath:\n        path: /var/run/docker.sock\n",
+        );
+        for expected in [
+            "k8s-privileged-container",
+            "k8s-allow-privilege-escalation",
+            "k8s-host-network",
+            "k8s-host-path",
+        ] {
+            assert!(
+                rules.iter().any(|rule| rule == expected),
+                "missing {expected}: {rules:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kubernetes_rules_stand_down_on_hardened_manifests() {
+        let rules = rules_firing(
+            "deployment.yaml",
+            "spec:\n  containers:\n    - name: app\n      securityContext:\n        privileged: false\n        allowPrivilegeEscalation: false\n        runAsNonRoot: true\n  hostNetwork: false\n  volumes:\n    - name: config\n      configMap:\n        name: app-config\n",
+        );
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn workflow_rules_fire_on_mutable_refs_and_shell_interpolation() {
+        let rules = workflow_rules_firing(
+            "build.yml",
+            "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@main\n      - run: echo ${{ github.event.issue.title }}\n",
+        );
+        for expected in ["gha-unpinned-action", "gha-script-injection"] {
+            assert!(
+                rules.iter().any(|rule| rule == expected),
+                "missing {expected}: {rules:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_rules_stand_down_on_pinned_actions_and_bound_expressions() {
+        let rules = workflow_rules_firing(
+            "build.yml",
+            "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\n      - uses: ./local/action\n      - run: echo \"${{ github.event.issue.title }}\"\n      - env:\n          TITLE: ${{ github.event.issue.title }}\n        run: echo \"$TITLE\"\n",
+        );
+        assert!(rules.is_empty(), "{rules:?}");
+    }
 }

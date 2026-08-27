@@ -42,7 +42,23 @@ const LANGUAGE_BY_EXTENSION = {
   ".kt": "kotlin",
   ".kts": "kotlin",
   ".swift": "swift",
+  ".tf": "terraform",
+  ".yaml": "yaml",
+  ".yml": "yaml",
+  ".Dockerfile": "dockerfile",
 };
+
+/**
+ * Language for a fixture path.
+ *
+ * Extensions decide most files, but a workflow file is YAML whose rules are
+ * workflow rules; fixtures kept under `source/github-actions/` are classified
+ * by their directory rather than their extension.
+ */
+function languageFor(path) {
+  if (path.includes("/github-actions/")) return "github-actions";
+  return LANGUAGE_BY_EXTENSION[extname(path)] ?? null;
+}
 
 function walk(directory) {
   const found = [];
@@ -87,7 +103,7 @@ const fixtures = walk(CORPUS).map((path) => {
     id: `${ruleId}.${polarity}.${slug}`,
     inputPath: relative(CORPUS, path).replaceAll("\\", "/"),
     inputSha256: createHash("sha256").update(content).digest("hex"),
-    language: LANGUAGE_BY_EXTENSION[extname(path)] ?? null,
+    language: languageFor(path),
     scannerFamilies: [familyFor(path)],
     ruleId,
     // A positive asserts the rule fires here; a negative asserts it does not.
