@@ -318,7 +318,16 @@ struct DataSourceDefinition {
     limitation: &'static str,
 }
 
-const DATA_SOURCES: [DataSourceDefinition; 4] = [
+const DATA_SOURCES: [DataSourceDefinition; 5] = [
+    DataSourceDefinition {
+        id: "exploit-db",
+        name: "Exploit-DB",
+        source_url: crate::exploit::POC_URL,
+        terms_url: "https://www.exploit-db.com/papers",
+        license: "Exploit-DB records retain their source attribution",
+        supports_offline: true,
+        limitation: "The full index is cached locally and refreshed weekly; scans read the cached copy.",
+    },
     DataSourceDefinition {
         id: "osv",
         name: "OSV",
@@ -1402,6 +1411,12 @@ fn scan_context(
         .app_cache_dir()
         .map_err(|e| format!("no cache directory available: {e}"))?
         .join("binscan");
+    // Best-effort: a missing data dir only means the exploit index is fetched
+    // fresh instead of read from cache.
+    let cache_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| scratch_dir.clone());
 
     let trimmed = |value: Option<String>| {
         value
@@ -1419,7 +1434,8 @@ fn scan_context(
         cve_bin_tool_path: trimmed(settings.binary_scanner_path.clone()),
         grype_path: trimmed(settings.grype_path.clone()),
         nvd_api_key,
-        scratch_dir,
+        scratch_dir: scratch_dir.clone(),
+        cache_dir,
         use_cve_bin_tool: true,
         use_grype,
         use_native: true,

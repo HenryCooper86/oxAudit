@@ -17,6 +17,7 @@ mod models;
 pub mod observability;
 mod presentation;
 pub mod quality;
+pub mod reachability;
 // Public so benches/scanning.rs can measure the rule engines directly. The
 // benchmark exists to catch a rule change that quietly makes matching
 // quadratic, which means it has to reach the same functions a scan does.

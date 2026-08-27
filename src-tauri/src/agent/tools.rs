@@ -735,6 +735,11 @@ pub fn builtins() -> Vec<Tool> {
                     .app_cache_dir()
                     .map_err(|e| format!("no cache directory available: {e}"))?
                     .join("binscan");
+                let cache_dir = ctx
+                    .app
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| scratch_dir.clone());
 
                 let trimmed = |value: Option<String>| {
                     value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
@@ -747,6 +752,7 @@ pub fn builtins() -> Vec<Tool> {
                     grype_path: trimmed(settings.grype_path.clone()),
                     nvd_api_key,
                     scratch_dir,
+                    cache_dir,
                     use_cve_bin_tool: true,
                     // Every scanner sees different things, so the agent gets
                     // the merged view rather than having to choose.

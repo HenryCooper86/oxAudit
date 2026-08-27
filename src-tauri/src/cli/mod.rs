@@ -634,11 +634,46 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
     }
 
     let http = build_http_client()?;
-    let osv = crate::deps::osv::OsvClient::new(http);
-    let matches = block_on(osv.query_batch(&dependencies))
+    let osv = crate::deps::osv::OsvClient::new(http.clone());
+    let matches = block_on(osv.query_batch_full(&dependencies))
         .map_err(|error| failure(format!("OSV query failed: {error}")))?;
 
     let mut vulnerabilities: Vec<_> = matches.into_values().flatten().collect();
+    // Exploitation and reachability signals: the same sources the desktop
+    // asks, attached best-effort so a failing feed never sinks the report.
+    // The local usage index runs first and needs no network at all.
+    let usage_index = crate::reachability::UsageIndex::for_project(&root, &args.ignore_dirs);
+    let cve_ids: Vec<String> = vulnerabilities
+        .iter()
+        .filter_map(|vulnerability| {
+            crate::exploit::cve_among(
+                std::iter::once(vulnerability.id.as_str())
+                    .chain(vulnerability.aliases.iter().map(String::as_str)),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let (kev, epss, _) = block_on(crate::exploit::fetch(&http, &cve_ids));
+    let (poc, _) = {
+        let cache_dir = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
+        block_on(crate::exploit::fetch_poc_set(&http, &cache_dir))
+    };
+    for vulnerability in &mut vulnerabilities {
+        vulnerability.direct_usage =
+            usage_index.lookup(&vulnerability.ecosystem, &vulnerability.package_name);
+        if let Some(cve) = crate::exploit::cve_among(
+            std::iter::once(vulnerability.id.as_str())
+                .chain(vulnerability.aliases.iter().map(String::as_str)),
+        ) {
+            let signal = crate::exploit::combine(&kev, &epss, &cve);
+            vulnerability.known_exploited = signal.known_exploited;
+            vulnerability.ransomware = signal.ransomware;
+            vulnerability.epss = signal.epss;
+            vulnerability.epss_percentile = signal.epss_percentile;
+            vulnerability.public_exploit = poc.has(&cve);
+        }
+    }
     vulnerabilities.sort_by(|left, right| {
         severity_rank(right.severity.as_deref().unwrap_or(""))
             .cmp(&severity_rank(left.severity.as_deref().unwrap_or("")))
@@ -1001,6 +1036,12 @@ fn render_deps_text(
         }
         if vulnerability.ransomware {
             flags.push("ransomware");
+        }
+        if vulnerability.public_exploit {
+            flags.push("PoC");
+        }
+        if vulnerability.direct_usage.referenced == Some(true) {
+            flags.push("in use");
         }
         let _ = writeln!(
             out,

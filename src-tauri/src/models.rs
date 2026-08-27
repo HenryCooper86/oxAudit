@@ -195,6 +195,12 @@ pub struct Vulnerability {
     /// Named in a ransomware campaign, per KEV.
     #[serde(default)]
     pub ransomware: bool,
+    /// Public exploit code exists for this CVE (Exploit-DB).
+    #[serde(default)]
+    pub public_exploit: bool,
+    /// Whether the project's own source references this package.
+    #[serde(default)]
+    pub direct_usage: crate::reachability::DirectUsage,
     pub ecosystem: String,
     pub package_name: String,
     pub installed_version: String,
