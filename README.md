@@ -80,8 +80,13 @@ with a reason, an expiry, and a pull request.
   confirmed the match sits in code rather than a comment, `text` when no grammar
   was available.
 - **Nothing is sent anywhere.** Scanning is local. oxAudit contacts NVD, OSV,
-  CISA KEV, and FIRST EPSS, plus whatever AI endpoint you configure — and
-  nothing else. There is no telemetry to opt out of.
+  CISA KEV, FIRST EPSS, and Exploit-DB, plus whatever AI endpoint you configure —
+  and nothing else. There is no telemetry to opt out of.
+- **Findings are ranked by exploitability-in-context.** CISA KEV says a CVE was
+  exploited in the wild, EPSS predicts it, a public Exploit-DB entry proves
+  working exploit code exists, and direct-usage reachability says whether *your*
+  source actually references the vulnerable package — each signal kept separate
+  and stated honestly, because none of them substitutes for the others.
 - **Dismissals are decisions, not deletions.** A suppressed finding stays in the
   report with its reason and its author, and expires.
 - **The assistant asks before it reaches the network**, and cannot reach your
@@ -94,11 +99,12 @@ with a reason, an expiry, and a pull request.
 | Capability | What it does |
 |---|---|
 | **Source code scanning** | 79 dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, C#, Kotlin, Swift, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
+| **Infrastructure-as-code scanning** | 14 misconfiguration rules across Dockerfiles, Terraform, Kubernetes manifests, and GitHub Actions workflows — unpinned base images and actions, `curl \| sh` installs, credentials copied into image layers, public S3 buckets and RDS instances, wildcard IAM policies, security groups open to `0.0.0.0/0`, privileged containers, `hostPath` mounts, and `github.event.*` script injection — each mapped to a CWE with remediation, ranked as infrastructure findings even under `test/` directories |
 | **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
-| **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by CISA KEV and EPSS — same exploitation signal as the binary scanner |
+| **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by exploitability-in-context: CISA KEV, public exploit availability (Exploit-DB), EPSS, and whether the project's own source directly references the package (imports/requires across JavaScript/TS, Python, Rust, Go, Ruby, and PHP) — same exploitation signal as the binary scanner |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
 | **AI assistant** | Chat with any **OpenAI-compatible** endpoint (OpenAI, Ollama, LM Studio, vLLM, Groq, OpenRouter…). **Streaming responses** with live reasoning display, typed error handling with automatic retry, **per-conversation token & cost tracking**, cancellable turns, and an **agentic tool loop**: the AI can read files, grep/glob the scanned project, run scans, search NVD, query OSV, and fetch web pages — every tool call rendered live with a status card, gated by an allow/ask/deny permission pipeline with HITL approval, a loop guard, and dual iteration/call budgets. One-click "Ask AI" on every finding and "Generate research briefing" on every CVE |
-| **Binary scanning** | Detects vulnerable components bundled inside compiled binaries and firmware images (statically linked OpenSSL, zlib, zstd, sqlite, …) with oxAudit's **own scanner** — no database to download, no external tool required — then looks each component up in NVD and OSV, and ranks every finding by CISA KEV (actively exploited?) and EPSS (exploitation probability). Optionally also runs [cve-bin-tool](https://github.com/ossf/cve-bin-tool) or [grype](https://github.com/anchore/grype) if you have them installed; neither is bundled |
+| **Binary scanning** | Detects vulnerable components bundled inside compiled binaries and firmware images (statically linked OpenSSL, zlib, zstd, sqlite, …) with oxAudit's **own scanner** — no database to download, no external tool required — then looks each component up in NVD and OSV, and ranks every finding by CISA KEV (actively exploited?), public exploit availability (Exploit-DB), and EPSS (exploitation probability). Optionally also runs [cve-bin-tool](https://github.com/ossf/cve-bin-tool) or [grype](https://github.com/anchore/grype) if you have them installed; neither is bundled |
 | **Durable evidence and inventory** | Source, Dependency, Binary, and imported SBOM runs use one persisted Artifact → Component → Observation → Evidence → Finding graph. Runs survive restart, unflagged components remain visible, provider/rule snapshots preserve historical meaning, and every scan family shares the same lifecycle timeline |
 | **Rules, data, and quality** | A GUI Rule Library exposes provenance and fixture health and safely validates bounded declarative packs; Data Sources exposes immutable advisory snapshots and offline readiness; Quality Lab runs committed ground truth and reports precision, recall, misses, runtime, corpus size, and regression honestly |
 | **Standards and verification** | Preview and export oxAudit JSON, SARIF 2.1.0, CycloneDX 1.6, SPDX 2.3, OpenVEX, and CycloneDX VEX. Preview bounded imports with conflict/unmapped records, import SBOM inventory separately, and retain strictly mapped SARIF/VEX assertions as immutable `external-unverified` claims that cannot alter local findings or reviews. Independent verification records bind a separate verifier to an immutable input hash |
@@ -198,32 +204,35 @@ rule.
 |---|---|---|
 | Corpus precision | 46.2% | **100%** |
 | Corpus recall | 85.7% | **100%** |
-| Corpus size | 26 fixtures | **155 fixtures** |
-| Findings on this repository | 142 | **32** |
-| …still shown after scope triage | 142 | **5** |
+| Corpus size | 26 fixtures | **192 fixtures** |
+| Findings on this repository | 142 | **33** |
+| …still shown after scope triage | 142 | **6** |
 
-The corpus is 155 fixtures, 87 of them negatives, and none of the negatives were
+The corpus is 192 fixtures, 106 of them negatives, and none of the negatives were
 invented: each is a shape oxAudit was observed firing on when it scanned its own
 source or a real dependency tree — type declarations, prose in Markdown,
 comments, environment lookups, function parameters, JSON schemas, UI labels,
-hardened XML parsers, non-security uses of `Math.random()`, and the detector
-code that searches for PEM headers.
+hardened XML parsers, non-security uses of `Math.random()`, the detector
+code that searches for PEM headers, and the benign halves of the misconfiguration
+rules (pinned images and actions, private buckets, hardened pods).
 
 The corpus is deliberately vulnerable, so it is excluded from the repository
-figure above: a full scan of this checkout returns 106 findings, 74 of which are
+figure above: a full scan of this checkout returns 122 findings, 89 of which are
 the fixtures doing their job.
 
 A corpus you tuned against proves little, so the last two rows are the ones that
 matter: this repository is held-out data, and the fixtures that were tuned
 against are excluded from it.
 
-All 32 findings that remain are secrets. Twenty-five are deliberately fake
-credentials in oxAudit's own tests and two are prose in a planning document.
+All 33 findings that remain are secrets. Twenty-five are deliberately fake
+credentials in oxAudit's own tests and detector tables, and two are prose in a
+planning document.
 None of those are suppressed — they are *classified*, and the difference is the
-point of the next section. What is left in the default view is five findings:
-two UI labels, the corpus builder's own detector strings, and the code that
-searches for PEM headers. A scanner that looks for credential shapes will always
-contain credential shapes.
+point of the next section. What is left in the default view is six findings:
+two UI labels, the corpus builder's own detector strings, the code that
+searches for PEM headers, and the redaction adapter's own "credential material"
+label. A scanner that looks for credential shapes will always contain credential
+shapes.
 
 ### Measured against ground truth nobody here wrote
 
@@ -557,7 +566,7 @@ show up here as throughput falling as files grow.
 
 Syntax analysis is roughly 40× more expensive than rule matching and dominates
 scan time — it is the entire cost of the precision improvement above. End to
-end, this repository (329 files, 5.1 MB) scans in about 2.2 seconds.
+end, this repository (576 files, 4.8 MB) scans in about 2.4 seconds.
 
 ### Dataflow
 
@@ -698,6 +707,11 @@ Three limits, stated because they bound what the result means:
   suppressed on a guess — it is scanned on text alone, and every match stands.
   Grammars are selected at build time, so `oxaudit-cli languages` tells you
   which ones are in the binary you are holding.
+- **Infrastructure file kinds at the text tier.** Dockerfiles, Terraform,
+  Kubernetes/YAML manifests, and CI workflow files are scanned with dedicated
+  misconfiguration rules. No grammar covers them yet, so nothing in them is
+  suppressed on a guess — the rules anchor on the format's structure (block
+  windows, line-anchored keys, `run:` lines) instead.
 - **Intraprocedural.** Analysis stops at the enclosing function. Following a
   value across call boundaries needs a call graph, and a wrong one produces
   confident nonsense.
@@ -812,8 +826,9 @@ src-tauri/            Rust backend (Tauri v2)
 ```
 
 All *oxAudit* scanning is local. oxAudit itself contacts only NVD, OSV, CISA KEV,
-FIRST.org EPSS, and the AI endpoint you configure — all free and key-less except
-the optional NVD API key.
+FIRST.org EPSS, Exploit-DB, and the AI endpoint you configure — all free and
+key-less except the optional NVD API key. The Exploit-DB index is cached locally
+and refreshed weekly, so the public-exploit signal keeps working offline.
 
 The default **native binary scanner is local and needs no external tool or advisory
 database bootstrap**. If you explicitly select cve-bin-tool, that separate program
