@@ -1,14 +1,48 @@
 import type { JSX, SVGProps } from "react";
+import { useId } from "react";
+
+const SWORD_PATH = `
+  M 242 42
+  L 256 18
+  L 270 42
+  V 326
+  H 304
+  L 314 350
+  H 272
+  V 414
+  L 286 432
+  L 256 466
+  L 226 432
+  L 240 414
+  V 350
+  H 198
+  L 208 326
+  H 242
+  Z
+`;
+
+const SHIELD_PATH = `
+  M 256 146
+  C 278 157 302 163 326 158
+  V 248
+  C 326 328 301 388 256 430
+  C 211 388 186 328 186 248
+  V 158
+  C 210 163 234 157 256 146
+  Z
+`;
 
 /**
- * The oxAudit mark: a compact Spartan helmet and plume, with the helmet dome
- * doubling as a shield cue. Monochrome (`currentColor`) so it inherits the
- * accent or text color wherever it is used, on either theme.
+ * The oxAudit mark: two straight swords crossed behind a compact heraldic
+ * shield. Monochrome (`currentColor`) so it inherits the accent or text color
+ * wherever it is used, on either theme.
  */
 export function BrandMark({
   className,
   ...props
 }: SVGProps<SVGSVGElement>): JSX.Element {
+  const maskId = `brand-sword-clearance-${useId().replace(/:/g, "")}`;
+
   return (
     <svg
       viewBox="0 0 512 512"
@@ -17,40 +51,33 @@ export function BrandMark({
       className={className}
       {...props}
     >
-      <path
-        fill="currentColor"
-        fillRule="evenodd"
-        d="M 208 42
-           C 251 26 307 29 356 51
-           C 326 59 296 75 269 96
-           H 208
-           Z
-           M 256 92
-           C 174 92 116 155 116 241
-           V 274
-           H 163
-           L 184 430
-           H 223
-           L 256 376
-           L 289 430
-           H 328
-           L 349 274
-           H 396
-           V 241
-           C 396 155 338 92 256 92
-           Z
-           M 163 222
-           C 184 172 218 146 256 146
-           C 294 146 328 172 349 222
-           L 340 270
-           H 280
-           V 351
-           L 256 330
-           L 232 351
-           V 270
-           H 172
-           Z"
-      />
+      <defs>
+        <mask id={maskId} maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+          <rect width="512" height="512" fill="white" />
+          <path
+            fill="black"
+            stroke="black"
+            strokeWidth="24"
+            strokeLinejoin="round"
+            d={SHIELD_PATH}
+          />
+        </mask>
+      </defs>
+      <g mask={`url(#${maskId})`}>
+        <path
+          data-brand-layer="sword-left"
+          fill="currentColor"
+          transform="rotate(-45 256 256)"
+          d={SWORD_PATH}
+        />
+        <path
+          data-brand-layer="sword-right"
+          fill="currentColor"
+          transform="rotate(45 256 256)"
+          d={SWORD_PATH}
+        />
+      </g>
+      <path data-brand-layer="shield" fill="currentColor" d={SHIELD_PATH} />
     </svg>
   );
 }

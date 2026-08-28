@@ -1,8 +1,8 @@
 # oxAudit brand assets
 
-The oxAudit mark is a simplified Spartan helmet and plume inspired by the
-product's warrior reference. The helmet dome also reads as a shield, pairing
-disciplined investigation with protection without adding small-scale detail.
+The oxAudit mark pairs two straight crossed swords with a centered heraldic
+shield. Its restrained, symmetrical geometry communicates active defense and
+disciplined investigation without decorative or small-scale detail.
 
 ## Files
 
@@ -17,8 +17,8 @@ disciplined investigation with protection without adding small-scale detail.
 - Light-theme mark: use the product accent token (`#9A7C2A`) when the mark is
   rendered inline; the source SVG retains the canonical brand gold.
 - Minimum symbol width: 20 px. Use the app-icon container below that size.
-- Clear space: keep at least half the height of the helmet brow around the mark.
-- Do not add gradients, shadows, outlines, extra weapons, or rotate the mark.
+- Clear space: keep at least half the width of one sword blade around the mark.
+- Do not add gradients, shadows, outlines, ornaments, or rotate the full mark.
 
 These SVGs are the deterministic production masters. The historical warrior
 image is reference material only and is not embedded in shipped assets.

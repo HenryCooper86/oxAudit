@@ -19,18 +19,44 @@ function normalizePathData(pathData: string): string {
   return pathData.replace(/\s+/g, " ").trim();
 }
 
-function firstPathData(svg: string): string {
-  const match = svg.match(/<path\b[^>]*\bd=["']([\s\S]*?)["']/i);
-  assert.ok(match, "brand asset must contain a path");
-  return normalizePathData(match[1]);
+type PathSignature = { layer: string; pathData: string; transform: string };
+
+function pathSignatures(svg: string): PathSignature[] {
+  return Array.from(svg.matchAll(/<path\b([^>]*)>/gi)).flatMap((match) => {
+    const attributes = match[1];
+    const layer = attributes.match(/\bdata-brand-layer=["']([\s\S]*?)["']/i)?.[1];
+    if (!layer) return [];
+
+    const pathData = attributes.match(/\bd=["']([\s\S]*?)["']/i)?.[1];
+    const transform = attributes.match(/\btransform=["']([\s\S]*?)["']/i)?.[1] ?? "";
+
+    assert.ok(pathData, "every brand path must contain path data");
+    return [{ layer, pathData: normalizePathData(pathData), transform }];
+  });
 }
 
-test("every shipped brand entry point renders the same mark geometry", () => {
+test("every shipped brand entry point renders two crossed swords and one shield", () => {
   const runtimeSvg = renderToStaticMarkup(createElement(BrandMark));
-  const runtimeGeometry = firstPathData(runtimeSvg);
+  const runtimeGeometry = pathSignatures(runtimeSvg);
+
+  assert.deepEqual(
+    runtimeGeometry.map(({ layer, transform }) => [layer, transform]),
+    [
+      ["sword-left", "rotate(-45 256 256)"],
+      ["sword-right", "rotate(45 256 256)"],
+      ["shield", ""],
+    ],
+  );
 
   const mismatches = BRAND_ASSETS.filter(
-    (path) => firstPathData(readFileSync(path, "utf8")) !== runtimeGeometry,
+    (path) => {
+      try {
+        assert.deepEqual(pathSignatures(readFileSync(path, "utf8")), runtimeGeometry);
+        return false;
+      } catch {
+        return true;
+      }
+    },
   );
 
   assert.deepEqual(mismatches, []);
