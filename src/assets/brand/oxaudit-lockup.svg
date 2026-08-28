@@ -1,38 +1,73 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 286 64" role="img" aria-labelledby="title description">
   <title id="title">oxAudit</title>
-  <desc id="description">The gold oxAudit Spartan helmet mark followed by the product name.</desc>
-  <path fill="#C8B560" fill-rule="evenodd" transform="translate(4 4) scale(0.109375)" d="
-    M 208 42
-    C 251 26 307 29 356 51
-    C 326 59 296 75 269 96
-    H 208
-    Z
-    M 256 92
-    C 174 92 116 155 116 241
-    V 274
-    H 163
-    L 184 430
-    H 223
-    L 256 376
-    L 289 430
-    H 328
-    L 349 274
-    H 396
-    V 241
-    C 396 155 338 92 256 92
-    Z
-    M 163 222
-    C 184 172 218 146 256 146
-    C 294 146 328 172 349 222
-    L 340 270
-    H 280
-    V 351
-    L 256 330
-    L 232 351
-    V 270
-    H 172
-    Z
-  " />
+  <desc id="description">The gold oxAudit crossed-swords and shield mark followed by the product name.</desc>
+  <defs>
+    <mask id="sword-clearance" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="white" />
+      <path fill="black" stroke="black" stroke-width="24" stroke-linejoin="round" d="
+        M 256 146
+        C 278 157 302 163 326 158
+        V 248
+        C 326 328 301 388 256 430
+        C 211 388 186 328 186 248
+        V 158
+        C 210 163 234 157 256 146
+        Z
+      "/>
+    </mask>
+  </defs>
+  <g fill="#C8B560" transform="translate(4 4) scale(0.109375)">
+    <g mask="url(#sword-clearance)">
+    <path data-brand-layer="sword-left" transform="rotate(-45 256 256)" d="
+      M 242 42
+      L 256 18
+      L 270 42
+      V 326
+      H 304
+      L 314 350
+      H 272
+      V 414
+      L 286 432
+      L 256 466
+      L 226 432
+      L 240 414
+      V 350
+      H 198
+      L 208 326
+      H 242
+      Z
+    "/>
+    <path data-brand-layer="sword-right" transform="rotate(45 256 256)" d="
+      M 242 42
+      L 256 18
+      L 270 42
+      V 326
+      H 304
+      L 314 350
+      H 272
+      V 414
+      L 286 432
+      L 256 466
+      L 226 432
+      L 240 414
+      V 350
+      H 198
+      L 208 326
+      H 242
+      Z
+    "/>
+    </g>
+    <path data-brand-layer="shield" d="
+      M 256 146
+      C 278 157 302 163 326 158
+      V 248
+      C 326 328 301 388 256 430
+      C 211 388 186 328 186 248
+      V 158
+      C 210 163 234 157 256 146
+      Z
+    "/>
+  </g>
   <text
     x="68"
     y="46"
