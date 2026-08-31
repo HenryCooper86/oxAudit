@@ -45,8 +45,14 @@ pub async fn scan_dependencies(
             .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
             .map_err(|error| error.to_string())?;
         let settings = state.settings.lock().unwrap().clone();
-        let lockfiles =
-            fs_utils::discover_lockfiles(root, root, &settings.scan.ignored_dirs);
+        let lockfiles = fs_utils::discover_lockfiles_bounded(
+            root,
+            root,
+            &settings.scan.ignored_dirs,
+            crate::deps::lockfiles::MAX_LOCKFILES,
+            Some(&state.cancel_dependency_scan),
+        )
+        .map_err(|error| error.to_string())?;
         let run_id = managed
             .as_ref()
             .expect("managed dependency run exists")
@@ -80,6 +86,9 @@ pub async fn scan_dependencies(
         .ok();
 
         for (i, lf) in lockfiles.iter().enumerate() {
+        if state.cancel_dependency_scan.load(Ordering::SeqCst) {
+            return Err("dependency scan cancelled".into());
+        }
         let name = lf.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let kind = crate::deps::lockfiles::lockfile_kind(name);
         match crate::deps::lockfiles::parse_lockfile(lf, kind) {
@@ -89,7 +98,14 @@ pub async fn scan_dependencies(
                     kind: kind.into(),
                     packages: deps.len(),
                 });
-                all_deps.extend(deps);
+                crate::deps::lockfiles::extend_dependencies_bounded(
+                    &mut all_deps,
+                    deps,
+                    crate::deps::lockfiles::MAX_DEPENDENCIES,
+                )?;
+            }
+            Err(error) if crate::deps::lockfiles::is_resource_limit_error(&error) => {
+                return Err(format!("{}: {error}", lf.display()));
             }
             Err(e) => parse_errors.push(format!("{}: {e}", lf.display())),
         }
@@ -452,14 +468,25 @@ pub fn find_lockfiles(
         return Err(format!("path is not a directory: {path}"));
     }
     let settings = state.settings.lock().unwrap().clone();
-    let files = fs_utils::discover_lockfiles(root, root, &settings.scan.ignored_dirs);
+    let files = fs_utils::discover_lockfiles_bounded(
+        root,
+        root,
+        &settings.scan.ignored_dirs,
+        crate::deps::lockfiles::MAX_LOCKFILES,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
     let mut out = Vec::new();
     for f in files {
         let name = f.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let kind = crate::deps::lockfiles::lockfile_kind(name);
-        let count = crate::deps::lockfiles::parse_lockfile(&f, kind)
-            .map(|d| d.len())
-            .unwrap_or(0);
+        let count = match crate::deps::lockfiles::parse_lockfile(&f, kind) {
+            Ok(dependencies) => dependencies.len(),
+            Err(error) if crate::deps::lockfiles::is_resource_limit_error(&error) => {
+                return Err(format!("{}: {error}", f.display()));
+            }
+            Err(_) => 0,
+        };
         out.push(LockfileInfo {
             path: f.to_string_lossy().replace('\\', "/"),
             kind: kind.into(),

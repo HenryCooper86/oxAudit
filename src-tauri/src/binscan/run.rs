@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
 use super::runtime::PreparedCommand;
@@ -25,6 +25,34 @@ use super::runtime::PreparedCommand;
 const SEVERITIES: [&str; 4] = ["low", "medium", "high", "critical"];
 /// Refresh policies accepted by `--update`.
 const UPDATE_POLICIES: [&str; 4] = ["now", "daily", "never", "latest"];
+pub const MAX_EXTERNAL_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+
+async fn collect_stdout_limited<R>(mut reader: R, max_bytes: usize) -> Result<String, String>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut collected = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut buffer = [0_u8; 8192];
+    let mut overflow = false;
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("cannot read scanner stdout: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        let remaining = max_bytes.saturating_sub(collected.len());
+        collected.extend_from_slice(&buffer[..read.min(remaining)]);
+        overflow |= read > remaining;
+    }
+    if overflow {
+        return Err(format!(
+            "scanner stdout exceeds the safety limit of {max_bytes} bytes"
+        ));
+    }
+    Ok(String::from_utf8_lossy(&collected).into_owned())
+}
 
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -48,12 +76,7 @@ pub struct BinaryScanRequest {
 ///
 /// Kept separate from spawning so the exact command line is testable: this is
 /// the one place where a caller-supplied value becomes part of an invocation.
-pub fn build_args(
-    target: &Path,
-    output_file: &Path,
-    request: &BinaryScanRequest,
-    nvd_api_key: Option<&str>,
-) -> Vec<String> {
+pub fn build_args(target: &Path, output_file: &Path, request: &BinaryScanRequest) -> Vec<String> {
     let mut args: Vec<String> = vec![
         target.to_string_lossy().into_owned(),
         "--format".into(),
@@ -87,15 +110,6 @@ pub fn build_args(
     {
         args.push("--update".into());
         args.push(update);
-    }
-
-    // An offline scan makes no requests, so sending the key would only widen
-    // its exposure for no benefit.
-    if !request.offline {
-        if let Some(key) = nvd_api_key.map(str::trim).filter(|key| !key.is_empty()) {
-            args.push("--nvd-api-key".into());
-            args.push(key.to_string());
-        }
     }
 
     args
@@ -172,20 +186,25 @@ pub async fn execute(
 ) -> Result<CommandOutcome, String> {
     let started = Instant::now();
 
-    let mut child = Command::new(&prepared.program)
+    let mut command = Command::new(&prepared.program);
+    command
         .args(&prepared.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    for (name, value) in &prepared.environment {
+        command.env(name, value.as_str());
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("could not start {}: {e}", prepared.program))?;
 
     let tail = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    if let Some(stderr) = child.stderr.take() {
+    let stderr_task = if let Some(stderr) = child.stderr.take() {
         let tail = tail.clone();
         let on_progress = on_progress.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let trimmed = line.trim().to_string();
@@ -201,23 +220,17 @@ pub async fn execute(
                 }
                 on_progress(trimmed);
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     // grype writes its report to stdout, so it must be drained too — a full
     // pipe would otherwise block the child forever.
-    let stdout_buffer = Arc::new(std::sync::Mutex::new(String::new()));
-    if let Some(stdout) = child.stdout.take() {
-        let buffer = stdout_buffer.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let mut buffer = buffer.lock().unwrap();
-                buffer.push_str(&line);
-                buffer.push('\n');
-            }
-        });
-    }
+    let stdout_task = child
+        .stdout
+        .take()
+        .map(|stdout| tokio::spawn(collect_stdout_limited(stdout, MAX_EXTERNAL_OUTPUT_BYTES)));
 
     let status = loop {
         if cancel.load(Ordering::Relaxed) {
@@ -239,11 +252,18 @@ pub async fn execute(
         }
     };
 
-    // Give the readers a moment to drain whatever is still buffered.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    if let Some(task) = stderr_task {
+        task.await
+            .map_err(|error| format!("scanner stderr reader failed: {error}"))?;
+    }
 
     let stderr_tail = tail.lock().unwrap().join("\n");
-    let stdout = stdout_buffer.lock().unwrap().clone();
+    let stdout = match stdout_task {
+        Some(task) => task
+            .await
+            .map_err(|error| format!("scanner stdout reader failed: {error}"))??,
+        None => String::new(),
+    };
 
     Ok(CommandOutcome {
         status: status.to_string(),
@@ -286,7 +306,6 @@ mod tests {
             Path::new("/fw/image.bin"),
             Path::new("/tmp/out.json"),
             &request("/fw/image.bin"),
-            None,
         );
         assert_eq!(
             args,
@@ -306,12 +325,12 @@ mod tests {
         // is a bug or an attack, so it is never passed along.
         let mut req = request("/fw");
         req.severity = Some("; rm -rf /".into());
-        let args = build_args(Path::new("/fw"), Path::new("/tmp/o.json"), &req, None);
+        let args = build_args(Path::new("/fw"), Path::new("/tmp/o.json"), &req);
         assert!(!args.iter().any(|a| a.contains("rm -rf")));
         assert!(!args.iter().any(|a| a == "--severity"));
 
         req.severity = Some("HIGH".into());
-        let args = build_args(Path::new("/fw"), Path::new("/tmp/o.json"), &req, None);
+        let args = build_args(Path::new("/fw"), Path::new("/tmp/o.json"), &req);
         assert!(args.windows(2).any(|w| w == ["--severity", "high"]));
     }
 
@@ -319,7 +338,7 @@ mod tests {
     fn an_unrecognized_update_policy_is_dropped() {
         let mut req = request("/fw");
         req.update = Some("--nvd-api-key=leak".into());
-        let args = build_args(Path::new("/fw"), Path::new("/tmp/o.json"), &req, None);
+        let args = build_args(Path::new("/fw"), Path::new("/tmp/o.json"), &req);
         assert!(!args.iter().any(|a| a == "--update"));
         assert!(!args.iter().any(|a| a.contains("leak")));
     }
@@ -331,12 +350,7 @@ mod tests {
         let mut req = request("/fw");
         req.offline = true;
         req.update = Some("now".into());
-        let args = build_args(
-            Path::new("/fw"),
-            Path::new("/tmp/o.json"),
-            &req,
-            Some("secret-key"),
-        );
+        let args = build_args(Path::new("/fw"), Path::new("/tmp/o.json"), &req);
 
         assert!(args.iter().any(|a| a == "--offline"));
         assert!(!args.iter().any(|a| a == "--update"));
@@ -344,25 +358,6 @@ mod tests {
             !args.iter().any(|a| a.contains("secret-key")),
             "the NVD key must not reach an offline invocation"
         );
-    }
-
-    #[test]
-    fn an_online_scan_forwards_a_non_blank_api_key_only() {
-        let args = build_args(
-            Path::new("/fw"),
-            Path::new("/o.json"),
-            &request("/fw"),
-            Some("k"),
-        );
-        assert!(args.windows(2).any(|w| w == ["--nvd-api-key", "k"]));
-
-        let args = build_args(
-            Path::new("/fw"),
-            Path::new("/o.json"),
-            &request("/fw"),
-            Some("   "),
-        );
-        assert!(!args.iter().any(|a| a == "--nvd-api-key"));
     }
 
     #[test]
@@ -385,7 +380,7 @@ mod tests {
     #[test]
     fn a_relative_target_becomes_absolute_in_the_argument_list() {
         let resolved = resolve_target(".").unwrap();
-        let args = build_args(&resolved, Path::new("/tmp/o.json"), &request("."), None);
+        let args = build_args(&resolved, Path::new("/tmp/o.json"), &request("."));
         assert!(Path::new(&args[0]).is_absolute());
     }
 
@@ -420,5 +415,22 @@ mod tests {
     fn a_silent_failure_at_least_reports_the_exit_status() {
         let message = explain_failure("   ", "exit status: 2");
         assert!(message.contains("exit status: 2"));
+    }
+
+    #[tokio::test]
+    async fn stdout_collection_drains_but_rejects_output_over_its_budget() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let write = tokio::spawn(async move {
+            writer.write_all(b"123456789").await.expect("write");
+        });
+
+        let error = collect_stdout_limited(reader, 8)
+            .await
+            .expect_err("stdout overflow");
+
+        assert!(error.contains("8 bytes"), "{error}");
+        write.await.expect("writer task");
     }
 }

@@ -543,7 +543,13 @@ fn display_time(value: u64) -> String {
 }
 
 fn csv_cell(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    let first_non_whitespace = value.trim_start().chars().next();
+    let safe = if first_non_whitespace.is_some_and(|character| "=+-@".contains(character)) {
+        format!("'{value}")
+    } else {
+        value.to_string()
+    };
+    format!("\"{}\"", safe.replace('"', "\"\""))
 }
 
 fn md(value: &str) -> String {
@@ -666,5 +672,20 @@ mod tests {
         .unwrap();
         assert!(!html.contains("<script>alert"));
         assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn csv_cells_neutralize_spreadsheet_formulas() {
+        for value in ["=1+1", "+SUM(A1:A2)", "-2+3", "@cmd", " \t=1+1"] {
+            let cell = csv_cell(value);
+            assert!(
+                cell.starts_with("\"'"),
+                "formula was not neutralized: {cell}"
+            );
+            assert!(cell.ends_with('"'));
+        }
+
+        assert_eq!(csv_cell("ordinary text"), "\"ordinary text\"");
+        assert_eq!(csv_cell("a \"quote\""), "\"a \"\"quote\"\"\"");
     }
 }

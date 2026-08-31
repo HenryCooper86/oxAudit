@@ -575,9 +575,10 @@ impl ToolCallAccumulator {
         Self::default()
     }
 
-    /// Feed one streamed delta. `index` may be None (some OpenAI-compat
-    /// surfaces, e.g. Gemini): then the delta is assigned the next sequential
-    /// slot — defaulting to 0 would merge parallel calls into one corrupt entry.
+    /// Feed one streamed delta. Some OpenAI-compatible providers omit `index`.
+    /// In that case, an existing ID is authoritative, an argument-only delta
+    /// continues the latest open call, and a newly identified call gets a new
+    /// slot. This preserves both fragmented and parallel unindexed calls.
     fn process_delta(
         &mut self,
         index: Option<usize>,
@@ -585,23 +586,35 @@ impl ToolCallAccumulator {
         name: Option<&str>,
         args: Option<&str>,
     ) {
+        let nonempty_id = id.filter(|value| !value.is_empty());
+        let nonempty_name = name.filter(|value| !value.is_empty());
         let idx = match index {
             Some(i) => i,
-            None => self.entries.len(),
+            None => {
+                if let Some(id) = nonempty_id {
+                    self.entries
+                        .iter()
+                        .position(|entry| entry.id.as_deref() == Some(id))
+                        .unwrap_or(self.entries.len())
+                } else if nonempty_name.is_some() {
+                    self.entries
+                        .last()
+                        .filter(|entry| entry.name.is_none())
+                        .map_or(self.entries.len(), |_| self.entries.len() - 1)
+                } else {
+                    self.entries.len().saturating_sub(1)
+                }
+            }
         };
         while self.entries.len() <= idx {
             self.entries.push(AccEntry::default());
         }
         let entry = &mut self.entries[idx];
-        if let Some(id) = id {
-            if !id.is_empty() {
-                entry.id = Some(id.to_string());
-            }
+        if let Some(id) = nonempty_id {
+            entry.id = Some(id.to_string());
         }
-        if let Some(name) = name {
-            if !name.is_empty() {
-                entry.name = Some(name.to_string());
-            }
+        if let Some(name) = nonempty_name {
+            entry.name = Some(name.to_string());
         }
         if let Some(args) = args {
             entry.arguments.push_str(args);
@@ -687,6 +700,24 @@ mod tests {
         assert_eq!(calls.len(), 2, "both calls must survive");
         assert_eq!(calls[0].name, "glob");
         assert_eq!(calls[1].name, "search_cve");
+    }
+
+    #[test]
+    fn none_index_argument_fragments_stay_with_the_open_call() {
+        let mut acc = ToolCallAccumulator::new();
+        acc.process_delta(
+            None,
+            Some("call_1"),
+            Some("read_file"),
+            Some("{\"path\":\""),
+        );
+        acc.process_delta(None, None, None, Some("src/main.rs\"}"));
+
+        let calls = acc.drain();
+        assert_eq!(calls.len(), 1, "one fragmented call must not be split");
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].arguments["path"], "src/main.rs");
     }
 
     #[test]

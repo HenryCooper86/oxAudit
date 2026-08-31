@@ -4,6 +4,17 @@ use std::error::Error;
 
 const OSV_BASE: &str = "https://api.osv.dev/v1";
 
+fn validate_query_count(count: usize) -> Result<(), String> {
+    let limit = crate::deps::lockfiles::MAX_DEPENDENCIES;
+    if count > limit {
+        Err(format!(
+            "resource limit: OSV query exceeds {limit} dependencies"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub struct OsvClient {
     pub http: reqwest::Client,
 }
@@ -71,6 +82,7 @@ impl OsvClient {
         &self,
         deps: &[Dependency],
     ) -> Result<std::collections::HashMap<String, Vec<Vulnerability>>, String> {
+        validate_query_count(deps.len())?;
         let mut out = std::collections::HashMap::new();
         let queryable: Vec<&Dependency> = deps
             .iter()
@@ -161,19 +173,17 @@ impl OsvClient {
             std::collections::HashMap::new();
         let id_list: Vec<&String> = ids.iter().collect();
         for chunk in id_list.chunks(20) {
-            let fetched = futures::future::join_all(
-                chunk.iter().map(|id| {
-                    let client = self;
-                    async move {
-                        match client.get_vuln(id).await {
-                            Ok(Some(record)) => Some(((*id).clone(), record)),
-                            // A record deleted since the batch still resolves
-                            // for the rest of its package.
-                            _ => None,
-                        }
+            let fetched = futures::future::join_all(chunk.iter().map(|id| {
+                let client = self;
+                async move {
+                    match client.get_vuln(id).await {
+                        Ok(Some(record)) => Some(((*id).clone(), record)),
+                        // A record deleted since the batch still resolves
+                        // for the rest of its package.
+                        _ => None,
                     }
-                }),
-            )
+                }
+            }))
             .await;
             for found in fetched.into_iter().flatten() {
                 records.insert(found.0, found.1);
@@ -588,6 +598,14 @@ mod tests {
             cvss_vector_to_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H"),
             Some(9.6)
         );
+    }
+
+    #[test]
+    fn oversized_osv_batches_are_rejected_before_chunking() {
+        assert!(validate_query_count(crate::deps::lockfiles::MAX_DEPENDENCIES).is_ok());
+        let error = validate_query_count(crate::deps::lockfiles::MAX_DEPENDENCIES + 1)
+            .expect_err("oversized batch");
+        assert!(error.contains("resource limit"), "{error}");
     }
 
     #[test]

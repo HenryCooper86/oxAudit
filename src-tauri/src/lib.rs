@@ -16,6 +16,7 @@ mod migration;
 mod models;
 pub mod observability;
 mod presentation;
+mod private_storage;
 pub mod quality;
 pub mod reachability;
 // Public so benches/scanning.rs can measure the rule engines directly. The

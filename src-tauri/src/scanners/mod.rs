@@ -174,11 +174,51 @@ fn assess_sink(
     }
 }
 
+pub const MAX_FINDINGS_PER_FILE: usize = 5_000;
+pub const MAX_FINDINGS_PER_RUN: usize = 100_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FindingLimitError {
+    PerFile { limit: usize },
+    PerRun { limit: usize },
+}
+
+impl std::fmt::Display for FindingLimitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PerFile { limit } => write!(
+                formatter,
+                "a file exceeded the safety limit of {limit} findings; narrow the scan or ignore \
+                 generated/vendor paths"
+            ),
+            Self::PerRun { limit } => write!(
+                formatter,
+                "the scan exceeded the safety limit of {limit} findings; narrow the scan or add \
+                 ignore rules"
+            ),
+        }
+    }
+}
+
+pub(crate) fn ensure_run_finding_budget(
+    current: usize,
+    incoming: usize,
+    limit: usize,
+) -> Result<(), FindingLimitError> {
+    if current
+        .checked_add(incoming)
+        .map_or(true, |total| total > limit)
+    {
+        Err(FindingLimitError::PerRun { limit })
+    } else {
+        Ok(())
+    }
+}
+
 pub struct ScanFileOutcome {
     pub findings: Vec<Finding>,
-    // Consumed by the durable scan service introduced in the next foundation slice.
-    #[allow(dead_code)]
     pub covered_families: Vec<String>,
+    pub limit_error: Option<FindingLimitError>,
 }
 
 impl ScanFileOutcome {
@@ -186,6 +226,7 @@ impl ScanFileOutcome {
         Self {
             findings: Vec::new(),
             covered_families: Vec::new(),
+            limit_error: None,
         }
     }
 }
@@ -211,6 +252,14 @@ fn redact_detected_secrets(text: &str, values: &[String]) -> String {
     values.iter().fold(text.to_owned(), |safe, value| {
         redaction::redact_exact(&safe, value)
     })
+}
+
+/// Remove credential material from arbitrary text before it crosses an AI,
+/// event, transcript, log, or report boundary.
+pub(crate) fn redact_secrets_in_text(text: &str) -> String {
+    let hits = secrets::scan_content(text);
+    let values = secret_redaction_values(&hits);
+    redact_detected_secrets(text, &values)
 }
 
 /// Scan a single file and produce findings. Returns an empty vec when the file
@@ -243,13 +292,32 @@ pub fn scan_file_with_relative_path(
     scan_secrets: bool,
     scan_vulnerabilities: bool,
 ) -> ScanFileOutcome {
-    scan_file_in_project(
+    scan_file_with_relative_path_and_limit(
+        path,
+        relative_path,
+        max_file_size_kb,
+        scan_secrets,
+        scan_vulnerabilities,
+        MAX_FINDINGS_PER_FILE,
+    )
+}
+
+fn scan_file_with_relative_path_and_limit(
+    path: &Path,
+    relative_path: &str,
+    max_file_size_kb: u64,
+    scan_secrets: bool,
+    scan_vulnerabilities: bool,
+    max_findings: usize,
+) -> ScanFileOutcome {
+    scan_file_in_project_and_limit(
         path,
         relative_path,
         max_file_size_kb,
         scan_secrets,
         scan_vulnerabilities,
         &config_values::ProjectConfig::default(),
+        max_findings,
     )
 }
 
@@ -267,6 +335,26 @@ pub fn scan_file_in_project(
     scan_vulnerabilities: bool,
     config: &config_values::ProjectConfig,
 ) -> ScanFileOutcome {
+    scan_file_in_project_and_limit(
+        path,
+        relative_path,
+        max_file_size_kb,
+        scan_secrets,
+        scan_vulnerabilities,
+        config,
+        MAX_FINDINGS_PER_FILE,
+    )
+}
+
+fn scan_file_in_project_and_limit(
+    path: &Path,
+    relative_path: &str,
+    max_file_size_kb: u64,
+    scan_secrets: bool,
+    scan_vulnerabilities: bool,
+    config: &config_values::ProjectConfig,
+    max_findings: usize,
+) -> ScanFileOutcome {
     let max_bytes = max_file_size_kb.saturating_mul(1024);
     let content = match fs_utils::read_text_file(path, max_bytes) {
         Some(c) => c,
@@ -281,10 +369,25 @@ pub fn scan_file_in_project(
     let detected_language = fs_utils::detect_language(path).unwrap_or("");
     let parsed = syntax::parse(&content, detected_language);
     let spans = parsed.spans();
-    let secret_hits: Vec<_> = secrets::scan_content(&content)
+    let (raw_secret_hits, secret_hit_overflow) =
+        secrets::scan_content_bounded(&content, max_findings.saturating_add(1));
+    let secret_hits: Vec<_> = raw_secret_hits
         .into_iter()
         .filter(|hit| spans.allows_secret_match(hit.offset))
         .collect();
+    if secret_hit_overflow || secret_hits.len() > max_findings {
+        return ScanFileOutcome {
+            findings: Vec::new(),
+            covered_families: if scan_secrets {
+                vec!["secret".to_string()]
+            } else {
+                Vec::new()
+            },
+            limit_error: Some(FindingLimitError::PerFile {
+                limit: max_findings,
+            }),
+        };
+    }
     let secret_values = secret_redaction_values(&secret_hits);
     // Walked once, and only for a file that actually produced a finding: the
     // tree walk is wasted on the overwhelming majority of files that yield
@@ -355,7 +458,17 @@ pub fn scan_file_in_project(
     if scan_vulnerabilities {
         if let Some(lang) = fs_utils::detect_language(path) {
             covered_families.push("vulnerability".to_string());
-            let mut hits = patterns::scan_content(&content, lang);
+            let (mut hits, pattern_hit_overflow) =
+                patterns::scan_content_bounded(&content, lang, max_findings.saturating_add(1));
+            if pattern_hit_overflow {
+                return ScanFileOutcome {
+                    findings: Vec::new(),
+                    covered_families,
+                    limit_error: Some(FindingLimitError::PerFile {
+                        limit: max_findings,
+                    }),
+                };
+            }
             // One nested expression is one defect, not one per constructor.
             parsed.drop_nested_duplicates(&mut hits);
             for hit in hits {
@@ -371,6 +484,15 @@ pub fn scan_file_in_project(
                 let assessment = assess_sink(&parsed, &content, &hit, config);
                 if !assessment.reportable {
                     continue;
+                }
+                if findings.len() >= max_findings {
+                    return ScanFileOutcome {
+                        findings: Vec::new(),
+                        covered_families,
+                        limit_error: Some(FindingLimitError::PerFile {
+                            limit: max_findings,
+                        }),
+                    };
                 }
                 let rule = &patterns::SOURCE_RULES[hit.rule_index];
                 let (line, col) = fs_utils::line_col(&starts, hit.offset);
@@ -422,15 +544,71 @@ pub fn scan_file_in_project(
     ScanFileOutcome {
         findings,
         covered_families,
+        limit_error: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::config_values::ProjectConfig;
-    use super::{scan_file_in_project, scan_file_with_relative_path};
+    use super::{
+        redact_secrets_in_text, scan_file_in_project, scan_file_with_relative_path,
+        scan_file_with_relative_path_and_limit, FindingLimitError,
+    };
 
     const CANARY: &str = "oxaudit-secret-canary-7D4zP9q2";
+
+    #[test]
+    fn arbitrary_tool_text_uses_the_scanner_secret_redaction_rules() {
+        let source = format!("token = \"{CANARY}\";\nkeep this explanation");
+
+        let safe = redact_secrets_in_text(&source);
+
+        assert!(!safe.contains(CANARY));
+        assert!(safe.contains("[REDACTED]"));
+        assert!(safe.contains("keep this explanation"));
+    }
+
+    #[test]
+    fn a_file_that_exceeds_its_finding_budget_reports_overflow() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let path = directory.path().join("secrets.js");
+        std::fs::write(
+            &path,
+            [
+                "const one = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890';",
+                "const two = 'ghp_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ';",
+                "const three = 'ghp_ABCDEFGHIJ1234567890KLMNOPQRSTUVWXYZ';",
+            ]
+            .join("\n"),
+        )
+        .expect("fixture");
+
+        let outcome =
+            scan_file_with_relative_path_and_limit(&path, "secrets.js", 64, true, false, 2);
+
+        assert_eq!(
+            outcome.limit_error,
+            Some(FindingLimitError::PerFile { limit: 2 })
+        );
+        assert!(outcome
+            .limit_error
+            .expect("finding limit")
+            .to_string()
+            .contains("narrow the scan"));
+    }
+
+    #[test]
+    fn aggregate_finding_budget_rejects_the_first_overflow() {
+        assert_eq!(
+            super::ensure_run_finding_budget(2, 1, 2),
+            Err(FindingLimitError::PerRun { limit: 2 })
+        );
+        assert_eq!(super::ensure_run_finding_budget(1, 1, 2), Ok(()));
+        assert!(FindingLimitError::PerRun { limit: 2 }
+            .to_string()
+            .contains("narrow the scan"));
+    }
 
     #[test]
     fn scanner_retains_all_thirty_matches_for_one_rule() {

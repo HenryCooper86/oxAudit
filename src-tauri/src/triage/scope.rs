@@ -95,11 +95,16 @@ fn is_infrastructure_yaml(parts: &[String]) -> bool {
         return true;
     }
     let dirs = &parts[..parts.len() - 1];
-    if K8S_DIRS.iter().any(|dir| dirs.iter().any(|part| part == dir)) {
+    if K8S_DIRS
+        .iter()
+        .any(|dir| dirs.iter().any(|part| part == dir))
+    {
         return true;
     }
     K8S_FILES.iter().any(|kind| {
-        base == *kind || base.starts_with(&format!("{kind}-")) || base.ends_with(&format!("-{kind}"))
+        base == *kind
+            || base.starts_with(&format!("{kind}-"))
+            || base.ends_with(&format!("-{kind}"))
     })
 }
 

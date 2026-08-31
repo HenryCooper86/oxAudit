@@ -478,6 +478,10 @@ pub(super) struct SecretHit {
 /// Run all secret rules against a whole file's content.
 /// Byte offsets are relative to `content`; the scanner maps them to line numbers.
 pub(super) fn scan_content(content: &str) -> Vec<SecretHit> {
+    scan_content_bounded(content, usize::MAX).0
+}
+
+pub(super) fn scan_content_bounded(content: &str, limit: usize) -> (Vec<SecretHit>, bool) {
     let mut hits = Vec::new();
     for (i, rule) in SECRET_RULES.iter().enumerate() {
         for caps in rule.regex.captures_iter(content) {
@@ -515,6 +519,9 @@ pub(super) fn scan_content(content: &str) -> Vec<SecretHit> {
                 0.0
             };
             let off = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            if hits.len() >= limit {
+                return (hits, true);
+            }
             hits.push(SecretHit {
                 rule_index: i,
                 offset: off,
@@ -524,7 +531,7 @@ pub(super) fn scan_content(content: &str) -> Vec<SecretHit> {
             });
         }
     }
-    hits
+    (hits, false)
 }
 
 pub fn truncate(s: &str, max: usize) -> String {

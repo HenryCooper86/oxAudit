@@ -4,6 +4,7 @@
 //! the results. A failure in one scanner does not fail the scan: the two see
 //! genuinely different things, so half an answer is worth far more than none.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use super::grype;
 use super::report::{merge_results, BinaryScanResult};
 use super::run::{
     execute, explain_failure, report_path, resolve_target, BinaryScanRequest, ScratchReport,
+    MAX_EXTERNAL_OUTPUT_BYTES,
 };
 use super::runtime::{prepare_docker, prepare_native, to_host_path, Runtime, DEFAULT_IMAGE};
 
@@ -271,9 +273,9 @@ async fn run_cve_bin_tool(
     let outcome = execute(&prepared, cancel, timeout, on_progress).await?;
 
     // The exit code carries a finding count, so only the report decides.
-    let raw = match std::fs::read_to_string(&host_report) {
-        Ok(raw) if !raw.trim().is_empty() => raw,
-        _ => return Err(explain_failure(&outcome.stderr_tail, &outcome.status)),
+    let raw = match read_report_limited(&host_report, MAX_EXTERNAL_OUTPUT_BYTES)? {
+        Some(raw) => raw,
+        None => return Err(explain_failure(&outcome.stderr_tail, &outcome.status)),
     };
 
     let mut result =
@@ -290,6 +292,31 @@ async fn run_cve_bin_tool(
     }
 
     Ok(result)
+}
+
+fn read_report_limited(path: &Path, max_bytes: usize) -> Result<Option<String>, String> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot inspect scanner report: {error}")),
+    };
+    if metadata.len() > max_bytes as u64 {
+        return Err(format!(
+            "scanner report exceeds the safety limit of {max_bytes} bytes"
+        ));
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("cannot open scanner report: {error}"))?;
+    let mut raw = String::new();
+    file.take(max_bytes.saturating_add(1) as u64)
+        .read_to_string(&mut raw)
+        .map_err(|error| format!("cannot read scanner report: {error}"))?;
+    if raw.len() > max_bytes {
+        return Err(format!(
+            "scanner report exceeds the safety limit of {max_bytes} bytes"
+        ));
+    }
+    Ok((!raw.trim().is_empty()).then_some(raw))
 }
 
 async fn run_grype(
@@ -310,6 +337,7 @@ async fn run_grype(
     let prepared = super::runtime::PreparedCommand {
         program,
         args: grype::build_args(target),
+        environment: Vec::new(),
         path_rewrite: None,
     };
 
@@ -330,4 +358,20 @@ async fn run_grype(
         &target.to_string_lossy(),
         outcome.duration_ms,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_report_limited;
+
+    #[test]
+    fn oversized_on_disk_reports_are_rejected_before_parsing() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("report.json");
+        std::fs::write(&path, "123456789").expect("fixture");
+
+        let error = read_report_limited(&path, 8).expect_err("oversized report");
+
+        assert!(error.contains("8 bytes"), "{error}");
+    }
 }

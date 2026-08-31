@@ -29,6 +29,26 @@ fn truncate(s: &str, n: usize) -> String {
     crate::scanners::secrets::truncate(s, n)
 }
 
+struct SafeToolResult {
+    success: bool,
+    payload: String,
+    preview: String,
+}
+
+fn safe_tool_result(result: Result<Value, String>) -> SafeToolResult {
+    let (success, raw) = match result {
+        Ok(value) => (true, value.to_string()),
+        Err(error) => (false, json!({ "error": error }).to_string()),
+    };
+    let payload = crate::scanners::redact_secrets_in_text(&raw);
+    let preview = truncate(&payload, 500);
+    SafeToolResult {
+        success,
+        payload,
+        preview,
+    }
+}
+
 /// True while the most recent assistant message has requested tool calls that
 /// are not all answered yet.
 ///
@@ -139,7 +159,7 @@ pub async fn run_turn(request: RunTurnRequest<'_>) -> Result<(String, Option<Usa
         allow_compaction,
     } = request;
     let hint = "You are running inside oxAudit, a security research desktop app. \
-You have research tools available: read_file, grep_project, glob, run_scan, search_cve, \
+You have research tools available: read_file, grep_project, glob, run_scan, run_dependency_scan, search_cve, \
 get_cve_detail, query_osv_package, web_fetch, ask_user, todo. \
 Use them when they genuinely help — never invent file contents, scan results, or CVE data \
 you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Reply in Markdown.";
@@ -166,7 +186,8 @@ you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Repl
             settings.max_tokens,
         ) {
             let head: Vec<Value> = messages[1..selection.keep_from].to_vec();
-            if let Ok(summary) = super::compaction::summarize_messages(client, settings, &head).await
+            if let Ok(summary) =
+                super::compaction::summarize_messages(client, settings, &head).await
             {
                 messages = super::compaction::apply(&messages, selection.keep_from, &summary);
                 emit(AiStreamEvent::ContextCompacted {
@@ -415,21 +436,18 @@ Let me summarize what I have and ask you how to proceed.",
                 return Err(LlmError::Cancelled);
             }
             let duration_ms = started.elapsed().as_millis() as u64;
-            let (success, payload) = match result {
-                Ok(v) => (true, v.to_string()),
-                Err(e) => (false, json!({ "error": e }).to_string()),
-            };
+            let safe_result = safe_tool_result(result);
             emit(AiStreamEvent::ToolResult {
                 tool_call_id: tc.id.clone(),
                 name: tc.name.clone(),
-                success,
+                success: safe_result.success,
                 duration_ms,
-                result_preview: truncate(&payload, 500),
+                result_preview: safe_result.preview,
             });
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": truncate(&payload, TOOL_RESULT_MAX_CHARS),
+                "content": truncate(&safe_result.payload, TOOL_RESULT_MAX_CHARS),
             }));
         }
 
@@ -477,6 +495,20 @@ mod steer_tests {
 
     fn tool_result(id: &str) -> Value {
         json!({ "role": "tool", "tool_call_id": id, "content": "{}" })
+    }
+
+    #[test]
+    fn tool_payload_and_preview_share_the_same_secret_redaction() {
+        const CANARY: &str = "oxaudit-agent-secret-canary-7D4zP9q2";
+        let result = Ok(json!({ "content": format!("token = \"{CANARY}\"") }));
+
+        let safe = safe_tool_result(result);
+
+        assert!(safe.success);
+        assert!(!safe.payload.contains(CANARY));
+        assert!(!safe.preview.contains(CANARY));
+        assert!(safe.payload.contains("[REDACTED]"));
+        assert_eq!(safe.preview, truncate(&safe.payload, 500));
     }
 
     /// Collects emitted events so tests can assert on what the UI would see.

@@ -641,7 +641,7 @@ export interface Vulnerability {
   publicExploit: boolean;
   /** Whether the project's own source references this package. */
   directUsage: {
-    /** true = confirmed; false = mapped and not found; null = not mapped. */
+    /** true = confirmed; false = completely indexed and not found; null = unmapped or incomplete. */
     referenced: boolean | null;
     referencedFiles: number;
     exampleFile: string | null;

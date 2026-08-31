@@ -1,6 +1,8 @@
-//! The 10 built-in tools for the AI research agent. All read-only except the
-//! two interactive ones (ask_user, todo) — that is the safety posture.
+//! Built-in tools for the AI research agent. Project-only reads are automatic;
+//! network and subprocess tools require approval.
 
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -17,13 +19,15 @@ use crate::models::Vulnerability;
 use rayon::prelude::*;
 use tauri::Manager;
 
+const MAX_ASSISTANT_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
 #[cfg(test)]
 fn collect_agent_files(
     project_root: &std::path::Path,
     root: &std::path::Path,
     settings: &crate::models::ScanSettings,
 ) -> (Vec<std::path::PathBuf>, usize, u64) {
-    fs_utils::collect_files(
+    let collection = fs_utils::collect_source_files_bounded(
         root,
         fs_utils::CollectFilesOptions {
             project_root,
@@ -31,6 +35,18 @@ fn collect_agent_files(
             follow_symlinks: settings.follow_symlinks,
             extra_ignored: &settings.ignored_dirs,
         },
+        fs_utils::CollectionBudget::default(),
+        None,
+    )
+    .expect("test collection stays within production limits");
+    (
+        collection
+            .files
+            .into_iter()
+            .map(|file| file.canonical_path)
+            .collect(),
+        collection.skipped,
+        collection.total_bytes,
     )
 }
 
@@ -38,8 +54,9 @@ fn collect_agent_source_files(
     project_root: &std::path::Path,
     root: &std::path::Path,
     settings: &crate::models::ScanSettings,
-) -> fs_utils::SourceFileCollection {
-    fs_utils::collect_source_files(
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<fs_utils::SourceFileCollection, String> {
+    fs_utils::collect_source_files_bounded(
         root,
         fs_utils::CollectFilesOptions {
             project_root,
@@ -47,7 +64,10 @@ fn collect_agent_source_files(
             follow_symlinks: settings.follow_symlinks,
             extra_ignored: &settings.ignored_dirs,
         },
+        fs_utils::CollectionBudget::default(),
+        cancel,
     )
+    .map_err(|error| error.to_string())
 }
 
 fn source_identity(path: &std::path::Path) -> String {
@@ -58,27 +78,40 @@ fn collect_agent_lockfiles(
     project_root: &std::path::Path,
     root: &std::path::Path,
     settings: &crate::models::ScanSettings,
-) -> Vec<std::path::PathBuf> {
-    fs_utils::discover_lockfiles(project_root, root, &settings.ignored_dirs)
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    fs_utils::discover_lockfiles_bounded(
+        project_root,
+        root,
+        &settings.ignored_dirs,
+        crate::deps::lockfiles::MAX_LOCKFILES,
+        cancel,
+    )
+    .map_err(|error| error.to_string())
+}
+
+struct GrepQuery<'a> {
+    pattern: &'a str,
+    mode: &'a str,
+    context: usize,
+    head_limit: usize,
 }
 
 fn grep_project_files(
     project_root: &std::path::Path,
     root: &std::path::Path,
     settings: &crate::models::ScanSettings,
-    pattern: &str,
-    mode: &str,
-    context: usize,
-    head_limit: usize,
+    query: GrepQuery<'_>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Value, String> {
-    let re = regex::Regex::new(pattern).map_err(|e| format!("invalid regex: {e}"))?;
-    let collection = collect_agent_source_files(project_root, root, settings);
+    let re = regex::Regex::new(query.pattern).map_err(|e| format!("invalid regex: {e}"))?;
+    let collection = collect_agent_source_files(project_root, root, settings, cancel)?;
     let mut hits: Vec<Value> = Vec::new();
     let mut counts: Vec<Value> = Vec::new();
     let mut files_with: Vec<String> = Vec::new();
     let mut total = 0usize;
     for file in &collection.files {
-        if total >= head_limit {
+        if total >= query.head_limit {
             break;
         }
         let Some(content) = fs_utils::read_text_file(&file.canonical_path, 1024 * 1024) else {
@@ -88,16 +121,16 @@ fn grep_project_files(
         let lines: Vec<&str> = content.lines().collect();
         let mut file_count = 0usize;
         for found in re.find_iter(&content) {
-            if total >= head_limit {
+            if total >= query.head_limit {
                 break;
             }
             total += 1;
             file_count += 1;
             let line_no = content[..found.start()].matches('\n').count() + 1;
             let line_index = line_no - 1;
-            if mode == "content" {
-                let low = line_index.saturating_sub(context);
-                let high = (line_index + 1 + context).min(lines.len());
+            if query.mode == "content" {
+                let low = line_index.saturating_sub(query.context);
+                let high = (line_index + 1 + query.context).min(lines.len());
                 let context_lines: Vec<Value> = (low..high)
                     .map(|index| Value::String(format!("{:>6} │ {}", index + 1, lines[index])))
                     .collect();
@@ -108,24 +141,24 @@ fn grep_project_files(
                         - content[..found.start()].rfind('\n').map(|position| position + 1).unwrap_or(0)
                         + 1,
                     "text": lines[line_index],
-                    "context": if context > 0 { Value::Array(context_lines) } else { Value::Null },
+                    "context": if query.context > 0 { Value::Array(context_lines) } else { Value::Null },
                 }));
             }
         }
-        if mode == "count" {
+        if query.mode == "count" {
             if file_count > 0 {
                 counts.push(json!({ "file": identity, "matches": file_count }));
             }
-        } else if file_count > 0 && mode == "files_with_matches" {
+        } else if file_count > 0 && query.mode == "files_with_matches" {
             files_with.push(identity);
         }
     }
-    if total >= head_limit {
+    if total >= query.head_limit {
         hits.push(json!({ "note": "hit head_limit — results truncated" }));
     }
     Ok(json!({
         "total_matches": total,
-        "mode": mode,
+        "mode": query.mode,
         "files_with_matches": files_with,
         "counts": counts,
         "matches": hits,
@@ -138,13 +171,14 @@ fn glob_project_files(
     settings: &crate::models::ScanSettings,
     pattern: &str,
     max_results: usize,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Value, String> {
     let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
     builder
         .add_line(None, pattern)
         .map_err(|e| format!("invalid glob: {e}"))?;
     let matcher = builder.build().map_err(|e| format!("invalid glob: {e}"))?;
-    let collection = collect_agent_source_files(project_root, root, settings);
+    let collection = collect_agent_source_files(project_root, root, settings, cancel)?;
     let mut matched: Vec<String> = Vec::new();
     for file in &collection.files {
         if matched.len() >= max_results {
@@ -173,13 +207,14 @@ fn scan_agent_code_files(
     scan_type: &str,
     scan_secrets: bool,
     scan_vulnerabilities: bool,
-) -> Value {
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Value, String> {
     let started = Instant::now();
-    let collection = collect_agent_source_files(project_root, root, settings);
-    let findings: Vec<crate::models::Finding> = collection
+    let collection = collect_agent_source_files(project_root, root, settings, cancel)?;
+    let outcomes = collection
         .files
         .par_iter()
-        .flat_map(|file| {
+        .map(|file| {
             crate::scanners::scan_file_with_relative_path(
                 &file.canonical_path,
                 &source_identity(&file.collection_relative_path),
@@ -187,9 +222,21 @@ fn scan_agent_code_files(
                 scan_secrets,
                 scan_vulnerabilities,
             )
-            .findings
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let mut findings: Vec<crate::models::Finding> = Vec::new();
+    for outcome in outcomes {
+        if let Some(error) = outcome.limit_error {
+            return Err(error.to_string());
+        }
+        crate::scanners::ensure_run_finding_budget(
+            findings.len(),
+            outcome.findings.len(),
+            crate::scanners::MAX_FINDINGS_PER_RUN,
+        )
+        .map_err(|error| error.to_string())?;
+        findings.extend(outcome.findings);
+    }
     let secrets = findings
         .iter()
         .filter(|finding| finding.category == "secret")
@@ -201,7 +248,7 @@ fn scan_agent_code_files(
     let mut sorted = findings.clone();
     sorted.sort_by(|a, b| b.severity.cmp(&a.severity));
     let top = top_findings_json(&sorted);
-    json!({
+    Ok(json!({
         "scan_type": scan_type,
         "files_scanned": collection.files.len(),
         "files_skipped": collection.skipped,
@@ -210,7 +257,7 @@ fn scan_agent_code_files(
         "total_findings": findings.len(),
         "top_findings": top,
         "duration_ms": started.elapsed().as_millis() as u64,
-    })
+    }))
 }
 
 fn top_findings_json(findings: &[crate::models::Finding]) -> Vec<Value> {
@@ -235,16 +282,18 @@ fn scan_agent_source_files(
     project_root: &std::path::Path,
     root: &std::path::Path,
     settings: &crate::models::ScanSettings,
-) -> Value {
-    scan_agent_code_files(project_root, root, settings, "source", false, true)
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Value, String> {
+    scan_agent_code_files(project_root, root, settings, "source", false, true, cancel)
 }
 
 fn scan_agent_secret_files(
     project_root: &std::path::Path,
     root: &std::path::Path,
     settings: &crate::models::ScanSettings,
-) -> Value {
-    scan_agent_code_files(project_root, root, settings, "secrets", true, false)
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Value, String> {
+    scan_agent_code_files(project_root, root, settings, "secrets", true, false, cancel)
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -257,6 +306,75 @@ pub struct TodoItem {
 
 fn truncate(s: &str, n: usize) -> String {
     crate::scanners::secrets::truncate(s, n)
+}
+
+fn read_file_window(
+    path: &std::path::Path,
+    offset: u64,
+    limit: u64,
+    include_numbers: bool,
+    max_bytes: u64,
+) -> Result<Value, String> {
+    let file = File::open(path).map_err(|error| format!("read failed: {error}"))?;
+    let length = file
+        .metadata()
+        .map_err(|error| format!("read failed: {error}"))?
+        .len();
+    if length > max_bytes {
+        return Err(format!(
+            "file is too large for the assistant (maximum {max_bytes} bytes)"
+        ));
+    }
+
+    let start_index = usize::try_from(offset.saturating_sub(1)).unwrap_or(usize::MAX);
+    let requested = usize::try_from(limit).unwrap_or(usize::MAX);
+    let mut reader = BufReader::new(file.take(max_bytes.saturating_add(1)));
+    let mut total_lines = 0usize;
+    let mut selected = 0usize;
+    let mut output = String::new();
+
+    loop {
+        let mut line = String::new();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|error| format!("read failed: {error}"))?;
+        if bytes == 0 {
+            break;
+        }
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+        let index = total_lines;
+        total_lines += 1;
+        if index < start_index || selected >= requested {
+            continue;
+        }
+        if include_numbers {
+            output.push_str(&format!("{:>6} │ {}\n", index + 1, line));
+        } else {
+            output.push_str(&line);
+            output.push('\n');
+        }
+        selected += 1;
+    }
+
+    if reader.get_ref().limit() == 0 {
+        return Err(format!(
+            "file is too large for the assistant (maximum {max_bytes} bytes)"
+        ));
+    }
+
+    let effective_start = start_index.min(total_lines);
+    Ok(json!({
+        "line_offset": effective_start + 1,
+        "line_count": selected,
+        "total_lines": total_lines,
+        "has_more_lines": total_lines > effective_start.saturating_add(selected),
+        "content": truncate(&output, 20000),
+    }))
 }
 
 /// The full agent tool set.
@@ -284,27 +402,15 @@ pub fn builtins() -> Vec<Tool> {
                 let include_numbers = arg_bool_default(&args, "include_line_numbers", true);
                 let root = project_root(&ctx)?;
                 let full = resolve_in_project(&root, &path)?;
-                let content = std::fs::read_to_string(&full).map_err(|e| format!("read failed: {e}"))?;
-                let lines: Vec<&str> = content.lines().collect();
-                let start = (offset.max(1) as usize - 1).min(lines.len());
-                let end = (start + limit as usize).min(lines.len());
-                let mut out = String::new();
-                for (i, line) in lines.iter().enumerate().take(end).skip(start) {
-                    if include_numbers {
-                        out.push_str(&format!("{:>6} │ {}\n", i + 1, line));
-                    } else {
-                        out.push_str(line);
-                        out.push('\n');
-                    }
-                }
-                Ok(json!({
-                    "path": display_rel(&root, &full),
-                    "line_offset": start + 1,
-                    "line_count": end - start,
-                    "total_lines": lines.len(),
-                    "has_more_lines": end < lines.len(),
-                    "content": truncate(&out, 20000),
-                }))
+                let mut window = read_file_window(
+                    &full,
+                    offset,
+                    limit,
+                    include_numbers,
+                    MAX_ASSISTANT_FILE_BYTES,
+                )?;
+                window["path"] = Value::String(display_rel(&root, &full));
+                Ok(window)
             }
         ),
         // ---------------------------------------------------------- grep_project
@@ -335,14 +441,18 @@ pub fn builtins() -> Vec<Tool> {
                 };
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().scan.clone();
+                let cancellation = ctx.cancellation.as_ref().map(|value| value.flag());
                 grep_project_files(
                     &proj,
                     &root,
                     &settings,
-                    &pattern,
-                    &mode,
-                    context,
-                    head_limit,
+                    GrepQuery {
+                        pattern: &pattern,
+                        mode: &mode,
+                        context,
+                        head_limit,
+                    },
+                    cancellation.as_deref(),
                 )
             }
         ),
@@ -370,17 +480,25 @@ pub fn builtins() -> Vec<Tool> {
                 };
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().scan.clone();
-                glob_project_files(&proj, &root, &settings, &pattern, max_results)
+                let cancellation = ctx.cancellation.as_ref().map(|value| value.flag());
+                glob_project_files(
+                    &proj,
+                    &root,
+                    &settings,
+                    &pattern,
+                    max_results,
+                    cancellation.as_deref(),
+                )
             }
         ),
         // -------------------------------------------------------------- run_scan
         crate::tool!(
             "run_scan",
-            "Run an oxAudit scan on the active project: source (vulnerable code patterns), secrets (leaked credentials), or dependencies (lockfiles vs OSV). Returns counts and the top findings.",
+            "Run a local oxAudit scan on the active project: source (vulnerable code patterns) or secrets (leaked credentials). Returns counts and the top findings.",
             json!({
                 "type": "object",
                 "properties": {
-                    "scan_type": { "type": "string", "enum": ["source", "secrets", "dependencies"], "description": "source: vuln patterns (default); secrets: secret scanning; dependencies: OSV check of lockfiles." },
+                    "scan_type": { "type": "string", "enum": ["source", "secrets"], "description": "source: vulnerable code patterns (default); secrets: leaked-credential scanning." },
                     "path": { "type": "string", "description": "Optional subfolder to scan (defaults to the project root)." }
                 }
             }),
@@ -392,51 +510,118 @@ pub fn builtins() -> Vec<Tool> {
                     Some(p) => resolve_collection_root(&proj, &p)?,
                     None => proj.clone(),
                 };
-                let started = Instant::now();
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().clone();
-
-                if scan_type == "dependencies" || scan_type == "deps" {
-                    let lockfiles = collect_agent_lockfiles(&proj, &root, &settings.scan);
-                    let mut deps = Vec::new();
-                    for lf in &lockfiles {
-                        let name = lf.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                        let kind = crate::deps::lockfiles::lockfile_kind(name);
-                        if let Ok(d) = crate::deps::lockfiles::parse_lockfile(lf, kind) {
-                            deps.extend(d);
-                        }
-                    }
-                    let deps = crate::deps::lockfiles::dedupe_dependencies(deps);
-                    let st = ctx.state().ok_or("app state unavailable")?;
-                    let vuln_map = st.osv.query_batch(&deps).await.unwrap_or_default();
-                    let mut vulns: Vec<Vulnerability> = Vec::new();
-                    for dep in &deps {
-                        let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
-                        if let Some(v) = vuln_map.get(&key) {
-                            vulns.extend(v.clone());
-                        }
-                    }
-                    vulns.sort_by(|a, b| b.cvss_score.unwrap_or(0.0).partial_cmp(&a.cvss_score.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
-                    let top: Vec<Value> = vulns.iter().take(20).map(|v| json!({
-                        "id": v.id, "package": v.package_name, "installed": v.installed_version,
-                        "severity": v.severity, "cvss": v.cvss_score, "fixed": v.fixed_versions,
-                        "summary": truncate(&v.summary, 160),
-                    })).collect();
-                    return Ok(json!({
-                        "scan_type": "dependencies",
-                        "lockfiles": lockfiles.len(),
-                        "packages_queried": deps.len(),
-                        "vulnerabilities_found": vulns.len(),
-                        "top_vulnerabilities": top,
-                        "duration_ms": started.elapsed().as_millis() as u64,
-                    }));
-                }
+                let cancellation = ctx.cancellation.as_ref().map(|value| value.flag());
 
                 if scan_type == "secrets" {
-                    Ok(scan_agent_secret_files(&proj, &root, &settings.scan))
+                    scan_agent_secret_files(
+                        &proj,
+                        &root,
+                        &settings.scan,
+                        cancellation.as_deref(),
+                    )
                 } else {
-                    Ok(scan_agent_source_files(&proj, &root, &settings.scan))
+                    scan_agent_source_files(
+                        &proj,
+                        &root,
+                        &settings.scan,
+                        cancellation.as_deref(),
+                    )
                 }
+            }
+        ),
+        // --------------------------------------------------- run_dependency_scan
+        crate::tool!(
+            "run_dependency_scan",
+            "Parse project lockfiles and query OSV for known vulnerabilities. This reaches the network and requires the user's approval.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Optional subfolder to scan (defaults to the project root)." }
+                }
+            }),
+            false, false, true,
+            |ctx, args| {
+                let proj = project_root(&ctx)?;
+                let root = match arg_str_opt(&args, "path") {
+                    Some(p) => resolve_collection_root(&proj, &p)?,
+                    None => proj.clone(),
+                };
+                let started = Instant::now();
+                let st = ctx.state().ok_or("app state unavailable")?;
+                let scan_settings = st.settings.lock().unwrap().scan.clone();
+                let cancellation = ctx.cancellation.as_ref().map(|value| value.flag());
+                let lockfiles = collect_agent_lockfiles(
+                    &proj,
+                    &root,
+                    &scan_settings,
+                    cancellation.as_deref(),
+                )?;
+                let mut deps = Vec::new();
+                let mut parse_errors = Vec::new();
+                for lockfile in &lockfiles {
+                    if cancellation
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+                    {
+                        return Err("dependency scan cancelled".into());
+                    }
+                    let name = lockfile.file_name().and_then(|value| value.to_str()).unwrap_or("");
+                    let kind = crate::deps::lockfiles::lockfile_kind(name);
+                    match crate::deps::lockfiles::parse_lockfile(lockfile, kind) {
+                        Ok(parsed) => crate::deps::lockfiles::extend_dependencies_bounded(
+                            &mut deps,
+                            parsed,
+                            crate::deps::lockfiles::MAX_DEPENDENCIES,
+                        )?,
+                        Err(error)
+                            if crate::deps::lockfiles::is_resource_limit_error(&error) =>
+                        {
+                            return Err(format!("{}: {error}", lockfile.display()));
+                        }
+                        Err(error) => parse_errors.push(format!("{}: {error}", lockfile.display())),
+                    }
+                }
+                let deps = crate::deps::lockfiles::dedupe_dependencies(deps);
+                let state = ctx.state().ok_or("app state unavailable")?;
+                let vuln_map = state.osv.query_batch(&deps).await?;
+                let mut vulns: Vec<Vulnerability> = Vec::new();
+                for dep in &deps {
+                    let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
+                    if let Some(matches) = vuln_map.get(&key) {
+                        vulns.extend(matches.clone());
+                    }
+                }
+                vulns.sort_by(|left, right| {
+                    right
+                        .cvss_score
+                        .unwrap_or(0.0)
+                        .partial_cmp(&left.cvss_score.unwrap_or(0.0))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let top: Vec<Value> = vulns
+                    .iter()
+                    .take(20)
+                    .map(|vulnerability| json!({
+                        "id": vulnerability.id,
+                        "package": vulnerability.package_name,
+                        "installed": vulnerability.installed_version,
+                        "severity": vulnerability.severity,
+                        "cvss": vulnerability.cvss_score,
+                        "fixed": vulnerability.fixed_versions,
+                        "summary": truncate(&vulnerability.summary, 160),
+                    }))
+                    .collect();
+                Ok(json!({
+                    "scan_type": "dependencies",
+                    "lockfiles": lockfiles.len(),
+                    "packages_queried": deps.len(),
+                    "parse_errors": parse_errors,
+                    "vulnerabilities_found": vulns.len(),
+                    "top_vulnerabilities": top,
+                    "duration_ms": started.elapsed().as_millis() as u64,
+                }))
             }
         ),
         // ------------------------------------------------------------ search_cve
@@ -451,7 +636,7 @@ pub fn builtins() -> Vec<Tool> {
                 },
                 "required": ["query"]
             }),
-            true, false, false,
+            false, false, true,
             |ctx, args| {
                 let query = arg_str(&args, "query")?;
                 let limit = arg_u64_default(&args, "limit", 10).min(25) as usize;
@@ -488,7 +673,7 @@ pub fn builtins() -> Vec<Tool> {
                 },
                 "required": ["cve_id"]
             }),
-            true, false, false,
+            false, false, true,
             |ctx, args| {
                 let cve_id = arg_str(&args, "cve_id")?;
                 let cve = ctx.app.state::<crate::cve::CveState>();
@@ -526,7 +711,7 @@ pub fn builtins() -> Vec<Tool> {
                 },
                 "required": ["ecosystem", "name"]
             }),
-            true, false, false,
+            false, false, true,
             |ctx, args| {
                 let ecosystem = arg_str(&args, "ecosystem")?;
                 let name = arg_str(&args, "name")?;
@@ -575,18 +760,23 @@ pub fn builtins() -> Vec<Tool> {
                     let settings = st.settings.lock().map_err(|_| "settings unavailable")?;
                     crate::agent::egress::EgressPolicy::new(&settings.agent_allowed_fetch_hosts)
                 };
-                let http = st.http_no_redirect.clone();
-
                 let mut current =
                     reqwest::Url::parse(&url).map_err(|e| format!("invalid URL: {e}"))?;
                 let mut hops = 0usize;
 
-                let (final_url, bytes) = loop {
+                let (final_url, bytes, truncated) = loop {
                     // Validate *this* hop before a single byte is sent. A host
                     // that cleared the check and then redirected inward is the
                     // whole reason the loop re-checks rather than trusting the
                     // URL the model supplied.
-                    guard_egress(&policy, &current).await?;
+                    let addresses = guard_egress(&policy, &current).await?;
+                    let host = current.host_str().ok_or_else(|| {
+                        crate::agent::egress::EgressError::MissingHost.to_string()
+                    })?;
+                    // Use exactly the addresses that passed the policy. Letting
+                    // reqwest resolve the name again would reopen a DNS-rebinding
+                    // race between validation and connection.
+                    let http = build_pinned_http_client(host, &addresses)?;
 
                     let response = http
                         .get(current.clone())
@@ -623,21 +813,17 @@ pub fn builtins() -> Vec<Tool> {
                     if !status.is_success() {
                         return Err(format!("endpoint returned {status}"));
                     }
-                    let bytes = response
-                        .bytes()
-                        .await
-                        .map_err(|e| format!("read failed: {e}"))?;
-                    break (current, bytes);
+                    let (bytes, truncated) = read_response_limited(response, max_bytes).await?;
+                    break (current, bytes, truncated);
                 };
 
-                let slice = &bytes[..bytes.len().min(max_bytes)];
-                let raw = String::from_utf8_lossy(slice);
+                let raw = String::from_utf8_lossy(&bytes);
                 let text = strip_html(&raw);
                 let text = crate::scanners::secrets::truncate(&text, 20000);
                 Ok(json!({
                     "url": final_url.to_string(),
                     "content": text,
-                    "truncated": bytes.len() > max_bytes,
+                    "truncated": truncated,
                     "redirects": hops,
                 }))
             }
@@ -924,13 +1110,28 @@ mod permission_tests {
         // The counterpart guard: tightening web_fetch must not make the
         // read-only tools prompt on every call, which would train users to
         // click through approvals without reading them.
-        for name in ["read_file", "grep_project", "glob"] {
+        for name in ["read_file", "grep_project", "glob", "run_scan"] {
             let spec = spec_named(name);
             assert_eq!(
                 classify(&spec),
                 Permission::Allow,
                 "{name} should not prompt"
             );
+        }
+    }
+
+    #[test]
+    fn model_selected_network_tools_require_human_approval() {
+        for name in [
+            "run_dependency_scan",
+            "search_cve",
+            "get_cve_detail",
+            "query_osv_package",
+        ] {
+            let spec = spec_named(name);
+            assert!(spec.dangerous, "{name} must stay classified dangerous");
+            assert!(!spec.read_only, "{name} must not be treated as local-only");
+            assert_eq!(classify(&spec), Permission::Ask, "{name} should prompt");
         }
     }
 
@@ -953,8 +1154,9 @@ mod permission_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_agent_files, collect_agent_lockfiles, glob_project_files, grep_project_files,
-        scan_agent_secret_files, scan_agent_source_files, top_findings_json,
+        build_pinned_http_client, collect_agent_files, collect_agent_lockfiles, glob_project_files,
+        grep_project_files, read_file_window, read_response_limited, scan_agent_secret_files,
+        scan_agent_source_files, top_findings_json, GrepQuery,
     };
     use crate::agent::tool::resolve_collection_root;
     use crate::models::ScanSettings;
@@ -970,6 +1172,71 @@ mod tests {
         fs::write(root.path().join("ignored.rs"), "ignored\n").unwrap();
         fs::write(root.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         root
+    }
+
+    #[test]
+    fn assistant_file_read_returns_only_the_requested_window() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let path = directory.path().join("window.txt");
+        fs::write(&path, "one\ntwo\nthree\nfour\n").expect("window fixture");
+
+        let window = read_file_window(&path, 2, 2, true, 1024).expect("bounded read");
+
+        assert_eq!(window["line_offset"], 2);
+        assert_eq!(window["line_count"], 2);
+        assert_eq!(window["total_lines"], 4);
+        assert_eq!(window["has_more_lines"], true);
+        assert_eq!(window["content"], "     2 │ two\n     3 │ three\n");
+    }
+
+    #[test]
+    fn assistant_file_read_rejects_input_over_its_byte_budget() {
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let path = directory.path().join("oversized.txt");
+        fs::write(&path, "123456789").expect("oversized fixture");
+
+        let error = read_file_window(&path, 1, 1, false, 8).expect_err("must reject");
+
+        assert!(error.contains("8 bytes"), "{error}");
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn web_fetch_pins_the_validated_address_and_stops_at_its_byte_budget() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("connection");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let body = "x".repeat(4096);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("response");
+        });
+
+        let client = build_pinned_http_client("pin.invalid", &[address]).expect("client");
+        let response = client
+            .get(format!("http://pin.invalid:{}/", address.port()))
+            .send()
+            .await
+            .expect("request reaches pinned listener");
+        let (body, truncated) = read_response_limited(response, 32)
+            .await
+            .expect("bounded response");
+
+        assert_eq!(body, vec![b'x'; 32]);
+        assert!(truncated);
+        server.await.expect("server task");
     }
 
     #[test]
@@ -1002,7 +1269,8 @@ mod tests {
         let mut settings = ScanSettings::default();
         settings.ignored_dirs.clear();
 
-        let payload = scan_agent_source_files(directory.path(), directory.path(), &settings);
+        let payload = scan_agent_source_files(directory.path(), directory.path(), &settings, None)
+            .expect("assistant scan");
         let serialized = payload.to_string();
 
         assert_eq!(payload["vulnerabilities_found"], 1);
@@ -1100,9 +1368,9 @@ mod tests {
         let mut settings = ScanSettings::default();
         settings.ignored_dirs.clear();
 
-        let excluded = collect_agent_lockfiles(root.path(), root.path(), &settings);
+        let excluded = collect_agent_lockfiles(root.path(), root.path(), &settings, None).unwrap();
         settings.include_git = true;
-        let included = collect_agent_lockfiles(root.path(), root.path(), &settings);
+        let included = collect_agent_lockfiles(root.path(), root.path(), &settings, None).unwrap();
 
         let lockfile = root.path().join("Cargo.lock").canonicalize().unwrap();
         assert_eq!(excluded.as_slice(), std::slice::from_ref(&lockfile));
@@ -1130,15 +1398,18 @@ mod tests {
             root.path(),
             &requested,
             &settings,
-            "ordinary",
-            "content",
-            0,
-            100,
+            GrepQuery {
+                pattern: "ordinary",
+                mode: "content",
+                context: 0,
+                head_limit: 100,
+            },
+            None,
         )
         .unwrap();
-        let glob = glob_project_files(root.path(), &requested, &settings, "*", 100).unwrap();
-        let source = scan_agent_source_files(root.path(), &requested, &settings);
-        let secrets = scan_agent_secret_files(root.path(), &requested, &settings);
+        let glob = glob_project_files(root.path(), &requested, &settings, "*", 100, None).unwrap();
+        let source = scan_agent_source_files(root.path(), &requested, &settings, None).unwrap();
+        let secrets = scan_agent_secret_files(root.path(), &requested, &settings, None).unwrap();
 
         assert_eq!(grep["total_matches"], 0);
         assert_eq!(glob["count"], 0);
@@ -1167,11 +1438,22 @@ mod tests {
         };
         settings.ignored_dirs.clear();
 
-        let grep =
-            grep_project_files(root.path(), &alias, &settings, "eval", "content", 0, 100).unwrap();
-        let glob = glob_project_files(root.path(), &alias, &settings, "*.js", 100).unwrap();
-        let source = scan_agent_source_files(root.path(), &alias, &settings);
-        let secrets = scan_agent_secret_files(root.path(), &alias, &settings);
+        let grep = grep_project_files(
+            root.path(),
+            &alias,
+            &settings,
+            GrepQuery {
+                pattern: "eval",
+                mode: "content",
+                context: 0,
+                head_limit: 100,
+            },
+            None,
+        )
+        .unwrap();
+        let glob = glob_project_files(root.path(), &alias, &settings, "*.js", 100, None).unwrap();
+        let source = scan_agent_source_files(root.path(), &alias, &settings, None).unwrap();
+        let secrets = scan_agent_secret_files(root.path(), &alias, &settings, None).unwrap();
 
         assert_eq!(grep["total_matches"], 0);
         assert_eq!(glob["matches"], serde_json::json!([]));
@@ -1203,15 +1485,18 @@ mod tests {
             root.path(),
             &alias,
             &settings,
-            "eval",
-            "files_with_matches",
-            0,
-            100,
+            GrepQuery {
+                pattern: "eval",
+                mode: "files_with_matches",
+                context: 0,
+                head_limit: 100,
+            },
+            None,
         )
         .unwrap();
-        let glob = glob_project_files(root.path(), &alias, &settings, "*.js", 100).unwrap();
-        let source = scan_agent_source_files(root.path(), &alias, &settings);
-        let secrets = scan_agent_secret_files(root.path(), &alias, &settings);
+        let glob = glob_project_files(root.path(), &alias, &settings, "*.js", 100, None).unwrap();
+        let source = scan_agent_source_files(root.path(), &alias, &settings, None).unwrap();
+        let secrets = scan_agent_secret_files(root.path(), &alias, &settings, None).unwrap();
 
         assert_eq!(
             grep["files_with_matches"],
@@ -1236,17 +1521,58 @@ mod tests {
     }
 }
 
+fn build_pinned_http_client(
+    host: &str,
+    addresses: &[std::net::SocketAddr],
+) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("oxAudit/0.1 (security research)")
+        .gzip(true)
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        // A proxy would resolve and connect on oxAudit's behalf, bypassing the
+        // address binding below. Security-sensitive assistant fetches therefore
+        // make a direct connection to the validated destination.
+        .no_proxy()
+        .resolve_to_addrs(host, addresses)
+        .build()
+        .map_err(|error| format!("cannot prepare restricted fetch: {error}"))
+}
+
+async fn read_response_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, bool), String> {
+    use futures::StreamExt;
+
+    let declared_oversize = response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64);
+    let probe_limit = max_bytes.saturating_add(1);
+    let mut body = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut chunks = response.bytes_stream();
+
+    while body.len() < probe_limit {
+        let Some(chunk) = chunks.next().await else {
+            break;
+        };
+        let chunk = chunk.map_err(|error| format!("read failed: {error}"))?;
+        let remaining = probe_limit - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+
+    let truncated = declared_oversize || body.len() > max_bytes;
+    body.truncate(max_bytes);
+    Ok((body, truncated))
+}
+
 /// Apply the egress policy to one hop: scheme, host allow-list, then every
-/// address that host resolves to.
-///
-/// Resolving here and connecting a moment later leaves a DNS-rebinding window we
-/// cannot close without owning the socket. Narrowing it is still worth doing:
-/// it turns "any hostname reaches any internal service" into "an attacker must
-/// win a race against a host the user already allow-listed".
+/// address that host resolves to. The returned socket addresses must be bound
+/// into the HTTP client used for that hop.
 async fn guard_egress(
     policy: &crate::agent::egress::EgressPolicy,
     url: &reqwest::Url,
-) -> Result<(), String> {
+) -> Result<Vec<std::net::SocketAddr>, String> {
     use crate::agent::egress::{self, EgressError};
 
     policy
@@ -1261,14 +1587,18 @@ async fn guard_egress(
 
     // A literal address in the URL never goes near the resolver.
     if let Ok(literal) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
-        return egress::check_address(&host, literal).map_err(|error| error.to_string());
+        egress::check_address(&host, literal).map_err(|error| error.to_string())?;
+        return Ok(vec![std::net::SocketAddr::new(literal, port)]);
     }
 
-    let addresses: Vec<std::net::IpAddr> = tokio::net::lookup_host((host.as_str(), port))
+    let mut addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
         .await
         .map_err(|_| EgressError::UnresolvableHost(host.clone()).to_string())?
-        .map(|socket| socket.ip())
         .collect();
+    addresses.sort_unstable();
+    addresses.dedup();
+    let ips: Vec<std::net::IpAddr> = addresses.iter().map(|socket| socket.ip()).collect();
 
-    egress::check_addresses(&host, &addresses).map_err(|error| error.to_string())
+    egress::check_addresses(&host, &ips).map_err(|error| error.to_string())?;
+    Ok(addresses)
 }

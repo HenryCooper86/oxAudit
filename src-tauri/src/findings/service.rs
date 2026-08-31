@@ -493,7 +493,7 @@ impl FindingsService {
                 .map_err(|_| CommandError::persistence_unavailable())?;
 
             let _ = events.emit("scan://progress", Value::from("walking"));
-            let collection = fs_utils::collect_source_files(
+            let collection = fs_utils::collect_source_files_bounded(
                 &canonical,
                 CollectFilesOptions {
                     project_root: &canonical,
@@ -501,7 +501,13 @@ impl FindingsService {
                     follow_symlinks: options.follow_symlinks,
                     extra_ignored: &options.extra_ignored_dirs,
                 },
-            );
+                fs_utils::CollectionBudget::default(),
+                Some(cancel),
+            )
+            .map_err(|error| match error {
+                fs_utils::CollectionError::Cancelled => CommandError::scan_cancelled(),
+                error => CommandError::scan_resource_limit(error.to_string()),
+            })?;
             if collection.files.is_empty() {
                 // Not a failure: nothing broke. The target, the ignore list,
                 // and the size limit between them selected no files, and
@@ -580,6 +586,15 @@ impl FindingsService {
             let mut findings = Vec::new();
             let mut coverage_entries = Vec::new();
             for (relative, outcome) in outcomes.into_iter().flatten() {
+                if let Some(error) = outcome.limit_error {
+                    return Err(CommandError::scan_resource_limit(error.to_string()));
+                }
+                scanners::ensure_run_finding_budget(
+                    findings.len(),
+                    outcome.findings.len(),
+                    scanners::MAX_FINDINGS_PER_RUN,
+                )
+                .map_err(|error| CommandError::scan_resource_limit(error.to_string()))?;
                 coverage_entries.push((relative, outcome.covered_families));
                 findings.extend(outcome.findings);
             }

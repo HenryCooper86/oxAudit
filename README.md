@@ -24,10 +24,12 @@ and a finding on a workstation are the same finding.
 > [Development](#development). The release pipeline is in place and unused.
 
 When the first release lands, builds for macOS, Windows, and Linux will be
-published on the [releases page](https://github.com/HenryCooper86/oxAudit/releases),
-each signed and notarized, with a SHA-256 checksum, a SLSA build-provenance
-attestation, and a CycloneDX SBOM of oxAudit itself, so a download can be
-verified rather than trusted:
+published on the [releases page](https://github.com/HenryCooper86/oxAudit/releases).
+Publishable macOS desktop bundles require Developer ID signing and notarization;
+Windows desktop bundles require Authenticode signing. Linux bundles and the
+standalone CLI do not claim a native platform signature. Every artifact receives
+a SHA-256 checksum and SLSA build-provenance attestation, and each release carries
+CycloneDX SBOMs for oxAudit's Rust and JavaScript dependency trees:
 
 ```bash
 sha256sum -c SHA256SUMS.txt
@@ -35,6 +37,10 @@ gh attestation verify <file> --repo HenryCooper86/oxAudit
 ```
 
 The desktop app and `oxaudit-cli` ship together.
+
+Tag builds fail before bundling if the macOS or Windows signing configuration is
+incomplete. Manually dispatched dry runs may be unsigned, but the workflow cannot
+publish them.
 
 ## Sixty seconds
 
@@ -79,9 +85,9 @@ with a reason, an expiry, and a pull request.
 - **Every finding says how far it was verified** — `syntax` when a parser
   confirmed the match sits in code rather than a comment, `text` when no grammar
   was available.
-- **Nothing is sent anywhere.** Scanning is local. oxAudit contacts NVD, OSV,
-  CISA KEV, FIRST EPSS, and Exploit-DB, plus whatever AI endpoint you configure —
-  and nothing else. There is no telemetry to opt out of.
+- **Scanning is local.** oxAudit contacts NVD, OSV, CISA KEV, FIRST EPSS, and
+  Exploit-DB only for the network-backed features you invoke, plus whatever AI
+  endpoint you configure. There is no telemetry to opt out of.
 - **Findings are ranked by exploitability-in-context.** CISA KEV says a CVE was
   exploited in the wild, EPSS predicts it, a public Exploit-DB entry proves
   working exploit code exists, and direct-usage reachability says whether *your*
@@ -89,8 +95,9 @@ with a reason, an expiry, and a pull request.
   and stated honestly, because none of them substitutes for the others.
 - **Dismissals are decisions, not deletions.** A suppressed finding stays in the
   report with its reason and its author, and expires.
-- **The assistant asks before it reaches the network**, and cannot reach your
-  own machine or network at all. See [Security notes](#security-notes).
+- **The assistant asks before every model-selected network action.** Its general
+  web fetcher is restricted to approved public hosts and cannot reach your own
+  machine or private network. See [Security notes](#security-notes).
 
 ---
 
@@ -956,6 +963,15 @@ parses ten lockfile formats natively and queries OSV directly.
 
 ## Security notes
 
+- Model-selected NVD search, OSV queries, dependency scans, general web fetches,
+  and external binary-scanner runs always enter the approval queue before they
+  can use the network. Local source/secret scans remain automatic. The approved
+  fetch-host list in Settings extends the built-in advisory/reference hosts; it
+  never overrides the block on private, loopback, link-local, or otherwise
+  non-routable addresses. Redirects are checked and DNS-pinned again at every hop.
+- Symbolic links are ignored by default. When **Follow in-project symlinks** (or
+  `--follow-symlinks`) is enabled, a link is followed only if its canonical target
+  remains inside the selected project. A link cannot widen the scan boundary.
 - API keys are stored by the operating system credential manager, never in ordinary
   settings or the scanned project. Public settings are committed atomically and use
   owner-only Unix permissions. Upgrades checkpoint a safe, idempotent migration from
@@ -969,6 +985,24 @@ parses ten lockfile formats natively and queries OSV directly.
   untrusted firmware runs third-party extraction code on attacker-supplied input.
 - Live verification of secrets (calling AWS/GitHub to check tokens) is intentionally
   **not** performed; treat findings as candidates.
+
+### Safety budgets
+
+Untrusted repositories are bounded deliberately. A source run stops at 100,000
+eligible files or 20 GiB of eligible file metadata, 5,000 findings in one file,
+or 100,000 findings in the run. Dependency discovery stops at 256 lockfiles;
+each lockfile is capped at 16 MiB and the combined inventory at 100,000 unique
+ecosystem/name/version packages.
+
+Native binary discovery stops at 100,000 files or 20 GiB, uses at most four
+dedicated workers, and examines at most the first 128 MiB of any one binary.
+External scanner stdout and report files are capped at 64 MiB. Assistant file
+reads reject inputs over 2 MiB, and general web fetches retain at most 256 KiB.
+
+Crossing a scan budget is an incomplete run, never a clean result: oxAudit stops,
+names the exceeded ceiling, and does not persist the run as completed. Scan a
+smaller subdirectory or exclude generated/vendor paths with the ignored-directory
+setting or repeated CLI `--ignore-dir` flags.
 
 ## Measured next steps
 

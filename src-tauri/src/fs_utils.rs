@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ignore::WalkBuilder;
 use walkdir::WalkDir;
@@ -7,6 +9,51 @@ use walkdir::WalkDir;
 /// Directories that are always skipped when walking source trees,
 /// regardless of the user-configured ignore list.
 const ALWAYS_IGNORED: &[&str] = &[".hg", ".svn", ".DS_Store"];
+
+pub const MAX_SOURCE_FILES: usize = 100_000;
+pub const MAX_SOURCE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CollectionBudget {
+    pub max_files: usize,
+    pub max_bytes: u64,
+}
+
+impl Default for CollectionBudget {
+    fn default() -> Self {
+        Self {
+            max_files: MAX_SOURCE_FILES,
+            max_bytes: MAX_SOURCE_BYTES,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CollectionError {
+    Cancelled,
+    FileLimitExceeded { limit: usize },
+    ByteLimitExceeded { limit: u64 },
+}
+
+impl fmt::Display for CollectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cancelled => write!(formatter, "file discovery was cancelled"),
+            Self::FileLimitExceeded { limit } => write!(
+                formatter,
+                "file discovery exceeded the safety limit of {limit} eligible files; scan a \
+                 smaller subdirectory or add ignore rules"
+            ),
+            Self::ByteLimitExceeded { limit } => write!(
+                formatter,
+                "file discovery exceeded the safety limit of {limit} eligible bytes; scan a \
+                 smaller subdirectory or add ignore rules"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CollectionError {}
 
 /// File extensions we treat as "known text-ish" to short-circuit binary sniffing
 /// for files we know we want to scan. Empty extension means "sniff content".
@@ -130,6 +177,7 @@ pub struct SourceFile {
     pub collection_relative_path: PathBuf,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct SourceFileCollection {
     pub files: Vec<SourceFile>,
     pub skipped: usize,
@@ -167,20 +215,39 @@ pub fn collect_files(root: &Path, options: CollectFilesOptions<'_>) -> (Vec<Path
 /// every returned path. This preserves native project/nested ignore and
 /// negation semantics without consulting ignore files above the project, while
 /// making later reads independent from a swapped lexical symlink alias.
+#[cfg(test)]
 pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> SourceFileCollection {
-    let Some((project_root, _, lexical_collection_root, project_relative_root)) =
-        validated_collection_scope(
-            options.project_root,
-            root,
-            options.include_git,
-            options.follow_symlinks,
-        )
+    collect_source_files_bounded(root, options, CollectionBudget::default(), None)
+        .unwrap_or_else(|_| SourceFileCollection::empty())
+}
+
+/// Collect source files while enforcing a hard inventory budget and optional
+/// cancellation signal. Any interruption discards the partial inventory.
+pub fn collect_source_files_bounded(
+    root: &Path,
+    options: CollectFilesOptions<'_>,
+    budget: CollectionBudget,
+    cancel: Option<&AtomicBool>,
+) -> Result<SourceFileCollection, CollectionError> {
+    let Some((
+        project_root,
+        canonical_collection_root,
+        lexical_collection_root,
+        project_relative_root,
+    )) = validated_collection_scope(
+        options.project_root,
+        root,
+        options.include_git,
+        options.follow_symlinks,
+    )
     else {
-        return SourceFileCollection::empty();
+        return Ok(SourceFileCollection::empty());
     };
 
     let ignored = options.extra_ignored.to_vec();
     let filter_project_root = project_root.clone();
+    let filter_collection_root = lexical_collection_root.clone();
+    let filter_canonical_collection_root = canonical_collection_root.clone();
     let filter_ignored = ignored.clone();
     let include_git = options.include_git;
     let mut policy_builder = WalkBuilder::new(&project_root);
@@ -193,11 +260,20 @@ pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> So
         .require_git(false)
         .parents(false)
         .filter_entry(move |entry| {
+            let lexical_path = entry.path();
+            let within_requested_identity = filter_collection_root.starts_with(lexical_path)
+                || lexical_path.starts_with(&filter_collection_root);
+            let within_canonical_target = filter_canonical_collection_root
+                .starts_with(lexical_path)
+                || lexical_path.starts_with(&filter_canonical_collection_root);
+            if !(within_requested_identity || within_canonical_target) {
+                return false;
+            }
             let Ok(canonical_path) = entry.path().canonicalize() else {
                 return false;
             };
             source_entry_allowed(
-                entry.path(),
+                lexical_path,
                 &canonical_path,
                 &filter_project_root,
                 canonical_path.is_dir(),
@@ -207,7 +283,11 @@ pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> So
         });
 
     let mut allowed_files = BTreeSet::new();
+    let mut allowed_bytes = 0_u64;
     for entry in policy_builder.build().flatten() {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(CollectionError::Cancelled);
+        }
         if !entry
             .file_type()
             .is_some_and(|file_type| file_type.is_file())
@@ -217,8 +297,27 @@ pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> So
         let Ok(canonical_path) = entry.path().canonicalize() else {
             continue;
         };
-        if canonical_path.starts_with(&project_root) {
+        if canonical_path.starts_with(&project_root) && !allowed_files.contains(&canonical_path) {
+            if allowed_files.len() >= budget.max_files {
+                return Err(CollectionError::FileLimitExceeded {
+                    limit: budget.max_files,
+                });
+            }
+            let Ok(metadata) = std::fs::metadata(&canonical_path) else {
+                continue;
+            };
+            let next_bytes = allowed_bytes.checked_add(metadata.len()).ok_or(
+                CollectionError::ByteLimitExceeded {
+                    limit: budget.max_bytes,
+                },
+            )?;
+            if next_bytes > budget.max_bytes {
+                return Err(CollectionError::ByteLimitExceeded {
+                    limit: budget.max_bytes,
+                });
+            }
             allowed_files.insert(canonical_path);
+            allowed_bytes = next_bytes;
         }
     }
 
@@ -257,7 +356,11 @@ pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> So
 
     let mut files = BTreeMap::new();
     let mut skipped = 0usize;
+    let mut total_bytes = 0_u64;
     for entry in selection_builder.build() {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(CollectionError::Cancelled);
+        }
         match entry {
             Ok(entry) => {
                 let Ok(canonical_path) = entry.path().canonicalize() else {
@@ -300,6 +403,28 @@ pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> So
                     project_relative_path: project_relative_path.to_path_buf(),
                     collection_relative_path,
                 };
+                if !files.contains_key(&canonical_path) {
+                    if files.len() >= budget.max_files {
+                        return Err(CollectionError::FileLimitExceeded {
+                            limit: budget.max_files,
+                        });
+                    }
+                    let Ok(metadata) = std::fs::metadata(&canonical_path) else {
+                        skipped += 1;
+                        continue;
+                    };
+                    let next_bytes = total_bytes.checked_add(metadata.len()).ok_or(
+                        CollectionError::ByteLimitExceeded {
+                            limit: budget.max_bytes,
+                        },
+                    )?;
+                    if next_bytes > budget.max_bytes {
+                        return Err(CollectionError::ByteLimitExceeded {
+                            limit: budget.max_bytes,
+                        });
+                    }
+                    total_bytes = next_bytes;
+                }
                 files
                     .entry(canonical_path)
                     .and_modify(|current: &mut SourceFile| {
@@ -321,19 +446,11 @@ pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> So
     }
 
     let files: Vec<SourceFile> = files.into_values().collect();
-    let total_bytes = files
-        .iter()
-        .filter_map(|file| {
-            std::fs::metadata(&file.canonical_path)
-                .ok()
-                .map(|metadata| metadata.len())
-        })
-        .sum();
-    SourceFileCollection {
+    Ok(SourceFileCollection {
         files,
         skipped,
         total_bytes,
-    }
+    })
 }
 
 fn validated_collection_scope(
@@ -450,15 +567,33 @@ fn has_git_component(path: &Path) -> bool {
 /// ordinary ignore files are deliberately not consulted, `.git` is always
 /// excluded, symlinks are never followed, and canonical paths must stay within
 /// the explicit project boundary.
+#[cfg(test)]
 pub fn discover_lockfiles(
     project_root: &Path,
     root: &Path,
     extra_ignored: &[String],
 ) -> Vec<PathBuf> {
+    discover_lockfiles_bounded(
+        project_root,
+        root,
+        extra_ignored,
+        crate::deps::lockfiles::MAX_LOCKFILES,
+        None,
+    )
+    .unwrap_or_default()
+}
+
+pub fn discover_lockfiles_bounded(
+    project_root: &Path,
+    root: &Path,
+    extra_ignored: &[String],
+    max_lockfiles: usize,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<PathBuf>, CollectionError> {
     let Some((project_root, collection_root, _, _)) =
         validated_collection_scope(project_root, root, false, false)
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut out = BTreeSet::new();
     let ignored: Vec<String> = extra_ignored.to_vec();
@@ -485,17 +620,25 @@ pub fn discover_lockfiles(
             !ignored.iter().any(|d| d == &name)
         });
     for entry in walker.flatten() {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(CollectionError::Cancelled);
+        }
         if entry.file_type().is_file() {
             if let Some(name) = entry.file_name().to_str() {
                 if is_lockfile_name(name) {
                     if let Ok(canonical_path) = entry.path().canonicalize() {
+                        if !out.contains(&canonical_path) && out.len() >= max_lockfiles {
+                            return Err(CollectionError::FileLimitExceeded {
+                                limit: max_lockfiles,
+                            });
+                        }
                         out.insert(canonical_path);
                     }
                 }
             }
         }
     }
-    out.into_iter().collect()
+    Ok(out.into_iter().collect())
 }
 
 /// Read a file's contents as a lossy UTF-8 string, returning None if it is
@@ -563,8 +706,9 @@ pub fn display_path(root: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_files, collect_source_files, detect_language, discover_lockfiles, read_text_file,
-        CollectFilesOptions,
+        collect_files, collect_source_files, collect_source_files_bounded, detect_language,
+        discover_lockfiles, discover_lockfiles_bounded, read_text_file, CollectFilesOptions,
+        CollectionBudget, CollectionError,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -578,6 +722,128 @@ mod tests {
         fs::write(root.path().join("ignored.rs"), "ignored\n").unwrap();
         fs::write(root.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         root
+    }
+
+    #[test]
+    fn source_collection_fails_when_the_file_budget_is_exceeded() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(root.path().join("one.rs"), "one").expect("fixture");
+        fs::write(root.path().join("two.rs"), "two").expect("fixture");
+
+        let result = collect_source_files_bounded(
+            root.path(),
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+            CollectionBudget {
+                max_files: 1,
+                max_bytes: 1024,
+            },
+            None,
+        );
+
+        assert_eq!(result, Err(CollectionError::FileLimitExceeded { limit: 1 }));
+        assert!(result
+            .expect_err("file budget")
+            .to_string()
+            .contains("smaller subdirectory"));
+    }
+
+    #[test]
+    fn source_collection_fails_when_the_byte_budget_is_exceeded() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(root.path().join("large.rs"), "123456789").expect("fixture");
+
+        let result = collect_source_files_bounded(
+            root.path(),
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+            CollectionBudget {
+                max_files: 10,
+                max_bytes: 8,
+            },
+            None,
+        );
+
+        assert_eq!(result, Err(CollectionError::ByteLimitExceeded { limit: 8 }));
+        assert!(result
+            .expect_err("byte budget")
+            .to_string()
+            .contains("ignore rules"));
+    }
+
+    #[test]
+    fn a_subdirectory_scan_does_not_spend_its_budget_on_project_siblings() {
+        let project = tempfile::tempdir().expect("project");
+        let requested = project.path().join("src");
+        let sibling = project.path().join("generated");
+        fs::create_dir(&requested).expect("requested directory");
+        fs::create_dir(&sibling).expect("sibling directory");
+        fs::write(requested.join("main.rs"), "fn main() {}\n").expect("requested fixture");
+        fs::write(sibling.join("one.rs"), "one\n").expect("sibling fixture");
+        fs::write(sibling.join("two.rs"), "two\n").expect("sibling fixture");
+
+        let collection = collect_source_files_bounded(
+            &requested,
+            CollectFilesOptions {
+                project_root: project.path(),
+                include_git: false,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+            CollectionBudget {
+                max_files: 1,
+                max_bytes: 1024,
+            },
+            None,
+        )
+        .expect("only the requested subtree consumes its inventory budget");
+
+        assert_eq!(collection.files.len(), 1);
+        assert_eq!(
+            collection.files[0].collection_relative_path,
+            Path::new("main.rs")
+        );
+    }
+
+    #[test]
+    fn source_collection_honors_cancellation_during_discovery() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(root.path().join("one.rs"), "one").expect("fixture");
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+
+        let result = collect_source_files_bounded(
+            root.path(),
+            CollectFilesOptions {
+                project_root: root.path(),
+                include_git: false,
+                follow_symlinks: false,
+                extra_ignored: &[],
+            },
+            CollectionBudget::default(),
+            Some(&cancel),
+        );
+
+        assert_eq!(result, Err(CollectionError::Cancelled));
+    }
+
+    #[test]
+    fn lockfile_discovery_fails_instead_of_returning_a_partial_inventory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(root.path().join("Cargo.lock"), "").expect("fixture");
+        fs::write(root.path().join("requirements.txt"), "package==1\n").expect("fixture");
+
+        assert_eq!(
+            discover_lockfiles_bounded(root.path(), root.path(), &[], 1, None),
+            Err(CollectionError::FileLimitExceeded { limit: 1 })
+        );
     }
 
     fn relative_files(root: &Path, include_git: bool) -> Vec<PathBuf> {
@@ -604,7 +870,10 @@ mod tests {
             detect_language(Path::new("deploy/Dockerfile.prod")),
             Some("dockerfile")
         );
-        assert_eq!(detect_language(Path::new("build.dockerfile")), Some("dockerfile"));
+        assert_eq!(
+            detect_language(Path::new("build.dockerfile")),
+            Some("dockerfile")
+        );
         assert_eq!(detect_language(Path::new("main.tf")), Some("terraform"));
         assert_eq!(detect_language(Path::new("prod.tfvars")), Some("terraform"));
         assert_eq!(detect_language(Path::new("deployment.yaml")), Some("yaml"));
@@ -614,7 +883,10 @@ mod tests {
             Some("github-actions")
         );
         // A plain yaml file outside a workflow directory stays a manifest.
-        assert_eq!(detect_language(Path::new("config/application.yml")), Some("yaml"));
+        assert_eq!(
+            detect_language(Path::new("config/application.yml")),
+            Some("yaml")
+        );
         assert_eq!(
             detect_language(Path::new("workflows/ingress.yaml")),
             Some("yaml")

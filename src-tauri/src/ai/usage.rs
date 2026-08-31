@@ -5,6 +5,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+
+static USAGE_IO_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_usage_io() -> Result<MutexGuard<'static, ()>, String> {
+    USAGE_IO_LOCK
+        .lock()
+        .map_err(|_| "usage storage lock is unavailable".to_string())
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -40,7 +49,8 @@ impl UsageStore {
             .or_default();
         list.push(rec);
         if list.len() > 5000 {
-            let _ = list.split_off(list.len() - 5000);
+            let excess = list.len() - 5000;
+            list.drain(..excess);
         }
     }
 
@@ -72,17 +82,43 @@ impl UsageStore {
         s
     }
 
-    pub fn load(path: &Path) -> Option<Self> {
-        let content = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
+    fn load_unlocked(path: &Path) -> Result<Self, String> {
+        let content = match crate::private_storage::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default())
+            }
+            Err(error) => return Err(format!("cannot read usage: {error}")),
+        };
+        serde_json::from_str(&content).map_err(|error| format!("cannot parse usage: {error}"))
     }
 
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("cannot create dir: {e}"))?;
-        }
+    fn save_unlocked(&self, path: &Path) -> Result<(), String> {
         let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, content).map_err(|e| format!("cannot write usage: {e}"))
+        crate::private_storage::atomic_write(path, content.as_bytes())
+            .map_err(|error| format!("cannot write usage: {error}"))
+    }
+
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let _guard = lock_usage_io()?;
+        Self::load_unlocked(path)
+    }
+
+    #[cfg(test)]
+    fn save(&self, path: &Path) -> Result<(), String> {
+        let _guard = lock_usage_io()?;
+        self.save_unlocked(path)
+    }
+
+    pub fn record_persisted(
+        path: &Path,
+        conversation_id: &str,
+        record: UsageRecord,
+    ) -> Result<(), String> {
+        let _guard = lock_usage_io()?;
+        let mut store = Self::load_unlocked(path)?;
+        store.record(conversation_id, record);
+        store.save_unlocked(path)
     }
 }
 
@@ -156,5 +192,98 @@ mod tests {
         assert_eq!(s.total_tokens, 4000);
         assert!((s.cost_usd - 0.003).abs() < 1e-9);
         assert_eq!(store.conversation_summary("nope").turns, 0);
+    }
+
+    #[test]
+    fn retention_keeps_the_latest_five_thousand_records() {
+        let mut store = UsageStore::default();
+        for index in 0..=5000 {
+            store.record(
+                "conversation",
+                UsageRecord {
+                    at: index.to_string(),
+                    model: "test".into(),
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    cost_usd: 0.0,
+                },
+            );
+        }
+
+        let records = &store.conversations["conversation"];
+        assert_eq!(records.len(), 5000);
+        assert_eq!(records.first().expect("first retained").at, "1");
+        assert_eq!(records.last().expect("last retained").at, "5000");
+    }
+
+    #[test]
+    fn malformed_usage_is_reported_instead_of_silently_reset() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("usage.json");
+        std::fs::write(&path, "{not-json").expect("fixture");
+
+        assert!(UsageStore::load(&path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_usage_is_owner_readable_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("usage.json");
+        UsageStore::default().save(&path).expect("save usage");
+
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn concurrent_persisted_records_are_not_lost() {
+        use std::sync::{Arc, Barrier};
+
+        const RECORDS: usize = 32;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = Arc::new(directory.path().join("usage.json"));
+        let barrier = Arc::new(Barrier::new(RECORDS));
+        let mut workers = Vec::new();
+
+        for index in 0..RECORDS {
+            let path = Arc::clone(&path);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                UsageStore::record_persisted(
+                    &path,
+                    "conversation",
+                    UsageRecord {
+                        at: index.to_string(),
+                        model: "test".into(),
+                        prompt_tokens: 1,
+                        completion_tokens: 1,
+                        cost_usd: 0.0,
+                    },
+                )
+                .expect("persist record");
+            }));
+        }
+
+        for worker in workers {
+            worker.join().expect("worker");
+        }
+
+        assert_eq!(
+            UsageStore::load(&path)
+                .expect("load usage")
+                .conversation_summary("conversation")
+                .turns,
+            RECORDS as u32
+        );
     }
 }

@@ -29,6 +29,9 @@ use crate::binscan::report::{BinaryComponent, BinaryScanResult, BinaryScanSummar
 
 /// Scanner identifier, so a merged result says where a component came from.
 pub const NATIVE: &str = "oxaudit";
+pub const MAX_BINARY_FILES: usize = 100_000;
+pub const MAX_BINARY_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+pub const NATIVE_WORKERS: usize = 4;
 
 /// How a component was recognized, strongest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -151,17 +154,67 @@ pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
 }
 
 /// Collect every file under `root` (or `root` itself, if it is a file).
-fn candidates(root: &Path) -> Vec<std::path::PathBuf> {
+fn candidates_with_budget(
+    root: &Path,
+    max_files: usize,
+    max_bytes: u64,
+    cancel: &AtomicBool,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut files = Vec::new();
+    let mut total_bytes = 0_u64;
+
     if root.is_file() {
-        return vec![root.to_path_buf()];
+        let size = std::fs::metadata(root)
+            .map_err(|error| format!("cannot inspect {}: {error}", root.display()))?
+            .len();
+        if max_files == 0 {
+            return Err(format!(
+                "binary inventory exceeds the safety limit of {max_files} files; scan a smaller \
+                 subdirectory or ignore generated/vendor paths"
+            ));
+        }
+        if size > max_bytes {
+            return Err(format!(
+                "binary inventory exceeds the safety limit of {max_bytes} bytes; scan a smaller \
+                 subdirectory or ignore generated/vendor paths"
+            ));
+        }
+        return Ok(vec![root.to_path_buf()]);
     }
-    WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .collect()
+
+    for entry in WalkDir::new(root).follow_links(false).into_iter() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("scan cancelled".into());
+        }
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if files.len() >= max_files {
+            return Err(format!(
+                "binary inventory exceeds the safety limit of {max_files} files; scan a smaller \
+                 subdirectory or ignore generated/vendor paths"
+            ));
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        total_bytes = total_bytes.checked_add(metadata.len()).ok_or_else(|| {
+            format!(
+                "binary inventory exceeds the safety limit of {max_bytes} bytes; scan a smaller \
+                 subdirectory or ignore generated/vendor paths"
+            )
+        })?;
+        if total_bytes > max_bytes {
+            return Err(format!(
+                "binary inventory exceeds the safety limit of {max_bytes} bytes; scan a smaller \
+                 subdirectory or ignore generated/vendor paths"
+            ));
+        }
+        files.push(entry.into_path());
+    }
+
+    Ok(files)
 }
 
 /// Fold detections into one component per (product, version).
@@ -234,19 +287,26 @@ pub fn scan(
     on_progress: Arc<dyn Fn(String) + Send + Sync>,
 ) -> Result<NativeScan, String> {
     let started = std::time::Instant::now();
-    let files = candidates(root);
+    let files = candidates_with_budget(root, MAX_BINARY_FILES, MAX_BINARY_BYTES, &cancel)?;
     on_progress(format!("{} files to examine", files.len()));
 
     let signatures: &SignatureSet = &SIGNATURES;
-    let detections: Vec<Detection> = files
-        .par_iter()
-        .flat_map_iter(|path| {
-            if cancel.load(Ordering::Relaxed) {
-                return Vec::new().into_iter();
-            }
-            scan_file(path, signatures).into_iter()
-        })
-        .collect();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(NATIVE_WORKERS)
+        .thread_name(|index| format!("oxaudit-binscan-{index}"))
+        .build()
+        .map_err(|error| format!("cannot prepare binary scan workers: {error}"))?;
+    let detections: Vec<Detection> = pool.install(|| {
+        files
+            .par_iter()
+            .flat_map_iter(|path| {
+                if cancel.load(Ordering::Relaxed) {
+                    return Vec::new().into_iter();
+                }
+                scan_file(path, signatures).into_iter()
+            })
+            .collect()
+    });
 
     if cancel.load(Ordering::Relaxed) {
         return Err("scan cancelled".to_string());
@@ -443,5 +503,23 @@ mod tests {
         )
         .expect_err("must not report success");
         assert!(error.contains("cancelled"), "{error}");
+    }
+
+    #[test]
+    fn binary_inventory_rejects_file_and_byte_overflow() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("one.bin"), b"1234").expect("fixture");
+        std::fs::write(dir.path().join("two.bin"), b"5678").expect("fixture");
+        let cancel = AtomicBool::new(false);
+
+        let file_error = candidates_with_budget(dir.path(), 1, 1024, &cancel)
+            .expect_err("file inventory overflow");
+        assert!(file_error.contains("1 files"), "{file_error}");
+        assert!(file_error.contains("smaller subdirectory"), "{file_error}");
+
+        let byte_error = candidates_with_budget(dir.path(), 10, 7, &cancel)
+            .expect_err("byte inventory overflow");
+        assert!(byte_error.contains("7 bytes"), "{byte_error}");
+        assert!(byte_error.contains("ignore"), "{byte_error}");
     }
 }

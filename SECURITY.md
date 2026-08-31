@@ -81,6 +81,26 @@ oxAudit is pre-1.0. Only the latest release receives security fixes.
 - Attacks that need an already-compromised machine or an already-root attacker.
 - Advisory data that is wrong upstream at NVD, OSV, KEV, or EPSS.
 
+## Effective safeguards
+
+- Every network-backed tool selected by the AI assistant requires explicit human
+  approval. Local source and secret scanning can run automatically; NVD, OSV,
+  dependency, general web, and external binary-scanner actions cannot.
+- Settings can extend the web fetcher's built-in advisory-host allow-list, but
+  private, loopback, link-local, and otherwise non-routable addresses remain
+  blocked. DNS answers are pinned to the validated connection and redirects are
+  revalidated hop by hop.
+- Symbolic links are not followed by default. Opting in follows only links whose
+  canonical target remains inside the project boundary.
+- Source discovery is capped at 100,000 eligible files and 20 GiB; findings at
+  5,000 per file and 100,000 per run; dependency input at 256 lockfiles, 16 MiB
+  per lockfile, and 100,000 unique packages; binary discovery at 100,000 files,
+  20 GiB, and four workers; and external scanner output at 64 MiB. Exceeding a
+  ceiling fails the run with narrowing/ignore guidance instead of returning or
+  persisting a partial clean result.
+- Assistant file reads reject inputs over 2 MiB. General web fetches retain no
+  more than 256 KiB of decoded response data.
+
 ## Our own supply chain
 
 The measures below are enforced in CI, not aspirational:
@@ -94,9 +114,17 @@ The measures below are enforced in CI, not aspirational:
 - `cargo-fuzz` smoke-runs the bounded rule-pack parser on a schedule.
 - The toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
 
-Release artifacts are signed, and each release publishes a CycloneDX SBOM of
-oxAudit itself alongside SHA-256 checksums. If you are evaluating oxAudit for use
-in a regulated environment, that SBOM is the artifact to point your reviewers at.
+Tag-triggered macOS desktop bundles fail closed unless Developer ID signing and
+notarization inputs are complete; Windows desktop bundles fail closed unless the
+Authenticode certificate and password are present. Linux bundles and standalone
+CLI files do not claim native platform signatures. Manual dry runs may be unsigned
+and can never reach the publishing job.
+
+Every published file receives a SHA-256 checksum and a GitHub build-provenance
+attestation. Each release also publishes pinned-generator CycloneDX SBOMs for
+oxAudit's Rust and JavaScript dependency trees. If you are evaluating oxAudit for
+use in a regulated environment, those SBOMs are the artifacts to point your
+reviewers at.
 
 ## Reporting a vulnerability *found by* oxAudit
 

@@ -94,7 +94,7 @@ export function SourceTargetPanel(props: {
               <Switch checked={values.scanSecrets} onChange={(checked) => onOptionChange("scanSecrets", checked)} label="Secrets" disabled={running} />
               <Switch checked={values.scanVulnerabilities} onChange={(checked) => onOptionChange("scanVulnerabilities", checked)} label="Vulnerabilities" disabled={running} />
               <Switch checked={values.includeGit} onChange={(checked) => onOptionChange("includeGit", checked)} label="Include .git" disabled={running} />
-              <Switch checked={values.followSymlinks} onChange={(checked) => onOptionChange("followSymlinks", checked)} label="Follow symlinks" disabled={running} />
+              <Switch checked={values.followSymlinks} onChange={(checked) => onOptionChange("followSymlinks", checked)} label="Follow in-project symlinks" disabled={running} />
               <label className="flex items-center gap-2 text-[12px] text-text-secondary">
                 Max file size
                 <input

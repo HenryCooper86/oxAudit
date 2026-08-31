@@ -1,7 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::Path;
 
 use crate::models::Dependency;
+
+pub const MAX_LOCKFILE_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_LOCKFILES: usize = 256;
+pub const MAX_DEPENDENCIES: usize = 100_000;
+const RESOURCE_LIMIT_PREFIX: &str = "resource limit:";
+
+pub fn is_resource_limit_error(error: &str) -> bool {
+    error.starts_with(RESOURCE_LIMIT_PREFIX)
+}
 
 /// Kind identifiers returned to the UI.
 pub fn lockfile_kind(name: &str) -> &'static str {
@@ -37,10 +47,35 @@ pub fn ecosystem_for_kind(kind: &str) -> &'static str {
 /// Parse a lockfile into dependencies. Returns Err with a human-readable
 /// reason when the file cannot be understood.
 pub fn parse_lockfile(path: &Path, kind: &str) -> Result<Vec<Dependency>, String> {
+    parse_lockfile_with_limit(path, kind, MAX_LOCKFILE_BYTES)
+}
+
+fn parse_lockfile_with_limit(
+    path: &Path,
+    kind: &str,
+    max_bytes: u64,
+) -> Result<Vec<Dependency>, String> {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let ecosystem = ecosystem_for_kind(kind).to_string();
     let lockfile = path.to_string_lossy().replace('\\', "/");
-    let content = std::fs::read_to_string(path).map_err(|e| format!("read failed: {e}"))?;
+    let metadata = std::fs::metadata(path).map_err(|error| format!("read failed: {error}"))?;
+    if metadata.len() > max_bytes {
+        return Err(format!(
+            "{RESOURCE_LIMIT_PREFIX} lockfile exceeds {max_bytes} bytes; scan a smaller \
+             subdirectory or exclude that generated/vendor path"
+        ));
+    }
+    let file = std::fs::File::open(path).map_err(|error| format!("read failed: {error}"))?;
+    let mut content = String::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_string(&mut content)
+        .map_err(|error| format!("read failed: {error}"))?;
+    if content.len() as u64 > max_bytes {
+        return Err(format!(
+            "{RESOURCE_LIMIT_PREFIX} lockfile exceeds {max_bytes} bytes; scan a smaller \
+             subdirectory or exclude that generated/vendor path"
+        ));
+    }
 
     let deps = match name {
         "package-lock.json" => parse_package_lock(&content)?,
@@ -65,6 +100,41 @@ pub fn parse_lockfile(path: &Path, kind: &str) -> Result<Vec<Dependency>, String
             lockfile: lockfile.clone(),
         })
         .collect())
+}
+
+pub fn extend_dependencies_bounded(
+    aggregate: &mut Vec<Dependency>,
+    incoming: Vec<Dependency>,
+    max_dependencies: usize,
+) -> Result<(), String> {
+    let mut seen = aggregate
+        .iter()
+        .map(dependency_key)
+        .collect::<BTreeSet<_>>();
+    let incoming = incoming
+        .into_iter()
+        .filter(|dependency| seen.insert(dependency_key(dependency)))
+        .collect::<Vec<_>>();
+    if aggregate
+        .len()
+        .checked_add(incoming.len())
+        .map_or(true, |total| total > max_dependencies)
+    {
+        return Err(format!(
+            "{RESOURCE_LIMIT_PREFIX} dependency scan exceeds {max_dependencies} packages; scan a \
+             smaller subdirectory or add ignore rules"
+        ));
+    }
+    aggregate.extend(incoming);
+    Ok(())
+}
+
+fn dependency_key(dependency: &Dependency) -> (String, String, String) {
+    (
+        dependency.ecosystem.clone(),
+        dependency.name.clone(),
+        dependency.version.clone(),
+    )
 }
 
 fn strip_version_ops(v: &str) -> String {
@@ -516,7 +586,7 @@ fn parse_requirements(content: &str) -> Result<Vec<(String, String)>, String> {
 pub fn dedupe_dependencies(deps: Vec<Dependency>) -> Vec<Dependency> {
     let mut seen: BTreeMap<(String, String, String), Dependency> = BTreeMap::new();
     for d in deps {
-        let key = (d.ecosystem.clone(), d.name.clone(), d.version.clone());
+        let key = dependency_key(&d);
         seen.entry(key).or_insert(d);
     }
     seen.into_values().collect()
@@ -524,7 +594,7 @@ pub fn dedupe_dependencies(deps: Vec<Dependency>) -> Vec<Dependency> {
 
 #[cfg(test)]
 mod pom_tests {
-    use super::parse_pom_xml;
+    use super::{extend_dependencies_bounded, parse_lockfile_with_limit, parse_pom_xml};
 
     /// A `pom.xml` comes from the repository under scan, so every property
     /// asserted here is a property of parsing *untrusted* input.
@@ -536,6 +606,56 @@ mod pom_tests {
 {body}
 </project>"#
         )
+    }
+
+    #[test]
+    fn oversized_lockfiles_are_rejected_before_their_contents_are_read() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("requirements.txt");
+        std::fs::write(&path, "package==1.0\n").expect("fixture");
+
+        let error = parse_lockfile_with_limit(&path, "pip", 8).expect_err("oversized");
+
+        assert!(error.contains("resource limit"), "{error}");
+        assert!(error.contains("8 bytes"), "{error}");
+    }
+
+    #[test]
+    fn aggregate_dependency_overflow_is_rejected_before_extension() {
+        let dependency = crate::models::Dependency {
+            ecosystem: "npm".into(),
+            name: "package".into(),
+            version: "1.0.0".into(),
+            lockfile: "package-lock.json".into(),
+        };
+        let distinct = crate::models::Dependency {
+            name: "other-package".into(),
+            ..dependency.clone()
+        };
+        let mut aggregate = vec![dependency.clone()];
+
+        let error = extend_dependencies_bounded(&mut aggregate, vec![distinct], 1)
+            .expect_err("aggregate overflow");
+
+        assert!(error.contains("resource limit"), "{error}");
+        assert_eq!(aggregate.len(), 1, "overflow must not partially extend");
+        assert!(error.contains("smaller subdirectory"), "{error}");
+    }
+
+    #[test]
+    fn duplicate_dependencies_do_not_consume_the_unique_dependency_budget() {
+        let dependency = crate::models::Dependency {
+            ecosystem: "npm".into(),
+            name: "package".into(),
+            version: "1.0.0".into(),
+            lockfile: "package-lock.json".into(),
+        };
+        let mut aggregate = vec![dependency.clone()];
+
+        extend_dependencies_bounded(&mut aggregate, vec![dependency], 1)
+            .expect("a duplicate stays within the unique package budget");
+
+        assert_eq!(aggregate.len(), 1);
     }
 
     #[test]

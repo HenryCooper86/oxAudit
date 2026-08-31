@@ -13,7 +13,8 @@
     "check": "tsc --noEmit",
     "test:unit": "tsx --test tests/*.test.ts",
     "test:components": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "audit:dependencies": "npm audit --audit-level=high"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
