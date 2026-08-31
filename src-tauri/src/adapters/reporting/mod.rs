@@ -54,6 +54,7 @@ pub struct ReportData {
     pub artifacts: Vec<Artifact>,
     pub components: Vec<Component>,
     pub observations: Vec<ObservationRecord>,
+    pub findings: Vec<crate::models::Finding>,
     pub projection: Option<serde_json::Value>,
 }
 
@@ -77,6 +78,11 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             "projection": data.projection,
         }),
         ReportFormat::Sarif => {
+            let findings_by_observation = data
+                .findings
+                .iter()
+                .map(|finding| (finding.id.as_str(), finding))
+                .collect::<std::collections::BTreeMap<_, _>>();
             let applicable = data.observations.iter().filter(|record| {
                 matches!(
                     record.observation.kind,
@@ -110,7 +116,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                             })
                             .unwrap_or_default();
                         let rule_id = record.observation.rule_id.as_deref();
-                        serde_json::json!({
+                        let mut result = serde_json::json!({
                             "ruleId": record.observation.rule_id,
                             // Consumers that show a severity read `level`, not
                             // our own vocabulary. Without it every finding
@@ -124,7 +130,14 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                                 "detectorVersion": record.observation.detector_version,
                                 "severity": rule_severity(rule_id).unwrap_or("unknown")
                             }
-                        })
+                        });
+                        if let Some(suppression) = findings_by_observation
+                            .get(record.observation.id.as_str())
+                            .and_then(|finding| sarif_suppression(finding.review.as_ref()))
+                        {
+                            result["suppressions"] = serde_json::json!([suppression]);
+                        }
+                        result
                     })
                     .collect::<Vec<_>>();
             if results.is_empty() {
@@ -308,6 +321,7 @@ mod tests {
             artifacts: Vec::new(),
             components: Vec::new(),
             observations: Vec::new(),
+            findings: Vec::new(),
             projection: None,
         };
         for format in [
@@ -356,6 +370,25 @@ fn sarif_level(severity: Option<&str>) -> &'static str {
         Some("info") => "note",
         _ => "warning",
     }
+}
+
+fn sarif_suppression(
+    review: Option<&crate::findings::domain::ReviewRecord>,
+) -> Option<serde_json::Value> {
+    use crate::findings::domain::ReviewState;
+
+    let review = review?;
+    if !matches!(
+        review.state,
+        ReviewState::FalsePositive | ReviewState::AcceptedRisk | ReviewState::Suppressed
+    ) {
+        return None;
+    }
+    Some(serde_json::json!({
+        "kind": "external",
+        "status": "accepted",
+        "justification": review.reason,
+    }))
 }
 
 /// A `reportingDescriptor` for one rule: what it detects and how to fix it.
@@ -409,7 +442,8 @@ fn sarif_rule(rule_id: &str) -> Option<serde_json::Value> {
 
 #[cfg(test)]
 mod sarif_metadata_tests {
-    use super::{rule_severity, sarif_level, sarif_rule};
+    use super::{rule_severity, sarif_level, sarif_rule, sarif_suppression};
+    use crate::findings::domain::{ReviewOrigin, ReviewRecord, ReviewState};
 
     #[test]
     fn severity_is_read_from_the_rule_that_defines_it() {
@@ -486,5 +520,36 @@ mod sarif_metadata_tests {
     #[test]
     fn an_unknown_rule_yields_no_descriptor() {
         assert!(sarif_rule("not-a-rule").is_none());
+    }
+
+    #[test]
+    fn reviewed_dismissals_become_external_sarif_suppressions() {
+        let mut review = ReviewRecord {
+            id: "review-1".into(),
+            project_id: "project-1".into(),
+            fingerprint_version: 1,
+            fingerprint: "fingerprint-1".into(),
+            state: ReviewState::Suppressed,
+            reason: "Reviewed fixture".into(),
+            evidence: None,
+            entry_point: None,
+            data_flow: None,
+            gates: Vec::new(),
+            deciding_gate: None,
+            expires_at: None,
+            origin: ReviewOrigin::ProjectPolicy,
+            policy_hash: Some("policy-hash".into()),
+            updated_at: "2026-08-31T00:00:00Z".into(),
+            superseded_at: None,
+        };
+
+        let suppression = sarif_suppression(Some(&review)).expect("dismissal is represented");
+        assert_eq!(suppression["kind"], "external");
+        assert_eq!(suppression["status"], "accepted");
+        assert_eq!(suppression["justification"], "Reviewed fixture");
+
+        review.state = ReviewState::Confirmed;
+        assert!(sarif_suppression(Some(&review)).is_none());
+        assert!(sarif_suppression(None).is_none());
     }
 }

@@ -563,6 +563,34 @@ fn a_suppressed_finding_is_still_reported() {
 }
 
 #[test]
+fn sarif_preserves_committed_suppressions_for_code_scanning() {
+    let project = project();
+    write_suppression(project.path(), "2099-01-01T00:00:00Z");
+
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--format",
+        "sarif",
+        "-q",
+    ]);
+    assert_eq!(code(&output), 0);
+    let sarif: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid SARIF");
+    let results = sarif["runs"][0]["results"]
+        .as_array()
+        .expect("results array");
+    assert!(!results.is_empty(), "suppressed findings remain auditable");
+    for result in results {
+        let suppression = &result["suppressions"][0];
+        assert_eq!(suppression["kind"], "external");
+        assert_eq!(suppression["status"], "accepted");
+        assert!(suppression["justification"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("SEC-441")));
+    }
+}
+
+#[test]
 fn an_expired_suppression_gates_again() {
     // An expiry that did not expire is a permanent exception with extra steps.
     let project = project();

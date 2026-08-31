@@ -52,15 +52,13 @@ pub fn plan_compaction(
         return None;
     }
     // Already fits — nothing to do.
-    if AiClient::estimate_context_tokens(messages, tools)
-        .saturating_add(reserved)
-        <= context_window
+    if AiClient::estimate_context_tokens(messages, tools).saturating_add(reserved) <= context_window
     {
         return None;
     }
 
-    let target = (u64::from(context_window) * KEPT_RATIO_NUMERATOR / KEPT_RATIO_DENOMINATOR).max(1)
-        as u32;
+    let target =
+        (u64::from(context_window) * KEPT_RATIO_NUMERATOR / KEPT_RATIO_DENOMINATOR).max(1) as u32;
 
     // Walk from the newest message backwards, keeping turns while the kept
     // slice (system + retained turns + tools + reserved output) fits the target.
@@ -119,16 +117,14 @@ pub async fn summarize_messages(
                 .get("role")
                 .and_then(Value::as_str)
                 .unwrap_or("message");
-            let content = message
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let content = message.get("content").and_then(Value::as_str).unwrap_or("");
             format!("[{role}]\n{content}")
         })
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let system = "You are condensing part of a security research conversation so it fits a context window. \
+    let system =
+        "You are condensing part of a security research conversation so it fits a context window. \
 Summarize the transcript below, preserving every concrete fact a reviewer still needs: \
 specific findings (rule, file path, line, CWE, severity), CVE IDs, affected packages and versions, \
 evidence already gathered from tools, conclusions reached, and anything left open. \
@@ -230,7 +226,8 @@ mod tests {
         let window = AiClient::estimate_context_tokens(&messages, &tools);
         assert_eq!(plan_compaction(&messages, &tools, window, 0), None);
 
-        let plan = plan_compaction(&messages, &tools, window, 1).expect("reserve forces compaction");
+        let plan =
+            plan_compaction(&messages, &tools, window, 1).expect("reserve forces compaction");
         assert_eq!(plan.summarized, 1);
         assert_eq!(plan.keep_from, messages.len() - 1);
     }

@@ -7,9 +7,9 @@ name: Release
 # ---------------------------------------------------------------------------
 # BEFORE THE FIRST RELEASE
 #
-# Configure the signing secrets listed under `bundle`. Without them the job
-# still succeeds and produces UNSIGNED bundles, and says so loudly — an
-# unsigned security tool is not something to ship quietly.
+# Configure the native signing secrets listed under `bundle`. Tag-triggered,
+# publishable macOS and Windows builds fail before bundling when any required
+# value is absent. Manual dry runs may remain unsigned for CI validation.
 #
 # Every action is pinned to a full commit SHA, as SECURITY.md promises. A tag
 # is a moving reference: whoever controls the action repository can repoint it
@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Build and sign, but publish nothing"
+        description: "Build without publishing (sign when configured)"
         type: boolean
         default: true
 
@@ -131,29 +131,23 @@ jobs:
 
       - run: npm ci
 
-      - name: Report the signing posture
+      - name: Require native signing for publishable bundles
+        if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-        run: |
-          case "${{ runner.os }}" in
-            macOS)   [ -n "$APPLE_CERTIFICATE" ]   && signed=yes || signed=no ;;
-            Windows) [ -n "$WINDOWS_CERTIFICATE" ] && signed=yes || signed=no ;;
-            *)       signed=na ;;
-          esac
-          if [ "$signed" = "no" ]; then
-            echo "::warning::Producing an UNSIGNED ${{ runner.os }} bundle — signing secrets are not configured. Do not publish this to users."
-          else
-            echo "Signing posture for ${{ runner.os }}: $signed"
-          fi
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: node tools/require-release-signing.mjs "${{ runner.os }}"
 
       - name: Build the bundle
         shell: bash
         env:
-          # Tauri updater signature, so an update cannot be swapped in transit.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # macOS Developer ID signing and notarization.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -276,14 +270,14 @@ jobs:
 
       - name: Generate the Rust SBOM
         run: |
-          cargo install cargo-cyclonedx --locked
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
           cargo cyclonedx --manifest-path src-tauri/Cargo.toml --format json --all-features
           find src-tauri -name '*.cdx.json' -print -quit | xargs -I{} cp {} oxaudit-rust.cdx.json
           test -s oxaudit-rust.cdx.json
 
       - name: Generate the JavaScript SBOM
         run: |
-          npx --yes @cyclonedx/cyclonedx-npm@latest \
+          npx --yes @cyclonedx/cyclonedx-npm@6.0.1 \
             --output-format JSON --output-file oxaudit-npm.cdx.json --omit dev
           test -s oxaudit-npm.cdx.json
 
@@ -358,8 +352,8 @@ jobs:
           error, 3 scan failure.
           NOTES
           sed -i "s|OWNER/REPO|${GITHUB_REPOSITORY}|" notes.md
-          # Draft, so a human looks at the artifact list before anyone can
-          # download a security tool that claims to be signed.
+          # Draft, so a human checks the artifact list and native desktop-signing
+          # posture before anyone can download the release.
           gh release create "${GITHUB_REF_NAME}" \
             --draft \
             --title "oxAudit ${GITHUB_REF_NAME}" \

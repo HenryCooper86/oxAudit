@@ -275,14 +275,22 @@ static COMPILED_GUARDS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
 /// `scan_content`, so the benchmark and a real scan cannot disagree.
 const MATCH_EXCLUSIONS: &[(&str, &str)] = &[
     ("dockerfile-unpinned-base", r"^scratch$"),
-    ("dockerfile-secret-copy", r"\.env\.(?:example|sample|template)\b"),
+    (
+        "dockerfile-secret-copy",
+        r"\.env\.(?:example|sample|template)\b",
+    ),
     ("gha-unpinned-action", r"^(?:\.\.?/|/|docker://)"),
 ];
 
 static COMPILED_MATCH_EXCLUSIONS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
     MATCH_EXCLUSIONS
         .iter()
-        .map(|(rule, pattern)| (*rule, Regex::new(pattern).expect("invalid exclusion pattern")))
+        .map(|(rule, pattern)| {
+            (
+                *rule,
+                Regex::new(pattern).expect("invalid exclusion pattern"),
+            )
+        })
         .collect()
 });
 
@@ -426,6 +434,14 @@ pub struct PatternHit {
 /// Scan content for rules matching `language` ("" or None = generic rules only
 /// apply to every language via the empty languages slice).
 pub fn scan_content(content: &str, language: &str) -> Vec<PatternHit> {
+    scan_content_bounded(content, language, usize::MAX).0
+}
+
+pub fn scan_content_bounded(
+    content: &str,
+    language: &str,
+    limit: usize,
+) -> (Vec<PatternHit>, bool) {
     let mut hits = Vec::new();
     for (i, rule) in SOURCE_RULES.iter().enumerate() {
         if !rule.languages.is_empty() && !rule.languages.contains(&language) {
@@ -441,6 +457,9 @@ pub fn scan_content(content: &str, language: &str) -> Vec<PatternHit> {
             // finding; the rest is context the rule needed in order to decide.
             let span = captures.get(1).or_else(|| captures.get(0));
             let Some(span) = span else { continue };
+            if hits.len() >= limit {
+                return (hits, true);
+            }
             hits.push(PatternHit {
                 rule_index: i,
                 offset: span.start(),
@@ -450,7 +469,7 @@ pub fn scan_content(content: &str, language: &str) -> Vec<PatternHit> {
     }
     hits.retain(|hit| !match_is_excluded(SOURCE_RULES[hit.rule_index].id, &hit.match_text));
     drop_superseded(&mut hits);
-    hits
+    (hits, false)
 }
 
 /// A specific rule and the broader one it stands in for at the same site.

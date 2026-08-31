@@ -30,6 +30,22 @@ jobs:
           license-check: true
           deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0
 
+  npm-audit:
+    name: JavaScript supply chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run audit:dependencies
+
   codeql:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -60,7 +76,7 @@ jobs:
         run: rustup show active-toolchain
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
 
       - name: Check advisories, licences, bans, and sources
         run: cargo deny --manifest-path src-tauri/Cargo.toml check
@@ -75,6 +91,6 @@ jobs:
         with:
           toolchain: nightly
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz bounded rule-pack parsing
         run: cargo +nightly fuzz run rule_pack -- -max_total_time=90 -timeout=5

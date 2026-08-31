@@ -32,7 +32,6 @@ pub struct DirectUsage {
     /// See the module docs: `true` confirms direct use, `false` means the
     /// ecosystem was mapped and no reference was found, `null` means the
     /// ecosystem cannot be mapped from source imports.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub referenced: Option<bool>,
     /// Source files that reference the package (0 when not referenced).
     #[serde(default)]
@@ -54,6 +53,7 @@ pub fn mappable(ecosystem: &str) -> bool {
 #[derive(Default)]
 pub struct UsageIndex {
     references: HashMap<String, PackageUsage>,
+    complete: bool,
 }
 
 #[derive(Default)]
@@ -70,7 +70,7 @@ impl UsageIndex {
     pub fn for_project(root: &std::path::Path, ignored_dirs: &[String]) -> Self {
         const MAX_FILES: usize = 5_000;
         const MAX_FILE_BYTES: u64 = 256 * 1024;
-        let collection = crate::fs_utils::collect_source_files(
+        let collection = match crate::fs_utils::collect_source_files_bounded(
             root,
             crate::fs_utils::CollectFilesOptions {
                 project_root: root,
@@ -78,7 +78,13 @@ impl UsageIndex {
                 follow_symlinks: false,
                 extra_ignored: ignored_dirs,
             },
-        );
+            crate::fs_utils::CollectionBudget::default(),
+            None,
+        ) {
+            Ok(collection) => collection,
+            Err(_) => return Self::default(),
+        };
+        let mut complete = collection.files.len() <= MAX_FILES;
         let mut entries = Vec::new();
         for file in collection.files.into_iter().take(MAX_FILES) {
             let Some(language) = crate::fs_utils::detect_language(&file.canonical_path) else {
@@ -94,12 +100,18 @@ impl UsageIndex {
                 crate::fs_utils::read_text_file(&file.canonical_path, MAX_FILE_BYTES)
             {
                 entries.push((
-                    file.project_relative_path.to_string_lossy().replace('\\', "/"),
+                    file.project_relative_path
+                        .to_string_lossy()
+                        .replace('\\', "/"),
                     content,
                 ));
+            } else {
+                complete = false;
             }
         }
-        Self::build(&entries)
+        let mut index = Self::build(&entries);
+        index.complete = complete;
+        index
     }
 
     /// Build an index from `(path, content)` pairs of the project's source
@@ -107,7 +119,10 @@ impl UsageIndex {
     /// nothing; no error is possible because a reference found in one file
     /// must not fail the scan for another.
     pub fn build(entries: &[(String, String)]) -> Self {
-        let mut index = UsageIndex::default();
+        let mut index = UsageIndex {
+            complete: true,
+            ..UsageIndex::default()
+        };
         for (path, content) in entries {
             for (ecosystem, references) in extract(content) {
                 for reference in references {
@@ -136,7 +151,7 @@ impl UsageIndex {
                 example_file: usage.files.iter().next().cloned(),
             },
             None => DirectUsage {
-                referenced: mappable(ecosystem).then_some(false),
+                referenced: (self.complete && mappable(ecosystem)).then_some(false),
                 referenced_files: 0,
                 example_file: None,
             },
@@ -248,17 +263,24 @@ fn npm_references(content: &str) -> Vec<String> {
     out
 }
 
-static PY_IMPORT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*import\s+([\w.]+)").expect("valid"));
-static PY_FROM: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*from\s+([\w.]+)\s+import").expect("valid"));
+static PY_IMPORT: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?m)^\s*import\s+([\w.]+)").expect("valid"));
+static PY_FROM: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?m)^\s*from\s+([\w.]+)\s+import").expect("valid"));
 
 /// PyPI names and imports disagree about `-` and `_`: the package is
 /// `requests-cache` and the import is `requests_cache`. Canonicalising both
 /// to the underscore spelling makes either reference the other.
 fn pypi_references(content: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for pattern in [PY_IMPORT.captures_iter(content), PY_FROM.captures_iter(content)] {
+    for pattern in [
+        PY_IMPORT.captures_iter(content),
+        PY_FROM.captures_iter(content),
+    ] {
         for captures in pattern {
-            let Some(module) = captures.get(1) else { continue };
+            let Some(module) = captures.get(1) else {
+                continue;
+            };
             let module = module.as_str();
             if module.starts_with('.') {
                 continue; // relative import names no package
@@ -272,7 +294,8 @@ fn pypi_references(content: &str) -> Vec<String> {
     out
 }
 
-static RS_USE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)^\s*use\s+([a-zA-Z_]\w*)").expect("valid"));
+static RS_USE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?m)^\s*use\s+([a-zA-Z_]\w*)").expect("valid"));
 static RS_EXTERN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?m)^\s*extern\s+crate\s+([a-zA-Z_]\w*)").expect("valid"));
 
@@ -285,7 +308,9 @@ fn cargo_references(content: &str) -> Vec<String> {
         .captures_iter(content)
         .chain(RS_EXTERN.captures_iter(content))
     {
-        let Some(name) = captures.get(1) else { continue };
+        let Some(name) = captures.get(1) else {
+            continue;
+        };
         let name = name.as_str();
         if matches!(name, "crate" | "self" | "super") {
             continue;
@@ -326,16 +351,22 @@ fn go_references(content: &str) -> Vec<String> {
 
 static RB_REQUIRE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"\brequire\s+["']([^"']+)["']"#).expect("valid"));
-static RB_GEM: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\bgem\s+["']([^"']+)["']"#).expect("valid"));
+static RB_GEM: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"\bgem\s+["']([^"']+)["']"#).expect("valid"));
 
 /// `require "x/y"` names the gem `x` by convention, and a `gem "x"` entry in
 /// the Gemfile is a direct declaration. The `-`/`_` spelling disagreement is
 /// handled the same way as PyPI and Cargo.
 fn rubygems_references(content: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for pattern in [RB_REQUIRE.captures_iter(content), RB_GEM.captures_iter(content)] {
+    for pattern in [
+        RB_REQUIRE.captures_iter(content),
+        RB_GEM.captures_iter(content),
+    ] {
         for captures in pattern {
-            let Some(requirement) = captures.get(1) else { continue };
+            let Some(requirement) = captures.get(1) else {
+                continue;
+            };
             let gem = requirement.as_str().split('/').next().unwrap_or_default();
             if !gem.is_empty() {
                 out.push(gem.to_ascii_lowercase().replace('-', "_"));
@@ -417,8 +448,16 @@ mod tests {
             Some(true),
             "import … from"
         );
-        assert_eq!(usage(&idx, "npm", "lodash").referenced, Some(true), "require sub-path");
-        assert_eq!(usage(&idx, "npm", "next").referenced, Some(true), "dynamic import");
+        assert_eq!(
+            usage(&idx, "npm", "lodash").referenced,
+            Some(true),
+            "require sub-path"
+        );
+        assert_eq!(
+            usage(&idx, "npm", "next").referenced,
+            Some(true),
+            "dynamic import"
+        );
         assert_eq!(
             usage(&idx, "npm", "@scope/left-pad").referenced,
             Some(true),
@@ -502,8 +541,14 @@ mod tests {
             Some(true),
             "the use statement names a class under the package's namespace"
         );
-        assert_eq!(usage(&idx, "Packagist", "monolog/monolog").referenced, Some(true));
-        assert_eq!(usage(&idx, "Packagist", "laravel/framework").referenced, Some(false));
+        assert_eq!(
+            usage(&idx, "Packagist", "monolog/monolog").referenced,
+            Some(true)
+        );
+        assert_eq!(
+            usage(&idx, "Packagist", "laravel/framework").referenced,
+            Some(false)
+        );
     }
 
     #[test]
@@ -511,6 +556,29 @@ mod tests {
         let idx = index(&[("pom.xml", "<dependency>log4j-core</dependency>")]);
         assert_eq!(usage(&idx, "Maven", "log4j-core").referenced, None);
         assert_eq!(usage(&idx, "Maven", "anything").referenced, None);
+    }
+
+    #[test]
+    fn an_incomplete_source_index_never_claims_a_package_is_absent() {
+        let idx = UsageIndex {
+            references: HashMap::new(),
+            complete: false,
+        };
+
+        assert_eq!(usage(&idx, "npm", "unseen-package").referenced, None);
+    }
+
+    #[test]
+    fn an_unknown_reachability_answer_serializes_as_explicit_null() {
+        let idx = UsageIndex {
+            references: HashMap::new(),
+            complete: false,
+        };
+        let serialized = serde_json::to_value(usage(&idx, "npm", "unseen-package"))
+            .expect("serialize direct usage");
+
+        assert!(serialized.get("referenced").is_some());
+        assert!(serialized["referenced"].is_null());
     }
 
     #[test]

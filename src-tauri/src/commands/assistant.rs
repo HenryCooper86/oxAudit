@@ -118,7 +118,7 @@ pub async fn stream_chat(
     let client = crate::ai::AiClient::new(state.http.clone());
     let registry = crate::agent::tool::ToolRegistry::from_tools(crate::agent::tools::builtins());
     let app2 = app.clone();
-    let usage_path = usage_path(&app);
+    let usage_path = usage_path(&app)?;
     let conversation_id = request.conversation_id.clone();
     let user_messages: Vec<Value> = request
         .messages
@@ -153,8 +153,8 @@ pub async fn stream_chat(
         match result {
             Ok((content, usage)) => {
                 if let (Some(cid), Some(usage)) = (&conversation_id, &usage) {
-                    let mut store = UsageStore::load(&usage_path).unwrap_or_default();
-                    store.record(
+                    if let Err(error) = UsageStore::record_persisted(
+                        &usage_path,
                         cid,
                         crate::ai::usage::UsageRecord {
                             at: chrono::Utc::now().to_rfc3339(),
@@ -167,8 +167,9 @@ pub async fn stream_chat(
                                 usage.completion_tokens,
                             ),
                         },
-                    );
-                    let _ = store.save(&usage_path);
+                    ) {
+                        log::error!("cannot persist assistant usage: {error}");
+                    }
                 }
                 let _ = app2.emit(
                     "ai://done",
@@ -301,13 +302,13 @@ pub fn get_conversation_usage(
     app: AppHandle,
     conversation_id: String,
 ) -> Result<UsageSummary, String> {
-    let store = UsageStore::load(&usage_path(&app)).unwrap_or_default();
+    let store = UsageStore::load(&usage_path(&app)?)?;
     Ok(store.conversation_summary(&conversation_id))
 }
 
 #[tauri::command]
 pub fn get_total_usage(app: AppHandle) -> Result<UsageSummary, String> {
-    let store = UsageStore::load(&usage_path(&app)).unwrap_or_default();
+    let store = UsageStore::load(&usage_path(&app)?)?;
     Ok(store.total())
 }
 

@@ -67,6 +67,16 @@ impl CommandError {
         )
     }
 
+    pub fn scan_resource_limit(detail: impl Into<String>) -> Self {
+        let mut error = Self::new(
+            ErrorCode::ScanFailed,
+            "The scan exceeded a safety limit and was stopped.",
+            false,
+        );
+        error.detail = Some(detail.into());
+        error
+    }
+
     pub fn scan_already_running() -> Self {
         Self::new(
             ErrorCode::ScanAlreadyRunning,

@@ -49,6 +49,13 @@ impl ToolRateLimiter {
                 },
             ),
             (
+                "run_dependency_scan",
+                RateLimitConfig {
+                    capacity: 2,
+                    refill_per_minute: 6,
+                },
+            ),
+            (
                 "search_cve",
                 RateLimitConfig {
                     capacity: 5,
@@ -174,5 +181,23 @@ mod tests {
             limiter.check_at("read_file", now),
             RateLimitDecision::Allowed
         );
+    }
+
+    #[test]
+    fn dependency_scans_share_a_network_request_budget() {
+        let limiter = ToolRateLimiter::oxaudit_defaults();
+        let now = Instant::now();
+        assert_eq!(
+            limiter.check_at("run_dependency_scan", now),
+            RateLimitDecision::Allowed
+        );
+        assert_eq!(
+            limiter.check_at("run_dependency_scan", now),
+            RateLimitDecision::Allowed
+        );
+        assert!(matches!(
+            limiter.check_at("run_dependency_scan", now),
+            RateLimitDecision::Limited { .. }
+        ));
     }
 }

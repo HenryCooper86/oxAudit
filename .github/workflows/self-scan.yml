@@ -53,6 +53,7 @@ jobs:
           ./src-tauri/target/release/oxaudit-cli scan . \
             --format sarif \
             --output oxaudit.sarif \
+            --ignore-dir benchmarks \
             --ignore-dir node_modules \
             --ignore-dir target \
             --ignore-dir dist

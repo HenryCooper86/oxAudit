@@ -624,7 +624,7 @@ export function SettingsPage() {
             <Field
               label="Allowed fetch hosts"
               htmlFor="agent-allowed-fetch-hosts"
-              hint="One host per line. The assistant can already read advisory sources such as nvd.nist.gov, osv.dev, and github.com — add a host here to let it read vendor advisories elsewhere. Every fetch still asks for your approval, and addresses on your own machine or network are always refused."
+              hint="One host per line. This extends the built-in web-fetch list for advisory sites such as nvd.nist.gov, osv.dev, and github.com. Every model-selected network tool still asks for approval. Web fetches to private, loopback, link-local, or otherwise non-routable addresses are always refused."
             >
               <Textarea
                 id="agent-allowed-fetch-hosts"
@@ -744,7 +744,7 @@ export function SettingsPage() {
             <Switch checked={form.scan.scanSecrets} onChange={(scanSecrets) => update("scan", { ...form.scan, scanSecrets })} label="Secrets scanning" />
             <Switch checked={form.scan.scanVulnerabilities} onChange={(scanVulnerabilities) => update("scan", { ...form.scan, scanVulnerabilities })} label="Pattern scanning" />
             <Switch checked={form.scan.includeGit} onChange={(includeGit) => update("scan", { ...form.scan, includeGit })} label="Include .git" />
-            <Switch checked={form.scan.followSymlinks} onChange={(followSymlinks) => update("scan", { ...form.scan, followSymlinks })} label="Follow symlinks" />
+            <Switch checked={form.scan.followSymlinks} onChange={(followSymlinks) => update("scan", { ...form.scan, followSymlinks })} label="Follow in-project symlinks" />
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <Field label="Max file size (KB)" htmlFor="scan-max-file-size">

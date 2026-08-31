@@ -650,8 +650,8 @@ function AdvisoryDetail({
               )}
               {vulnerability.directUsage.referenced === null && (
                 <>
-                  Direct-usage reachability is not mapped for this ecosystem, so oxAudit says nothing
-                  either way.
+                  Direct-usage reachability could not be established. This ecosystem is not mapped,
+                  or the bounded source index was incomplete, so oxAudit says nothing either way.
                 </>
               )}
             </p>

@@ -160,6 +160,86 @@
       "state": "suppressed",
       "reason": "Synthetic token fixture in a Rust test module.",
       "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "generic-api-key",
+      "pathPattern": "docs/**",
+      "state": "suppressed",
+      "reason": "Illustrative token shapes in architecture and study documents, not issued credentials.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "github-token",
+      "pathPattern": "src-tauri/src/scanners/mod.rs",
+      "state": "suppressed",
+      "reason": "Synthetic tokens in scanner limit tests; the test must plant multiple matches to prove overflow fails closed.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "github-token",
+      "pathPattern": "src-tauri/src/findings/service_tests.rs",
+      "state": "suppressed",
+      "reason": "Synthetic token fixtures in Rust test modules.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "openai-api-key",
+      "pathPattern": "src-tauri/src/findings/policy_tests.rs",
+      "state": "suppressed",
+      "reason": "Synthetic token fixture in a Rust test module.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "generic-password",
+      "pathPattern": "tests/**",
+      "state": "suppressed",
+      "reason": "Synthetic password-shaped values used to verify error redaction and release-signing validation.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "generic-password",
+      "pathPattern": "src-tauri/crates/oxaudit-domain/src/evidence.rs",
+      "state": "suppressed",
+      "reason": "A deliberately reversible password fixture proves secret correlations are rejected.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "generic-password",
+      "pathPattern": "tools/build-corpus-suite.mjs",
+      "state": "suppressed",
+      "reason": "Corpus tooling names the secret fixture family it routes; it contains no credential material.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "json-credential",
+      "pathPattern": "tools/build-corpus-suite.mjs",
+      "state": "suppressed",
+      "reason": "Corpus tooling names the secret fixture family it routes; it contains no credential material.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "generic-password",
+      "pathPattern": "src/components/FindingDetail.tsx",
+      "state": "suppressed",
+      "reason": "The finding UI renders the literal category label Secret; it does not embed credential data.",
+      "expiresAt": "2027-08-24T00:00:00Z"
+    },
+    {
+      "kind": "suppression",
+      "ruleId": "json-credential",
+      "pathPattern": "src/components/FindingDetail.tsx",
+      "state": "suppressed",
+      "reason": "The finding UI renders the literal category label Secret; it does not embed credential data.",
+      "expiresAt": "2027-08-24T00:00:00Z"
     }
   ]
 }

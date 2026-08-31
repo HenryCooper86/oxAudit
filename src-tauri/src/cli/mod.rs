@@ -168,7 +168,7 @@ struct ScanArgs {
     #[arg(long)]
     include_git: bool,
 
-    /// Follow symbolic links out of the project.
+    /// Follow symbolic links only when their canonical targets remain in the project.
     #[arg(long)]
     follow_symlinks: bool,
 
@@ -601,7 +601,14 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
     if !quiet {
         eprintln!("Discovering lockfiles under {}", root.display());
     }
-    let lockfiles = crate::fs_utils::discover_lockfiles(&root, &root, &args.ignore_dirs);
+    let lockfiles = crate::fs_utils::discover_lockfiles_bounded(
+        &root,
+        &root,
+        &args.ignore_dirs,
+        crate::deps::lockfiles::MAX_LOCKFILES,
+        None,
+    )
+    .map_err(|error| failure(error.to_string()))?;
     if lockfiles.is_empty() {
         return Err(failure(format!(
             "no lockfiles found under {}",
@@ -618,7 +625,15 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
             .unwrap_or("");
         let kind = crate::deps::lockfiles::lockfile_kind(name);
         match crate::deps::lockfiles::parse_lockfile(lockfile, kind) {
-            Ok(parsed) => dependencies.extend(parsed),
+            Ok(parsed) => crate::deps::lockfiles::extend_dependencies_bounded(
+                &mut dependencies,
+                parsed,
+                crate::deps::lockfiles::MAX_DEPENDENCIES,
+            )
+            .map_err(failure)?,
+            Err(error) if crate::deps::lockfiles::is_resource_limit_error(&error) => {
+                return Err(failure(format!("{}: {error}", lockfile.display())));
+            }
             // A single unreadable lockfile should not sink the whole run; the
             // errors are reported alongside the results instead.
             Err(error) => parse_errors.push(format!("{}: {error}", lockfile.display())),
@@ -850,6 +865,17 @@ fn render_stored_run(
         .repository()
         .canonical_load_projection(&identity)
         .map_err(|error| failure(error.to_string()))?;
+    let findings = if matches!(
+        run.kind,
+        oxaudit_domain::RunKind::Source | oxaudit_domain::RunKind::Secrets
+    ) {
+        service
+            .load_run(run_id)
+            .map_err(|error| failure(error.to_string()))?
+            .findings
+    } else {
+        Vec::new()
+    };
 
     let report = reporting::generate(
         &reporting::ReportData {
@@ -857,6 +883,7 @@ fn render_stored_run(
             artifacts,
             components,
             observations,
+            findings,
             projection,
         },
         format,

@@ -54,13 +54,50 @@ impl Runtime {
 }
 
 /// A command ready to spawn, plus how to read the paths it will report.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PreparedCommand {
     pub program: String,
     pub args: Vec<String>,
+    pub environment: Vec<(String, zeroize::Zeroizing<String>)>,
     /// `(container_prefix, host_prefix)` for rewriting reported paths back to
     /// something the user can open. `None` when the scan ran natively.
     pub path_rewrite: Option<(String, PathBuf)>,
+}
+
+impl std::fmt::Debug for PreparedCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let environment_names: Vec<&str> = self
+            .environment
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        formatter
+            .debug_struct("PreparedCommand")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("environment_names", &environment_names)
+            .field("path_rewrite", &self.path_rewrite)
+            .finish()
+    }
+}
+
+fn nvd_environment(
+    request: &BinaryScanRequest,
+    nvd_api_key: Option<&str>,
+) -> Vec<(String, zeroize::Zeroizing<String>)> {
+    if request.offline {
+        return Vec::new();
+    }
+    nvd_api_key
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(|key| {
+            vec![(
+                "NVD_API_KEY".to_string(),
+                zeroize::Zeroizing::new(key.to_string()),
+            )]
+        })
+        .unwrap_or_default()
 }
 
 /// Rewrite a path the container reported into its host equivalent.
@@ -89,10 +126,11 @@ pub fn prepare_native(
     nvd_api_key: Option<&str>,
 ) -> PreparedCommand {
     let mut args = invocation.leading_args.clone();
-    args.extend(build_args(target, report_path, request, nvd_api_key));
+    args.extend(build_args(target, report_path, request));
     PreparedCommand {
         program: invocation.program.clone(),
         args,
+        environment: nvd_environment(request, nvd_api_key),
         path_rewrite: None,
     }
 }
@@ -153,6 +191,9 @@ pub fn prepare_docker(
     // available and the one to prefer for untrusted firmware.
     if request.offline {
         args.push("--network=none".into());
+    } else if nvd_api_key.is_some_and(|key| !key.trim().is_empty()) {
+        args.push("--env".into());
+        args.push("NVD_API_KEY".into());
     }
 
     args.push("-v".into());
@@ -167,12 +208,12 @@ pub fn prepare_docker(
         Path::new(&container_target),
         Path::new(&container_report),
         request,
-        nvd_api_key,
     ));
 
     Ok(PreparedCommand {
         program: docker_program.to_string(),
         args,
+        environment: nvd_environment(request, nvd_api_key),
         path_rewrite: Some((CONTAINER_SCAN_ROOT.to_string(), host_mount)),
     })
 }
@@ -218,6 +259,61 @@ mod tests {
         assert_eq!(prepared.program, "cve-bin-tool");
         assert_eq!(prepared.args[0], "/fw/image.bin");
         assert_eq!(prepared.path_rewrite, None);
+    }
+
+    #[test]
+    fn online_native_and_docker_commands_keep_the_nvd_key_out_of_argv() {
+        const CANARY: &str = "nvd-canary-secret-7D4zP9q2";
+        let native = prepare_native(
+            &native_invocation(),
+            Path::new("/fw/image.bin"),
+            Path::new("/tmp/report.json"),
+            &request(),
+            Some(CANARY),
+        );
+        assert!(!native.args.iter().any(|argument| argument.contains(CANARY)));
+        assert!(native
+            .environment
+            .iter()
+            .any(|(name, value)| name == "NVD_API_KEY" && value.as_str() == CANARY));
+
+        let docker = prepare_docker(
+            "docker",
+            DEFAULT_IMAGE,
+            &std::env::temp_dir(),
+            Path::new("/tmp/out/report.json"),
+            &request(),
+            Some(CANARY),
+        )
+        .expect("docker command");
+        assert!(!docker.args.iter().any(|argument| argument.contains(CANARY)));
+        assert!(docker
+            .args
+            .windows(2)
+            .any(|arguments| arguments == ["--env", "NVD_API_KEY"]));
+        assert!(docker
+            .environment
+            .iter()
+            .any(|(name, value)| name == "NVD_API_KEY" && value.as_str() == CANARY));
+    }
+
+    #[test]
+    fn offline_prepared_commands_do_not_receive_the_nvd_key() {
+        let mut offline = request();
+        offline.offline = true;
+        let prepared = prepare_native(
+            &native_invocation(),
+            Path::new("/fw/image.bin"),
+            Path::new("/tmp/report.json"),
+            &offline,
+            Some("nvd-canary-secret"),
+        );
+
+        assert!(prepared.environment.is_empty());
+        assert!(!prepared
+            .args
+            .iter()
+            .any(|argument| argument.contains("nvd-canary-secret")));
     }
 
     #[test]
