@@ -5,6 +5,7 @@ import type {
   ScanRunDetail,
 } from "../../src/lib/types";
 export const projectSettings: AppSettings = {
+  editor: "system",
   ai: {
     enabled: false,
     baseUrl: "",

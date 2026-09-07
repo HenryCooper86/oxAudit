@@ -1501,6 +1501,21 @@ impl FindingsRepository {
         false
     }
 
+    /// Effective options captured when this saved run started; never project defaults.
+    pub fn run_options(&self, run_id: &str) -> Result<ScanOptions, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let json: String = connection
+            .query_row(
+                "SELECT options_json FROM scan_runs WHERE id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(persistence_error)?
+            .ok_or_else(CommandError::not_found)?;
+        from_json(&json)
+    }
+
     pub fn load_run(&self, run_id: &str) -> Result<ScanRunDetail, CommandError> {
         let connection = self.connection.lock().map_err(persistence_error)?;
         load_run_with_comparison_from_connection(&connection, run_id)?

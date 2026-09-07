@@ -30,4 +30,5 @@ An engineer can reopen a project, inspect new issues, navigate to their editor, 
 - Phase 1: complete; dependency coverage failures, complete offline receipts, analysis evidence, and authored corpus additions verified.
 - Phase 2: complete; durable project home, selection restoration, combined checks, cross-page cancellation, and result handoffs verified.
 - Phase 3: complete; saved baseline selection, Git path review, revision/coverage evidence, policy-aware counts, and CLI baseline safety verified.
-- Phases 4–6: pending; each will receive an implementation plan grounded in the code left by its predecessor.
+- Phase 4: complete; typed editor navigation, remediation examples, coverage-aware rechecks, and unsaved-result recovery verified.
+- Phases 5–6: pending; each will receive an implementation plan grounded in the code left by its predecessor.

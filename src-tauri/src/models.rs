@@ -452,9 +452,18 @@ pub fn default_ignored_dirs() -> Vec<String> {
     .collect()
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EditorPreference {
+    #[default]
+    System,
+    Vscode,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
+    pub editor: EditorPreference,
     pub ai: AiSettings,
     pub scan: ScanSettings,
     pub credentials: CredentialPresence,
@@ -482,6 +491,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            editor: EditorPreference::default(),
             ai: AiSettings::default(),
             scan: ScanSettings::default(),
             credentials: CredentialPresence::default(),

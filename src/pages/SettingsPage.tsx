@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { Field } from "../components/workbench/Field";
 import { InlineState } from "../components/workbench/InlineState";
-import { Button, Input, Switch, Textarea } from "../components/ui";
+import { Button, Input, Select, Switch, Textarea } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import { normalizeThemePreference, THEME_PREFERENCES, type ThemePreference } from "../lib/theme";
@@ -37,6 +37,7 @@ import { useAppStore, useToastStore } from "../lib/stores";
 import type { AiSettings, AiStatus, AppSettings, UsageSummary } from "../lib/types";
 
 const DEFAULT_SETTINGS: AppSettings = {
+  editor: "system",
   ai: {
     enabled: false,
     baseUrl: "https://api.openai.com/v1",
@@ -72,6 +73,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 function cloneSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
+    editor: settings.editor ?? "system",
     ai: { ...settings.ai },
     credentials: { ...settings.credentials },
     scan: {
@@ -442,6 +444,17 @@ export function SettingsPage() {
       }
     >
       <div className="max-w-4xl space-y-4">
+        <section className={sectionCls} aria-labelledby="editor-title">
+          <h2 id="editor-title" className={sectionTitleCls}>Editor</h2>
+          <p className={sectionDescriptionCls}>Choose where finding files open. Save to apply this preference.</p>
+          <Field label="Preferred editor" htmlFor="preferred-editor">
+            <Select id="preferred-editor" value={form.editor} onChange={event => update("editor", event.target.value as AppSettings["editor"])}>
+              <option value="system">System opener (file only)</option>
+              <option value="vscode">Visual Studio Code (line and column)</option>
+            </Select>
+          </Field>
+          <p className="mt-2 text-[11px] text-text-muted">VS Code must register its vscode URL handler; its command-line launcher is not required. Errors stay visible if the handler is unavailable. Positions use the current saved file, which may have changed since scanning.</p>
+        </section>
         <section className={sectionCls} aria-labelledby="ai-engine-title">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
