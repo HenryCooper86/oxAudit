@@ -1,1 +1,8 @@
 *.pdf binary
+
+# These inputs are hashed as exact bytes, including embedded scanner data.
+# Disable checkout/clean newline conversion rather than changing their hashes.
+src-tauri/src/binscan/native/signatures.toml -text
+src-tauri/src/binscan/native/signatures.provenance.toml -text
+benchmarks/corpus/** -text
+benchmarks/ground-truth/** -text

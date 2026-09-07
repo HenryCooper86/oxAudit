@@ -778,22 +778,28 @@ fn contextual_hash_assignments_are_allowed_before_generic_entropy_checks() {
 #[test]
 fn windows_temp_handle_is_explicitly_closed_before_path_publication() {
     let source = include_str!("policy.rs");
-    let windows_write = source
-        .split("#[cfg(windows)]\nfn atomic_write_policy(")
-        .nth(1)
-        .expect("Windows policy writer remains present");
-    let validation = windows_write
-        .find("parse_and_validate(&persisted")
-        .expect("the temp bytes are validated before publication");
-    let close = windows_write
-        .find("drop(temp);")
-        .expect("the Windows temp handle has an explicit lifetime boundary");
-    let publication = windows_write
-        .find("windows_fs::durable_replace(")
-        .expect("the Windows writer publishes through the durable helper");
+    // Source checkout line endings are not part of the handle-lifetime contract.
+    // Exercise both spellings on every platform, including LF-only CI runners.
+    let lf_source = source.replace("\r\n", "\n");
+    for source in [lf_source.clone(), lf_source.replace("\n", "\r\n")] {
+        let source = source.replace("\r\n", "\n");
+        let windows_write = source
+            .split("#[cfg(windows)]\nfn atomic_write_policy(")
+            .nth(1)
+            .expect("Windows policy writer remains present");
+        let validation = windows_write
+            .find("parse_and_validate(&persisted")
+            .expect("the temp bytes are validated before publication");
+        let close = windows_write
+            .find("drop(temp);")
+            .expect("the Windows temp handle has an explicit lifetime boundary");
+        let publication = windows_write
+            .find("windows_fs::durable_replace(")
+            .expect("the Windows writer publishes through the durable helper");
 
-    assert!(validation < close);
-    assert!(close < publication);
+        assert!(validation < close);
+        assert!(close < publication);
+    }
 }
 
 #[test]
