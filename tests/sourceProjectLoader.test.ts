@@ -126,3 +126,15 @@ test("invalidate prevents an in-flight load from publishing", async () => {
   inspection.resolve(context("project"));
   assert.equal(await pending, null);
 });
+
+test("an explicit project handoff restores that run rather than silently selecting latest", async () => {
+  const requested: string[] = [];
+  const loader = new SourceProjectLoader({
+    inspectSourceProject: async () => context("project"),
+    listSourceRuns: async () => [],
+    loadSourceRun: async id => { requested.push(id); return { ...run("project"), runId: id }; },
+  });
+  const loaded = await loader.load("/project", "older-run");
+  assert.equal(loaded?.run?.runId, "older-run");
+  assert.deepEqual(requested, ["older-run"]);
+});

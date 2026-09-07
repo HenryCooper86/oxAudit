@@ -42,6 +42,27 @@ Tag builds fail before bundling if the macOS or Windows signing configuration is
 incomplete. Manually dispatched dry runs may be unsigned, but the workflow cannot
 publish them.
 
+## Project home
+
+The desktop opens to durable project history. Choose a folder, click **Open
+project**, or select a recent project. The selected folder is remembered across
+restarts and validated again before use. **Resume project** opens saved source
+or dependency results; opening a project never starts a scan.
+
+**Check project** runs source scanning with the project's saved options (or your
+saved scan defaults), discovers supported lockfiles, then checks dependencies.
+The status bar shows the target and current stage and offers cancellation even
+when you leave home. Source and dependency scan buttons share ownership so a
+second scan cannot interfere with active work. If settings cannot be loaded,
+open Settings and save usable scan settings before retrying.
+
+Home distinguishes the latest attempt from the last completed results. Source
+open/critical/high counts and new findings come from durable source history;
+dependency counts remain unknown on home until you open the saved results.
+Failed, cancelled, unsaved, or incomplete work is labelled explicitly. No
+supported lockfiles means **not applicable**, and zero findings is not a claim
+that a project is safe. Refresh projects to reload history after external work.
+
 ## Sixty seconds
 
 ```bash

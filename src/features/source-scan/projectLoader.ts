@@ -22,18 +22,22 @@ export class SourceProjectLoader {
 
   constructor(private readonly api: SourceProjectApi) {}
 
-  async load(path: string): Promise<SourceProjectLoad | null> {
+  async load(path: string, runId?: string): Promise<SourceProjectLoad | null> {
     const token = this.requests.begin();
     const context = await this.api.inspectSourceProject(path);
     if (!this.requests.isCurrent(token)) return null;
 
     const [runs, run] = await Promise.all([
       this.api.listSourceRuns(context.projectId, 50),
-      context.lastCompletedRunId
-        ? this.api.loadSourceRun(context.lastCompletedRunId).catch(() => null)
-        : Promise.resolve(null),
+      runId
+        ? this.api.loadSourceRun(runId)
+        : context.lastCompletedRunId
+          ? this.api.loadSourceRun(context.lastCompletedRunId).catch(() => null)
+          : Promise.resolve(null),
     ]);
     if (!this.requests.isCurrent(token)) return null;
+    if (run && run.projectId !== context.projectId)
+      throw new Error("Saved source run belongs to a different project.");
     return { context, run, runs };
   }
 

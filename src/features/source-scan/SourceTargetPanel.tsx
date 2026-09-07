@@ -20,6 +20,7 @@ export function SourceTargetPanel(props: {
   project: ProjectContext | null;
   options: SourceScanOptionsState;
   running: boolean;
+  blocked?: boolean;
   cancelling: boolean;
   dropping: boolean;
   progress: ScanProgress | null;
@@ -49,7 +50,7 @@ export function SourceTargetPanel(props: {
   const values = options.values;
   const noCategories = !values.scanSecrets && !values.scanVulnerabilities;
   const policyInvalid = project?.policy.status === "invalid";
-  const runDisabled = !path || !project || running || !options.resolved || noCategories || policyInvalid;
+  const runDisabled = props.blocked || !path || !project || running || !options.resolved || noCategories || policyInvalid;
 
   return (
     <section aria-label="Source scan target" className={`rounded-sm border bg-surface-secondary p-4 ${activeDrop ? "border-accent bg-accent-subtle" : "border-border"}`}>
@@ -115,7 +116,7 @@ export function SourceTargetPanel(props: {
             <div className="mt-3">
               <PolicyStatusView
                 policy={project.policy}
-                running={running}
+                running={running || Boolean(props.blocked)}
                 onRunWithoutPolicy={() => onRun(true)}
               />
             </div>
