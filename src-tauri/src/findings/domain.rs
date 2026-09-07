@@ -145,6 +145,9 @@ pub struct RecentProject {
     pub last_opened_at: String,
     pub last_completed_run_id: Option<String>,
     pub last_completed_at: Option<String>,
+    /// None is legacy metadata; false means numeric totals are not authoritative.
+    #[serde(default)]
+    pub counts_available: Option<bool>,
     pub open_findings: usize,
     pub critical: usize,
     pub high: usize,

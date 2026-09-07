@@ -771,3 +771,87 @@ fn a_missing_baseline_file_is_refused_rather_than_treated_as_empty() {
     ]);
     assert_eq!(code(&output), 2);
 }
+
+#[test]
+fn baseline_output_alias_preserves_new_findings_gate() {
+    let project = project();
+    let reports = tempfile::tempdir().unwrap();
+    let baseline = reports.path().join("baseline.json");
+    std::fs::write(&baseline, r#"{"findings":[]}"#).unwrap();
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--baseline",
+        &baseline.to_string_lossy(),
+        "--output",
+        &baseline.to_string_lossy(),
+        "--format",
+        "json",
+        "--fail-on-new",
+        "high",
+        "-q",
+    ]);
+    assert_eq!(
+        code(&output),
+        1,
+        "baseline must be read before output overwrites it"
+    );
+}
+
+#[test]
+fn invalid_baseline_gate_cannot_write_output() {
+    let project = project();
+    let reports = tempfile::tempdir().unwrap();
+    let output_path = reports.path().join("output.json");
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--output",
+        &output_path.to_string_lossy(),
+        "--fail-on-new",
+        "high",
+        "-q",
+    ]);
+    assert_eq!(code(&output), 2);
+    assert!(
+        !output_path.exists(),
+        "invalid gate must fail before scanning or writing"
+    );
+}
+
+#[test]
+fn skipped_or_deleted_baseline_file_is_not_claimed_resolved() {
+    let project = project();
+    let reports = tempfile::tempdir().unwrap();
+    let baseline = reports.path().join("baseline.json");
+    assert_eq!(
+        code(&run(&[
+            "scan",
+            &project.path().to_string_lossy(),
+            "--format",
+            "json",
+            "--output",
+            &baseline.to_string_lossy(),
+            "-q"
+        ])),
+        0
+    );
+    std::fs::remove_file(project.path().join("src/render.js")).unwrap();
+    // Previously observed Python findings become skipped because of size.
+    std::fs::write(project.path().join("src/run.py"), "# padding\n".repeat(300)).unwrap();
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--baseline",
+        &baseline.to_string_lossy(),
+        "--max-file-size",
+        "1",
+    ]);
+    assert_eq!(code(&output), 0);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no longer observed (coverage unverified)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("resolved"), "{stderr}");
+}

@@ -361,6 +361,60 @@ pub fn reconcile_project_policy_reviews(
     )
 }
 
+/// Project current policy authority onto a comparison without reconciling or
+/// appending review events. Historical policy events remain historical evidence;
+/// only local decisions and the policy currently on disk determine active state.
+pub(in crate::findings) fn read_only_project_policy_comparison(
+    repository: &FindingsRepository,
+    current_run_id: &str,
+    baseline_run_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<crate::models::Finding>, CommandError> {
+    let current = repository
+        .load_run(current_run_id)
+        .map_err(|_| CommandError::baseline_incompatible())?;
+    let findings = repository
+        .compare_runs(current_run_id, baseline_run_id)
+        .map_err(|_| CommandError::baseline_incompatible())?;
+    read_only_project_policy_findings(repository, &current.project_id, findings, now)
+}
+
+pub(in crate::findings) fn read_only_project_policy_findings(
+    repository: &FindingsRepository,
+    project_id: &str,
+    mut findings: Vec<crate::models::Finding>,
+    now: DateTime<Utc>,
+) -> Result<Vec<crate::models::Finding>, CommandError> {
+    with_policy_authority(|authority| {
+        let project = repository.project_context(project_id)?;
+        let root = Path::new(&project.canonical_path);
+        let loaded = load_policy_under_authority(authority, root)?;
+        // Only SELECT history; persisted policy events are not active authority.
+        repository.enrich_findings_with_reviews(project_id, &mut findings, false, now)?;
+        if !matches!(loaded.status(), super::domain::PolicyStatus::Invalid { .. }) {
+            for finding in &mut findings {
+                let projected = apply_policy(
+                    &loaded,
+                    project_id,
+                    finding.fingerprint_version,
+                    &finding.fingerprint,
+                    &finding.category,
+                    &finding.rule_id,
+                    &finding.file_path,
+                    finding.review.as_ref(),
+                    now,
+                )?;
+                finding.review = (projected.state != ReviewState::Candidate).then_some(projected);
+            }
+        }
+        revalidate_project_root(repository, project_id, root)?;
+        if !policy_authority_still_matches(authority, root, &loaded)? {
+            return Err(CommandError::policy_write_failed());
+        }
+        Ok(findings)
+    })
+}
+
 pub(in crate::findings) fn authoritative_project_policy_projection<T, H, P>(
     repository: &FindingsRepository,
     project_id: &str,

@@ -14,6 +14,7 @@ pub struct CommandError {
 #[serde(rename_all = "camelCase")]
 pub enum ErrorCode {
     InvalidTarget,
+    BaselineIncompatible,
     NothingToScan,
     ScanCancelled,
     ScanFailed,
@@ -30,6 +31,11 @@ pub enum ErrorCode {
 }
 
 impl CommandError {
+    pub fn baseline_incompatible() -> Self {
+        Self::new(ErrorCode::BaselineIncompatible,
+            "This baseline cannot be compared. Choose an earlier completed saved run from the same project with compatible scanner coverage and finding identities.", false)
+    }
+
     pub fn invalid_target() -> Self {
         Self::new(
             ErrorCode::InvalidTarget,

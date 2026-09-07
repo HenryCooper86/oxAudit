@@ -161,6 +161,7 @@ export function SourceTargetPanel(props: {
             <div className="mt-2 max-h-52 overflow-y-auto divide-y divide-border">
               {recentProjects.slice(0, 12).map((recent) => {
                 const selected = recent.canonicalPath === path;
+                const countsAvailable = recent.lastCompletedRunId && recent.countsAvailable !== false;
                 return (
                   <button
                     key={recent.projectId}
@@ -172,11 +173,11 @@ export function SourceTargetPanel(props: {
                   >
                     <span className="flex items-center justify-between gap-3">
                       <span className="truncate text-[12px] font-medium text-text-primary">{recent.displayName}</span>
-                      <span className="shrink-0 font-mono text-[10px] text-text-muted">{recent.openFindings} open</span>
+                      <span className="shrink-0 font-mono text-[10px] text-text-muted">{countsAvailable ? `${recent.openFindings} open` : recent.lastCompletedRunId ? "Counts unavailable" : "Counts unknown"}</span>
                     </span>
                     <span className="mt-0.5 block truncate font-mono text-[10px] text-text-muted">{recent.canonicalPath}</span>
                     <span className="mt-1 block text-[10px] text-text-muted">
-                      {recent.lastCompletedAt ? fmtDateTime(recent.lastCompletedAt) : "Not yet completed"} · {recent.critical + recent.high} critical/high
+                      {recent.lastCompletedAt ? fmtDateTime(recent.lastCompletedAt) : "Not yet completed"}{countsAvailable ? ` · ${recent.critical + recent.high} critical/high` : ""}
                     </span>
                   </button>
                 );

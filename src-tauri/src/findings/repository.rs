@@ -1836,6 +1836,7 @@ impl FindingsRepository {
                     last_opened_at: project.last_opened_at,
                     last_completed_run_id: latest.as_ref().map(|run| run.run_id.clone()),
                     last_completed_at: latest.as_ref().and_then(|run| run.completed_at.clone()),
+                    counts_available: None,
                     open_findings: open.len(),
                     critical: open
                         .iter()
@@ -2510,7 +2511,7 @@ fn require_owner_only(metadata: &std::fs::Metadata) -> Result<(), CommandError> 
     }
 }
 
-fn is_open_finding(finding: &Finding) -> bool {
+pub(in crate::findings) fn is_open_finding(finding: &Finding) -> bool {
     match finding.review.as_ref().map(|review| review.state) {
         Some(ReviewState::Confirmed) => true,
         None | Some(ReviewState::Candidate) => matches!(
@@ -3203,6 +3204,8 @@ impl From<&Finding> for StoredFindingPayload {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredScanSummary {
+    #[serde(default)]
+    git_context: Option<crate::git_context::GitEvidence>,
     path: String,
     files_scanned: usize,
     files_skipped: usize,
@@ -3222,6 +3225,7 @@ struct StoredScanSummary {
 impl From<&ScanSummary> for StoredScanSummary {
     fn from(summary: &ScanSummary) -> Self {
         Self {
+            git_context: summary.git_context.clone(),
             path: summary.path.clone(),
             files_scanned: summary.files_scanned,
             files_skipped: summary.files_skipped,
@@ -3243,6 +3247,7 @@ impl From<&ScanSummary> for StoredScanSummary {
 impl From<StoredScanSummary> for ScanSummary {
     fn from(summary: StoredScanSummary) -> Self {
         Self {
+            git_context: summary.git_context,
             path: summary.path,
             files_scanned: summary.files_scanned,
             files_skipped: summary.files_skipped,
@@ -3733,6 +3738,7 @@ fn parse_run_status(value: &str) -> Result<RunStatus, CommandError> {
 
 fn empty_summary() -> ScanSummary {
     ScanSummary {
+        git_context: None,
         path: String::new(),
         files_scanned: 0,
         files_skipped: 0,

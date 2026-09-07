@@ -36,6 +36,7 @@ export function filterFindings(
 ): Finding[] {
   const search = query.search.trim().toLocaleLowerCase();
   return findings.filter((finding) => {
+    if (query.newOnly && finding.diffStatus !== "new") return false;
     if (findingView(finding) !== query.view) return false;
     if (query.category !== "all" && finding.category !== query.category) return false;
     if (query.severity !== "all" && finding.severity !== query.severity) return false;

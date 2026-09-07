@@ -94,6 +94,38 @@ oxaudit-cli scan . --format json --output baseline.json
 oxaudit-cli scan . --baseline baseline.json --fail-on-new high
 ```
 
+Source Scan’s **Review changes** panel compares a completed saved run with an
+older compatible run. Automatic baseline selection remains the default; choosing
+another baseline is read-only. **New since baseline** intersects the existing
+Open, Other scopes, Closed, and Resolved views. A first scan without a compatible
+baseline does not attribute findings to a commit. Missing files without compatible
+scan coverage remain **not evaluated**.
+
+Git path modes select findings in all files, changes since a chosen base (using
+the merge base), staged paths, or unstaged/untracked paths. Every scan still reads
+the full working tree. Staged paths include current working-tree content, including
+unstaged edits to partially staged files; oxAudit does not scan index contents.
+The panel separates the run’s captured revision from the current checkout and
+shows scanned/skipped coverage. Old runs show revision unavailable. Git context
+expires on focus changes or after a minute; refresh after editing or staging.
+An empty changed-path view is not evidence of a clean project.
+
+Git inspection uses read-only object/index commands with a cleared Git environment,
+optional locks and fsmonitor disabled, and no network protocols. It compares raw
+file hashes without running repository clean/process filters, external diff, or
+textconv. Attribute normalization can therefore add conservative changed paths.
+Inspection is bounded to ten seconds, 16 MiB per command/file, 128 MiB of file
+content and 100,000 paths. Unsupported Git state (including unresolved merges,
+symlinks/submodules or non-UTF-8 paths) and exceeded limits leave normal results
+available. Pre/post HEAD and index metadata checks do not promise an atomic
+snapshot: the stored artifact content hashes remain the scan evidence.
+
+CLI report baselines are loaded and validated before scanning or writing output,
+including when baseline and output paths alias. Report-file-only absence is
+labelled **no longer observed (coverage unverified)**, covering skipped/deleted
+files; only durable comparisons with compatible coverage claim resolution.
+Missing or invalid fingerprint identities are rejected.
+
 Reviewed something and decided it is not a problem? Record it in
 [`.oxaudit/policy.json`](#suppressing-a-finding) and it stops failing the build —
 with a reason, an expiry, and a pull request.

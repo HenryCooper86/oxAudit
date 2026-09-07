@@ -36,6 +36,8 @@ impl Default for ScanOptions {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanSummary {
+    #[serde(default)]
+    pub git_context: Option<crate::git_context::GitEvidence>,
     pub path: String,
     pub files_scanned: usize,
     pub files_skipped: usize,

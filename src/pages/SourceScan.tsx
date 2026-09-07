@@ -1,3 +1,5 @@
+import { ReviewChangesPanel } from "../features/source-scan/ReviewChangesPanel";
+import { useReviewChanges } from "../features/source-scan/useReviewChanges";
 import { acquireScan, cancelActiveScan, reconcileSourceRunSave, releaseScan, useScanWorkStore } from "../features/project-home/coordinator";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Clipboard, RotateCcw, Search } from "lucide-react";
@@ -551,11 +553,12 @@ export function SourceScanPage(): JSX.Element {
     }
   };
 
-  const findings = run?.findings ?? [];
+  const reviewChanges = useReviewChanges(project?.canonicalPath ?? "", run);
+  const findings = reviewChanges.findings;
   const counts = useMemo(() => countViews(findings), [findings]);
   const filtered = useMemo(
-    () => filterFindings(findings, query),
-    [findings, query],
+    () => filterFindings(findings, { ...query, newOnly: query.newOnly && reviewChanges.hasBaseline }),
+    [findings, query, reviewChanges.hasBaseline],
   );
   const effectiveSelection = nextSelection(filtered, selectedFingerprint);
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
@@ -665,6 +668,7 @@ export function SourceScanPage(): JSX.Element {
   };
 
   const clearFilters = () => {
+    reviewChanges.setPathMode("all");
     setQuery((current) => ({ ...DEFAULT_QUERY, view: current.view }));
     setSelectedFingerprint(null);
   };
@@ -693,6 +697,7 @@ export function SourceScanPage(): JSX.Element {
         onRun={(ignoreInvalidPolicy) => void runScan(ignoreInvalidPolicy)}
         onCancel={() => void cancel()}
       />
+      {project && <ReviewChangesPanel review={reviewChanges} run={run} runs={runs} newOnly={Boolean(query.newOnly)} onNewOnly={newOnly => setQuery(current => ({ ...current, newOnly }))} />}
       <RunTimeline
         active={!running && run ? "completed" : !running ? "discovering" : progress?.phase === "walking" ? "discovering" : progress?.phase === "scanning" ? "detecting" : "persisting"}
         running={running}
@@ -771,7 +776,7 @@ export function SourceScanPage(): JSX.Element {
         <InlineState tone="unavailable" compact title="History maintenance needs attention" description={run.maintenanceWarning} />
       )}
 
-      {run && run.findings.length > 0 && (
+      {run && reviewChanges.allFindings.length > 0 && (
         <section aria-label="Source scan results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <ResultViewTabs
             value={query.view}
@@ -782,7 +787,7 @@ export function SourceScanPage(): JSX.Element {
             }}
           />
           <ResultsToolbar
-            countLabel={`${filtered.length} in this view · ${run.findings.length} total`}
+            countLabel={`${filtered.length} in this view · ${reviewChanges.allFindings.length} total`}
             filters={
               <>
                 <Select aria-label="Finding category" value={query.category} onChange={(event) => setQuery((current) => ({ ...current, category: event.target.value as ResultsQuery["category"] }))} variant="compact">
@@ -866,7 +871,7 @@ export function SourceScanPage(): JSX.Element {
               <InlineState
                 tone="empty"
                 title="No findings match this view and its filters"
-                description="Widen the category, severity, scope, or language filters, or clear the search."
+                description="Change the Git path or baseline filter, widen category, severity, scope, or language, or clear all filters."
                 action={<Button type="button" onClick={clearFilters} variant="outline" size="md">Clear filters</Button>}
               />
             )}
@@ -874,11 +879,11 @@ export function SourceScanPage(): JSX.Element {
         </section>
       )}
 
-      {run && run.findings.length === 0 && (
+      {run && reviewChanges.allFindings.length === 0 && (
         <InlineState
           tone="empty"
           title="No findings detected"
-          description="The completed run found no exposed secrets or vulnerable source patterns."
+          description={`No findings were detected in ${run.summary.filesScanned} scanned files; ${run.summary.filesSkipped} files were skipped. This does not establish that unscanned files are safe.`}
           action={<Button type="button" onClick={() => void copyJson()} variant="outline" size="md"><Clipboard size={13} aria-hidden="true" />Copy JSON</Button>}
         />
       )}

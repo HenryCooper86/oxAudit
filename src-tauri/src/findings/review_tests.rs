@@ -264,6 +264,7 @@ fn prepare_repository_at(repository: &FindingsRepository, category: &str, projec
         )
         .unwrap();
     let summary = ScanSummary {
+        git_context: None,
         path: "/project".into(),
         files_scanned: 1,
         files_skipped: 0,
@@ -321,6 +322,7 @@ fn complete_followup_run(
         .unwrap()
         .to_rfc3339();
     let summary = ScanSummary {
+        git_context: None,
         path: "/project".into(),
         files_scanned: findings.len(),
         files_skipped: 0,
@@ -414,6 +416,7 @@ fn project_policy_save_resolves_the_persisted_root_after_restart() {
     project_b_finding.fingerprint = "fedcba9876543210".into();
     project_b_finding.file_path = "src/project_b.rs".into();
     let project_b_summary = ScanSummary {
+        git_context: None,
         path: project_b.to_string_lossy().into_owned(),
         files_scanned: 1,
         files_skipped: 0,
@@ -1400,6 +1403,7 @@ fn newest_observation_uses_parsed_instant_before_category_validation() {
     let repository = FindingsRepository::open_in_memory().unwrap();
     prepare_repository(&repository, "vulnerability");
     let summary = ScanSummary {
+        git_context: None,
         path: "/project".into(),
         files_scanned: 1,
         files_skipped: 0,

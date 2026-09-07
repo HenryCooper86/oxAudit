@@ -1,6 +1,7 @@
 import type { CommandError, ErrorCode } from "./types";
 
 const ERROR_CODES = new Set<ErrorCode>([
+  "baselineIncompatible",
   "invalidTarget",
   "scanCancelled",
   "scanFailed",

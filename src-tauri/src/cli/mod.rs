@@ -460,6 +460,17 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
             "--no-secrets and --no-patterns together leave nothing to scan",
         ));
     }
+    // Retain the pre-scan report even when output aliases its path (including
+    // symlinks/hard links). Invalid gates must not scan or write anything.
+    if args.fail_on_new != FailOn::None && args.baseline.is_none() {
+        return Err(usage("--fail-on-new needs --baseline to compare against"));
+    }
+    let previous = args
+        .baseline
+        .as_deref()
+        .map(baseline::load)
+        .transpose()
+        .map_err(|error| usage(error.to_string()))?;
     // The canonical run graph lives in the database, so the standards formats
     // cannot be produced without one. Saying so up front beats scanning for a
     // minute and then failing to write the report.
@@ -536,27 +547,17 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
         }
     }
 
-    // A gate on new findings is meaningless without something to be new
-    // against, and silently passing would be the dangerous reading.
-    if args.fail_on_new != FailOn::None && args.baseline.is_none() {
-        return Err(usage("--fail-on-new needs --baseline to compare against"));
-    }
-
-    let comparison = match &args.baseline {
-        Some(path) => {
-            let previous = baseline::load(path).map_err(|error| usage(error.to_string()))?;
-            let comparison = baseline::compare(&previous, &detail.findings);
-            if !quiet {
-                eprintln!(
-                    "Against {}: {}",
-                    path.display(),
-                    baseline::describe(&comparison)
-                );
-            }
-            Some(comparison)
+    let comparison = previous.as_ref().map(|previous| {
+        let comparison = baseline::compare(previous, &detail.findings);
+        if !quiet {
+            eprintln!(
+                "Against {}: {}",
+                args.baseline.as_ref().unwrap().display(),
+                baseline::describe(&comparison)
+            );
         }
-        None => None,
-    };
+        comparison
+    });
 
     let gated = gate(
         detail

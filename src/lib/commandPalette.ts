@@ -177,6 +177,7 @@ export function projectCommands(
 
 /** The subset of a recent project the palette needs. */
 export interface RecentProjectLike {
+  countsAvailable?: boolean | null;
   projectId: string;
   canonicalPath: string;
   displayName: string;
@@ -192,6 +193,7 @@ export interface RecentProjectLike {
  * with nothing open says so rather than showing a zero.
  */
 export function describeProjectState(project: RecentProjectLike): string {
+  if (project.countsAvailable === false) return "counts unavailable";
   if (project.openFindings === 0) return "clear";
   const parts: string[] = [];
   if (project.critical > 0) parts.push(`${project.critical} critical`);
