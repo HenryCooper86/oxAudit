@@ -35,10 +35,9 @@ pub struct Comparison {
     pub unchanged: Vec<Finding>,
     /// Present in the baseline, absent now.
     ///
-    /// Reported rather than dropped: a finding disappearing is usually a fix
-    /// and occasionally a file that stopped being scanned, and those want
-    /// different responses.
-    pub resolved: Vec<Finding>,
+    /// Report files do not prove compatible coverage. This is unverified
+    /// absence, including skipped and deleted files, never a resolution.
+    pub no_longer_observed: Vec<Finding>,
 }
 
 impl Comparison {
@@ -46,7 +45,7 @@ impl Comparison {
         (
             self.introduced.len(),
             self.unchanged.len(),
-            self.resolved.len(),
+            self.no_longer_observed.len(),
         )
     }
 }
@@ -84,8 +83,21 @@ pub fn load(path: &Path) -> Result<Vec<Finding>, BaselineError> {
     let findings = document
         .get("findings")
         .ok_or_else(|| BaselineError::Malformed("no `findings` array".to_string()))?;
-    serde_json::from_value(findings.clone())
-        .map_err(|error| BaselineError::Malformed(error.to_string()))
+    let loaded: Vec<Finding> = serde_json::from_value(findings.clone())
+        .map_err(|error| BaselineError::Malformed(error.to_string()))?;
+    if loaded.iter().any(|finding| {
+        finding.fingerprint_version == 0
+            || finding.fingerprint.trim().is_empty()
+            || finding
+                .fingerprint
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+    }) {
+        return Err(BaselineError::Malformed(
+            "missing or invalid finding identity".into(),
+        ));
+    }
+    Ok(loaded)
 }
 
 /// Compare the current findings against a baseline.
@@ -103,7 +115,7 @@ pub fn compare(baseline: &[Finding], current: &[Finding]) -> Comparison {
     }
     for finding in baseline {
         if !current_ids.contains(&identity(finding)) {
-            comparison.resolved.push(finding.clone());
+            comparison.no_longer_observed.push(finding.clone());
         }
     }
     comparison
@@ -112,7 +124,7 @@ pub fn compare(baseline: &[Finding], current: &[Finding]) -> Comparison {
 /// A one-line summary for the terminal.
 pub fn describe(comparison: &Comparison) -> String {
     let (introduced, unchanged, resolved) = comparison.counts();
-    format!("{introduced} new, {unchanged} pre-existing, {resolved} resolved")
+    format!("{introduced} new, {unchanged} pre-existing, {resolved} no longer observed (coverage unverified)")
 }
 
 #[cfg(test)]
@@ -174,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn a_finding_missing_from_the_current_scan_is_reported_as_resolved() {
+    fn a_skipped_or_deleted_finding_is_only_no_longer_observed() {
         // Not dropped: a finding disappearing is usually a fix and sometimes a
         // file that stopped being scanned, and those want different responses.
         let comparison = compare(
@@ -182,7 +194,7 @@ mod tests {
             &[finding("a", "high")],
         );
         assert_eq!(comparison.counts(), (0, 1, 1));
-        assert_eq!(comparison.resolved[0].fingerprint, "b");
+        assert_eq!(comparison.no_longer_observed[0].fingerprint, "b");
     }
 
     #[test]
@@ -194,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_scan_against_a_baseline_resolves_everything() {
+    fn an_empty_scan_does_not_prove_resolution() {
         let comparison = compare(&[finding("a", "high")], &[]);
         assert_eq!(comparison.counts(), (0, 0, 1));
     }
@@ -227,7 +239,10 @@ mod tests {
     #[test]
     fn the_summary_names_all_three_counts() {
         let comparison = compare(&[finding("a", "high")], &[finding("b", "high")]);
-        assert_eq!(describe(&comparison), "1 new, 0 pre-existing, 1 resolved");
+        assert_eq!(
+            describe(&comparison),
+            "1 new, 0 pre-existing, 1 no longer observed (coverage unverified)"
+        );
     }
 
     #[test]
@@ -264,5 +279,27 @@ mod tests {
         // fail the build for a typo in a path.
         let error = load(Path::new("/definitely/not/here.json")).expect_err("must refuse");
         assert!(matches!(error, BaselineError::Unreadable(_)));
+    }
+    #[test]
+    fn empty_matching_identity_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("baseline.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({"findings": [finding("", "high")]}).to_string(),
+        )
+        .unwrap();
+        assert!(load(&path).is_err());
+    }
+    #[test]
+    fn legacy_shape_cannot_silently_default_matching_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("baseline.json");
+        for field in ["fingerprint", "fingerprintVersion"] {
+            let mut record = serde_json::to_value(finding("a", "high")).unwrap();
+            record.as_object_mut().unwrap().remove(field);
+            std::fs::write(&path, serde_json::json!({"findings": [record]}).to_string()).unwrap();
+            assert!(load(&path).is_err(), "{field}");
+        }
     }
 }

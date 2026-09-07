@@ -27,6 +27,7 @@ import type {
   VerificationResult,
   DependencyScanResult,
   Finding,
+  GitContext,
   LockfileInfo,
   ScanOptions,
   ScanRunDetail,
@@ -64,6 +65,10 @@ export const api = {
     invoke<RecentProject[]>("list_source_projects", { limit }),
   listSourceRuns: (projectId: string, limit = 50) =>
     invoke<ScanRunSummary[]>("list_source_runs", { projectId, limit }),
+  compareSourceRuns: (currentRunId: string, baselineRunId: string) =>
+    invoke<Finding[]>("compare_source_runs", { currentRunId, baselineRunId }),
+  inspectSourceGit: (path: string, baseReference: string) =>
+    invoke<GitContext>("inspect_source_git", { path, baseReference }),
   loadSourceRun: (runId: string) =>
     invoke<ScanRunDetail>("load_source_run", { runId }),
   retrySourceRunSave: (retryToken: string) =>

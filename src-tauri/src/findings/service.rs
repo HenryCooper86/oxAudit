@@ -338,8 +338,68 @@ impl FindingsService {
         Ok(loaded)
     }
 
+    pub fn compare_runs(
+        &self,
+        current_run_id: &str,
+        baseline_run_id: &str,
+    ) -> Result<Vec<Finding>, CommandError> {
+        // Preserve repository comparison/coverage authority and apply current
+        // policy in memory. This route must never reconcile stored review events.
+        super::review::read_only_project_policy_comparison(
+            &self.repository,
+            current_run_id,
+            baseline_run_id,
+            Utc::now(),
+        )
+    }
+
     pub fn list_recent_projects(&self, limit: usize) -> Result<Vec<RecentProject>, CommandError> {
-        self.repository.list_recent_projects(limit)
+        let mut projects = self.repository.list_recent_projects(limit)?;
+        let now = Utc::now();
+        for project in &mut projects {
+            // A missing project is distinct from an accessible project with no policy.
+            // Retain its saved history, but do not present stale totals as current.
+            let root = std::path::Path::new(&project.canonical_path);
+            let accessible = || {
+                root.canonicalize().is_ok_and(|canonical| canonical == root)
+                    && std::fs::read_dir(root).is_ok()
+            };
+            let projected = project.last_completed_run_id.as_deref().and_then(|run_id| {
+                if !accessible() {
+                    return None;
+                }
+                let mut run = self.repository.load_run(run_id).ok()?;
+                // Comparison can append baseline-only findings; history totals
+                // describe observations actually saved in the completed run.
+                run.findings
+                    .retain(|finding| finding.observation_run_id == run_id);
+                let findings = super::review::read_only_project_policy_findings(
+                    &self.repository,
+                    &project.project_id,
+                    run.findings,
+                    now,
+                )
+                .ok()?;
+                accessible().then_some(findings)
+            });
+            project.counts_available = Some(projected.is_some());
+            if let Some(findings) = projected {
+                let open = findings
+                    .iter()
+                    .filter(|finding| super::repository::is_open_finding(finding))
+                    .collect::<Vec<_>>();
+                project.open_findings = open.len();
+                project.critical = open
+                    .iter()
+                    .filter(|finding| finding.severity == "critical")
+                    .count();
+                project.high = open
+                    .iter()
+                    .filter(|finding| finding.severity == "high")
+                    .count();
+            }
+        }
+        Ok(projects)
     }
 
     pub fn list_runs(
@@ -425,6 +485,7 @@ impl FindingsService {
             .filter(|name| !name.is_empty())
             .unwrap_or(&canonical_path)
             .to_owned();
+        let git_before = crate::git_context::snapshot(&canonical).ok();
         let started_at = timestamp(Utc::now());
         let project = self.repository.upsert_project(
             &Uuid::new_v4().to_string(),
@@ -702,7 +763,7 @@ impl FindingsService {
                 }
             }
             sort_findings(&mut findings);
-            let summary = summarize(
+            let mut summary = summarize(
                 canonical_path.clone(),
                 collection.files.len(),
                 collection.skipped,
@@ -710,6 +771,17 @@ impl FindingsService {
                 started_instant.elapsed().as_millis() as u64,
                 &findings,
             );
+            let git_after = crate::git_context::snapshot(&canonical).ok();
+            if git_before.is_some() || git_after.is_some() {
+                summary.git_context = Some(crate::git_context::GitEvidence {
+                    context_changed: git_before
+                        .as_ref()
+                        .zip(git_after.as_ref())
+                        .map(|(before, after)| before != after),
+                    before: git_before.clone(),
+                    after: git_after,
+                });
+            }
             let coverage = CoverageManifest::from_entries(coverage_entries);
             let started_cutoff = DateTime::parse_from_rfc3339(&started_at)
                 .map_err(|_| CommandError::persistence_unavailable())?
@@ -1449,6 +1521,7 @@ fn summarize(
             .count()
     };
     ScanSummary {
+        git_context: None,
         path,
         files_scanned,
         files_skipped,

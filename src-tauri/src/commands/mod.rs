@@ -859,6 +859,29 @@ pub fn list_source_runs(
 }
 
 #[tauri::command]
+pub fn compare_source_runs(
+    state: State<'_, FindingsState>,
+    current_run_id: String,
+    baseline_run_id: String,
+) -> Result<Vec<crate::models::Finding>, CommandError> {
+    state
+        .service()?
+        .compare_runs(&current_run_id, &baseline_run_id)
+}
+
+#[tauri::command]
+pub async fn inspect_source_git(
+    path: String,
+    base_reference: String,
+) -> Result<crate::git_context::GitContext, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::git_context::inspect(std::path::Path::new(&path), &base_reference)
+    })
+    .await
+    .map_err(|_| "Git inspection could not complete".to_owned())?
+}
+
+#[tauri::command]
 pub fn load_source_run(
     state: State<'_, FindingsState>,
     run_id: String,
@@ -979,6 +1002,7 @@ mod source_finding_command_tests {
 
     fn empty_summary(path: &std::path::Path) -> ScanSummary {
         ScanSummary {
+            git_context: None,
             path: path.to_string_lossy().into_owned(),
             files_scanned: 0,
             files_skipped: 0,

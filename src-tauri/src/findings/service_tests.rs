@@ -2226,3 +2226,456 @@ async fn an_empty_bulk_review_does_nothing_rather_than_erroring() {
     assert!(outcome.recorded.is_empty());
     assert!(outcome.failures.is_empty());
 }
+
+#[tokio::test]
+async fn explicit_comparison_is_read_only_and_reports_unscanned_absence() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("app.js"), "eval(input);\n").unwrap();
+    let service = FindingsService::new(super::FindingsRepository::open_in_memory().unwrap());
+    let baseline = service
+        .scan(
+            ScanOptions {
+                path: temp.path().to_string_lossy().into(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            },
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    std::fs::remove_file(temp.path().join("app.js")).unwrap();
+    std::fs::write(temp.path().join("safe.js"), "const safe = true;\n").unwrap();
+    let current = service
+        .scan(
+            ScanOptions {
+                path: temp.path().to_string_lossy().into(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            },
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    let before =
+        serde_json::to_value(service.repository.load_run(&current.run_id).unwrap()).unwrap();
+    let projection = service
+        .compare_runs(&current.run_id, &baseline.run_id)
+        .unwrap();
+    assert!(
+        projection
+            .iter()
+            .any(|f| f.diff_status == Some(DiffStatus::NotEvaluated)
+                && f.resolved_by_run_id.is_none())
+    );
+    assert_eq!(
+        before,
+        serde_json::to_value(service.repository.load_run(&current.run_id).unwrap()).unwrap()
+    );
+    assert!(service
+        .compare_runs(&baseline.run_id, &current.run_id)
+        .is_err());
+    assert!(service
+        .compare_runs(&current.run_id, &current.run_id)
+        .is_err());
+}
+
+#[tokio::test]
+async fn source_summary_persists_revision_and_defaults_legacy_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        crate::git_context::tests::git(temp.path(), args);
+    };
+    git(&["init", "-b", "main"]);
+    std::fs::write(temp.path().join("app.js"), "const safe = true;\n").unwrap();
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    ]);
+    let service = FindingsService::new(super::FindingsRepository::open_in_memory().unwrap());
+    let run = service
+        .scan(
+            ScanOptions {
+                path: temp.path().to_string_lossy().into(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            },
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    let summary =
+        serde_json::to_value(&service.repository.load_run(&run.run_id).unwrap().summary).unwrap();
+    assert_eq!(summary["gitContext"]["contextChanged"], false);
+    assert_eq!(summary["gitContext"]["before"]["branch"], "main");
+    let mut legacy = summary;
+    legacy.as_object_mut().unwrap().remove("gitContext");
+    assert!(serde_json::from_value::<crate::models::ScanSummary>(legacy).is_ok());
+}
+
+#[tokio::test]
+async fn index_change_during_scan_is_disclosed_in_saved_evidence() {
+    struct StageDuringScan {
+        root: std::path::PathBuf,
+        staged: AtomicBool,
+    }
+    impl ScanEventSink for StageDuringScan {
+        fn emit(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<(), crate::findings::error::CommandError> {
+            if !self.staged.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                std::fs::write(self.root.join("app.js"), "const changed = true;\n").unwrap();
+                crate::git_context::tests::git(&self.root, &["add", "app.js"]);
+            }
+            Ok(())
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        crate::git_context::tests::git(temp.path(), args);
+    };
+    git(&["init", "-b", "main"]);
+    std::fs::write(temp.path().join("app.js"), "const safe = true;\n").unwrap();
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    ]);
+    let service = FindingsService::new(super::FindingsRepository::open_in_memory().unwrap());
+    let events = StageDuringScan {
+        root: temp.path().to_owned(),
+        staged: AtomicBool::new(false),
+    };
+    let run = service
+        .scan(
+            ScanOptions {
+                path: temp.path().to_string_lossy().into(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            },
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &events,
+        )
+        .await
+        .unwrap();
+    let evidence = service
+        .repository
+        .load_run(&run.run_id)
+        .unwrap()
+        .summary
+        .git_context
+        .unwrap();
+    assert_eq!(evidence.context_changed, Some(true));
+    assert_ne!(
+        evidence.before.unwrap().index_digest,
+        evidence.after.unwrap().index_digest
+    );
+}
+
+#[tokio::test]
+async fn explicit_comparison_uses_current_policy_without_writing_review_events() {
+    use crate::findings::domain::{ReviewOrigin, ReviewState};
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+    for path in ["app.js", "removed.js"] {
+        std::fs::write(project.join(path), "eval(input);\n").unwrap();
+    }
+    let policy = project.join(".oxaudit/policy.json");
+    let write_policy = |state: &str, reason: &str| {
+        std::fs::write(&policy, format!(r#"{{"version":1,"entries":[{{"kind":"suppression","ruleId":"js-eval","pathPattern":"*.js","state":"{state}","reason":"{reason}"}}]}}"#)).unwrap()
+    };
+    write_policy("suppressed", "Initial project policy");
+    let database = temp.path().join("data/findings.db");
+    let service = FindingsService::new(super::FindingsRepository::open(&database).unwrap());
+    let options = ScanOptions {
+        path: project.to_string_lossy().into(),
+        scan_secrets: false,
+        ..ScanOptions::default()
+    };
+    let baseline = service
+        .scan(
+            options.clone(),
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    std::fs::remove_file(project.join("removed.js")).unwrap();
+    let current = service
+        .scan(
+            options,
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(current.findings.len(), 2);
+    assert!(current
+        .findings
+        .iter()
+        .all(|f| f.review.as_ref().is_some_and(
+            |r| r.origin == ReviewOrigin::ProjectPolicy && r.state == ReviewState::Suppressed
+        )));
+    let observer = rusqlite::Connection::open(&database).unwrap();
+    let version = || {
+        observer
+            .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    };
+    let stored_baseline =
+        serde_json::to_value(service.repository.load_run(&baseline.run_id).unwrap()).unwrap();
+    let stored_current =
+        serde_json::to_value(service.repository.load_run(&current.run_id).unwrap()).unwrap();
+    std::fs::write(&policy, "{ invalid policy").unwrap();
+    let ordinary = service.load_run(&current.run_id).unwrap();
+    assert!(ordinary.findings.iter().all(|f| f.review.is_none()));
+    let before = version();
+    let compared = service
+        .compare_runs(&current.run_id, &baseline.run_id)
+        .unwrap();
+    assert_eq!(
+        version(),
+        before,
+        "read-only comparison must not write any database row"
+    );
+    assert!(
+        compared.iter().all(|f| f.review.is_none()),
+        "invalid persisted policy must not reactivate in explicit comparison"
+    );
+    assert!(compared
+        .iter()
+        .any(|f| f.diff_status == Some(DiffStatus::NotEvaluated)));
+    write_policy("suppressed", "Updated current policy");
+    let before = version();
+    let compared = service
+        .compare_runs(&current.run_id, &baseline.run_id)
+        .unwrap();
+    assert_eq!(version(), before);
+    assert!(compared
+        .iter()
+        .all(|f| f.review.as_ref().is_some_and(
+            |r| r.state == ReviewState::Suppressed && r.reason == "Updated current policy"
+        )));
+    std::fs::remove_file(&policy).unwrap();
+    let before = version();
+    let compared = service
+        .compare_runs(&current.run_id, &baseline.run_id)
+        .unwrap();
+    assert_eq!(version(), before);
+    assert!(compared.iter().all(|f| f.review.is_none()));
+    assert_eq!(
+        stored_baseline,
+        serde_json::to_value(service.repository.load_run(&baseline.run_id).unwrap()).unwrap()
+    );
+    assert_eq!(
+        stored_current,
+        serde_json::to_value(service.repository.load_run(&current.run_id).unwrap()).unwrap()
+    );
+    let app = current
+        .findings
+        .iter()
+        .find(|f| f.file_path == "app.js")
+        .unwrap();
+    service
+        .save_review(&dismissal(&current.project_id, app), chrono::Utc::now())
+        .unwrap();
+    write_policy("suppressed", "Readded project policy");
+    let before = version();
+    let compared = service
+        .compare_runs(&current.run_id, &baseline.run_id)
+        .unwrap();
+    assert_eq!(version(), before);
+    assert!(compared
+        .iter()
+        .find(|f| f.file_path == "app.js")
+        .unwrap()
+        .review
+        .as_ref()
+        .is_some_and(|r| r.origin == ReviewOrigin::Local && r.state == ReviewState::AcceptedRisk));
+    assert!(compared
+        .iter()
+        .find(|f| f.file_path == "removed.js")
+        .unwrap()
+        .review
+        .as_ref()
+        .is_some_and(
+            |r| r.origin == ReviewOrigin::ProjectPolicy && r.reason == "Readded project policy"
+        ));
+}
+
+#[tokio::test]
+async fn recent_counts_follow_current_policy_read_only_and_keep_missing_roots() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+    std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+    let policy = project.join(".oxaudit/policy.json");
+    let write_policy = |pattern: &str| {
+        std::fs::write(&policy, format!(r#"{{"version":1,"entries":[{{"kind":"suppression","ruleId":"js-eval","pathPattern":"{pattern}","state":"suppressed","reason":"Reviewed project exception"}}]}}"#)).unwrap();
+    };
+    write_policy("*.js");
+    let database = temp.path().join("data/findings.db");
+    let service = FindingsService::new(super::FindingsRepository::open(&database).unwrap());
+    let run = service
+        .scan(
+            ScanOptions {
+                path: project.to_string_lossy().into(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            },
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    let observer = rusqlite::Connection::open(&database).unwrap();
+    let version = || {
+        observer
+            .query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    };
+    let stored = serde_json::to_value(service.repository.load_run(&run.run_id).unwrap()).unwrap();
+    let assert_counts = |expected: usize| {
+        let before = version();
+        let recent = service.list_recent_projects(10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].open_findings, expected);
+        assert_eq!(recent[0].high, expected);
+        assert_eq!(
+            recent[0].last_completed_run_id.as_deref(),
+            Some(run.run_id.as_str())
+        );
+        assert_eq!(
+            serde_json::to_value(&recent[0]).unwrap()["countsAvailable"],
+            true
+        );
+        assert_eq!(version(), before, "history count projection must not write");
+        assert_eq!(
+            stored,
+            serde_json::to_value(service.repository.load_run(&run.run_id).unwrap()).unwrap()
+        );
+    };
+    // No ordinary load/reconciliation first: persisted suppression is still active.
+    std::fs::write(&policy, "{ invalid").unwrap();
+    assert_counts(1);
+    write_policy("*.js");
+    assert_counts(0);
+    write_policy("other.js");
+    assert_counts(1);
+    std::fs::remove_file(&policy).unwrap();
+    assert_counts(1);
+    write_policy("*.js");
+    let other = temp.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("app.js"), "eval(input);\n").unwrap();
+    service
+        .scan(
+            ScanOptions {
+                path: other.to_string_lossy().into(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            },
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&project).unwrap();
+    let before = version();
+    let recent = service.list_recent_projects(10).unwrap();
+    assert_eq!(recent.len(), 2);
+    let available = recent
+        .iter()
+        .find(|row| row.project_id != run.project_id)
+        .unwrap();
+    assert_eq!(available.counts_available, Some(true));
+    assert_eq!(available.open_findings, 1);
+    let missing = recent
+        .iter()
+        .find(|row| row.project_id == run.project_id)
+        .unwrap();
+    assert_eq!(
+        missing.last_completed_run_id.as_deref(),
+        Some(run.run_id.as_str())
+    );
+    assert_eq!(
+        serde_json::to_value(missing).unwrap()["countsAvailable"],
+        false
+    );
+    assert_eq!(version(), before);
+}
+
+#[tokio::test]
+async fn recent_counts_only_include_last_completed_observations() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+    let service = FindingsService::new(
+        super::FindingsRepository::open(temp.path().join("data/findings.db")).unwrap(),
+    );
+    let options = ScanOptions {
+        path: project.to_string_lossy().into(),
+        scan_secrets: false,
+        ..ScanOptions::default()
+    };
+    service
+        .scan(
+            options.clone(),
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    std::fs::remove_file(project.join("app.js")).unwrap();
+    std::fs::write(project.join("safe.js"), "const a = 1;\n").unwrap();
+    let current = service
+        .scan(
+            options,
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        current.findings.len(),
+        1,
+        "baseline-only unscanned finding remains visible for comparison"
+    );
+    let recent = service.list_recent_projects(10).unwrap();
+    assert_eq!(
+        recent[0].last_completed_run_id.as_deref(),
+        Some(current.run_id.as_str())
+    );
+    assert_eq!(
+        recent[0].open_findings, 0,
+        "baseline-only evidence is not part of completed observation counts"
+    );
+    assert_eq!(recent[0].counts_available, Some(true));
+}

@@ -41,6 +41,7 @@ fn set_mode(path: &Path, mode: u32) {
 
 fn summary(total_findings: usize) -> ScanSummary {
     ScanSummary {
+        git_context: None,
         path: "/project".into(),
         files_scanned: 1,
         files_skipped: 0,
@@ -2966,4 +2967,13 @@ fn parent_regular_directory_swap_is_rejected_without_writing_replacement() {
         std::fs::read_to_string(parent.join("marker")).expect("replacement marker"),
         "replacement"
     );
+}
+
+#[test]
+fn legacy_stored_summary_defaults_git_context_to_unavailable() {
+    let mut stored = serde_json::to_value(StoredScanSummary::from(&summary(0))).unwrap();
+    stored.as_object_mut().unwrap().remove("gitContext");
+    let legacy: StoredScanSummary = serde_json::from_value(stored).unwrap();
+    let projection: ScanSummary = legacy.into();
+    assert!(projection.git_context.is_none());
 }

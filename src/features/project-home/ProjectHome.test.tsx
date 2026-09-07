@@ -298,3 +298,17 @@ test("a delayed A check finishes on A without replacing newer native and visible
   expect(useAppStore.getState().selectedProject).toBe("/b");
   expect(screen.getByLabelText("Project folder")).toHaveValue("/b");
 });
+
+test("home hides stale review counts when current policy cannot be projected", async () => {
+  useAppStore.setState({ selectedProject: "/project" });
+  vi.mocked(api.listSourceProjects).mockResolvedValue([{
+    projectId: "/project", canonicalPath: "/project", displayName: "project",
+    lastOpenedAt: "2026-09-07T00:00:00Z", lastCompletedRunId: "old",
+    lastCompletedAt: "2026-09-06T00:00:00Z", openFindings: 0, critical: 0, high: 0,
+    ...{ countsAvailable: false },
+  }]);
+  render(<Dashboard />);
+  expect(await screen.findByText("Source counts: unavailable — refresh when the project is accessible.")).toBeInTheDocument();
+  expect(screen.queryByText("0 source open · 0 critical · 0 high")).not.toBeInTheDocument();
+  expect(screen.getAllByText(/Last checked:/).length).toBeGreaterThan(0);
+});

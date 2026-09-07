@@ -199,3 +199,7 @@ describe("project commands", () => {
     expect(describeProjectState(project({ openFindings: 5 }))).toBe("5 open");
   });
 });
+
+test("unavailable project counts never imply the project is clear", () => {
+  expect(describeProjectState({ projectId: "missing", canonicalPath: "/missing", displayName: "missing", openFindings: 0, critical: 0, high: 0, ...{ countsAvailable: false } })).toBe("counts unavailable");
+});

@@ -148,11 +148,15 @@ export function ProjectHome() {
                         ? fmtDateTime(current.source.lastCompletedAt)
                         : "time unavailable"}
                     </p>
-                    <p>
-                      {current.source.openFindings} source open ·{" "}
-                      {current.source.critical} critical · {current.source.high}{" "}
-                      high
-                    </p>
+                    {current.source.countsAvailable === false ? (
+                      <p>Source counts: unavailable — refresh when the project is accessible.</p>
+                    ) : (
+                      <p>
+                        {current.source.openFindings} source open ·{" "}
+                        {current.source.critical} critical · {current.source.high}{" "}
+                        high
+                      </p>
+                    )}
                     <p>
                       New source findings: {current.newFindings ?? "unknown"}
                     </p>

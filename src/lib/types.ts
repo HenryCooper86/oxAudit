@@ -424,6 +424,7 @@ export type RunPersistence =
   | { status: "notSaved"; retryToken: string };
 
 export type ErrorCode =
+  | "baselineIncompatible"
   | "invalidTarget"
   | "scanCancelled"
   | "scanFailed"
@@ -457,6 +458,7 @@ export interface ScanOptions {
 }
 
 export interface ScanSummary {
+  gitContext?: GitEvidence | null;
   path: string;
   filesScanned: number;
   filesSkipped: number;
@@ -575,6 +577,7 @@ export interface RecentProject {
   lastOpenedAt: string;
   lastCompletedRunId: string | null;
   lastCompletedAt: string | null;
+  countsAvailable?: boolean | null;
   openFindings: number;
   critical: number;
   high: number;
@@ -1036,4 +1039,27 @@ export interface BulkReviewFailure {
 export interface BulkReviewOutcome {
   recorded: ReviewRecord[];
   failures: BulkReviewFailure[];
+}
+
+
+export interface GitSnapshot {
+  branch: string | null;
+  head: string;
+  indexDigest: string;
+}
+export interface GitEvidence {
+  before: GitSnapshot | null;
+  after: GitSnapshot | null;
+  contextChanged: boolean | null;
+}
+export interface GitContext {
+  target: string;
+  snapshot: GitSnapshot;
+  baseReference: string;
+  baseCommit: string;
+  changedPaths: string[];
+  stagedPaths: string[];
+  unstagedPaths: string[];
+  partiallyStaged: boolean;
+  inspectedAt: string;
 }

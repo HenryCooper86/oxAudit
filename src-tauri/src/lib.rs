@@ -12,6 +12,7 @@ pub mod exploit;
 pub mod external;
 pub mod findings;
 mod fs_utils;
+pub mod git_context;
 mod migration;
 mod models;
 pub mod observability;
@@ -112,6 +113,8 @@ pub fn run() {
             commands::list_source_projects,
             commands::list_source_runs,
             commands::load_source_run,
+            commands::compare_source_runs,
+            commands::inspect_source_git,
             commands::retry_source_run_save,
             commands::save_finding_review,
             commands::delete_finding_review,

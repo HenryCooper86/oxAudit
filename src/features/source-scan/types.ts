@@ -4,6 +4,7 @@ export type ResultView = "open" | "otherScopes" | "closed" | "resolved";
 
 export interface ResultsQuery {
   view: ResultView;
+  newOnly?: boolean;
   category: "all" | "secret" | "vulnerability";
   severity: "all" | Severity;
   scope: "all" | FindingScope;
