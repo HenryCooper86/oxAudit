@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -77,6 +77,17 @@ fn parse_lockfile_with_limit(
         ));
     }
 
+    if name == "package-lock.json" {
+        let root: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|error| format!("invalid package-lock.json: {error}"))?;
+        if root.get("packages").is_some() {
+            let mut dependencies = super::relationships::parse_packages(&root)?;
+            for dependency in &mut dependencies {
+                dependency.lockfile = lockfile.clone();
+            }
+            return Ok(dependencies);
+        }
+    }
     let deps = match name {
         "package-lock.json" => parse_package_lock(&content)?,
         "yarn.lock" => parse_yarn_lock(&content)?,
@@ -94,6 +105,10 @@ fn parse_lockfile_with_limit(
     Ok(deps
         .into_iter()
         .map(|(n, v)| Dependency {
+            occurrence: crate::models::DependencyOccurrence {
+                status: "unavailable".into(),
+                ..Default::default()
+            },
             ecosystem: ecosystem.clone(),
             name: n,
             version: v,
@@ -107,14 +122,6 @@ pub fn extend_dependencies_bounded(
     incoming: Vec<Dependency>,
     max_dependencies: usize,
 ) -> Result<(), String> {
-    let mut seen = aggregate
-        .iter()
-        .map(dependency_key)
-        .collect::<BTreeSet<_>>();
-    let incoming = incoming
-        .into_iter()
-        .filter(|dependency| seen.insert(dependency_key(dependency)))
-        .collect::<Vec<_>>();
     if aggregate
         .len()
         .checked_add(incoming.len())
@@ -159,85 +166,9 @@ fn parse_package_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     }
     let mut out = Vec::new();
 
-    fn optional_nonempty_string<'a>(
-        object: &'a serde_json::Map<String, serde_json::Value>,
-        field: &str,
-        subject: &str,
-    ) -> Result<Option<&'a str>, String> {
-        match object.get(field) {
-            None => Ok(None),
-            Some(serde_json::Value::String(value)) if !value.trim().is_empty() => Ok(Some(value)),
-            Some(_) => Err(format!(
-                "invalid package-lock.json: {subject} has an invalid {field}"
-            )),
-        }
-    }
-
-    // v2/v3: "packages" object keyed by node_modules/... path
-    if let Some(packages_value) = root.get("packages") {
-        let packages = packages_value
-            .as_object()
-            .ok_or_else(|| "invalid package-lock.json: packages must be an object".to_string())?;
-        for (key, val) in packages {
-            if key.is_empty() {
-                let root_metadata = val.as_object().ok_or_else(|| {
-                    "invalid package-lock.json: root package metadata must be an object".to_string()
-                })?;
-                // Root-only inventories are valid, but malformed metadata is
-                // not evidence that the project has no packages.
-                optional_nonempty_string(root_metadata, "name", "root package")?;
-                optional_nonempty_string(root_metadata, "version", "root package")?;
-                continue;
-            }
-            let package = val.as_object().ok_or_else(|| {
-                format!("invalid package-lock.json: package {key:?} must be an object")
-            })?;
-            let is_link = match package.get("link") {
-                None => false,
-                Some(serde_json::Value::Bool(link)) => *link,
-                Some(_) => {
-                    return Err(format!(
-                        "invalid package-lock.json: package {key:?} has an invalid link flag"
-                    ))
-                }
-            };
-            if is_link {
-                // npm represents workspaces and file links without an
-                // installable registry version. They are complete inventory
-                // metadata, not an unversioned package to send to OSV.
-                if package.contains_key("resolved") {
-                    optional_nonempty_string(package, "resolved", &format!("package {key:?}"))?;
-                }
-                if package.contains_key("name") {
-                    optional_nonempty_string(package, "name", &format!("package {key:?}"))?;
-                }
-                if package.contains_key("version") {
-                    optional_nonempty_string(package, "version", &format!("package {key:?}"))?;
-                }
-                continue;
-            }
-            let version =
-                optional_nonempty_string(package, "version", &format!("package {key:?}"))?
-                    .ok_or_else(|| {
-                        format!("invalid package-lock.json: package {key:?} has no version")
-                    })?
-                    .to_string();
-            let name = optional_nonempty_string(package, "name", &format!("package {key:?}"))?
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    key.trim_start_matches("node_modules/")
-                        .split('/')
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("/")
-                });
-            if name.is_empty() {
-                return Err(format!(
-                    "invalid package-lock.json: package {key:?} has no name"
-                ));
-            }
-            out.push((name, version));
-        }
+    if root.get("packages").is_some() {
+        return super::relationships::parse_packages(&root)
+            .map(|deps| deps.into_iter().map(|d| (d.name, d.version)).collect());
     }
 
     // v1: "dependencies" object (recursive)
@@ -688,6 +619,86 @@ mod pom_tests {
     }
 
     #[test]
+    fn npm_relationships_preserve_workspace_nested_paths_types_and_unknowns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package-lock.json");
+        std::fs::write(&path, r#"{"lockfileVersion":3,"packages":{
+          "":{"workspaces":["packages/*"],"dependencies":{"parent":"1.0.0","leaf":"1.0.0"}},
+          "packages/worker":{"name":"@qa/worker","devDependencies":{"leaf":"1.0.0"}},
+          "node_modules/@qa/worker":{"resolved":"packages/worker","link":true},
+          "node_modules/parent":{"version":"1.0.0","optionalDependencies":{"leaf":"2.0.0"},"peerDependencies":{"missing":"*"}},
+          "node_modules/parent/node_modules/leaf":{"version":"2.0.0","dependencies":{"parent":"1.0.0"}},
+          "node_modules/leaf":{"version":"1.0.0"}}}"#).unwrap();
+        let deps = parse_lockfile(&path, "npm").unwrap();
+        assert_eq!(deps.len(), 4);
+        let leaf = deps
+            .iter()
+            .find(|d| d.name == "leaf" && d.version == "1.0.0")
+            .unwrap();
+        let json = serde_json::to_value(leaf).unwrap();
+        assert_eq!(json["occurrence"]["installPath"], "node_modules/leaf");
+        let paths = json["occurrence"]["paths"].as_array().unwrap();
+        assert!(paths.iter().any(
+            |p| p["workspace"] == "packages/worker" && p["chain"][0]["dependencyType"] == "dev"
+        ));
+        assert!(paths
+            .iter()
+            .any(|p| p["workspace"] == "" && p["entryPoint"] == "leaf"));
+        let nested = deps.iter().find(|d| d.version == "2.0.0").unwrap();
+        let json = serde_json::to_value(nested).unwrap();
+        assert_eq!(json["occurrence"]["paths"][0]["entryPoint"], "parent");
+        assert_eq!(
+            json["occurrence"]["paths"][0]["chain"][1]["dependencyType"],
+            "optional"
+        );
+        assert!(json["occurrence"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("missing")));
+        assert!(deps
+            .iter()
+            .any(|d| d.name == "@qa/worker" && d.version.is_empty()));
+    }
+
+    #[test]
+    fn npm_authoritative_inventory_uses_nested_and_alias_identity() {
+        let packages = parse_package_lock(
+            r#"{"lockfileVersion":2,"packages":{
+          "":{},"node_modules/parent":{"version":"1.0.0"},
+          "node_modules/parent/node_modules/@scope/child":{"version":"2.0.0"},
+          "node_modules/alias":{"name":"actual","version":"3.0.0"}},
+          "dependencies":{"ghost":{"version":"9.0.0"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            packages,
+            vec![
+                ("actual".into(), "3.0.0".into()),
+                ("parent".into(), "1.0.0".into()),
+                ("@scope/child".into(), "2.0.0".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn aggregate_preserves_repeated_lockfile_occurrences_and_budgets_them() {
+        let first = crate::models::Dependency {
+            occurrence: Default::default(),
+            ecosystem: "npm".into(),
+            name: "example".into(),
+            version: "1.0.0".into(),
+            lockfile: "a/package-lock.json".into(),
+        };
+        let mut second = first.clone();
+        second.lockfile = "b/package-lock.json".into();
+        let mut aggregate = vec![first];
+        extend_dependencies_bounded(&mut aggregate, vec![second.clone()], 2).unwrap();
+        assert_eq!(aggregate.len(), 2, "inventory must preserve both locations");
+        assert!(extend_dependencies_bounded(&mut aggregate, vec![second], 2).is_err());
+    }
+
+    #[test]
     fn oversized_lockfiles_are_rejected_before_their_contents_are_read() {
         let directory = tempfile::tempdir().expect("tempdir");
         let path = directory.path().join("requirements.txt");
@@ -777,7 +788,8 @@ mod pom_tests {
             r#"{
               "lockfileVersion": 3,
               "packages": {
-                "": { "name": "workspace-root", "version": "1.0.0" },
+                "": { "name": "workspace-root", "version": "1.0.0", "workspaces":["packages/*"] },
+                "packages/workspace-package": { "name":"workspace-package" },
                 "node_modules/workspace-package": {
                   "resolved": "packages/workspace-package",
                   "link": true
@@ -788,7 +800,13 @@ mod pom_tests {
         )
         .expect("workspace links are metadata rather than unversioned registry packages");
 
-        assert_eq!(packages, vec![("registry-package".into(), "2.0.0".into())]);
+        assert_eq!(
+            packages,
+            vec![
+                ("registry-package".into(), "2.0.0".into()),
+                ("workspace-package".into(), "".into())
+            ]
+        );
     }
 
     #[test]
@@ -809,12 +827,14 @@ mod pom_tests {
     #[test]
     fn aggregate_dependency_overflow_is_rejected_before_extension() {
         let dependency = crate::models::Dependency {
+            occurrence: Default::default(),
             ecosystem: "npm".into(),
             name: "package".into(),
             version: "1.0.0".into(),
             lockfile: "package-lock.json".into(),
         };
         let distinct = crate::models::Dependency {
+            occurrence: Default::default(),
             name: "other-package".into(),
             ..dependency.clone()
         };
@@ -829,8 +849,9 @@ mod pom_tests {
     }
 
     #[test]
-    fn duplicate_dependencies_do_not_consume_the_unique_dependency_budget() {
+    fn duplicate_dependencies_consume_the_occurrence_budget() {
         let dependency = crate::models::Dependency {
+            occurrence: Default::default(),
             ecosystem: "npm".into(),
             name: "package".into(),
             version: "1.0.0".into(),
@@ -839,7 +860,7 @@ mod pom_tests {
         let mut aggregate = vec![dependency.clone()];
 
         extend_dependencies_bounded(&mut aggregate, vec![dependency], 1)
-            .expect("a duplicate stays within the unique package budget");
+            .expect_err("every inventory occurrence consumes budget");
 
         assert_eq!(aggregate.len(), 1);
     }

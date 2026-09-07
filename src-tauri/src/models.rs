@@ -166,9 +166,60 @@ pub struct ScanResult {
 // Dependency / application scanning
 // ---------------------------------------------------------------------------
 
+/// Same-read lockfile occurrence evidence. Historical projections default unknown.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyOccurrence {
+    #[serde(default)]
+    pub local_workspace: bool,
+    pub install_path: Option<String>,
+    pub status: String,
+    pub paths: Vec<DependencyPath>,
+    pub warnings: Vec<String>,
+}
+impl Default for DependencyOccurrence {
+    fn default() -> Self {
+        Self {
+            local_workspace: false,
+            install_path: None,
+            status: "unknown".into(),
+            paths: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyPath {
+    /// Empty string identifies the root manifest; other values are relative directories.
+    pub workspace: String,
+    pub entry_point: String,
+    pub chain: Vec<DependencyStep>,
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyStep {
+    pub name: String,
+    pub package_name: String,
+    pub install_path: String,
+    pub dependency_type: String,
+    pub declared: String,
+}
+/// Raw, matching-package OSV affected entries preserve every range/event and version.
+/// None means historical or missing matching identity, never proof of a safe upgrade.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AffectedEvidence {
+    pub ecosystem: String,
+    pub package_name: String,
+    pub records: Vec<serde_json::Value>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Dependency {
+    #[serde(default)]
+    pub occurrence: DependencyOccurrence,
     pub ecosystem: String,
     pub name: String,
     pub version: String,
@@ -178,6 +229,10 @@ pub struct Dependency {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Vulnerability {
+    #[serde(default)]
+    pub occurrence: DependencyOccurrence,
+    #[serde(default)]
+    pub affected_evidence: Option<AffectedEvidence>,
     /// OSV id, e.g. GHSA-xxxx or CVE-xxxx
     pub id: String,
     pub aliases: Vec<String>,
@@ -224,9 +279,41 @@ pub enum AdvisoryCoverage {
     Unknown,
 }
 
+fn unknown_dependency_source() -> String {
+    "unknown".into()
+}
+
+/// Optional ranking signals are not advisory coverage. Legacy fields default unknown.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrichmentStatus {
+    pub status: String,
+    pub checked_at_ms: Option<u64>,
+    pub poc_cache_updated_at_ms: Option<u64>,
+    pub warnings: Vec<String>,
+}
+impl Default for EnrichmentStatus {
+    fn default() -> Self {
+        Self {
+            status: "unknown".into(),
+            checked_at_ms: None,
+            poc_cache_updated_at_ms: None,
+            warnings: Vec::new(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DepScanSummary {
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub advisory_fetched_at_ms: Option<u64>,
+    #[serde(default = "unknown_dependency_source")]
+    pub advisory_source: String,
+    #[serde(default)]
+    pub enrichment: EnrichmentStatus,
     pub path: String,
     pub lockfiles_found: Vec<String>,
     pub packages_found: usize,
@@ -591,6 +678,9 @@ mod tests {
             r#"{"path":"/project","lockfilesFound":[],"packagesFound":0,"packagesQueried":0,"vulnerabilitiesFound":0,"durationMs":0}"#,
         )
         .expect("old projection remains readable");
+        assert_eq!(summary.advisory_source, "unknown");
+        assert_eq!(summary.enrichment.status, "unknown");
+        assert!(summary.run_id.is_none());
 
         assert!(matches!(
             summary.advisory_coverage,

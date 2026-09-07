@@ -623,7 +623,37 @@ export interface ScanProgress {
   parseErrors?: number;
 }
 
+export interface DependencyStep {
+  name: string;
+  packageName: string;
+  installPath: string;
+  dependencyType: string;
+  declared: string;
+}
+export interface DependencyPath {
+  workspace: string;
+  entryPoint: string;
+  chain: DependencyStep[];
+}
+export interface DependencyOccurrence {
+  localWorkspace?: boolean;
+  installPath: string | null;
+  status: string;
+  paths: DependencyPath[];
+  warnings: string[];
+}
+export interface AffectedEvidence {
+  ecosystem: string;
+  packageName: string;
+  records: Array<{
+    package?: { ecosystem?: string; name?: string };
+    ranges?: Array<{ type?: string; events?: Array<Record<string, unknown>> }>;
+    versions?: string[];
+  }>;
+}
+
 export interface Dependency {
+  occurrence?: DependencyOccurrence;
   ecosystem: string;
   name: string;
   version: string;
@@ -631,6 +661,8 @@ export interface Dependency {
 }
 
 export interface Vulnerability {
+  occurrence?: DependencyOccurrence;
+  affectedEvidence?: AffectedEvidence | null;
   id: string;
   aliases: string[];
   summary: string;
@@ -666,6 +698,16 @@ export interface Vulnerability {
 }
 
 export interface DepScanSummary {
+  runId?: string | null;
+  advisoryFetchedAtMs?: number | null;
+  advisorySource?: string;
+  /** Absent in older runs; false exploitation flags then mean unknown. */
+  enrichment?: {
+    status: "unknown" | "notApplicable" | "unavailable" | "available" | "partial";
+    checkedAtMs: number | null;
+    pocCacheUpdatedAtMs: number | null;
+    warnings: string[];
+  };
   path: string;
   lockfilesFound: string[];
   packagesFound: number;

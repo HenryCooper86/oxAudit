@@ -192,6 +192,7 @@ pub fn binary_graph(run_id: &RunId, result: &BinaryScanResult) -> Result<super::
                     EvidenceRecord {
                         id: advisory_id,
                         evidence: Evidence::AdvisoryMatch(AdvisoryMatchEvidence {
+                            install_path: None,
                             component_id: component_id.clone(),
                             provider_snapshot_id: provider_id,
                             advisory_id: vulnerability.cve_id.clone(),

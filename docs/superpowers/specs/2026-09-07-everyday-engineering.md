@@ -31,4 +31,5 @@ An engineer can reopen a project, inspect new issues, navigate to their editor, 
 - Phase 2: complete; durable project home, selection restoration, combined checks, cross-page cancellation, and result handoffs verified.
 - Phase 3: complete; saved baseline selection, Git path review, revision/coverage evidence, policy-aware counts, and CLI baseline safety verified.
 - Phase 4: complete; typed editor navigation, remediation examples, coverage-aware rechecks, and unsaved-result recovery verified.
-- Phases 5–6: pending; each will receive an implementation plan grounded in the code left by its predecessor.
+- Phase 5: complete; shared durable dependency workflow, CLI baseline gates, bounded npm relationships, advisory-based upgrade decisions and native rechecks verified.
+- Phase 6: pending; onboarding, reproducible pilot and CI corrections follow the completed dependency interfaces.

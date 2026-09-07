@@ -20,7 +20,24 @@ import type { DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/t
 import { Button, Switch } from "../components/ui";
 import { RunTimeline } from "../features/runs/RunTimeline";
 
-const vulnerabilityKey = (v: Vulnerability) => `${v.id}:${v.packageName}:${v.installedVersion}`;
+import { vulnerabilityKey } from "../features/dependencies/decisions";
+import { UpgradeDecisions } from "../features/dependencies/UpgradeDecisions";
+type LockfilePreview = Omit<LockfileInfo, "packages"> & { packages: number | null };
+function previewFromResult(result: DependencyScanResult): LockfilePreview[] {
+  const counts = new Map<string, number>();
+  const inventoryAvailable = Array.isArray(result.dependencies)
+    && result.dependencies.length === result.summary.packagesFound;
+  if (inventoryAvailable) {
+    for (const dependency of result.dependencies) {
+      counts.set(dependency.lockfile, (counts.get(dependency.lockfile) ?? 0) + 1);
+    }
+  }
+  return result.summary.lockfilesFound.map(path => ({
+    path,
+    kind: path.split(/[\\/]/).pop() ?? "?",
+    packages: inventoryAvailable ? counts.get(path) ?? 0 : null,
+  }));
+}
 type FailedOperation = "discovery" | "check";
 
 export function DepsScanPage() {
@@ -41,7 +58,7 @@ export function DepsScanPage() {
   const [path, setPath] = useState(activeProject ?? useAppStore.getState().selectedProject ?? "");
   const [running, setRunning] = useState(false);
   const [discovering, setDiscovering] = useState(false);
-  const [preview, setPreview] = useState<LockfileInfo[] | null>(null);
+  const [preview, setPreview] = useState<LockfilePreview[] | null>(null);
   const [historyReload, setHistoryReload] = useState(0);
   const [handoffResult, setHandoffResult] = useState<DependencyScanResult | null>(null);
   const [result, setResult] = useState<DependencyScanResult | null>(null);
@@ -58,6 +75,13 @@ export function DepsScanPage() {
   const discoveryRequestRef = useRef(0);
   const pathRequestRef = useRef(0);
   const historyRequestRef = useRef(0);
+  const scanInvocationRef = useRef<{ ownership: number; requestId: number } | null>(null);
+  const ownsCurrentInvocation = useCallback(() => {
+    const invocation = scanInvocationRef.current;
+    return invocation !== null
+      && invocation.requestId === discoveryRequestRef.current
+      && useScanWorkStore.getState().active?.id === invocation.ownership;
+  }, []);
 
   useEffect(() => {
     const requestedPath = path.trim();
@@ -65,7 +89,7 @@ export function DepsScanPage() {
     if (!requestedPath) return;
     if (handoffResult && handoffResult.summary.path === requestedPath) {
       setResult(handoffResult);
-      setPreview(handoffResult.summary.lockfilesFound.map(lockfilePath => ({ path: lockfilePath, kind: lockfilePath.split(/[\\/]/).pop() ?? "?", packages: 0 })));
+      setPreview(previewFromResult(handoffResult));
       return;
     }
 
@@ -77,13 +101,7 @@ export function DepsScanPage() {
         const restored = await api.loadCanonicalProjection<DependencyScanResult>(saved.id);
         if (requestId !== historyRequestRef.current) return;
         setResult(restored);
-        setPreview(
-          restored.summary.lockfilesFound.map((lockfilePath) => ({
-            path: lockfilePath,
-            kind: lockfilePath.split(/[\\/]/).pop() ?? "?",
-            packages: 0,
-          })),
-        );
+        setPreview(previewFromResult(restored));
         setPageStatus("deps-scan", {
           label: `Saved dependency results · ${restored.summary.vulnerabilitiesFound} vulnerabilities`,
           tone: "success",
@@ -100,7 +118,7 @@ export function DepsScanPage() {
     const register = async () => {
       try {
         const unlisten = await listen<{ phase: string; done?: number; total?: number }>("deps://progress", (event) => {
-          if (!disposed) {
+          if (!disposed && ownsCurrentInvocation()) {
             setPhase(event.payload.phase);
             setProgress({ done: event.payload.done ?? 0, total: event.payload.total ?? 0 });
           }
@@ -122,16 +140,16 @@ export function DepsScanPage() {
       unlistenRef.current?.();
       unlistenRef.current = null;
     };
-  }, []);
+  }, [ownsCurrentInvocation]);
 
   useEffect(() => {
-    if (!running) return;
+    if (!running || !ownsCurrentInvocation()) return;
     setPageStatus("deps-scan", {
       label: "Checking dependencies",
       tone: "running",
-      detail: phase === "parsing" ? "Parsing lockfiles" : phase === "querying-osv" ? "Querying OSV" : undefined,
+      detail: phase === "parsing" ? "Parsing lockfiles" : phase === "querying-osv" ? "Querying OSV" : phase === "loading-cache" ? "Loading cached advisories" : undefined,
     });
-  }, [phase, running, setPageStatus]);
+  }, [ownsCurrentInvocation, phase, running, setPageStatus]);
 
   const changePath = useCallback((nextPath: string) => {
     if (nextPath === path) return;
@@ -229,12 +247,14 @@ export function DepsScanPage() {
     if (!path || running || discovering) return;
     const ownership = acquireScan("dependencies", path, "Checking dependencies");
     if (ownership === null) return;
+    const requestId = ++discoveryRequestRef.current;
+    scanInvocationRef.current = { ownership, requestId };
     historyRequestRef.current += 1;
     setRunning(true);
+    setPhase(null);
     setError(null);
     setFailedOperation(null);
     setProgress({ done: 0, total: 0 });
-    const requestId = ++discoveryRequestRef.current;
     const requestedPath = path;
     try {
       const runtime = await resolveRuntimeProject(
@@ -251,14 +271,12 @@ export function DepsScanPage() {
       if (useScanWorkStore.getState().active?.cancelling) return;
       const scanResult = await api.scanDependencies(requestedPath, offline);
       if (requestId !== discoveryRequestRef.current) return;
+      // Terminal publication must invalidate running effects synchronously;
+      // React may flush an older running render before finally commits.
+      scanInvocationRef.current = null;
       setResult(scanResult);
       setSelectedKey(null);
-      setPreview(
-        scanResult.summary.lockfilesFound.map((lockfilePath) => {
-          const kind = lockfilePath.split(/[\\/]/).pop() ?? "?";
-          return { path: lockfilePath, kind, packages: 0 };
-        }),
-      );
+      setPreview(previewFromResult(scanResult));
       setPageStatus("deps-scan", {
         label: `Dependencies checked · ${scanResult.summary.vulnerabilitiesFound} vulnerabilities`,
         tone: "success",
@@ -278,11 +296,21 @@ export function DepsScanPage() {
       );
     } catch (scanError) {
       if (requestId !== discoveryRequestRef.current) return;
+      scanInvocationRef.current = null;
       setError(String(scanError));
       setFailedOperation("check");
       setPageStatus("deps-scan", { label: "Dependency check failed", tone: "error" });
       push("error", "Dependency checking failed");
     } finally {
+      if (scanInvocationRef.current?.ownership === ownership) {
+        scanInvocationRef.current = null;
+        if (requestId === discoveryRequestRef.current) {
+          setPageStatus("deps-scan", {
+            label: useScanWorkStore.getState().active?.cancelling ? "Dependency check cancelled" : "Dependency check not started",
+            tone: "neutral",
+          });
+        }
+      }
       releaseScan(ownership);
       setRunning(false);
       setProgress(null);
@@ -323,7 +351,9 @@ export function DepsScanPage() {
       ? "Parsing lockfiles…"
       : phase === "querying-osv"
         ? "Querying OSV vulnerability database…"
-        : "Checking dependencies…";
+        : phase === "loading-cache"
+          ? "Loading cached advisories…"
+          : "Checking dependencies…";
 
   return (
     <ToolPage
@@ -402,11 +432,12 @@ export function DepsScanPage() {
                 {preview.map((lockfile) => (
                   <span
                     key={lockfile.path}
+                    title={lockfile.path}
                     className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-secondary px-2.5 py-1 font-mono text-[11px] text-text-muted"
                   >
                     <Boxes size={11} aria-hidden="true" className="text-info" />
                     {lockfile.path.split(/[\\/]/).pop()}
-                    <span className="text-text-muted">({lockfile.packages} pkgs)</span>
+                    <span className="text-text-muted">{lockfile.packages === null ? "(packages unknown)" : `(${lockfile.packages} pkgs)`}</span>
                   </span>
                 ))}
               </div>
@@ -434,7 +465,7 @@ export function DepsScanPage() {
       </TargetBar>
 
       <RunTimeline
-        active={!running && result ? "completed" : phase === "parsing" ? "detecting" : phase === "querying-osv" || phase === "exploitation-signal" ? "enriching" : "discovering"}
+        active={!running && result ? "completed" : phase === "parsing" ? "detecting" : phase === "querying-osv" || phase === "loading-cache" || phase === "exploitation-signal" ? "enriching" : "discovering"}
         running={running || discovering}
         hasCompletedResult={Boolean(result)}
       />
@@ -452,8 +483,13 @@ export function DepsScanPage() {
         </section>
       )}
 
+      {result && <UpgradeDecisions result={result} disabled={running || discovering || activeWork !== null} onRecheck={() => { void run(); }} onSelect={(advisory) => {
+        setQuery(""); setSelectedKey(vulnerabilityKey(advisory));
+        document.getElementById("dependency-advisories")?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      }} />}
+
       {result && vulns.length > 0 && (
-        <section aria-label="Dependency vulnerabilities" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <section id="dependency-advisories" aria-label="Dependency vulnerabilities" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <ResultsToolbar
             countLabel={`${filteredVulns.length} of ${vulns.length} vulnerabilities`}
             search={
@@ -747,7 +783,7 @@ function AdvisoryDetail({
             <p className="text-text-muted">No aliases reported.</p>
           )}
         </DetailSection>
-        <DetailSection label="Fixed versions">
+        <DetailSection label="Advisory-reported fixed versions">
           {vulnerability.fixedVersions.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {vulnerability.fixedVersions.map((version) => (
@@ -757,7 +793,7 @@ function AdvisoryDetail({
               ))}
             </div>
           ) : (
-            <p className="text-warning">No fixed version published yet.</p>
+            <p className="text-warning">No fixed version supplied by this advisory.</p>
           )}
         </DetailSection>
         {vulnerability.references.length > 0 && (

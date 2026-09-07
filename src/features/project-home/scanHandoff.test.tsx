@@ -8,10 +8,13 @@ import {
 } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
+import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../../lib/stores";
 import { acquireScan, releaseScan, useScanWorkStore } from "./coordinator";
 import { SourceScanPage } from "../../pages/SourceScan";
 import { DepsScanPage } from "../../pages/DepsScan";
+import { flushSync } from "react-dom";
+import { StatusBar } from "../../components/workbench/StatusBar";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
@@ -364,4 +367,111 @@ test("a history response superseded by a fresh dependency scan cannot replace it
   await act(async () => finish(old));
   expect(screen.getByText("59")).toBeInTheDocument();
   expect(screen.queryByText("13")).not.toBeInTheDocument();
+});
+
+
+test.each(["success", "error"] as const)("fast dependency %s keeps terminal status through queued and late progress", async (terminal) => {
+  const { dependencyResult } = await import("../../../tests/fixtures/projectHome");
+  const receipt = dependencyResult("/project");
+  receipt.summary.packagesFound = 0;
+  receipt.summary.packagesQueried = 0;
+  let progress!: (event: { payload: { phase: string; done: number; total: number } }) => void;
+  vi.mocked(listen).mockImplementation(async (name, callback) => {
+    if (name === "deps://progress") progress = callback as typeof progress;
+    return () => {};
+  });
+  useAppStore.setState({ activeProject: "/project", page: "deps-scan", pageStatus: {} });
+  vi.spyOn(api, "scanDependencies").mockImplementation(async () => {
+    progress({ payload: { phase: "querying-osv", done: 0, total: 1 } });
+    if (terminal === "error") throw new Error("incomplete advisory coverage");
+    return receipt;
+  });
+  render(<><DepsScanPage /><StatusBar /></>);
+  await waitFor(() => expect(progress).toBeDefined());
+  // Flush one already queued native progress delivery when the terminal store
+  // status publishes, before the async invocation's finally block can render.
+  const stop = useAppStore.subscribe((state, previous) => {
+    if (state.pageStatus["deps-scan"]?.tone === terminal && previous.pageStatus["deps-scan"]?.tone !== terminal) {
+      flushSync(() => progress({ payload: { phase: "querying-osv", done: 0, total: 1 } }));
+    }
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Check dependencies" }));
+  await waitFor(() => expect(api.scanDependencies).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check dependencies" })).toBeEnabled());
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.tone).toBe(terminal);
+  await act(async () => progress({ payload: { phase: "querying-osv", done: 0, total: 1 } }));
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.tone).toBe(terminal);
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.label).toMatch(terminal === "success" ? /Dependencies checked/ : /Dependency check failed/);
+  expect(useScanWorkStore.getState().active).toBeNull();
+  stop();
+});
+
+
+test("dependency cancellation during preparation leaves a terminal status", async () => {
+  useAppStore.setState({ activeProject: "/project", pageStatus: {} });
+  let finish!: () => void;
+  vi.mocked(api.setActiveProject).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  vi.spyOn(api, "cancelDependencyScan").mockResolvedValue();
+  const scan = vi.spyOn(api, "scanDependencies");
+  render(<DepsScanPage />);
+  fireEvent.click(screen.getByRole("button", { name: "Check dependencies" }));
+  await waitFor(() => expect(finish).toBeDefined());
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await act(async () => finish());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check dependencies" })).toBeEnabled());
+  expect(scan).not.toHaveBeenCalled();
+  expect(useScanWorkStore.getState().active).toBeNull();
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.tone).toBe("neutral");
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.label).toMatch(/cancelled/i);
+});
+
+test('dependency group recheck uses the shared scan and honors active ownership', async () => {
+  const { dependencyResult } = await import('../../../tests/fixtures/projectHome');
+  const receipt=dependencyResult('/project');
+  useAppStore.getState().openProject('/project','deps-scan',undefined,receipt);
+  const fresh=dependencyResult('/project');fresh.summary.packagesFound=31;
+  const scan=vi.spyOn(api,'scanDependencies').mockResolvedValue(fresh);
+  render(<DepsScanPage/>);
+  const recheck=await screen.findByRole('button',{name:'Recheck dependencies'});
+  let ownership:number|null=null;
+  await act(async()=>{ownership=acquireScan('source','source-scan','/other');});
+  expect(recheck).toBeDisabled();
+  await act(async()=>{releaseScan(ownership!);});
+  fireEvent.click(recheck);
+  expect(await screen.findByText('31')).toBeInTheDocument();
+  expect(scan).toHaveBeenCalledTimes(1);
+  expect(useScanWorkStore.getState().active).toBeNull();
+  expect(useAppStore.getState().pageStatus['deps-scan']?.tone).toBe('success');
+});
+
+test.each(['completed','handoff','restored'] as const)('dependency %s receipt counts lockfile inventory occurrences instead of provider queries',async(source)=>{
+  const { dependencyResult }=await import('../../../tests/fixtures/projectHome');
+  const receipt=dependencyResult('/project');
+  receipt.summary.lockfilesFound=['/project/package-lock.json','/project/empty/package-lock.json'];
+  receipt.summary.packagesFound=2;
+  receipt.summary.packagesQueried=1;
+  receipt.dependencies=[
+    {ecosystem:'npm',name:'lodash',version:'4.17.20',lockfile:'/project/package-lock.json'},
+    {ecosystem:'npm',name:'@qa/worker',version:'',lockfile:'/project/package-lock.json',occurrence:{localWorkspace:true,installPath:'packages/worker',status:'available',paths:[],warnings:[]}},
+  ];
+  useAppStore.setState({activeProject:'/project',selectedProject:'/project'});
+  if(source==='handoff') useAppStore.getState().openProject('/project','deps-scan',undefined,receipt);
+  if(source==='restored') {
+    vi.mocked(api.listCanonicalRuns).mockResolvedValue([savedDependencyRun]);
+    vi.spyOn(api,'loadCanonicalProjection').mockResolvedValue(receipt);
+  }
+  if(source==='completed') vi.spyOn(api,'scanDependencies').mockResolvedValue(receipt);
+  render(<DepsScanPage/>);
+  if(source==='completed') fireEvent.click(screen.getByRole('button',{name:'Check dependencies'}));
+  expect(await screen.findByText('(2 pkgs)')).toBeInTheDocument();
+  expect(screen.getByTitle('/project/package-lock.json')).toHaveTextContent('(2 pkgs)');
+  expect(screen.getByTitle('/project/empty/package-lock.json')).toHaveTextContent('(0 pkgs)');
+});
+test('historical dependency receipt without complete inventory marks package counts unknown',async()=>{
+  const { dependencyResult }=await import('../../../tests/fixtures/projectHome');
+  const receipt=dependencyResult('/project');
+  receipt.summary.packagesFound=2;
+  useAppStore.getState().openProject('/project','deps-scan',undefined,receipt);
+  render(<DepsScanPage/>);
+  expect(await screen.findByText('(packages unknown)')).toBeInTheDocument();
 });

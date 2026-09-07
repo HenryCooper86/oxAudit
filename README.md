@@ -190,7 +190,7 @@ with a reason, an expiry, and a pull request.
 | **Source code scanning** | 79 dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, C#, Kotlin, Swift, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
 | **Infrastructure-as-code scanning** | 14 misconfiguration rules across Dockerfiles, Terraform, Kubernetes manifests, and GitHub Actions workflows — unpinned base images and actions, `curl \| sh` installs, credentials copied into image layers, public S3 buckets and RDS instances, wildcard IAM policies, security groups open to `0.0.0.0/0`, privileged containers, `hostPath` mounts, and `github.event.*` script injection — each mapped to a CWE with remediation, ranked as infrastructure findings even under `test/` directories |
 | **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
-| **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, fixed-version extraction, CVSS score computation from vector strings), then ranks each finding by exploitability-in-context: CISA KEV, public exploit availability (Exploit-DB), EPSS, and whether the project's own source directly references the package (imports/requires across JavaScript/TS, Python, Rust, Go, Ruby, and PHP) — same exploitation signal as the binary scanner |
+| **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt` and checks every pinned package against the **OSV** vulnerability database (batch queries, matching-package advisory range evidence, CVSS score computation from vector strings), then ranks findings using optional signals: CISA KEV, public exploit availability (Exploit-DB), EPSS, and whether the project's own source directly references the package (imports/requires across JavaScript/TS, Python, Rust, Go, Ruby, and PHP) — same exploitation signal as the binary scanner |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
 | **AI assistant** | Chat with any **OpenAI-compatible** endpoint (OpenAI, Ollama, LM Studio, vLLM, Groq, OpenRouter…). **Streaming responses** with live reasoning display, typed error handling with automatic retry, **per-conversation token & cost tracking**, cancellable turns, and an **agentic tool loop**: the AI can read files, grep/glob the scanned project, run scans, search NVD, query OSV, and fetch web pages — every tool call rendered live with a status card, gated by an allow/ask/deny permission pipeline with HITL approval, a loop guard, and dual iteration/call budgets. One-click "Ask AI" on every finding and "Generate research briefing" on every CVE |
 | **Binary scanning** | Detects vulnerable components bundled inside compiled binaries and firmware images (statically linked OpenSSL, zlib, zstd, sqlite, …) with oxAudit's **own scanner** — no database to download, no external tool required — then looks each component up in NVD and OSV, and ranks every finding by CISA KEV (actively exploited?), public exploit availability (Exploit-DB), and EPSS (exploitation probability). Optionally also runs [cve-bin-tool](https://github.com/ossf/cve-bin-tool) or [grype](https://github.com/anchore/grype) if you have them installed; neither is bundled |
@@ -251,6 +251,16 @@ oxaudit-cli scan . --baseline baseline.json --fail-on-new high
 # Lockfiles against OSV
 oxaudit-cli deps . --format json
 
+# Complete dependency baseline and a new-only CI gate
+oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --format json --output deps-baseline.json
+oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --baseline deps-baseline.json --fail-on-new high
+
+# Offline dependency scan from a complete receipt in the same database
+oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --offline --format cyclonedx
+
+# List actual canonical dependency runs; use each returned id with export
+oxaudit-cli runs --db ~/.oxaudit/findings.sqlite3 --kind dependencies --json
+
 # Keep the run so the desktop app can open it
 oxaudit-cli scan . --db ~/.oxaudit/findings.sqlite3
 oxaudit-cli export --db ~/.oxaudit/findings.sqlite3 --run <id> --format cyclonedx
@@ -275,6 +285,90 @@ parses successfully. A malformed lockfile, incomplete offline OSV snapshot, or
 incomplete OSV response exits with code `3` and names the coverage problem;
 oxAudit does not describe that run as having no known vulnerabilities. The
 desktop keeps the last completed dependency result visible when a new run fails.
+
+Desktop and CLI dependency scans share the same durable workflow. `--db` writes
+canonical dependency runs and validated full-detail advisory receipts to the
+selected database. Its directory must be private to your user; a missing directory
+is created privately. Without `--db`, storage and optional enrichment caches are
+temporary. Offline scans contact no providers and require a complete receipt that
+covers every selected query; an empty inventory needs no cached receipt. Cached
+records are checked for integrity and filtered to the selected inventory.
+
+Dependency JSON reports use `schemaVersion: 1`, `kind: "dependencies"`, and
+`summary`, `dependencies`, and `vulnerabilities`. The summary includes `runId`,
+complete advisory coverage, distinct query and occurrence counts, advisory receipt
+freshness, and optional enrichment status/warnings. Unavailable exploitation
+signals remain unknown even when legacy boolean fields are false. Every parsed
+lockfile occurrence remains in the inventory; provider queries alone are deduplicated.
+
+`deps --baseline FILE --fail-on-new high` compares advisory ID plus ecosystem,
+package name, and installed version. Another lockfile occurrence of an existing
+identity does not trip a new-only gate; a newly affected package or version does.
+Baselines must be complete versioned dependency reports with valid inventory and
+advisory identities. Invalid, missing, incompatible, or incomplete baselines exit
+`2` before output or database writes. A dependency report is read before an output
+path can overwrite it. `--fail-on` still gates all current advisories independently.
+
+`runs --kind dependencies --json` returns canonical run objects with `id`, `kind`,
+`state`, and `targetLabel`; `--kind all` includes every stored run kind. Omitting
+`--kind` preserves the existing source-project summary format, whose
+`lastCompletedRunId` refers to source history. Use a canonical `id` with `export`.
+Dependency scans also accept the same standards output names as `scan`.
+
+### Dependency paths and upgrade decisions
+
+The desktop groups related advisories by package installation, lockfile, workspace,
+and direct manifest update entry point. Select a group to inspect its declaration
+chains or open the original advisory. **Recheck dependencies** uses the same shared
+scan workflow and ownership controls as the main scan button.
+
+For npm package-lock v2/v3, inventory identity and relationships come from the same
+bounded JSON read. The `packages` map is authoritative; legacy `dependencies` is
+compatibility data. Nested, scoped, alias and hoisted installations retain their
+actual package identity and installation path. Root and linked workspace declarations
+retain runtime/dev/optional/peer types when supplied. A versionless named workspace
+is inventory metadata only when its local link target and root workspace declaration
+agree; it is not queried as an unknown registry version. Invalid or escaping links
+fail inventory coverage. Missing declaration targets, cycles and truncated traversal
+remain explicit relationship unknowns. npm v1 and other supported inventory formats
+retain lockfile locations with relationship evidence unavailable.
+
+Relationship traversal is bounded to 20,000 visits/edges, depth 64, 32 chains per
+occurrence and 4 MiB of chain evidence per lockfile. Workspace matching supports
+literal directories and a single `*` path segment; unsupported versionless workspace
+patterns require a supported lockfile before advisory coverage can be complete.
+All inspection reads metadata; oxAudit never runs npm install/explain or repository
+scripts during a scan.
+
+Dependency JSON retains `occurrence` on each inventory/advisory record
+(`installPath`, `localWorkspace`, `status`, `paths`, `warnings`) and
+`affectedEvidence` on advisories. Matching OSV affected records preserve all range
+events and explicit affected versions. CLI and stored projections carry this evidence;
+the desktop derives the explanatory groups from it. Existing baseline identity and
+schema 1 envelope stay unchanged. Older projections default relationships/range
+proof to unknown and require a manual decision.
+
+A combined candidate must be an advisory-reported fixed version that clears every
+supplied supported range and explicit affected-version list. Numeric npm `SEMVER`
+ranges support sorted, disjoint introduced/fixed intervals, inclusive `last_affected`,
+and exclusive `limit` boundaries. Other ecosystems/range types, prereleases, ambiguous
+versions and historical flattened strings stay manual. Patch/minor/major labels
+classify only the version change; neither a fixed string nor this proof establishes
+that a release exists or is compatible. A last-affected/limit boundary alone does
+not supply a fixed-release candidate.
+
+Copyable npm commands are limited to precisely identified direct runtime/dev/optional
+declarations with supported numeric specs and complete relationship evidence. They
+include `--ignore-scripts`, preserve the dependency type/workspace and are displayed
+for review and manual use from the lockfile directory. Transitive packages, aliases,
+peers and unknown declarations receive a remediation checklist. No command is executed
+and no manifests are changed. The UI shows advisory source/time, optional enrichment
+availability and warnings beside these decisions; absent optional signals in partial,
+offline or historical data are unknown.
+
+Parser and range semantics follow the [npm lockfile documentation](https://github.com/npm/cli/blob/latest/docs/lib/content/configuring-npm/package-lock-json.md),
+[npm workspaces documentation](https://docs.npmjs.com/cli/using-npm/workspaces/), and
+[OSV evaluation schema](https://ossf.github.io/osv-schema/#evaluation).
 
 ### In GitHub Actions
 
@@ -1084,8 +1178,8 @@ parses ten lockfile formats natively and queries OSV directly.
 Untrusted repositories are bounded deliberately. A source run stops at 100,000
 eligible files or 20 GiB of eligible file metadata, 5,000 findings in one file,
 or 100,000 findings in the run. Dependency discovery stops at 256 lockfiles;
-each lockfile is capped at 16 MiB and the combined inventory at 100,000 unique
-ecosystem/name/version packages.
+each lockfile is capped at 16 MiB and the combined inventory at 100,000 package
+occurrences. Only provider queries deduplicate ecosystem/name/version identities.
 
 Native binary discovery stops at 100,000 files or 20 GiB, uses at most four
 dedicated workers, and examines at most the first 128 MiB of any one binary.

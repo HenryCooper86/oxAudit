@@ -320,6 +320,7 @@ pub fn osv_dependencies(queries: &[ComponentQuery]) -> Vec<Dependency> {
         .iter()
         .filter_map(|query| {
             Some(Dependency {
+                occurrence: Default::default(),
                 ecosystem: query.ecosystem.clone()?,
                 // OSV's distribution ecosystems key on the distribution's own
                 // package name; the canonical product would match nothing.
@@ -670,6 +671,8 @@ mod tests {
         fixed: &[&str],
     ) -> crate::models::Vulnerability {
         crate::models::Vulnerability {
+            occurrence: Default::default(),
+            affected_evidence: None,
             id: id.to_string(),
             aliases: aliases.iter().map(|a| a.to_string()).collect(),
             summary: String::new(),

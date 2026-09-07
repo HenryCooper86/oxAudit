@@ -17,7 +17,7 @@ pub fn dependency_graph(
     artifacts: &BTreeMap<String, Artifact>,
     provider_snapshot_id: Option<&ProviderSnapshotId>,
 ) -> Result<(Vec<Component>, Vec<ObservationRecord>), String> {
-    let mut components = Vec::with_capacity(dependencies.len());
+    let mut components: BTreeMap<ComponentId, Component> = BTreeMap::new();
     let mut component_ids = BTreeMap::new();
     let mut observations = Vec::new();
     for dependency in dependencies {
@@ -38,18 +38,20 @@ pub fn dependency_graph(
             ),
             component_id.clone(),
         );
-        components.push(Component {
-            id: component_id,
+        let component = Component {
+            id: component_id.clone(),
             name: dependency.name.clone(),
-            version: Some(dependency.version.clone()),
+            version: (!dependency.version.is_empty()).then(|| dependency.version.clone()),
             supplier: None,
             ecosystem: Some(dependency.ecosystem.clone()),
-            purl: Some(format!(
-                "pkg/{}/{}@{}",
-                dependency.ecosystem.to_ascii_lowercase(),
-                dependency.name,
-                dependency.version
-            )),
+            purl: (!dependency.version.is_empty()).then(|| {
+                format!(
+                    "pkg/{}/{}@{}",
+                    dependency.ecosystem.to_ascii_lowercase(),
+                    dependency.name,
+                    dependency.version
+                )
+            }),
             cpes: Vec::new(),
             aliases: Vec::new(),
             identities: vec![ComponentIdentity {
@@ -58,7 +60,16 @@ pub fn dependency_graph(
                 confidence: 1.0,
                 source_artifact_id: artifact.id.clone(),
             }],
-        });
+        };
+        if let Some(existing) = components.get_mut(&component_id) {
+            for identity in component.identities {
+                if !existing.identities.contains(&identity) {
+                    existing.identities.push(identity);
+                }
+            }
+        } else {
+            components.insert(component_id, component);
+        }
         let evidence_id = EvidenceId::new();
         observations.push(ObservationRecord {
             observation: Observation {
@@ -76,6 +87,7 @@ pub fn dependency_graph(
             evidence: vec![EvidenceRecord {
                 id: evidence_id,
                 evidence: Evidence::PackageDeclaration(PackageDeclarationEvidence {
+                    install_path: dependency.occurrence.install_path.clone(),
                     artifact_id: artifact.id.clone(),
                     ecosystem: dependency.ecosystem.clone(),
                     package_name: dependency.name.clone(),
@@ -125,6 +137,7 @@ pub fn dependency_graph(
             evidence: vec![EvidenceRecord {
                 id: evidence_id,
                 evidence: Evidence::AdvisoryMatch(AdvisoryMatchEvidence {
+                    install_path: vulnerability.occurrence.install_path.clone(),
                     component_id: component_id.clone(),
                     provider_snapshot_id: provider_snapshot_id.clone(),
                     advisory_id: vulnerability.id.clone(),
@@ -137,7 +150,7 @@ pub fn dependency_graph(
             }],
         });
     }
-    Ok((components, observations))
+    Ok((components.into_values().collect(), observations))
 }
 
 pub fn lockfile_artifact(run_id: &RunId, path: &std::path::Path) -> Result<Artifact, String> {

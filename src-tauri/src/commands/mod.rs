@@ -10,7 +10,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
