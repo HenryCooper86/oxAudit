@@ -1,0 +1,164 @@
+# Copy to .github/workflows/oxaudit.yml in the consuming repository.
+# See docs/getting-started.md: private tool access, initial baseline and forks.
+name: oxAudit source gate
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: oxaudit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  OXAUDIT_TOOL_COMMIT: e709594f25d3398592ebce4d35f374b9240e4113
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require access to the private trusted tool
+        env:
+          TOOL_TOKEN: ${{ secrets.OXAUDIT_READ_TOKEN }}
+        run: |
+          test -n "$TOOL_TOKEN" || { echo 'Missing OXAUDIT_READ_TOKEN: no scan performed. Fork PRs require the documented maintainer/local path.' >&2; exit 1; }
+
+      - name: Check out pinned trusted oxAudit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: HenryCooper86/oxAudit
+          ref: e709594f25d3398592ebce4d35f374b9240e4113
+          token: ${{ secrets.OXAUDIT_READ_TOKEN }}
+          path: tool
+          persist-credentials: false
+
+      - name: Check out target as data only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: target
+          persist-credentials: false
+          submodules: false
+          lfs: false
+
+      - name: Install trusted tool build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential curl file libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev wget
+
+      - name: Build trusted CLI
+        working-directory: tool
+        run: |
+          test "$(git rev-parse HEAD)" = "$OXAUDIT_TOOL_COMMIT"
+          rustup show active-toolchain
+          cargo build --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli
+
+      - name: Locate successful main baseline at the PR base commit
+        if: github.event_name == 'pull_request'
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          baseline_run=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/oxaudit.yml/runs" \
+            -f branch=main -f event=push -f status=success -f head_sha="$BASE_SHA" \
+            --jq '.workflow_runs[0].id // empty')
+          test -n "$baseline_run" || { echo 'No successful main baseline at this PR base commit; bootstrap main before retrying.' >&2; exit 1; }
+          echo "run_id=$baseline_run" >> "$GITHUB_OUTPUT"
+
+      - name: Download authoritative main baseline
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oxaudit-source-baseline-${{ github.event.pull_request.base.sha }}
+          path: baseline-input
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.baseline.outputs.run_id }}
+
+      - name: Validate main baseline provenance
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASELINE_RUN_ID: ${{ steps.baseline.outputs.run_id }}
+        run: |
+          test -s baseline-input/baseline.json
+          jq -e --arg tool "$OXAUDIT_TOOL_COMMIT" --arg commit "$BASE_SHA" --arg run "$BASELINE_RUN_ID" \
+            '.schemaVersion == 1 and .toolCommit == $tool and .targetCommit == $commit and .workflowRunId == $run and .sourceRunState == "completed"' \
+            baseline-input/provenance.json
+
+      - name: Scan target once and export the same completed run
+        id: scan
+        shell: bash
+        env:
+          SCAN_EVENT: ${{ github.event_name }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # Durable storage rejects group/world-accessible database directories.
+          umask 077
+          cli="$GITHUB_WORKSPACE/tool/src-tauri/target/debug/oxaudit-cli"
+          test -x "$cli"
+          mkdir reports
+          args=(scan "$GITHUB_WORKSPACE/target" --db "$GITHUB_WORKSPACE/reports/runs.sqlite" --format json --output "$GITHUB_WORKSPACE/reports/source.json")
+          if [[ "$SCAN_EVENT" == pull_request ]]; then
+            test -s baseline-input/baseline.json
+            args+=(--baseline "$GITHUB_WORKSPACE/baseline-input/baseline.json" --fail-on-new high)
+          fi
+          set +e
+          "$cli" "${args[@]}" > reports/scan.stdout 2> reports/scan.stderr
+          scan_exit=$?
+          set -e
+          echo "$scan_exit" > reports/exit-code.txt
+          echo "exit_code=$scan_exit" >> "$GITHUB_OUTPUT"
+          # 1 is a completed scan with findings; 2/3/other codes are unusable.
+          case "$scan_exit" in 0|1) ;; *) cat reports/scan.stderr >&2; exit 1 ;; esac
+          jq -e '.summary.filesScanned > 0 and (.findings | type == "array")' reports/source.json
+          "$cli" runs --kind source --db reports/runs.sqlite --limit 1 --json > reports/runs.json
+          run_id=$(jq -er 'if length == 1 and .[0].kind == "source" and .[0].state == "completed" and (.[0].id | type == "string" and length > 0) then .[0].id else error("No completed canonical source run") end' reports/runs.json)
+          "$cli" export --db reports/runs.sqlite --run "$run_id" --format sarif --output reports/source.sarif
+          jq -e '.version == "2.1.0" and (.runs | length > 0)' reports/source.sarif
+          jq -n --arg tool "$OXAUDIT_TOOL_COMMIT" --arg target "$TARGET_SHA" --arg run "$GITHUB_RUN_ID" --arg source "$run_id" \
+            '{schemaVersion:1,toolCommit:$tool,targetCommit:$target,workflowRunId:$run,sourceRunId:$source,sourceRunState:"completed"}' > reports/provenance.json
+          echo 'completed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Retain reports even when the gate fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oxaudit-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Prepare main baseline only from completed evidence
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.scan.outputs.completed == 'true' && steps.scan.outputs.exit_code == '0'
+        run: |
+          mkdir baseline-output
+          cp reports/source.json baseline-output/baseline.json
+          cp reports/provenance.json baseline-output/provenance.json
+
+      - name: Publish authoritative main baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.scan.outputs.completed == 'true' && steps.scan.outputs.exit_code == '0'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oxaudit-source-baseline-${{ github.sha }}
+          path: baseline-output/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce scan completion and findings gate
+        if: always()
+        env:
+          COMPLETED: ${{ steps.scan.outputs.completed }}
+          SCAN_EXIT: ${{ steps.scan.outputs.exit_code }}
+        run: |
+          test "$COMPLETED" = true || { echo 'No completed scan; tool, baseline or scan failure cannot pass.' >&2; exit 1; }
+          test "$SCAN_EXIT" = 0 || { echo "oxAudit findings gate returned $SCAN_EXIT; reports retained." >&2; exit 1; }

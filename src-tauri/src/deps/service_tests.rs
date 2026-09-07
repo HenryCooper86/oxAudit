@@ -359,6 +359,65 @@ async fn missing_receipt_and_advisory_failure_cannot_complete_or_write_receipts(
         .all(|r| r.state == oxaudit_domain::RunState::Failed));
 }
 #[tokio::test]
+async fn malformed_osv_batch_cannot_complete_or_persist_a_receipt() {
+    struct BatchProvider(serde_json::Value);
+    impl DependencyProviders for BatchProvider {
+        fn query_full<'a>(
+            &'a self,
+            dependencies: &'a [Dependency],
+        ) -> PortFuture<'a, Result<AdvisoryResults, String>> {
+            Box::pin(async move {
+                crate::deps::osv::decode_batch_results(&self.0, dependencies.len())?;
+                Ok(AdvisoryResults::new())
+            })
+        }
+        fn enrich<'a>(
+            &'a self,
+            _: &'a mut [Vulnerability],
+            _: &'a [String],
+            _: &'a Path,
+        ) -> PortFuture<'a, EnrichmentStatus> {
+            Box::pin(async { EnrichmentStatus::default() })
+        }
+    }
+    for response in [
+        serde_json::json!({"results":[null]}),
+        serde_json::json!({"results":[{"vulns":{}}]}),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        project(directory.path());
+        let repository =
+            FindingsRepository::open(directory.path().join("data/runs.sqlite")).unwrap();
+        let events = events();
+        let error = execute(
+            directory.path(),
+            &repository,
+            &BatchProvider(response),
+            false,
+            &AtomicBool::new(false),
+            &events,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("incomplete advisory coverage"), "{error}");
+        assert!(repository
+            .provider_latest_snapshot("osv-query")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            repository.canonical_list_runs(None, 10).unwrap()[0].state,
+            oxaudit_domain::RunState::Failed
+        );
+        assert!(!events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "deps://done"));
+    }
+}
+
+#[tokio::test]
 async fn cancellation_before_discovery_and_after_provider_never_completes() {
     let directory = tempfile::tempdir().unwrap();
     project(directory.path());
@@ -604,7 +663,8 @@ async fn repeated_install_paths_survive_projection_and_canonical_evidence() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(paths.len(), 3);
     let run = oxaudit_domain::RunId::parse(result.summary.run_id.unwrap()).unwrap();
-    let (_, components, observations) = repository.canonical_load_report_graph(&run).unwrap();
+    let (artifacts, components, observations) =
+        repository.canonical_load_report_graph(&run).unwrap();
     assert_eq!(components.len(), 2);
     assert_eq!(observations.len(), 7);
     let records = serde_json::to_value(
@@ -617,6 +677,59 @@ async fn repeated_install_paths_survive_projection_and_canonical_evidence() {
     assert!(records
         .to_string()
         .contains("node_modules/parent/node_modules/example"));
+    use crate::adapters::reporting::{generate, ReportData, ReportFormat};
+    let mut projection = repository.canonical_load_projection(&run).unwrap().unwrap();
+    for vulnerability in projection["vulnerabilities"].as_array_mut().unwrap() {
+        vulnerability["severity"] = serde_json::json!(if vulnerability["lockfile"]
+            .as_str()
+            .unwrap()
+            .contains("workspace")
+        {
+            "info"
+        } else if vulnerability["occurrence"]["installPath"]
+            == "node_modules/parent/node_modules/example"
+        {
+            "medium"
+        } else {
+            "high"
+        });
+    }
+    let data = ReportData {
+        run: repository.canonical_load_run(&run).unwrap().unwrap(),
+        artifacts,
+        components,
+        observations,
+        findings: vec![],
+        projection: Some(projection),
+    };
+    let sarif: serde_json::Value =
+        serde_json::from_slice(&generate(&data, ReportFormat::Sarif).unwrap().bytes).unwrap();
+    let rows = sarif["runs"][0]["results"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    let mut levels = rows
+        .iter()
+        .map(|row| row["level"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    levels.sort();
+    assert_eq!(
+        levels,
+        ["error", "note", "warning"],
+        "detail joins must retain installation and lockfile provenance"
+    );
+    for format in [ReportFormat::OpenVex, ReportFormat::CycloneDxVex] {
+        let output: serde_json::Value =
+            serde_json::from_slice(&generate(&data, format).unwrap().bytes).unwrap();
+        let (collection, affected) = if format == ReportFormat::OpenVex {
+            ("statements", "products")
+        } else {
+            ("vulnerabilities", "affects")
+        };
+        let rows = output[collection].as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows
+            .iter()
+            .all(|row| row[affected].as_array().unwrap().len() == 1));
+    }
 }
 
 #[tokio::test]

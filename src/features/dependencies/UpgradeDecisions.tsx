@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DependencyScanResult, Vulnerability } from '../../lib/types';
 import { upgradeGroups } from './decisions';
 
@@ -7,12 +7,20 @@ function timestamp(value: number | null | undefined) { return value == null ? 'u
 export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:DependencyScanResult;onSelect:(v:Vulnerability)=>void;onRecheck:()=>void;disabled:boolean}) {
   const groups=useMemo(()=>upgradeGroups(result.vulnerabilities),[result.vulnerabilities]);
   const [selectedKey,setSelectedKey]=useState<string|null>(null);
-  const [copyStatus,setCopyStatus]=useState('');
   const selected=groups.find(g=>g.key===selectedKey) ?? groups[0];
+  const copyScope=useMemo(()=>({}),[result,result.summary.runId,selected?.key]);
+  const [copyFeedback,setCopyFeedback]=useState<{scope:object;message:string}|null>(null);
+  const copyRequest=useRef(0);
+  useLayoutEffect(()=>()=>{copyRequest.current+=1;},[copyScope]);
+  const copyStatus=copyFeedback?.scope===copyScope ? copyFeedback.message : '';
   const enrichment=result.summary.enrichment;
   async function copy(text:string,kind:string) {
-    try { await navigator.clipboard.writeText(text);setCopyStatus(`Copied ${kind}`); }
-    catch { setCopyStatus('Copy unavailable. Select and copy the displayed text.'); }
+    const request=++copyRequest.current;
+    const publish=(message:string)=>{
+      if(copyRequest.current===request) setCopyFeedback({scope:copyScope,message});
+    };
+    try { await navigator.clipboard.writeText(text);publish(`Copied ${kind}`); }
+    catch { publish('Copy unavailable. Select and copy the displayed text.'); }
   }
   return <section aria-label="Dependency upgrade decisions" className="rounded-sm border border-border bg-surface-secondary text-[13px]">
     <div className="space-y-2 border-b border-border p-4 text-text-secondary">
@@ -31,7 +39,7 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
         <table className="w-full text-left"><caption className="sr-only">Upgrade groups by installation and update entry point</caption>
           <thead><tr><th scope="col" className="p-3">Package / location</th><th scope="col" className="p-3">Advisories</th></tr></thead>
           <tbody>{groups.map(group=>{const first=group.advisories[0];return <tr key={group.key} className={selected.key===group.key?'bg-surface-active':''}>
-            <td className="p-3"><button type="button" aria-pressed={selected.key===group.key} className="w-full text-left text-info" onClick={()=>{setSelectedKey(group.key);setCopyStatus('');}}>
+            <td className="p-3"><button type="button" aria-pressed={selected.key===group.key} className="w-full text-left text-info" onClick={()=>{setSelectedKey(group.key);setCopyFeedback(null);copyRequest.current+=1;}}>
               <span className="font-mono">{first.packageName}@{first.installedVersion}</span>
               <span className="mt-1 block break-all text-[11px] text-text-muted">{group.paths[0] ? group.paths[0].workspace || 'Root manifest' : 'Workspace unknown'} · {group.paths[0]?.entryPoint ?? 'Entry point unknown'}</span>
               <span className="block break-all text-[11px] text-text-muted">{first.lockfile} · {first.occurrence?.installPath ?? 'Installation path unknown'}</span>

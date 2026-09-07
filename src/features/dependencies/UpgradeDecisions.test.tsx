@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { expect, test, vi } from 'vitest';
 import { UpgradeDecisions } from './UpgradeDecisions';
 import type { DependencyScanResult, Vulnerability } from '../../lib/types';
@@ -37,4 +37,35 @@ test('distinct installation groups navigate and direct command copy never execut
   fireEvent.click(screen.getByRole('button',{name:'Copy npm command'}));
   expect(await screen.findByRole('status')).toHaveTextContent('Copied npm command');
   expect(copy.mock.calls[0][0]).toBe("npm install --ignore-scripts --save-dev -- 'leaf@1.0.1'");
+});
+
+test('copy feedback belongs to the current result and ignores an old pending completion',async()=>{
+  let finish!:()=>void;
+  const copy=vi.fn().mockResolvedValueOnce(undefined).mockImplementationOnce(()=>new Promise<void>(resolve=>{finish=resolve;}));
+  Object.defineProperty(navigator,'clipboard',{value:{writeText:copy},configurable:true});
+  const props={onSelect:()=>{},onRecheck:()=>{},disabled:false};
+  const {rerender}=render(<UpgradeDecisions result={result} {...props}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Copy remediation checklist'}));
+  expect(await screen.findByRole('status')).toHaveTextContent('Copied remediation checklist');
+  fireEvent.click(screen.getByRole('button',{name:'Copy remediation checklist'}));
+  rerender(<UpgradeDecisions result={{...result,summary:{...result.summary,runId:'new-run'}}} {...props}/>);
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  await act(async()=>finish());
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+});
+
+test('switching groups invalidates pending copy feedback even when returning to the original group',async()=>{
+  let finish!:()=>void;
+  Object.defineProperty(navigator,'clipboard',{value:{writeText:()=>new Promise<void>(resolve=>{finish=resolve;})},configurable:true});
+  const other={...advisory,packageName:'other'};
+  const {unmount}=render(<UpgradeDecisions result={{...result,vulnerabilities:[advisory,other]}} onSelect={()=>{}} onRecheck={()=>{}} disabled={false}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Copy remediation checklist'}));
+  fireEvent.click(screen.getByRole('button',{name:/other@1.0.0/}));
+  fireEvent.click(screen.getByRole('button',{name:/leaf@1.0.0/}));
+  await act(async()=>finish());
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'Copy remediation checklist'}));
+  unmount();
+  await act(async()=>finish());
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });

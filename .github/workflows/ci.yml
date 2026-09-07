@@ -50,6 +50,14 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Install workflow shell test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bash jq
+
+      - name: Test consumer workflow shell contracts
+        run: npm run test:ci-shell
+
       - name: Build
         run: npm run build
 
@@ -57,6 +65,12 @@ jobs:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    # CI does not need debug symbols or incremental object caches. The static
+    # Tauri library plus three grammar builds otherwise exhaust Linux disk.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
     strategy:
       fail-fast: false
       matrix:
@@ -98,11 +112,21 @@ jobs:
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --all-features
 
-      - name: Validate benchmark and provenance contracts
-        if: runner.os == 'Linux'
+      # --workspace --all-features above already runs oxaudit-benchmark and
+      # bundled_signature_provenance. Do not rebuild them with a second feature set.
+      - name: Diagnose Windows loader failures
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml -p oxaudit-benchmark
-          cargo test --manifest-path src-tauri/Cargo.toml -p oxaudit bundled_signature_provenance
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          $dumpbin = Get-ChildItem "$vs/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          $mt = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/mt.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          Get-ChildItem src-tauri/target/debug/deps/oxaudit_lib-*.exe | ForEach-Object {
+            Write-Output "Loader diagnostics: $($_.FullName)"
+            if ($dumpbin) { & $dumpbin.FullName /imports $_.FullName }
+            if ($mt) { & $mt.FullName "-inputresource:$($_.FullName);#1" "-out:$($_.FullName).manifest" }
+          }
 
       - name: Clippy
         if: runner.os == 'Linux'
@@ -127,5 +151,5 @@ jobs:
       - name: Check detection quality has not regressed
         if: runner.os == 'Linux'
         run: |
-          cargo run --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli -- \
+          cargo run --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli -- \
             benchmark --min-precision 100 --min-recall 100

@@ -14,7 +14,9 @@
     "test:unit": "tsx --test tests/*.test.ts",
     "test:components": "vitest run",
     "test:watch": "vitest",
-    "audit:dependencies": "npm audit --audit-level=high"
+    "audit:dependencies": "npm audit --audit-level=high",
+    "pilot:smoke": "node tools/pilot-smoke.mjs",
+    "test:ci-shell": "tsx --test tests/ci/*.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

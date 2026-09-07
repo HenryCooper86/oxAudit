@@ -4,9 +4,9 @@ name: Self scan
 #
 #  1. Dogfooding. If the CLI breaks, or a rule starts firing on everything, we
 #     find out on our own repository before a user does.
-#  2. The findings land in GitHub code scanning, which is exactly the workflow
-#     oxAudit asks other people to adopt. Publishing our own results is the
-#     cheapest honest demonstration that it works.
+#  2. Every completed scan retains downloadable SARIF. Code-scanning upload is
+#     an explicit optional repository capability; this private repo currently
+#     returns 403 with code scanning disabled.
 #
 # `--fail-on` is deliberately absent: this uploads findings, it does not gate
 # the build. Gating our own repository on our own scanner would be circular.
@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -54,11 +55,21 @@ jobs:
             --format sarif \
             --output oxaudit.sarif \
             --ignore-dir benchmarks \
+            --ignore-dir pilot \
             --ignore-dir node_modules \
             --ignore-dir target \
             --ignore-dir dist
 
-      - name: Upload to code scanning
+      - name: Retain self-scan SARIF
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oxaudit-self-scan-sarif
+          path: oxaudit.sarif
+          if-no-files-found: error
+
+      - name: Upload to code scanning (optional capability)
+        if: vars.OXAUDIT_CODE_SCANNING == 'true'
         uses: github/codeql-action/upload-sarif@bb16b9baa2ec4010b29f5c606d57d01190139edd # v4.37.1
         with:
           sarif_file: oxaudit.sarif

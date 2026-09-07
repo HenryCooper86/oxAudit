@@ -5,10 +5,13 @@ import {
   RefreshCw,
   ScanSearch,
   Settings2,
-  ShieldCheck,
+  FolderOpen,
   Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+import { normalizeCommandError } from "../../lib/commandError";
+import { startProjectCheck, useScanWorkStore } from "../../features/project-home/coordinator";
 import { api } from "../../lib/api";
 import {
   completeReadinessWizard,
@@ -34,7 +37,7 @@ const INITIAL_CHECKS: ReadinessChecks = {
   error: false,
 };
 
-const STEPS = ["Welcome", "Core readiness", "Optional AI", "Ready"];
+const STEPS = ["Welcome", "Core readiness", "Optional AI", "Your first project"];
 
 export function ReadinessWizard() {
   const settings = useAppStore((state) => state.settings);
@@ -47,6 +50,12 @@ export function ReadinessWizard() {
       : !isReadinessWizardComplete(localStorage),
   );
   const [step, setStep] = useState(0);
+  const [projectPath, setProjectPath] = useState(() => useAppStore.getState().selectedProject ?? "");
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const activeScan = useScanWorkStore((state) => state.active);
+  const generation = useRef(0);
+  const readinessRequest = useRef(0);
   const [checks, setChecks] = useState<ReadinessChecks>(INITIAL_CHECKS);
   const rootRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
@@ -54,11 +63,13 @@ export function ReadinessWizard() {
   const eligible = settings !== null || settingsLoadError;
 
   const refreshChecks = useCallback(async () => {
+    const request = ++readinessRequest.current;
     setChecks((current) => ({ ...current, loading: true, error: false }));
     const [scanners, sources] = await Promise.allSettled([
       api.binaryToolStatus(),
       api.listDataSources(),
     ]);
+    if (readinessRequest.current !== request) return;
     setChecks({
       scanners: scanners.status === "fulfilled" ? scanners.value : null,
       sources: sources.status === "fulfilled" ? sources.value : null,
@@ -69,11 +80,19 @@ export function ReadinessWizard() {
 
   useEffect(() => {
     const reopen = () => {
+      generation.current += 1;
+      readinessRequest.current += 1;
+      setSelecting(false);
+      setProjectError(null);
       setStep(0);
       setOpen(true);
     };
     window.addEventListener(READINESS_WIZARD_OPEN_EVENT, reopen);
-    return () => window.removeEventListener(READINESS_WIZARD_OPEN_EVENT, reopen);
+    return () => {
+      generation.current += 1;
+      readinessRequest.current += 1;
+      window.removeEventListener(READINESS_WIZARD_OPEN_EVENT, reopen);
+    };
   }, []);
 
   useEffect(() => {
@@ -81,9 +100,54 @@ export function ReadinessWizard() {
   }, [eligible, open, refreshChecks]);
 
   const finish = useCallback(() => {
+    generation.current += 1;
+    readinessRequest.current += 1;
+    setSelecting(false);
     completeReadinessWizard(localStorage);
     setOpen(false);
   }, []);
+
+  const changeProject = (path: string) => {
+    generation.current += 1;
+    setProjectPath(path);
+    setProjectError(null);
+    setSelecting(false);
+  };
+  const browseProject = async () => {
+    const token = ++generation.current;
+    setProjectError(null);
+    setSelecting(false);
+    try {
+      const path = await pickFolder({ directory: true, multiple: false, title: "Select your first project" });
+      if (generation.current === token && typeof path === "string") changeProject(path);
+    } catch (error) {
+      if (generation.current === token) setProjectError(normalizeCommandError(error).message);
+    }
+  };
+  const checkProject = async () => {
+    if (!projectPath.trim() || !settings || useScanWorkStore.getState().active) return;
+    const token = ++generation.current;
+    setSelecting(true);
+    setProjectError(null);
+    try {
+      const context = await api.inspectSourceProject(projectPath.trim());
+      if (generation.current !== token) return;
+      if (useScanWorkStore.getState().active) {
+        setProjectError("Another scan is active. Wait for it to finish or cancel it from the status bar.");
+        return;
+      }
+      // This explicit handoff selects Home. The shared coordinator owns all
+      // scan work after this point; late work cannot mutate runtime selection.
+      useAppStore.getState().setSelectedProject(context.canonicalPath);
+      setPage("dashboard");
+      void startProjectCheck(context.canonicalPath, settings.scan);
+      finish();
+    } catch (error) {
+      if (generation.current === token) setProjectError(normalizeCommandError(error).message);
+    } finally {
+      if (generation.current === token) setSelecting(false);
+    }
+  };
 
   useEffect(() => {
     if (!open || !eligible) return;
@@ -272,27 +336,37 @@ export function ReadinessWizard() {
           )}
 
           {step === 3 && (
-            <div className="py-2 text-center">
-              <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-success-subtle text-success">
-                <ShieldCheck size={22} aria-hidden="true" />
-              </span>
-              <h2 className="mt-4 text-[18px] font-semibold text-text-primary">You’re ready to audit</h2>
-              <p id="readiness-wizard-description" className="mx-auto mt-2 max-w-md text-[13px] leading-relaxed text-text-secondary">
-                Start with a source folder, inspect a binary, or explore the dashboard. This setup can be reopened from Settings.
+            <div className="space-y-4">
+              <p id="readiness-wizard-description" className="text-[13px] leading-relaxed text-text-secondary">
+                Choose a project folder, then check its source and dependencies from Home. AI is optional. No repository scripts are executed.
               </p>
-              <div className="mt-5 flex flex-wrap justify-center gap-2">
-                <Button
-                  ref={firstActionRef}
-                  variant="primary"
-                  onClick={() => {
-                    finish();
-                    setPage("source-scan");
-                  }}
-                >
-                  <ScanSearch size={13} aria-hidden="true" />
-                  Start a source scan
+              <div className="flex items-center gap-2">
+                <input
+                  aria-label="First project folder"
+                  value={projectPath}
+                  onChange={(event) => changeProject(event.target.value)}
+                  placeholder="Choose a project folder…"
+                  className="selectable min-w-0 flex-1 rounded-sm border border-border bg-surface-secondary px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted"
+                />
+                <Button ref={firstActionRef} variant="outline" onClick={() => void browseProject()}>
+                  <FolderOpen size={14} aria-hidden="true" /> Browse…
                 </Button>
-                <Button variant="outline" onClick={finish}>Explore dashboard</Button>
+              </div>
+              {selecting && <p role="status" className="text-[13px] text-text-secondary">Inspecting project…</p>}
+              {projectError && <p role="alert" className="text-[13px] text-error">Project unavailable: {projectError}</p>}
+              {!settings && <p className="text-[13px] text-warning">Settings could not be loaded. Open Settings and retry before checking a project.</p>}
+              {activeScan && <p className="text-[13px] text-text-secondary">Another scan is active. You can return to Home to follow its progress.</p>}
+              <p className="text-[12px] leading-relaxed text-text-muted">
+                Home keeps your project history and results. You can reopen this setup from Settings and add a project later.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="primary"
+                  disabled={!projectPath.trim() || !settings || selecting || Boolean(activeScan)}
+                  onClick={() => void checkProject()}>
+                  <ScanSearch size={13} aria-hidden="true" /> Check project
+                </Button>
+                <Button variant="outline" onClick={() => { finish(); setPage("dashboard"); }}>Go to Home</Button>
+                <Button variant="ghost" onClick={finish}>Skip for now</Button>
               </div>
             </div>
           )}
