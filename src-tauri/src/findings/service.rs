@@ -338,6 +338,41 @@ impl FindingsService {
         Ok(loaded)
     }
 
+    pub fn recheck_options(
+        &self,
+        run_id: &str,
+        project_id: &str,
+    ) -> Result<ScanOptions, CommandError> {
+        let original = self.repository.load_run(run_id)?;
+        if original.project_id != project_id || original.status != RunStatus::Completed {
+            return Err(CommandError::baseline_incompatible());
+        }
+        let stored_project = self.repository.project_context(project_id)?;
+        let project = self.inspect_project(&stored_project.canonical_path)?;
+        if matches!(project.policy, PolicyStatus::Invalid { .. }) {
+            return Err(CommandError::policy_invalid());
+        }
+        let mut options = self.repository.run_options(run_id)?;
+        options.path = project.canonical_path;
+        // The scan service revalidates current policy. A historic override must
+        // never authorize ignoring a newly invalid policy during recheck.
+        options.ignore_invalid_policy = false;
+        Ok(options)
+    }
+
+    pub fn compare_recheck_runs(
+        &self,
+        current_run_id: &str,
+        baseline_run_id: &str,
+    ) -> Result<Vec<Finding>, CommandError> {
+        super::review::read_only_recheck_comparison(
+            &self.repository,
+            current_run_id,
+            baseline_run_id,
+            Utc::now(),
+        )
+    }
+
     pub fn compare_runs(
         &self,
         current_run_id: &str,

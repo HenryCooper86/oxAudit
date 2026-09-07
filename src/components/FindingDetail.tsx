@@ -1,3 +1,4 @@
+import { remediationFor } from "../features/source-scan/remediation";
 import { Bot, Clipboard, ExternalLink, History, ShieldCheck } from "lucide-react";
 import { useEffect, useState, type JSX } from "react";
 import { diffLabel, reviewLabel, scopeLabel } from "../features/source-scan/FindingList";
@@ -16,7 +17,11 @@ export function FindingDetail({
   onSaveReview,
   onCopy,
   onOpenFile,
+  onRecheck,
+  recheckDisabled,
 }: {
+  onRecheck?: (finding: Finding) => void;
+  recheckDisabled?: boolean;
   projectId: string;
   finding: Finding;
   savingReview: boolean;
@@ -29,6 +34,7 @@ export function FindingDetail({
   const openAssistant = useAppStore((state) => state.openAssistant);
   const [reviewing, setReviewing] = useState(false);
   const secret = finding.category === "secret";
+  const remediation = remediationFor(finding.ruleId, finding.category);
   const safeMatch = secret && !finding.matchText.includes("[REDACTED]")
     ? "[REDACTED]"
     : finding.matchText;
@@ -79,12 +85,14 @@ export function FindingDetail({
             </div>
             <h2 className="mt-2 text-[16px] font-semibold leading-snug text-text-primary">{finding.ruleName}</h2>
             <p className="selectable mt-1 break-all font-mono text-[11px] text-text-muted">{finding.filePath}:{finding.line}:{finding.column}</p>
+            <p className="mt-1 text-[11px] text-text-muted">Recorded byte column. Editor navigation converts the current saved line; edits since scanning may move the finding.</p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             <Button type="button" onClick={() => setReviewing(true)} variant="accent" size="md" disabled={finding.diffStatus === "resolved"}>
               <ShieldCheck size={13} aria-hidden="true" />
               {finding.diffStatus === "resolved" ? "Resolved projection" : "Review finding"}
             </Button>
+            {onRecheck && <Button type="button" onClick={() => onRecheck(finding)} disabled={recheckDisabled} variant="outline" size="md">Recheck finding</Button>}
             <Button type="button" onClick={discussFinding} variant="accent" size="md">
               <Bot size={13} aria-hidden="true" />
               Discuss in Assistant
@@ -154,6 +162,19 @@ export function FindingDetail({
           <h3 id="finding-recommendation" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">Recommendation</h3>
           <p className="selectable mt-1.5 text-[13px] leading-relaxed text-text-secondary">{finding.recommendation}</p>
         </section>
+
+        {remediation && (
+          <section aria-labelledby="remediation-example-title" className="mt-5 rounded-sm border border-border p-3">
+            <h3 id="remediation-example-title" className="text-[12px] font-semibold">Remediation example</h3>
+            <p className="mt-2 text-[12px] leading-relaxed text-text-secondary">{remediation.constraint}</p>
+            <div className="mt-3 grid gap-3 xl:grid-cols-2">
+              <div><h4 className="text-[11px] font-medium">Before (illustrative)</h4><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-sm bg-surface-primary p-3 font-mono text-[12px]">{remediation.before}</pre></div>
+              <div><h4 className="text-[11px] font-medium">After (adapt to your application)</h4><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-sm bg-surface-primary p-3 font-mono text-[12px]">{remediation.after}</pre></div>
+            </div>
+            <h4 className="mt-3 text-[12px] font-semibold">Verification steps</h4>
+            <ol className="mt-2 list-decimal space-y-1 pl-5 text-[12px] leading-relaxed text-text-secondary">{remediation.verify.map(step => <li key={step}>{step}</li>)}</ol>
+          </section>
+        )}
 
         {finding.review && (
           <section aria-labelledby="finding-review-summary" className="mt-5 rounded-sm border border-border bg-surface-primary p-3">

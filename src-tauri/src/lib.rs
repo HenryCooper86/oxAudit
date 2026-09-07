@@ -8,6 +8,7 @@ pub mod compliance;
 mod credentials;
 pub mod cve;
 mod deps;
+mod editor;
 pub mod exploit;
 pub mod external;
 pub mod findings;
@@ -107,6 +108,7 @@ pub fn run() {
             commands::settings::collect_diagnostics,
             commands::save_finding_reviews,
             commands::scan_project,
+            commands::recheck_source_run,
             commands::cancel_scan,
             commands::open_scan_finding,
             commands::inspect_source_project,

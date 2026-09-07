@@ -370,25 +370,77 @@ pub(in crate::findings) fn read_only_project_policy_comparison(
     baseline_run_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<crate::models::Finding>, CommandError> {
+    read_only_comparison_with_policy_requirement(
+        repository,
+        current_run_id,
+        baseline_run_id,
+        now,
+        false,
+    )
+}
+
+pub(in crate::findings) fn read_only_recheck_comparison(
+    repository: &FindingsRepository,
+    current_run_id: &str,
+    baseline_run_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<crate::models::Finding>, CommandError> {
+    read_only_comparison_with_policy_requirement(
+        repository,
+        current_run_id,
+        baseline_run_id,
+        now,
+        true,
+    )
+}
+
+fn read_only_comparison_with_policy_requirement(
+    repository: &FindingsRepository,
+    current_run_id: &str,
+    baseline_run_id: &str,
+    now: DateTime<Utc>,
+    require_valid_policy: bool,
+) -> Result<Vec<crate::models::Finding>, CommandError> {
     let current = repository
         .load_run(current_run_id)
         .map_err(|_| CommandError::baseline_incompatible())?;
     let findings = repository
         .compare_runs(current_run_id, baseline_run_id)
         .map_err(|_| CommandError::baseline_incompatible())?;
-    read_only_project_policy_findings(repository, &current.project_id, findings, now)
+    read_only_findings_with_policy_requirement(
+        repository,
+        &current.project_id,
+        findings,
+        now,
+        require_valid_policy,
+    )
 }
 
 pub(in crate::findings) fn read_only_project_policy_findings(
     repository: &FindingsRepository,
     project_id: &str,
+    findings: Vec<crate::models::Finding>,
+    now: DateTime<Utc>,
+) -> Result<Vec<crate::models::Finding>, CommandError> {
+    read_only_findings_with_policy_requirement(repository, project_id, findings, now, false)
+}
+
+fn read_only_findings_with_policy_requirement(
+    repository: &FindingsRepository,
+    project_id: &str,
     mut findings: Vec<crate::models::Finding>,
     now: DateTime<Utc>,
+    require_valid_policy: bool,
 ) -> Result<Vec<crate::models::Finding>, CommandError> {
     with_policy_authority(|authority| {
         let project = repository.project_context(project_id)?;
         let root = Path::new(&project.canonical_path);
         let loaded = load_policy_under_authority(authority, root)?;
+        if require_valid_policy
+            && matches!(loaded.status(), super::domain::PolicyStatus::Invalid { .. })
+        {
+            return Err(CommandError::policy_invalid());
+        }
         // Only SELECT history; persisted policy events are not active authority.
         repository.enrich_findings_with_reviews(project_id, &mut findings, false, now)?;
         if !matches!(loaded.status(), super::domain::PolicyStatus::Invalid { .. }) {

@@ -31,6 +31,7 @@ import type {
   LockfileInfo,
   ScanOptions,
   ScanRunDetail,
+  RecheckSourceResult,
   ScanRunSummary,
   ProjectContext,
   RecentProject,
@@ -58,6 +59,8 @@ import type {
 export const api = {
   scanProject: (options: ScanOptions) =>
     invoke<ScanRunDetail>("scan_project", { options }),
+  recheckSourceRun: (originalRunId: string, projectId: string) =>
+    invoke<RecheckSourceResult>("recheck_source_run", { originalRunId, projectId }),
   cancelScan: () => invoke<void>("cancel_scan"),
   inspectSourceProject: (path: string) =>
     invoke<ProjectContext>("inspect_source_project", { path }),
@@ -65,8 +68,8 @@ export const api = {
     invoke<RecentProject[]>("list_source_projects", { limit }),
   listSourceRuns: (projectId: string, limit = 50) =>
     invoke<ScanRunSummary[]>("list_source_runs", { projectId, limit }),
-  compareSourceRuns: (currentRunId: string, baselineRunId: string) =>
-    invoke<Finding[]>("compare_source_runs", { currentRunId, baselineRunId }),
+  compareSourceRuns: (currentRunId: string, baselineRunId: string, requireValidPolicy = false) =>
+    invoke<Finding[]>("compare_source_runs", { currentRunId, baselineRunId, ...(requireValidPolicy ? { requireValidPolicy } : {}) }),
   inspectSourceGit: (path: string, baseReference: string) =>
     invoke<GitContext>("inspect_source_git", { path, baseReference }),
   loadSourceRun: (runId: string) =>
@@ -119,8 +122,8 @@ export const api = {
   cancelBinaryScan: () => invoke<void>("cancel_binary_scan"),
   /** Force `--update now`; the only escape from cve-bin-tool's stale-cache trap. */
   refreshBinaryDatabase: () => invoke<void>("refresh_binary_database"),
-  openScanFinding: (root: string, relativePath: string) =>
-    invoke<void>("open_scan_finding", { root, relativePath }),
+  openScanFinding: (root: string, relativePath: string, line: number, column: number) =>
+    invoke<void>("open_scan_finding", { root, relativePath, line, column }),
   scanDependencies: (path: string, offline = false) =>
     invoke<DependencyScanResult>("scan_dependencies", { path, offline }),
   cancelDependencyScan: () => invoke<void>("cancel_dependency_scan"),

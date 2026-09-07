@@ -561,6 +561,11 @@ export interface ScanRunDetail {
   maintenanceWarning: string | null;
 }
 
+export interface RecheckSourceResult {
+  run: ScanRunDetail;
+  options: ScanOptions;
+}
+
 export interface ProjectContext {
   projectId: string;
   canonicalPath: string;
@@ -746,6 +751,7 @@ export interface ScanSettings {
 }
 
 export interface AppSettings {
+  editor: "system" | "vscode";
   ai: AiSettings;
   scan: ScanSettings;
   credentials: CredentialPresence;

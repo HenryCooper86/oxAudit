@@ -350,7 +350,7 @@ fn raw_entry_with_open(
 // symlink-swap gap between containment checks and the raw byte read. NONBLOCK
 // also prevents a concurrent replacement with a FIFO from hanging inspection.
 #[cfg(unix)]
-fn open_raw_file(root: &Path, relative: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_raw_file(root: &Path, relative: &Path) -> std::io::Result<std::fs::File> {
     use std::{
         ffi::CString,
         os::{
@@ -391,11 +391,11 @@ fn open_raw_file(root: &Path, relative: &Path) -> std::io::Result<std::fs::File>
 #[path = "git_context_windows.rs"]
 mod windows;
 #[cfg(windows)]
-fn open_raw_file(root: &Path, relative: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_raw_file(root: &Path, relative: &Path) -> std::io::Result<std::fs::File> {
     windows::open_raw_file(root, relative)
 }
 #[cfg(not(any(unix, windows)))]
-fn open_raw_file(_root: &Path, _relative: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_raw_file(_root: &Path, _relative: &Path) -> std::io::Result<std::fs::File> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "safe Git raw reads are unavailable on this platform",

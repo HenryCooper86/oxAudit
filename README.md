@@ -126,6 +126,35 @@ labelled **no longer observed (coverage unverified)**, covering skipped/deleted
 files; only durable comparisons with compatible coverage claim resolution.
 Missing or invalid fingerprint identities are rejected.
 
+For a finding-to-fix workflow, choose **Settings → Editor → Visual Studio Code**
+and save, then use **Open file** in a finding. The default **System opener** opens
+only the file. VS Code navigation uses its registered `vscode` URL handler; no
+shell template or editor CLI installation is needed. Paths stay within the
+captured scan root. Stored columns are UTF-8 byte offsets; the opener converts
+the current UTF-8 line to VS Code's UTF-16 column with an 8 MiB read limit.
+Changed files may move the recorded location, and missing lines, invalid byte
+boundaries, unsupported encoding or an unavailable handler produce visible
+errors. Windows VS Code navigation supports local drive paths; select the system
+opener for network/device paths. Editor navigation cannot freeze a file against edits after it is opened.
+
+The finding detail includes constrained before/after examples for JavaScript
+code evaluation, command execution and SQL, Python shell execution and SQL, and
+secret rotation. Adapt examples to your input contract and driver; JSON parsing
+only replaces evaluation of JSON data, SQL value bindings do not bind identifiers,
+and scan absence does not prove a credential was revoked.
+
+After saving your change, select **Recheck finding** on a saved completed run.
+It repeats the full source scan with that run's captured effective options,
+including ignored directories, then compares against that exact original run
+under current policy. The outcome retains the original fingerprint/evidence,
+shows the captured options, and links the original and new runs. It distinguishes
+still detected, no longer detected in covered file/rule-family evidence, and not
+evaluated. A same-rule finding within 20 lines is called out as changed context,
+not a verified fix. Deleted/skipped files, missing coverage, cancellation,
+failures, unsaved results and invalid policy cannot establish absence. Rechecks
+share the normal source/project-check cancellation and ownership controls, and
+never change a review decision or create an independent verification record.
+
 Reviewed something and decided it is not a problem? Record it in
 [`.oxaudit/policy.json`](#suppressing-a-finding) and it stops failing the build —
 with a reason, an expiry, and a pull request.

@@ -2679,3 +2679,112 @@ async fn recent_counts_only_include_last_completed_observations() {
     );
     assert_eq!(recent[0].counts_available, Some(true));
 }
+
+#[tokio::test]
+async fn recheck_uses_original_effective_options_and_requires_same_completed_project() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+    let service = FindingsService::new(
+        crate::findings::repository::FindingsRepository::open(
+            directory.path().join("data/findings.sqlite3"),
+        )
+        .unwrap(),
+    );
+    let original_options = ScanOptions {
+        path: project.to_string_lossy().into_owned(),
+        scan_secrets: false,
+        include_git: true,
+        max_file_size_kb: 73,
+        extra_ignored_dirs: vec!["original-ignore".into()],
+        ignore_invalid_policy: true,
+        ..ScanOptions::default()
+    };
+    let original = service
+        .scan(
+            original_options.clone(),
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    let options = service
+        .recheck_options(&original.run_id, &original.project_id)
+        .unwrap();
+    assert_eq!(
+        options,
+        ScanOptions {
+            path: project
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            ignore_invalid_policy: false,
+            ..original_options
+        }
+    );
+    assert!(service
+        .recheck_options(&original.run_id, "wrong-project")
+        .is_err());
+    assert!(service
+        .recheck_options("missing", &original.project_id)
+        .is_err());
+    let mut incomplete = original.clone();
+    incomplete.run_id = "incomplete-recheck-original".into();
+    incomplete.status = RunStatus::Running;
+    incomplete.completed_at = None;
+    service
+        .repository
+        .start_run(&incomplete, super::SCANNER_VERSION, &options)
+        .unwrap();
+    service
+        .repository
+        .mark_incomplete(&incomplete.run_id, "2026-09-07T00:00:00Z", "test")
+        .unwrap();
+    assert!(service
+        .recheck_options(&incomplete.run_id, &original.project_id)
+        .is_err());
+    write_valid_policy(&project, "test");
+    std::fs::write(project.join(".oxaudit/policy.json"), "invalid").unwrap();
+    assert!(service
+        .recheck_options(&original.run_id, &original.project_id)
+        .is_err());
+}
+
+#[tokio::test]
+async fn recheck_comparison_rejects_policy_invalidated_after_scanning() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("app.js"), "eval(input);\n").unwrap();
+    let service = FindingsService::new(super::FindingsRepository::open_in_memory().unwrap());
+    let options = ScanOptions {
+        path: temp.path().to_string_lossy().into(),
+        scan_secrets: false,
+        ..ScanOptions::default()
+    };
+    let original = service
+        .scan(
+            options.clone(),
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    std::fs::write(temp.path().join("app.js"), "const input = 1;\n").unwrap();
+    let current = service
+        .scan(
+            options,
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    write_valid_policy(temp.path(), "temporary");
+    std::fs::write(temp.path().join(".oxaudit/policy.json"), "broken").unwrap();
+    assert!(service
+        .compare_recheck_runs(&current.run_id, &original.run_id)
+        .is_err());
+}

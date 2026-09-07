@@ -1,3 +1,4 @@
+import { assessRecheck } from "../features/source-scan/recheck";
 import { ReviewChangesPanel } from "../features/source-scan/ReviewChangesPanel";
 import { useReviewChanges } from "../features/source-scan/useReviewChanges";
 import { acquireScan, cancelActiveScan, reconcileSourceRunSave, releaseScan, useScanWorkStore } from "../features/project-home/coordinator";
@@ -64,6 +65,8 @@ import type {
   ScanProgress,
   ScanRunDetail,
   ScanRunSummary,
+  ScanOptions,
+  RecheckSourceResult,
   Severity,
 } from "../lib/types";
 
@@ -146,6 +149,13 @@ export function SourceScanPage(): JSX.Element {
   const [loadVersion, setLoadVersion] = useState(0);
   const [handoffRunId, setHandoffRunId] = useState<string | undefined>();
 
+  const [recheck, setRecheck] = useState<{ originalRunId: string; fingerprint: string; message: string; newRunId?: string; options?: ScanOptions } | null>(null);
+  const [unsavedRecheck, setUnsavedRecheck] = useState<{
+    original: ScanRunDetail;
+    finding: Finding;
+    receipt: RecheckSourceResult;
+  } | null>(null);
+  useEffect(() => { setRecheck(null); setUnsavedRecheck(null); }, [path, run?.runId]);
   const cancellingRef = useRef(false);
   const runLoadGenerationRef = useRef(0);
   const loaderRef = useRef(new SourceProjectLoader(api));
@@ -275,7 +285,7 @@ export function SourceScanPage(): JSX.Element {
     };
   }, [handoffRunId, loadVersion, path, push, setActiveProjectStore]);
 
-  useEffect(() => () => loaderRef.current.invalidate(), []);
+  useEffect(() => () => { loaderRef.current.invalidate(); runLoadGenerationRef.current++; }, []);
 
   useEffect(() => {
     setReviewError(null);
@@ -436,6 +446,102 @@ export function SourceScanPage(): JSX.Element {
       cancellingRef.current = false;
       setCancelling(false);
       setProgress(null);
+    }
+  };
+
+  const recheckFinding = async (finding: Finding) => {
+    if (!run || !project || run.status !== "completed" || run.persistence.status !== "saved" || project.policy.status === "invalid" || finding.observationRunId !== run.runId || running || retryingSave || savingReview || unsavedRecheck) return;
+    const original = run;
+    const generation = runLoadGenerationRef.current;
+    const ownership = acquireScan("source", original.summary.path, "Rechecking finding");
+    if (ownership === null) return;
+    const current = () => generation === runLoadGenerationRef.current && useScanWorkStore.getState().active?.id === ownership;
+    setRunning(true);
+    setProgress({ phase: "walking" });
+    setSelectedFingerprint(finding.fingerprint);
+    setRecheck({ originalRunId: original.runId, fingerprint: finding.fingerprint, message: "Rechecking with the original saved scan options…" });
+    let newRunId: string | undefined;
+    let options: ScanOptions | undefined;
+    try {
+      const receipt = await api.recheckSourceRun(original.runId, original.projectId);
+      if (!current()) return;
+      const result = receipt.run;
+      if (result.projectId !== original.projectId || result.summary.path !== original.summary.path) throw new Error("The recheck response belongs to a different project.");
+      if (result.status !== "completed" || result.runId === original.runId) throw new Error("The recheck did not produce a new completed run.");
+      options = receipt.options;
+      if (result.persistence.status === "notSaved") {
+        setUnsavedRecheck({ original, finding, receipt });
+        setRecheck({ originalRunId: original.runId, fingerprint: finding.fingerprint, options, message: "Recheck not evaluated: the completed recheck was not saved. Retry saving this receipt before comparison." });
+        setPageStatus("source-scan", { label: "Recheck not saved", tone: "error" });
+        return;
+      }
+      newRunId = result.runId;
+      if (useScanWorkStore.getState().active?.cancelling) throw { code: "scanCancelled", message: "Recheck cancelled", retryable: false };
+      const comparison = await api.compareSourceRuns(result.runId, original.runId, true);
+      if (!current()) return;
+      if (useScanWorkStore.getState().active?.cancelling) throw { code: "scanCancelled", message: "Recheck cancelled", retryable: false };
+      const assessment = assessRecheck(original, finding, result, comparison);
+      setRecheck({ originalRunId: original.runId, fingerprint: finding.fingerprint, newRunId, options, message: assessment.message });
+      setPageStatus("source-scan", { label: "Recheck complete", tone: "neutral" });
+      try { await refreshMetadata(result.projectId, generation); } catch { if (current()) push("info", "Recheck completed, but history could not be refreshed."); }
+    } catch (error) {
+      if (!current()) return;
+      const normalized = normalizeCommandError(error);
+      setRecheck({ originalRunId: original.runId, fingerprint: finding.fingerprint, newRunId, options, message: normalized.code === "scanCancelled" ? "Recheck cancelled. No absence conclusion was made." : `Recheck not evaluated. ${normalized.message}` });
+      setPageStatus("source-scan", { label: "Recheck not evaluated", tone: "neutral" });
+    } finally {
+      releaseScan(ownership);
+      setRunning(false);
+      setCancelling(false);
+      cancellingRef.current = false;
+      setProgress(null);
+    }
+  };
+
+  const retryRecheckSave = async () => {
+    if (!unsavedRecheck || retryingSave || loadingRunId || targetLoading) return;
+    const { original, finding, receipt } = unsavedRecheck;
+    if (run?.runId !== original.runId || run.projectId !== original.projectId || project?.projectId !== original.projectId || run.summary.path !== original.summary.path || receipt.run.persistence.status !== "notSaved") return;
+    // Receipt lifetime follows the visible original; each attempt gets its own
+    // transition generation so failed history loads do not strand recovery.
+    const generation = runLoadGenerationRef.current;
+    const ownership = acquireScan("source", original.summary.path, "Saving recheck");
+    if (ownership === null) return;
+    const current = () => generation === runLoadGenerationRef.current && useScanWorkStore.getState().active?.id === ownership;
+    const context = { originalRunId: original.runId, fingerprint: finding.fingerprint, options: receipt.options };
+    let savedRunId: string | undefined;
+    setRetryingSave(true);
+    try {
+      const saved = await api.retrySourceRunSave(receipt.run.persistence.retryToken);
+      if (!current()) return;
+      if (saved.projectId !== receipt.run.projectId || saved.runId !== receipt.run.runId || saved.summary.path !== original.summary.path) {
+        throw new Error("The save response belongs to a different recheck run.");
+      }
+      if (saved.status !== "completed" || saved.persistence.status !== "saved") {
+        throw new Error("The recheck is still not saved. Retry saving the retained receipt.");
+      }
+      savedRunId = saved.runId;
+      setUnsavedRecheck(null);
+      reconcileSourceRunSave(original.summary.path, saved);
+      if (useScanWorkStore.getState().active?.cancelling) throw { code: "scanCancelled", message: "Recheck cancelled", retryable: false };
+      const comparison = await api.compareSourceRuns(saved.runId, original.runId, true);
+      if (!current()) return;
+      if (useScanWorkStore.getState().active?.cancelling) throw { code: "scanCancelled", message: "Recheck cancelled", retryable: false };
+      const assessment = assessRecheck(original, finding, saved, comparison);
+      setRecheck({ ...context, newRunId: saved.runId, message: assessment.message });
+      setPageStatus("source-scan", { label: "Recheck complete", tone: "neutral" });
+      try { await refreshMetadata(saved.projectId, generation); } catch { if (current()) push("info", "Recheck saved, but history could not be refreshed."); }
+    } catch (error) {
+      if (!current()) return;
+      const normalized = normalizeCommandError(error);
+      const message = normalized.code === "scanCancelled"
+        ? "Recheck cancelled. No absence conclusion was made."
+        : `${savedRunId ? "Recheck not evaluated" : "Recheck save failed"}. ${normalized.message}`;
+      setRecheck({ ...context, newRunId: savedRunId, message });
+      setPageStatus("source-scan", { label: savedRunId ? "Recheck not evaluated" : "Recheck not saved", tone: "error" });
+    } finally {
+      releaseScan(ownership);
+      setRetryingSave(false);
     }
   };
 
@@ -662,8 +768,8 @@ export function SourceScanPage(): JSX.Element {
 
   const openFile = (finding: Finding) => {
     if (!run) return;
-    void api.openScanFinding(run.summary.path, finding.filePath).catch(() => {
-      push("error", "The finding file could not be opened.");
+    void api.openScanFinding(run.summary.path, finding.filePath, finding.line, finding.column).catch((error) => {
+      push("error", typeof error === "string" ? error : normalizeCommandError(error).message);
     });
   };
 
@@ -776,6 +882,19 @@ export function SourceScanPage(): JSX.Element {
         <InlineState tone="unavailable" compact title="History maintenance needs attention" description={run.maintenanceWarning} />
       )}
 
+      {recheck && recheck.originalRunId === run?.runId && (
+        <section aria-label="Finding recheck outcome" className="my-3 rounded-sm border border-border bg-surface-secondary p-4 text-[12px] text-text-secondary">
+          <p role="status">{recheck.message}</p>
+          <p className="mt-2 break-all font-mono">Original fingerprint: {recheck.fingerprint}</p>
+          <div className="mt-2 flex gap-3">
+            <Button onClick={() => { setSelectedFingerprint(recheck.fingerprint); setQuery(DEFAULT_QUERY); reviewChanges.setBaseline("automatic"); reviewChanges.setPathMode("all"); }} variant="outline">Original run {recheck.originalRunId}</Button>
+            {unsavedRecheck && <Button onClick={() => void retryRecheckSave()} disabled={Boolean(activeWork || retryingSave || loadingRunId || targetLoading)} variant="primary">{retryingSave ? "Saving recheck…" : "Retry recheck save"}</Button>}
+            {recheck.newRunId && <Button onClick={() => void loadRun(recheck.newRunId!)} aria-label={`Open recheck run ${recheck.newRunId}`} variant="outline">Recheck run {recheck.newRunId}</Button>}
+          </div>
+          {recheck.options && <details className="mt-2"><summary>Captured scan options</summary><pre className="mt-2 whitespace-pre-wrap break-all">{JSON.stringify(recheck.options, null, 2)}</pre></details>}
+          <p className="mt-2">Original evidence is retained. Recheck is a scan observation and does not change the review decision.</p>
+        </section>
+      )}
       {run && reviewChanges.allFindings.length > 0 && (
         <section aria-label="Source scan results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <ResultViewTabs
@@ -857,6 +976,8 @@ export function SourceScanPage(): JSX.Element {
                 }
                 detail={selectedFinding ? (
                   <FindingDetail
+                    onRecheck={recheckFinding}
+                    recheckDisabled={Boolean(activeWork || unsavedRecheck || targetLoading || retryingSave || savingReview || project?.policy.status === "invalid" || run.status !== "completed" || run.persistence.status !== "saved" || selectedFinding.observationRunId !== run.runId)}
                     projectId={run.projectId}
                     finding={selectedFinding}
                     savingReview={savingReview}

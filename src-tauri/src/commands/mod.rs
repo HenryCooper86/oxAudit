@@ -545,13 +545,27 @@ fn resolve_scan_finding_path(
 #[tauri::command]
 pub fn open_scan_finding(
     app: AppHandle,
+    state: State<'_, AppState>,
     root: String,
     relative_path: String,
+    line: u32,
+    column: u32,
 ) -> Result<(), String> {
-    let path = resolve_scan_finding_path(root, relative_path)?;
-    app.opener()
-        .open_path(path.to_string_lossy().into_owned(), None::<String>)
-        .map_err(|error| format!("finding file could not be opened: {error}"))
+    if line == 0 || column == 0 {
+        return Err("Finding line and column must be positive.".into());
+    }
+    let root = Path::new(&root).canonicalize().map_err(|e| e.to_string())?;
+    let path = resolve_scan_finding_path(&root, relative_path)?;
+    let editor = state.settings.lock().unwrap().editor;
+    match editor {
+        crate::models::EditorPreference::System => app
+            .opener()
+            .open_path(path.to_string_lossy().into_owned(), None::<String>)
+            .map_err(|error| format!("Finding file could not be opened: {error}")),
+        crate::models::EditorPreference::Vscode => {
+            crate::editor::open_vscode(&app, crate::editor::vscode_uri(&root, &path, line, column)?)
+        }
+    }
 }
 
 struct EffectiveScanOptions {
@@ -751,6 +765,42 @@ pub async fn scan_project(
         .await
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecheckSourceResult {
+    run: ScanRunDetail,
+    options: ScanOptions,
+}
+
+#[tauri::command]
+pub async fn recheck_source_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    findings: State<'_, FindingsState>,
+    cve: State<'_, CveState>,
+    original_run_id: String,
+    project_id: String,
+) -> Result<RecheckSourceResult, CommandError> {
+    let service = findings.service()?;
+    let options = service.recheck_options(&original_run_id, &project_id)?;
+    struct RecheckEvents(AppHandle);
+    impl ScanEventSink for RecheckEvents {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            let _ = self.0.emit(event, payload);
+            Ok(())
+        }
+    }
+    let run = service
+        .scan(
+            options.clone(),
+            &cve,
+            &state.cancel_scan,
+            &RecheckEvents(app),
+        )
+        .await?;
+    Ok(RecheckSourceResult { run, options })
+}
+
 #[tauri::command]
 pub fn cancel_scan(state: State<'_, AppState>) -> Result<(), String> {
     state.cancel_scan.store(true, Ordering::Relaxed);
@@ -863,10 +913,17 @@ pub fn compare_source_runs(
     state: State<'_, FindingsState>,
     current_run_id: String,
     baseline_run_id: String,
+    require_valid_policy: Option<bool>,
 ) -> Result<Vec<crate::models::Finding>, CommandError> {
-    state
-        .service()?
-        .compare_runs(&current_run_id, &baseline_run_id)
+    if require_valid_policy.unwrap_or(false) {
+        state
+            .service()?
+            .compare_recheck_runs(&current_run_id, &baseline_run_id)
+    } else {
+        state
+            .service()?
+            .compare_runs(&current_run_id, &baseline_run_id)
+    }
 }
 
 #[tauri::command]
