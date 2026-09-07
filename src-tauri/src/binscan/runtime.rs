@@ -370,14 +370,21 @@ mod tests {
 
     #[test]
     fn container_paths_are_translated_back_for_display() {
-        let rewrite = Some(("/scan".to_string(), PathBuf::from("/Users/me/fw")));
+        let (host, expected_file) = if cfg!(windows) {
+            (r"C:\Users\me\fw", r"C:\Users\me\fw\lib\libssl.dylib")
+        } else {
+            ("/Users/me/fw", "/Users/me/fw/lib/libssl.dylib")
+        };
+        let rewrite = Some(("/scan".to_string(), PathBuf::from(host)));
 
+        // Container paths use POSIX separators; compare the resulting host path
+        // by its platform components instead of requiring a Unix display string.
         assert_eq!(
-            to_host_path(&rewrite, "/scan/lib/libssl.dylib"),
-            "/Users/me/fw/lib/libssl.dylib"
+            Path::new(&to_host_path(&rewrite, "/scan/lib/libssl.dylib")),
+            Path::new(expected_file)
         );
         // The mount point itself maps to the mounted directory.
-        assert_eq!(to_host_path(&rewrite, "/scan"), "/Users/me/fw");
+        assert_eq!(to_host_path(&rewrite, "/scan"), host);
         // Anything outside the mount is left alone rather than mangled.
         assert_eq!(
             to_host_path(&rewrite, "/usr/lib/other.so"),
