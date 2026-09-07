@@ -5,6 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
+    "brand:generate": "tsx tools/generate-brand-assets.ts",
     "dev": "vite",
     "build": "tsc && vite build",
     "test": "tsx --test tests/*.test.ts && vitest run",

@@ -35,16 +35,16 @@ function pathSignatures(svg: string): PathSignature[] {
   });
 }
 
-test("every shipped brand entry point renders two crossed swords and one shield", () => {
+test("every shipped brand entry point matches the geometric ox mark", () => {
   const runtimeSvg = renderToStaticMarkup(createElement(BrandMark));
   const runtimeGeometry = pathSignatures(runtimeSvg);
 
   assert.deepEqual(
     runtimeGeometry.map(({ layer, transform }) => [layer, transform]),
     [
-      ["sword-left", "rotate(-45 256 256)"],
-      ["sword-right", "rotate(45 256 256)"],
-      ["shield", ""],
+      ["horn-left", ""],
+      ["horn-right", "translate(512 0) scale(-1 1)"],
+      ["ox-face", ""],
     ],
   );
 
@@ -62,14 +62,15 @@ test("every shipped brand entry point renders two crossed swords and one shield"
   assert.deepEqual(mismatches, []);
 });
 
-test("standalone icons use the canonical gold-on-near-black palette", () => {
+test("standalone icons use gold on a graphite tile with transparent outer margins", () => {
   for (const path of [
     "design/logo/ox-icon.svg",
     "public/favicon.svg",
     "src/assets/brand/oxaudit-app-icon-v1.svg",
   ]) {
     const source = readFileSync(path, "utf8").toLowerCase();
-    assert.match(source, /#0f0f0f/);
+    assert.match(source, /#151719/);
     assert.match(source, /#c8b560/);
+    assert.match(source, /<rect x="24" y="24" width="464" height="464" rx="104"/);
   }
 });

@@ -1,24 +1,33 @@
 # oxAudit brand assets
 
-The oxAudit mark pairs two straight crossed swords with a centered heraldic
-shield. Its restrained, symmetrical geometry communicates active defense and
-disciplined investigation without decorative or small-scale detail.
+The geometric ox pairs broad, bracket-like horns with a compact central face.
+The horns recall code delimiters; the quiet, symmetrical silhouette suits a
+local engineering audit workbench and remains recognizable at small sizes.
 
-## Files
+`src/components/brand/geometry.ts` is the shared source for the React mark and
+all six standalone SVGs. Regenerate them with `npm run brand:generate`.
 
-- `oxaudit-mark.svg` — transparent, flat-color symbol for product UI and print.
-- `oxaudit-lockup.svg` — horizontal dark-background lockup with the mark and
-  the full `oxAudit` product name.
-- `oxaudit-app-icon-v1.svg` — square source master for the desktop icon bundle.
+- `oxaudit-mark.svg`: transparent gold symbol.
+- `oxaudit-lockup.svg`: gold mark and wordmark for a dark background.
+- `oxaudit-app-icon-v1.svg`: native icon master, with a graphite rounded tile
+  and transparent outer margins. The filename is retained for compatibility.
+- `design/logo/ox-mark.svg`, `design/logo/ox-icon.svg` and `public/favicon.svg`
+  are generated from the same geometry.
 
-## Usage
+Use warm gold `#C8B560` on graphite `#151719`. The inline React mark inherits
+the existing theme accent, including `#9A7C2A` on light backgrounds. Keep the
+mark's square viewBox and internal spacing; do not stretch or rotate it.
+Use the tile version for standalone icons. Avoid additional outlines, gradients,
+shadows or details that weaken its silhouette at 16–32 px.
 
-- Dark-theme mark: `#C8B560` on `#0F0F0F`.
-- Light-theme mark: use the product accent token (`#9A7C2A`) when the mark is
-  rendered inline; the source SVG retains the canonical brand gold.
-- Minimum symbol width: 20 px. Use the app-icon container below that size.
-- Clear space: keep at least half the width of one sword blade around the mark.
-- Do not add gradients, shadows, outlines, ornaments, or rotate the full mark.
+Generate platform icon sizes with the installed Tauri CLI from the SVG master:
 
-These SVGs are the deterministic production masters. The historical warrior
-image is reference material only and is not embedded in shipped assets.
+```sh
+npm run tauri -- icon src/assets/brand/oxaudit-app-icon-v1.svg --output src-tauri/icons
+```
+
+The desktop app consumes the PNG, ICNS and ICO files in `src-tauri/icons`.
+The generated concept in `design/brand/concepts/oxaudit-geometric-ox-concept.png`
+is reference material, not a runtime dependency. It was created with the built-in
+image-generation tool; the production vector is a simplified reconstruction.
+The concept brief and generation prompt are recorded beside that reference.

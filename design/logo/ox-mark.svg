@@ -1,67 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-hidden="true">
-  <defs>
-    <mask id="sword-clearance" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
-      <rect width="512" height="512" fill="white"/>
-      <path fill="black" stroke="black" stroke-width="24" stroke-linejoin="round" d="
-        M 256 146
-        C 278 157 302 163 326 158
-        V 248
-        C 326 328 301 388 256 430
-        C 211 388 186 328 186 248
-        V 158
-        C 210 163 234 157 256 146
-        Z
-      "/>
-    </mask>
-  </defs>
-  <g mask="url(#sword-clearance)">
-  <path data-brand-layer="sword-left" fill="currentColor" transform="rotate(-45 256 256)" d="
-    M 242 42
-    L 256 18
-    L 270 42
-    V 326
-    H 304
-    L 314 350
-    H 272
-    V 414
-    L 286 432
-    L 256 466
-    L 226 432
-    L 240 414
-    V 350
-    H 198
-    L 208 326
-    H 242
-    Z
-  "/>
-  <path data-brand-layer="sword-right" fill="currentColor" transform="rotate(45 256 256)" d="
-    M 242 42
-    L 256 18
-    L 270 42
-    V 326
-    H 304
-    L 314 350
-    H 272
-    V 414
-    L 286 432
-    L 256 466
-    L 226 432
-    L 240 414
-    V 350
-    H 198
-    L 208 326
-    H 242
-    Z
-  "/>
-  </g>
-  <path data-brand-layer="shield" fill="currentColor" d="
-    M 256 146
-    C 278 157 302 163 326 158
-    V 248
-    C 326 328 301 388 256 430
-    C 211 388 186 328 186 248
-    V 158
-    C 210 163 234 157 256 146
-    Z
-  "/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">oxAudit mark</title>
+  <desc id="description">A geometric ox with bracket-like horns and a compact face, representing deliberate engineering inspection.</desc>
+  <path data-brand-layer="horn-left" fill="#C8B560" d="M 126 88 H 164 Q 168 88 168 92 V 110 Q 168 114 165 117 L 130 152 Q 118 164 118 176 V 192 Q 118 208 139 212 L 178 220 Q 182 221 179 225 L 158 258 Q 156 261 152 260 L 109 248 Q 72 238 72 200 V 178 Q 72 156 88 140 L 112 116 Q 122 106 122 98 V 92 Q 122 88 126 88 Z" />
+  <path data-brand-layer="horn-right" fill="#C8B560" d="M 126 88 H 164 Q 168 88 168 92 V 110 Q 168 114 165 117 L 130 152 Q 118 164 118 176 V 192 Q 118 208 139 212 L 178 220 Q 182 221 179 225 L 158 258 Q 156 261 152 260 L 109 248 Q 72 238 72 200 V 178 Q 72 156 88 140 L 112 116 Q 122 106 122 98 V 92 Q 122 88 126 88 Z" transform="translate(512 0) scale(-1 1)" />
+  <path data-brand-layer="ox-face" fill="#C8B560" d="M 204 222 H 308 Q 312 222 315 226 L 334 262 Q 337 266 333 270 L 306 292 L 286 358 Q 284 362 286 366 L 292 374 Q 295 378 292 383 L 283 399 Q 280 404 274 404 H 238 Q 232 404 229 399 L 220 383 Q 217 378 220 374 L 226 366 Q 228 362 226 358 L 206 292 L 179 270 Q 175 266 178 262 L 197 226 Q 200 222 204 222 Z" />
 </svg>
