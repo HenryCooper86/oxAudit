@@ -129,6 +129,27 @@ export function FindingDetail({
           )}
         </section>
 
+        <section aria-labelledby="finding-analysis-evidence" className="mt-4 rounded-sm border border-border bg-surface-primary p-3">
+          <h3 id="finding-analysis-evidence" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Analysis evidence</h3>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-text-secondary">
+            {finding.analysis === "syntax"
+              ? finding.category === "secret"
+                ? "The parsed source was checked for comment-only matches. Secret detection can still match a literal value; review where the credential is used and whether it is active."
+                : "The match is in parsed code, not a comment or string literal. This does not prove exploitability; review the data flow and application context."
+              : "Syntax was not verified for this match. Treat it as text-only evidence and review the surrounding code."}
+          </p>
+          {finding.analysisGates.length > 0 && (
+            <ul className="mt-3 space-y-1 border-t border-border pt-3 text-[12px] text-text-secondary">
+              {finding.analysisGates.map((gate) => (
+                <li key={gate.gate}>
+                  <span className="font-medium text-text-primary">{gate.gate}</span>: {gate.verdict}
+                  {gate.evidence ? ` — ${gate.evidence}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
         <section aria-labelledby="finding-recommendation" className="mt-5 rounded-sm border border-success-border bg-success-subtle p-3">
           <h3 id="finding-recommendation" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">Recommendation</h3>
           <p className="selectable mt-1.5 text-[13px] leading-relaxed text-text-secondary">{finding.recommendation}</p>

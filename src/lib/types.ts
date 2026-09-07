@@ -662,6 +662,8 @@ export interface DepScanSummary {
   lockfilesFound: string[];
   packagesFound: number;
   packagesQueried: number;
+  /** Older saved runs did not record whether every package had advisory coverage. */
+  advisoryCoverage?: "complete" | "unknown";
   vulnerabilitiesFound: number;
   durationMs: number;
 }

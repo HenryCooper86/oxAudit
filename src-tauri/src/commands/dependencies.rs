@@ -6,6 +6,86 @@
 
 use super::*;
 
+const COMPLETE_OSV_RECEIPT_SCHEMA_VERSION: u64 = 2;
+const COMPLETE_OSV_RECEIPT_COVERAGE: &str = "complete";
+
+/// A cached provider response is usable offline only when it was written after
+/// every candidate advisory had been resolved to a full OSV record. Earlier
+/// batch-only snapshots remain historical data, but cannot prove a complete
+/// advisory result for a new scan.
+fn complete_osv_receipt_payload(
+    query_keys: Vec<String>,
+    results: &std::collections::HashMap<String, Vec<crate::models::Vulnerability>>,
+) -> Result<serde_json::Value, String> {
+    let record_count = results.values().map(Vec::len).sum::<usize>();
+    let payload = serde_json::json!({
+        "schemaVersion": COMPLETE_OSV_RECEIPT_SCHEMA_VERSION,
+        "advisoryCoverage": COMPLETE_OSV_RECEIPT_COVERAGE,
+        "queryKeys": query_keys,
+        "results": results,
+        "recordCount": record_count,
+    });
+    // Keep serialization fallible here so a cache write never invents a
+    // receipt after a malformed result cannot be represented.
+    serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+    Ok(payload)
+}
+
+fn load_complete_osv_receipt(
+    payload: &serde_json::Value,
+    expected_query_keys: &[String],
+) -> Result<std::collections::HashMap<String, Vec<crate::models::Vulnerability>>, String> {
+    if payload
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        != Some(COMPLETE_OSV_RECEIPT_SCHEMA_VERSION)
+        || payload
+            .get("advisoryCoverage")
+            .and_then(serde_json::Value::as_str)
+            != Some(COMPLETE_OSV_RECEIPT_COVERAGE)
+    {
+        return Err("incomplete advisory coverage: the cached OSV snapshot is not a validated complete receipt; refresh online before scanning offline".into());
+    }
+
+    let cached_keys = payload
+        .get("queryKeys")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "cached OSV receipt is invalid: queryKeys must be an array".to_string())?
+        .iter()
+        .map(|key| {
+            key.as_str().ok_or_else(|| {
+                "cached OSV receipt is invalid: queryKeys must contain strings".to_string()
+            })
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    if !expected_query_keys
+        .iter()
+        .all(|key| cached_keys.contains(key.as_str()))
+    {
+        return Err("incomplete advisory coverage: the latest OSV query snapshot does not cover every selected package".into());
+    }
+
+    let results_value = payload
+        .get("results")
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or_else(|| "cached OSV receipt is invalid: results must be an object".to_string())?;
+    let results = serde_json::from_value::<
+        std::collections::HashMap<String, Vec<crate::models::Vulnerability>>,
+    >(results_value)
+    .map_err(|error| format!("cached OSV receipt is invalid: {error}"))?;
+    let record_count = payload
+        .get("recordCount")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            "cached OSV receipt is invalid: recordCount must be an integer".to_string()
+        })?;
+    if record_count != results.values().map(Vec::len).sum::<usize>() as u64 {
+        return Err("cached OSV receipt is invalid: recordCount does not match results".into());
+    }
+    Ok(results)
+}
+
 #[tauri::command]
 pub async fn scan_dependencies(
     app: AppHandle,
@@ -119,8 +199,9 @@ pub async fn scan_dependencies(
         if state.cancel_dependency_scan.load(Ordering::SeqCst) {
             return Err("dependency scan cancelled".into());
         }
+        crate::deps::ensure_complete_lockfile_coverage(&parse_errors)?;
         let deps = crate::deps::lockfiles::dedupe_dependencies(all_deps);
-        let packages_queried = deps.len();
+        let packages_queried = crate::deps::osv::queryable_dependencies(&deps).count();
         // Direct-usage reachability: one index over the project's own source,
         // asked about every vulnerable package later. Purely local, so it runs
         // regardless of the offline flag.
@@ -147,12 +228,6 @@ pub async fn scan_dependencies(
             .expect("managed dependency run exists")
             .append_observations(declarations)
             .map_err(|error| error.to_string())?;
-        for parse_error in &parse_errors {
-            managed
-                .as_mut()
-                .expect("managed dependency run exists")
-                .warning("lockfile_parse_failed", parse_error.clone());
-        }
         managed
             .as_mut()
             .expect("managed dependency run exists")
@@ -165,90 +240,53 @@ pub async fn scan_dependencies(
     )
         .ok();
 
-        let query_keys = deps
-            .iter()
-            .filter(|dependency| dependency.ecosystem != "unknown")
-            .map(|dependency| {
-                format!(
-                    "{}\u{0}{}\u{0}{}",
-                    dependency.ecosystem, dependency.name, dependency.version
-                )
-            })
-            .collect::<Vec<_>>();
-        let (vuln_map, osv_snapshot_id, osv_warning) = if offline {
+        let query_keys = crate::deps::osv::query_keys(&deps);
+        let (vuln_map, osv_snapshot_id) = if query_keys.is_empty() {
+            // There is no provider claim to cache or satisfy: a complete empty
+            // inventory must work offline without borrowing an unrelated
+            // snapshot from another project.
+            (std::collections::HashMap::new(), None)
+        } else if offline {
             match service
                 .repository()
                 .provider_latest_snapshot("osv-query")
                 .map_err(|error| error.to_string())?
             {
                 Some(snapshot) => {
-                    let cached_keys = snapshot
-                        .payload
-                        .get("queryKeys")
-                        .and_then(serde_json::Value::as_array)
-                        .map(|keys| {
-                            keys.iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .collect::<std::collections::BTreeSet<_>>()
-                        })
-                        .unwrap_or_default();
-                    if query_keys.iter().all(|key| cached_keys.contains(key.as_str())) {
-                        let results = serde_json::from_value(
-                            snapshot
-                                .payload
-                                .get("results")
-                                .cloned()
-                                .unwrap_or_else(|| serde_json::json!({})),
-                        )
-                        .map_err(|error| format!("cached OSV snapshot is invalid: {error}"))?;
-                        (results, Some(snapshot.id), None)
-                    } else {
-                        (
-                            std::collections::HashMap::new(),
-                            Some(snapshot.id),
-                            Some("The latest OSV query snapshot does not cover every selected package; unmatched packages were inventoried without advisory enrichment.".to_string()),
-                        )
-                    }
+                    let results = load_complete_osv_receipt(&snapshot.payload, &query_keys)?;
+                    (results, Some(snapshot.id))
                 }
-                None => (
-                    std::collections::HashMap::new(),
-                    None,
-                    Some("No cached OSV query snapshot is available; packages were inventoried without advisory enrichment.".to_string()),
-                ),
+                None => return Err("incomplete advisory coverage: no cached OSV query snapshot is available".into()),
             }
         } else {
-            match state.osv.query_batch(&deps).await {
-                Ok(results) => {
-                    let payload = serde_json::json!({
-                        "schemaVersion": 1,
-                        "queryKeys": query_keys,
-                        "results": results,
-                        "recordCount": results.values().map(Vec::len).sum::<usize>(),
-                    });
-                    let payload_bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
-                    let content_sha256 = {
-                        use sha2::Digest;
-                        format!("{:x}", sha2::Sha256::digest(&payload_bytes))
-                    };
-                    let snapshot_id = format!("provider_{}", uuid::Uuid::new_v4());
-                    service
-                        .repository()
-                        .provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {
-                            id: snapshot_id.clone(),
-                            provider_id: "osv-query".into(),
-                            fetched_at_ms: epoch_millis(),
-                            content_sha256,
-                            payload,
-                        })
-                        .map_err(|error| error.to_string())?;
-                    (results, Some(snapshot_id), None)
-                }
-                Err(error) => (
-                    std::collections::HashMap::new(),
-                    None,
-                    Some(format!("OSV enrichment failed; package inventory is still complete: {error}")),
-                ),
-            }
+            let candidates = state
+                .osv
+                .query_batch(&deps)
+                .await
+                .map_err(|error| format!("incomplete advisory coverage: OSV query failed: {error}"))?;
+            let results = state
+                .osv
+                .resolve_full(&candidates, &deps)
+                .await
+                .map_err(|error| format!("incomplete advisory coverage: {error}"))?;
+            let payload = complete_osv_receipt_payload(query_keys, &results)?;
+            let payload_bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+            let content_sha256 = {
+                use sha2::Digest;
+                format!("{:x}", sha2::Sha256::digest(&payload_bytes))
+            };
+            let snapshot_id = format!("provider_{}", uuid::Uuid::new_v4());
+            service
+                .repository()
+                .provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {
+                    id: snapshot_id.clone(),
+                    provider_id: "osv-query".into(),
+                    fetched_at_ms: epoch_millis(),
+                    content_sha256,
+                    payload,
+                })
+                .map_err(|error| error.to_string())?;
+            (results, Some(snapshot_id))
         };
         let osv_snapshot_id = osv_snapshot_id
             .map(oxaudit_domain::ProviderSnapshotId::parse)
@@ -261,40 +299,13 @@ pub async fn scan_dependencies(
                 .record_provider_snapshot(snapshot_id.clone())
                 .map_err(|error| error.to_string())?;
         }
-        if let Some(warning) = osv_warning {
-            managed
-                .as_mut()
-                .expect("managed dependency run exists")
-                .warning("advisory_enrichment_incomplete", warning);
-        }
-
-        // The batch answers *which* advisories affect each package, and nothing
-        // else: its records carry no aliases (so no CVE, and no KEV/EPSS/public-
-        // exploit signal), no severity, no CVSS, and no fixed versions. Full
-        // records are fetched per advisory id, deduplicated, so every finding
-        // carries the data the triage and remediation columns display.
-        let vuln_map = if offline {
-            // Offline reuse of the cached batch receipt is exact by design.
-            vuln_map
-        } else {
-            match state.osv.resolve_full(&vuln_map, &deps).await {
-                Ok(full) => full,
-                Err(error) => {
-                    managed
-                        .as_mut()
-                        .expect("managed dependency run exists")
-                        .warning("advisory_records_incomplete", error);
-                    vuln_map
-                }
-            }
-        };
         if state.cancel_dependency_scan.load(Ordering::SeqCst) {
             return Err("dependency scan cancelled".into());
         }
 
         let mut vulnerabilities = Vec::new();
         for dep in &deps {
-        let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
+        let key = crate::deps::osv::dependency_query_key(dep);
         if let Some(vulns) = vuln_map.get(&key) {
             for mut v in vulns.clone() {
                 v.lockfile = dep.lockfile.clone();
@@ -406,6 +417,7 @@ pub async fn scan_dependencies(
             lockfiles_found: lockfile_infos.iter().map(|l| l.path.clone()).collect(),
             packages_found,
             packages_queried,
+            advisory_coverage: crate::models::AdvisoryCoverage::Complete,
             vulnerabilities_found: vulnerabilities.len(),
             duration_ms: started.elapsed().as_millis() as u64,
         },
@@ -925,4 +937,102 @@ pub async fn refresh_binary_database(
 pub fn cancel_binary_scan(state: State<'_, AppState>) -> Result<(), String> {
     state.cancel_binary_scan.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{complete_osv_receipt_payload, load_complete_osv_receipt};
+
+    fn full_vulnerability() -> crate::models::Vulnerability {
+        crate::models::Vulnerability {
+            id: "GHSA-full-detail".into(),
+            aliases: vec!["CVE-2026-0001".into()],
+            summary: "full advisory".into(),
+            details: "resolved OSV detail".into(),
+            severity: Some("high".into()),
+            cvss_score: Some(8.1),
+            epss: None,
+            epss_percentile: None,
+            known_exploited: false,
+            ransomware: false,
+            public_exploit: false,
+            direct_usage: Default::default(),
+            ecosystem: "npm".into(),
+            package_name: "example".into(),
+            installed_version: "1.0.0".into(),
+            fixed_versions: vec!["1.0.1".into()],
+            affected_range: Some("< 1.0.1".into()),
+            references: vec![],
+            published: None,
+            modified: None,
+            lockfile: "package-lock.json".into(),
+        }
+    }
+
+    #[test]
+    fn legacy_batch_snapshot_cannot_be_promoted_to_complete_offline_coverage() {
+        let key = "npm\u{0}example\u{0}1.0.0".to_string();
+        // Schema 1 wrote batch skeletons before detail resolution. Its empty
+        // map can represent a previously truncated response, so it cannot
+        // become a clean result merely because the query key is present.
+        let legacy = serde_json::json!({
+            "schemaVersion": 1,
+            "queryKeys": [key],
+            "results": {},
+            "recordCount": 0,
+        });
+
+        let error = load_complete_osv_receipt(&legacy, &[key])
+            .expect_err("legacy cache must require an online refresh");
+
+        assert!(
+            error.contains("not a validated complete receipt"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn incomplete_batch_only_receipt_cannot_succeed_on_an_offline_retry() {
+        let key = "npm\u{0}example\u{0}1.0.0".to_string();
+        // This is what existed after a batch found an advisory but the detail
+        // request failed. New code never writes it; old cache must fail too.
+        let batch_only = serde_json::json!({
+            "schemaVersion": 1,
+            "queryKeys": [key],
+            "results": { key.clone(): [{ "id": "GHSA-skeleton" }] },
+            "recordCount": 1,
+        });
+
+        assert!(load_complete_osv_receipt(&batch_only, &[key]).is_err());
+    }
+
+    #[test]
+    fn complete_receipt_round_trip_preserves_full_advisory_details() {
+        let key = "npm\u{0}example\u{0}1.0.0".to_string();
+        let results = std::collections::HashMap::from([(key.clone(), vec![full_vulnerability()])]);
+        let receipt = complete_osv_receipt_payload(vec![key.clone()], &results)
+            .expect("resolved advisory data is cacheable");
+
+        let restored = load_complete_osv_receipt(&receipt, std::slice::from_ref(&key))
+            .expect("validated full receipt is reusable offline");
+        let vulnerability = &restored[&key][0];
+        assert_eq!(vulnerability.severity.as_deref(), Some("high"));
+        assert_eq!(vulnerability.fixed_versions, vec!["1.0.1"]);
+        assert_eq!(vulnerability.aliases, vec!["CVE-2026-0001"]);
+    }
+
+    #[test]
+    fn complete_receipt_requires_an_explicit_results_object() {
+        let key = "npm\u{0}example\u{0}1.0.0".to_string();
+        let missing_results = serde_json::json!({
+            "schemaVersion": 2,
+            "advisoryCoverage": "complete",
+            "queryKeys": [key],
+            "recordCount": 0,
+        });
+
+        let error = load_complete_osv_receipt(&missing_results, &[key])
+            .expect_err("missing results must not look clean");
+        assert!(error.contains("results must be an object"), "{error}");
+    }
 }

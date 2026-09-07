@@ -634,11 +634,10 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
             Err(error) if crate::deps::lockfiles::is_resource_limit_error(&error) => {
                 return Err(failure(format!("{}: {error}", lockfile.display())));
             }
-            // A single unreadable lockfile should not sink the whole run; the
-            // errors are reported alongside the results instead.
             Err(error) => parse_errors.push(format!("{}: {error}", lockfile.display())),
         }
     }
+    crate::deps::ensure_complete_lockfile_coverage(&parse_errors).map_err(failure)?;
     let dependencies = crate::deps::lockfiles::dedupe_dependencies(dependencies);
     if !quiet {
         eprintln!(
@@ -700,13 +699,10 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
         DepsFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
             "lockfiles": lockfiles.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
             "packages": dependencies.len(),
-            "parseErrors": parse_errors,
             "vulnerabilities": vulnerabilities,
         }))
         .map_err(|error| failure(error.to_string()))?,
-        DepsFormat::Text => {
-            render_deps_text(&lockfiles, &dependencies, &vulnerabilities, &parse_errors)
-        }
+        DepsFormat::Text => render_deps_text(&lockfiles, &dependencies, &vulnerabilities),
     };
 
     write_output(args.output.as_deref(), &rendered)?;
@@ -1030,7 +1026,6 @@ fn render_deps_text(
     lockfiles: &[PathBuf],
     dependencies: &[Dependency],
     vulnerabilities: &[crate::models::Vulnerability],
-    parse_errors: &[String],
 ) -> Vec<u8> {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -1041,10 +1036,6 @@ fn render_deps_text(
         dependencies.len(),
         lockfiles.len()
     );
-    for error in parse_errors {
-        let _ = writeln!(out, "  could not parse {error}");
-    }
-
     if vulnerabilities.is_empty() {
         let _ = writeln!(out, "\nNo known vulnerabilities.");
         return out.into_bytes();
@@ -1314,6 +1305,145 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn deps_refuses_an_unparseable_lockfile_before_advisory_lookup() {
+        // Replacing this failure with a warning would let a malformed lockfile
+        // disappear behind a clean dependency report. The fixture has no valid
+        // dependencies, so the current broken behavior reaches an empty OSV
+        // query and returns success instead of waiting on a real network call.
+        let directory = tempfile::tempdir().expect("temporary project");
+        let lockfile = directory.path().join("package-lock.json");
+        std::fs::write(&lockfile, "{ this is not JSON").expect("invalid fixture");
+        let args = DepsArgs {
+            path: directory.path().to_path_buf(),
+            format: DepsFormat::Text,
+            output: None,
+            fail_on: FailOn::None,
+            ignore_dirs: Vec::new(),
+        };
+
+        let error = run_deps(&args, true).expect_err("incomplete coverage must fail");
+
+        assert_eq!(error.exit_code, EXIT_FAILURE);
+        assert!(
+            error.message.contains("incomplete dependency coverage"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("package-lock.json"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("invalid package-lock.json"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn deps_refuses_partial_lockfile_coverage_even_when_another_lockfile_parses() {
+        // A valid inventory beside an invalid lockfile is still incomplete.
+        // The parser guard runs before advisory lookup, so this stays local
+        // while proving this is not merely the empty-inventory case.
+        let directory = tempfile::tempdir().expect("temporary project");
+        std::fs::write(directory.path().join("requirements.txt"), "example==1.0\n")
+            .expect("valid fixture");
+        std::fs::write(directory.path().join("package-lock.json"), "{ malformed")
+            .expect("invalid fixture");
+        let args = DepsArgs {
+            path: directory.path().to_path_buf(),
+            format: DepsFormat::Text,
+            output: None,
+            fail_on: FailOn::None,
+            ignore_dirs: Vec::new(),
+        };
+
+        let error = run_deps(&args, true).expect_err("partial coverage must fail");
+
+        assert_eq!(error.exit_code, EXIT_FAILURE);
+        assert!(
+            error.message.contains("package-lock.json"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn deps_accepts_a_valid_empty_npm_lockfile() {
+        let directory = tempfile::tempdir().expect("temporary project");
+        std::fs::write(
+            directory.path().join("package-lock.json"),
+            r#"{"name":"empty-app","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"empty-app","version":"1.0.0"}}}"#,
+        )
+        .expect("valid empty lockfile");
+        let args = DepsArgs {
+            path: directory.path().to_path_buf(),
+            format: DepsFormat::Text,
+            output: None,
+            fail_on: FailOn::None,
+            ignore_dirs: Vec::new(),
+        };
+
+        let exit = run_deps(&args, true).expect("valid empty inventory is complete");
+
+        assert_eq!(exit, EXIT_OK);
+    }
+
+    #[test]
+    fn deps_refuses_a_malformed_npm_v3_entry_before_advisory_lookup() {
+        // A null version used to be silently skipped, which made this a
+        // zero-query clean result. The parser guard keeps the failure local.
+        let directory = tempfile::tempdir().expect("temporary project");
+        std::fs::write(
+            directory.path().join("package-lock.json"),
+            r#"{"lockfileVersion":3,"packages":{"node_modules/example":{"version":null}}}"#,
+        )
+        .expect("malformed lockfile");
+        let args = DepsArgs {
+            path: directory.path().to_path_buf(),
+            format: DepsFormat::Text,
+            output: None,
+            fail_on: FailOn::None,
+            ignore_dirs: Vec::new(),
+        };
+
+        let error = run_deps(&args, true).expect_err("malformed entry must stop before OSV");
+
+        assert_eq!(error.exit_code, EXIT_FAILURE);
+        assert!(
+            error.message.contains("package-lock.json"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("version"), "{}", error.message);
+    }
+
+    #[test]
+    fn deps_refuses_a_malformed_lockfile_beside_a_valid_empty_inventory() {
+        let directory = tempfile::tempdir().expect("temporary project");
+        std::fs::write(
+            directory.path().join("package-lock.json"),
+            r#"{"name":"empty-app","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"empty-app","version":"1.0.0"}}}"#,
+        )
+        .expect("valid empty lockfile");
+        std::fs::write(directory.path().join("Cargo.lock"), "not valid TOML [")
+            .expect("malformed fixture");
+        let args = DepsArgs {
+            path: directory.path().to_path_buf(),
+            format: DepsFormat::Text,
+            output: None,
+            fail_on: FailOn::None,
+            ignore_dirs: Vec::new(),
+        };
+
+        let error = run_deps(&args, true).expect_err("malformed sibling remains incomplete");
+
+        assert_eq!(error.exit_code, EXIT_FAILURE);
+        assert!(error.message.contains("Cargo.lock"), "{}", error.message);
     }
 
     #[test]

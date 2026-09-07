@@ -186,6 +186,14 @@ sarif > out.sarif` needs no extra flags.
 | `2` | The command was not usable — bad path, bad flag, bad format |
 | `3` | The scan itself failed |
 
+### Dependency coverage
+
+`oxaudit-cli deps` reports advisory results only after every discovered lockfile
+parses successfully. A malformed lockfile, incomplete offline OSV snapshot, or
+incomplete OSV response exits with code `3` and names the coverage problem;
+oxAudit does not describe that run as having no known vulnerabilities. The
+desktop keeps the last completed dependency result visible when a new run fails.
+
 ### In GitHub Actions
 
 ```yaml
@@ -205,23 +213,26 @@ oxAudit runs this against its own repository on every push
 
 Measured, not asserted. `oxaudit-cli benchmark` runs the committed corpus in
 [`benchmarks/corpus/`](benchmarks/corpus) and reports precision and recall per
-rule.
+rule. See the [corpus documentation](docs/corpus.md) for provenance and limits.
 
 | | Before | After |
 |---|---|---|
-| Corpus precision | 46.2% | **100%** |
-| Corpus recall | 85.7% | **100%** |
-| Corpus size | 26 fixtures | **192 fixtures** |
+| Corpus precision | 46.2% | **100% on the committed authored scenarios** |
+| Corpus recall | 85.7% | **100% on the committed authored scenarios** |
+| Corpus size | 26 fixtures | **198 fixtures** |
 | Findings on this repository | 142 | **33** |
 | …still shown after scope triage | 142 | **6** |
 
-The corpus is 192 fixtures, 106 of them negatives, and none of the negatives were
-invented: each is a shape oxAudit was observed firing on when it scanned its own
-source or a real dependency tree — type declarations, prose in Markdown,
-comments, environment lookups, function parameters, JSON schemas, UI labels,
-hardened XML parsers, non-security uses of `Math.random()`, the detector
-code that searches for PEM headers, and the benign halves of the misconfiguration
-rules (pinned images and actions, private buckets, hardened pods).
+The corpus is 198 fixtures: 89 positives and 109 negatives. It includes observed
+false-positive shapes from oxAudit's own source or dependency trees — type
+declarations, prose in Markdown, comments, environment lookups, function
+parameters, JSON schemas, UI labels, hardened XML parsers, non-security uses of
+`Math.random()`, the detector code that searches for PEM headers, and the benign
+halves of the misconfiguration rules. It also includes six repository-authored
+everyday pairs for request-derived versus constant command invocation,
+concatenated versus parameterized SQL, and request-derived versus fixed outbound
+URLs. Those pairs are executable regression scenarios, not an independent or
+representative real-world accuracy benchmark.
 
 The corpus is deliberately vulnerable, so it is excluded from the repository
 figure above: a full scan of this checkout returns 122 findings, 89 of which are

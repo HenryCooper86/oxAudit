@@ -12,9 +12,9 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 192,
-    "positives": 86,
-    "negatives": 106,
+    "fixtures": 198,
+    "positives": 89,
+    "negatives": 109,
     "rules": 74
   },
   "targets": [
@@ -1234,6 +1234,22 @@
       ]
     },
     {
+      "id": "java-runtime-exec.negative.constant-command",
+      "inputPath": "source/java-runtime-exec__negative__constant-command.java",
+      "inputSha256": "96acbca753eedac9002d1a9e5d7ee9ed26884d67c95ba90d6f3c1a76e52d6587",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-runtime-exec"
+        }
+      ]
+    },
+    {
       "id": "java-runtime-exec.negative.kotlin-literal-command",
       "inputPath": "source/java-runtime-exec__negative__kotlin-literal-command.kt",
       "inputSha256": "5723d8b429d8fd96e772f22761ebd87d8d84e9ee56943f8ea963731276d4ddbd",
@@ -1332,6 +1348,23 @@
       "expectedAbsent": []
     },
     {
+      "id": "java-runtime-exec.positive.request-derived-command",
+      "inputPath": "source/java-runtime-exec__positive__request-derived-command.java",
+      "inputSha256": "b0a83733dd3396492f2bb918838a4afa28181fdf98f204e4654fb7cdba70e7cb",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-runtime-exec",
+      "expected": [
+        {
+          "ruleId": "java-runtime-exec",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "java-runtime-exec.positive.split-chain-command",
       "inputPath": "source/java-runtime-exec__positive__split-chain-command.java",
       "inputSha256": "90f9028d0b445774b694b1b92f9cac218215e226e69141a6ff80d9d39e27d912",
@@ -1365,6 +1398,22 @@
       ]
     },
     {
+      "id": "java-sql-concat.negative.parameterized-query",
+      "inputPath": "source/java-sql-concat__negative__parameterized-query.java",
+      "inputSha256": "79cacbcb83269f9f4656050f94ec72c53098f84b272f17d9304e5ee20c584326",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-concat",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "java-sql-concat"
+        }
+      ]
+    },
+    {
       "id": "java-sql-concat.negative.variable-parameterized-query",
       "inputPath": "source/java-sql-concat__negative__variable-parameterized-query.java",
       "inputSha256": "8f1eed4b291ad93b06387ef2eaa552cd607399f3bae9167e131c5d88caf139e9",
@@ -1384,6 +1433,23 @@
       "id": "java-sql-concat.positive.accessor-supplied-value",
       "inputPath": "source/java-sql-concat__positive__accessor-supplied-value.java",
       "inputSha256": "a255436bd118d77f0b139cdd80805f9a334ce1f521e964d0745e6d4c40674e5b",
+      "language": "java",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "java-sql-concat",
+      "expected": [
+        {
+          "ruleId": "java-sql-concat",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "java-sql-concat.positive.request-derived-query",
+      "inputPath": "source/java-sql-concat__positive__request-derived-query.java",
+      "inputSha256": "2279efec62c79991caddda13b08e08ab56d73c83df2d45934d4fe389811ed4c1",
       "language": "java",
       "scannerFamilies": [
         "source-pattern"
@@ -2006,6 +2072,22 @@
       "expectedAbsent": []
     },
     {
+      "id": "js-ssrf.negative.fixed-outbound-url",
+      "inputPath": "source/js-ssrf__negative__fixed-outbound-url.js",
+      "inputSha256": "9db88f97c0a95e62deedda29c59e1e4c4208019b0985d386693f8c6f946f1ca1",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-ssrf",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "js-ssrf"
+        }
+      ]
+    },
+    {
       "id": "js-ssrf.negative.fixed-url",
       "inputPath": "source/js-ssrf__negative__fixed-url.js",
       "inputSha256": "6496d990dfb4c289269d5090149121cd7109b57244663979a5125534111792c0",
@@ -2020,6 +2102,23 @@
           "ruleId": "js-ssrf"
         }
       ]
+    },
+    {
+      "id": "js-ssrf.positive.request-derived-outbound-url",
+      "inputPath": "source/js-ssrf__positive__request-derived-outbound-url.js",
+      "inputSha256": "2ec29e6cfd9d64ffe3ce8953b944d128497ba1b34f350d1a634ec58789884c68",
+      "language": "javascript",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "js-ssrf",
+      "expected": [
+        {
+          "ruleId": "js-ssrf",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
     },
     {
       "id": "js-ssrf.positive.request-url",
