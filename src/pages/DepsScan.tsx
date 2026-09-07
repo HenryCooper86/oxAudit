@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type JSX } from "react";
+import { acquireScan, cancelActiveScan, releaseScan, useScanWorkStore } from "../features/project-home/coordinator";
+import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Ban, Boxes, ExternalLink, Play, Search } from "lucide-react";
@@ -24,16 +25,25 @@ type FailedOperation = "discovery" | "check";
 
 export function DepsScanPage() {
   const addRecentScan = useAppStore((state) => state.addRecentScan);
-  const setActiveProjectStore = useAppStore((state) => state.setActiveProject);
+  const publishActiveProject = useAppStore((state) => state.setActiveProject);
+  const ownRuntimeUpdate = useRef(false);
+  const activeWork = useScanWorkStore(state => state.active);
+  const setActiveProjectStore = useCallback((value: string | null) => {
+    ownRuntimeUpdate.current = true;
+    publishActiveProject(value);
+    ownRuntimeUpdate.current = false;
+  }, [publishActiveProject]);
   const setPageStatus = useAppStore((state) => state.setPageStatus);
   const clearPageStatus = useAppStore((state) => state.clearPageStatus);
   const activeProject = useAppStore((state) => state.activeProject);
   const push = useToastStore((state) => state.push);
 
-  const [path, setPath] = useState(activeProject ?? "");
+  const [path, setPath] = useState(activeProject ?? useAppStore.getState().selectedProject ?? "");
   const [running, setRunning] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [preview, setPreview] = useState<LockfileInfo[] | null>(null);
+  const [historyReload, setHistoryReload] = useState(0);
+  const [handoffResult, setHandoffResult] = useState<DependencyScanResult | null>(null);
   const [result, setResult] = useState<DependencyScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failedOperation, setFailedOperation] = useState<FailedOperation | null>(null);
@@ -53,6 +63,11 @@ export function DepsScanPage() {
     const requestedPath = path.trim();
     const requestId = ++historyRequestRef.current;
     if (!requestedPath) return;
+    if (handoffResult && handoffResult.summary.path === requestedPath) {
+      setResult(handoffResult);
+      setPreview(handoffResult.summary.lockfilesFound.map(lockfilePath => ({ path: lockfilePath, kind: lockfilePath.split(/[\\/]/).pop() ?? "?", packages: 0 })));
+      return;
+    }
 
     void (async () => {
       try {
@@ -78,7 +93,8 @@ export function DepsScanPage() {
         // must never prevent a fresh scan from running.
       }
     })();
-  }, [path, setPageStatus]);
+    return () => { historyRequestRef.current += 1; };
+  }, [handoffResult, historyReload, path, setPageStatus]);
   useEffect(() => {
     let disposed = false;
     const register = async () => {
@@ -117,11 +133,12 @@ export function DepsScanPage() {
     });
   }, [phase, running, setPageStatus]);
 
-  const changePath = (nextPath: string) => {
+  const changePath = useCallback((nextPath: string) => {
     if (nextPath === path) return;
     const activationId = ++pathRequestRef.current;
     discoveryRequestRef.current += 1;
     historyRequestRef.current += 1;
+    setHandoffResult(null);
     setPath(nextPath);
     setDiscovering(false);
     setPreview(null);
@@ -135,6 +152,7 @@ export function DepsScanPage() {
     clearPageStatus("deps-scan");
     void resolveRuntimeProject(nextPath || null, api.setActiveProject).then((outcome) => {
       setActiveProjectStore(outcome.runtimePath);
+      if (activationId === pathRequestRef.current && outcome.runtimePath === nextPath) useAppStore.getState().setSelectedProject(nextPath);
       if (
         activationId === pathRequestRef.current &&
         outcome.unavailablePath === nextPath &&
@@ -143,7 +161,27 @@ export function DepsScanPage() {
         push("error", outcome.warning);
       }
     });
-  };
+  }, [path, clearPageStatus, push, setActiveProjectStore]);
+
+  useEffect(() => {
+    const applyHandoff = () => {
+      const handoff = useAppStore.getState().projectHandoff;
+      if (handoff?.page === "deps-scan") {
+        changePath(handoff.path);
+        setHandoffResult(handoff.dependencyResult ?? null);
+        historyRequestRef.current += 1;
+        // Same-path handoffs must replace the invalidated request even when
+        // there is no in-memory receipt and the path itself did not change.
+        setHistoryReload(value => value + 1);
+        useAppStore.setState({ projectHandoff: null });
+      }
+    };
+    applyHandoff();
+    return useAppStore.subscribe((state, previous) => {
+      if (state.projectHandoff !== previous.projectHandoff) applyHandoff();
+      else if (!ownRuntimeUpdate.current && state.activeProject !== previous.activeProject && state.activeProject) changePath(state.activeProject);
+    });
+  }, [changePath]);
 
   const findLockfiles = async () => {
     if (!path || running || discovering) return;
@@ -189,6 +227,9 @@ export function DepsScanPage() {
 
   const run = async () => {
     if (!path || running || discovering) return;
+    const ownership = acquireScan("dependencies", path, "Checking dependencies");
+    if (ownership === null) return;
+    historyRequestRef.current += 1;
     setRunning(true);
     setError(null);
     setFailedOperation(null);
@@ -207,7 +248,9 @@ export function DepsScanPage() {
       ) {
         return;
       }
+      if (useScanWorkStore.getState().active?.cancelling) return;
       const scanResult = await api.scanDependencies(requestedPath, offline);
+      if (requestId !== discoveryRequestRef.current) return;
       setResult(scanResult);
       setSelectedKey(null);
       setPreview(
@@ -234,11 +277,13 @@ export function DepsScanPage() {
         `Dependency scan complete — ${scanResult.summary.vulnerabilitiesFound} vulnerabilities across ${scanResult.summary.packagesQueried} packages`,
       );
     } catch (scanError) {
+      if (requestId !== discoveryRequestRef.current) return;
       setError(String(scanError));
       setFailedOperation("check");
       setPageStatus("deps-scan", { label: "Dependency check failed", tone: "error" });
       push("error", "Dependency checking failed");
     } finally {
+      releaseScan(ownership);
       setRunning(false);
       setProgress(null);
       setPhase(null);
@@ -247,7 +292,7 @@ export function DepsScanPage() {
 
   const cancel = async () => {
     try {
-      await api.cancelDependencyScan();
+      await cancelActiveScan();
     } catch {
       // The running command remains the authoritative terminal result.
     }
@@ -303,7 +348,7 @@ export function DepsScanPage() {
                 <Ban size={13} aria-hidden="true" />Cancel
               </Button>
             ) : (
-              <Button type="button" onClick={run} disabled={!path || discovering} variant="primary" size="md">
+              <Button type="button" onClick={run} disabled={!path || discovering || Boolean(activeWork)} variant="primary" size="md">
                 <Play size={13} aria-hidden="true" />Check dependencies
               </Button>
             )}
@@ -459,7 +504,11 @@ export function DepsScanPage() {
       )}
 
       {result && vulns.length === 0 && result.summary.advisoryCoverage === "complete" && (
-        <InlineState tone="empty" title="OSV returned no published vulnerabilities for the queried packages." />
+        <InlineState
+          tone="empty"
+          title={result.summary.packagesQueried === 0 ? "No packages to query" : "OSV returned no published vulnerabilities for the queried packages."}
+          description={result.summary.packagesQueried === 0 ? "No OSV request was made because no queryable packages were found." : undefined}
+        />
       )}
 
       {result && vulns.length === 0 && result.summary.advisoryCoverage !== "complete" && (

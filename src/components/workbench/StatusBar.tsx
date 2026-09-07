@@ -1,3 +1,7 @@
+import {
+  cancelActiveScan,
+  useScanWorkStore,
+} from "../../features/project-home/coordinator";
 import type { JSX } from "react";
 import { useAppStore } from "../../lib/stores";
 
@@ -10,7 +14,15 @@ const STATUS_MARKER = {
 
 export function StatusBar(): JSX.Element {
   const page = useAppStore((state) => state.page);
-  const status = useAppStore((state) => state.pageStatus[page]);
+  const pageStatus = useAppStore((state) => state.pageStatus[page]);
+  const active = useScanWorkStore((state) => state.active);
+  const status = active
+    ? {
+        label: active.cancelling ? "Cancelling…" : active.stage,
+        detail: active.path,
+        tone: "running" as const,
+      }
+    : pageStatus;
   const aiReadiness = useAppStore((state) => state.aiReadiness);
   const aiStatusLabel = {
     loading: "loading settings",
@@ -32,6 +44,17 @@ export function StatusBar(): JSX.Element {
         <span className="truncate">{status?.label ?? "Ready"}</span>
         {status?.detail && <span className="truncate">{status.detail}</span>}
       </div>
+      {active && (
+        <button
+          type="button"
+          aria-label="Cancel active scan"
+          disabled={active.cancelling}
+          onClick={() => void cancelActiveScan()}
+          className="text-error disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      )}
       <span className="shrink-0">AI {aiStatusLabel}</span>
       <span className="shrink-0">oxAudit v0.1.0</span>
     </footer>

@@ -1,3 +1,4 @@
+import { acquireScan, cancelActiveScan, reconcileSourceRunSave, releaseScan, useScanWorkStore } from "../features/project-home/coordinator";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Clipboard, RotateCcw, Search } from "lucide-react";
 import {
@@ -98,12 +99,20 @@ export function SourceScanPage(): JSX.Element {
   const settings = useAppStore((state) => state.settings);
   const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const addRecentScan = useAppStore((state) => state.addRecentScan);
-  const setActiveProjectStore = useAppStore((state) => state.setActiveProject);
+  const publishActiveProject = useAppStore((state) => state.setActiveProject);
+  const ownRuntimeUpdate = useRef(false);
+  const pathEdited = useRef(false);
+  const activeWork = useScanWorkStore(state => state.active);
+  const setActiveProjectStore = useCallback((value: string | null) => {
+    ownRuntimeUpdate.current = true;
+    publishActiveProject(value);
+    ownRuntimeUpdate.current = false;
+  }, [publishActiveProject]);
   const setPageStatus = useAppStore((state) => state.setPageStatus);
   const clearPageStatus = useAppStore((state) => state.clearPageStatus);
   const push = useToastStore((state) => state.push);
 
-  const [path, setPath] = useState("");
+  const [path, setPath] = useState(() => useAppStore.getState().activeProject ?? useAppStore.getState().selectedProject ?? "");
   const [scanOptions, setScanOptions] = useState(() =>
     createSourceScanOptions(settings?.scan ?? null),
   );
@@ -133,6 +142,7 @@ export function SourceScanPage(): JSX.Element {
   const [query, setQuery] = useState<ResultsQuery>(DEFAULT_QUERY);
   const [recentUnavailable, setRecentUnavailable] = useState(false);
   const [loadVersion, setLoadVersion] = useState(0);
+  const [handoffRunId, setHandoffRunId] = useState<string | undefined>();
 
   const cancellingRef = useRef(false);
   const runLoadGenerationRef = useRef(0);
@@ -216,6 +226,7 @@ export function SourceScanPage(): JSX.Element {
     const candidate = path.trim();
     if (!candidate) {
       setTargetLoading(false);
+      if (!pathEdited.current) return;
       void resolveRuntimeProject(null, api.setActiveProject).then((outcome) => {
         setActiveProjectStore(outcome.runtimePath);
       });
@@ -226,13 +237,15 @@ export function SourceScanPage(): JSX.Element {
     const timer = window.setTimeout(() => {
       setTargetLoading(true);
       setTargetError(null);
+      const check = useScanWorkStore.getState().check;
+      const unsaved = check?.path === candidate && check.sourceResult?.runId === handoffRunId && check.sourceResult?.persistence.status === "notSaved" ? check.sourceResult : null;
       void loaderRef.current
-        .load(candidate)
+        .load(candidate, unsaved ? undefined : handoffRunId)
         .then(async (loaded) => {
           if (disposed || !loaded) return;
           setProject(loaded.context);
           setRuns(loaded.runs);
-          setRun(loaded.run);
+          setRun(unsaved ?? loaded.run);
           setScanOptions((current) =>
             hydrateSourceScanOptionsFromProject(current, loaded.context.lastOptions),
           );
@@ -243,6 +256,7 @@ export function SourceScanPage(): JSX.Element {
           );
           if (disposed) return;
           setActiveProjectStore(outcome.runtimePath);
+          useAppStore.getState().setSelectedProject(loaded.context.canonicalPath);
           if (outcome.warning) push("error", outcome.warning);
         })
         .catch((error) => {
@@ -257,7 +271,7 @@ export function SourceScanPage(): JSX.Element {
       disposed = true;
       window.clearTimeout(timer);
     };
-  }, [loadVersion, path, push, setActiveProjectStore]);
+  }, [handoffRunId, loadVersion, path, push, setActiveProjectStore]);
 
   useEffect(() => () => loaderRef.current.invalidate(), []);
 
@@ -275,8 +289,10 @@ export function SourceScanPage(): JSX.Element {
   const changePath = useCallback(
     (nextPath: string) => {
       if (nextPath === path) return;
+      pathEdited.current = true;
       loaderRef.current.invalidate();
       runLoadGenerationRef.current += 1;
+      setHandoffRunId(undefined);
       setPath(nextPath);
       setProject(null);
       setRuns([]);
@@ -292,12 +308,31 @@ export function SourceScanPage(): JSX.Element {
     [clearPageStatus, path],
   );
 
-  const refreshMetadata = useCallback(async (projectId: string) => {
+  useEffect(() => {
+    const applyHandoff = () => {
+      const handoff = useAppStore.getState().projectHandoff;
+      if (handoff?.page === "source-scan") {
+        runLoadGenerationRef.current += 1;
+        changePath(handoff.path);
+        setHandoffRunId(handoff.runId);
+        setLoadVersion(value => value + 1);
+        useAppStore.setState({ projectHandoff: null });
+      }
+    };
+    applyHandoff();
+    return useAppStore.subscribe((state, previous) => {
+      if (state.projectHandoff !== previous.projectHandoff) applyHandoff();
+      else if (!ownRuntimeUpdate.current && state.activeProject !== previous.activeProject && state.activeProject) changePath(state.activeProject);
+    });
+  }, [changePath]);
+
+  const refreshMetadata = useCallback(async (projectId: string, expectedGeneration = runLoadGenerationRef.current) => {
     const [context, nextRuns, nextRecent] = await Promise.all([
       api.inspectSourceProject(project?.canonicalPath ?? path),
       api.listSourceRuns(projectId, 50),
       api.listSourceProjects(12),
     ]);
+    if (expectedGeneration !== runLoadGenerationRef.current) return;
     setProject(context);
     setRuns(nextRuns);
     setRecentProjects(nextRecent);
@@ -318,6 +353,9 @@ export function SourceScanPage(): JSX.Element {
       return;
     }
 
+    const ownership = acquireScan("source", target, "Scanning source");
+    if (ownership === null) return;
+    const runGeneration = runLoadGenerationRef.current;
     setRunning(true);
     cancellingRef.current = false;
     setCancelling(false);
@@ -332,9 +370,16 @@ export function SourceScanPage(): JSX.Element {
         throw new Error(runtime.warning ?? "The selected project is unavailable.");
       }
 
+      if (runGeneration !== runLoadGenerationRef.current) return;
+      if (useScanWorkStore.getState().active?.cancelling) {
+        setCancelled(true);
+        setPageStatus("source-scan", { label: "Scan cancelled", tone: "neutral" });
+        return;
+      }
       const result = await api.scanProject(
         buildSourceScanRequest(target, scanOptions, ignoreInvalidPolicy),
       );
+      if (runGeneration !== runLoadGenerationRef.current) return;
       setRun(result);
       setSelectedFingerprint((current) =>
         current && result.findings.some((finding) => finding.fingerprint === current)
@@ -366,11 +411,12 @@ export function SourceScanPage(): JSX.Element {
       );
 
       try {
-        await refreshMetadata(result.projectId);
+        await refreshMetadata(result.projectId, runGeneration);
       } catch {
         push("info", "The scan completed, but project history could not be refreshed.");
       }
     } catch (error) {
+      if (runGeneration !== runLoadGenerationRef.current) return;
       const normalized = normalizeCommandError(error);
       if (normalized.code === "scanCancelled") {
         setCancelled(true);
@@ -383,6 +429,7 @@ export function SourceScanPage(): JSX.Element {
         push("error", normalized.message);
       }
     } finally {
+      releaseScan(ownership);
       setRunning(false);
       cancellingRef.current = false;
       setCancelling(false);
@@ -395,7 +442,8 @@ export function SourceScanPage(): JSX.Element {
     cancellingRef.current = true;
     setCancelling(true);
     try {
-      await api.cancelScan();
+      await cancelActiveScan();
+      if (!useScanWorkStore.getState().active?.cancelling) throw new Error("Cancellation unavailable");
       push("info", "Cancelling scan…");
     } catch {
       cancellingRef.current = false;
@@ -432,19 +480,29 @@ export function SourceScanPage(): JSX.Element {
 
   const retrySave = async () => {
     if (!run || run.persistence.status !== "notSaved" || retryingSave) return;
+    const requestedRun = run;
+    const requestedPath = project?.canonicalPath ?? run.summary.path;
+    const generation = runLoadGenerationRef.current;
     setRetryingSave(true);
     setOperationError(null);
     setOperationRetry(null);
     try {
       const saved = await api.retrySourceRunSave(run.persistence.retryToken);
+      if (saved.projectId !== requestedRun.projectId || saved.runId !== requestedRun.runId) {
+        throw new Error("The save response belongs to a different source run.");
+      }
+      if (saved.persistence.status !== "saved") throw new Error("The source run was not saved. Retry saving the current receipt.");
+      reconcileSourceRunSave(requestedPath, saved);
+      if (generation !== runLoadGenerationRef.current) return;
       setRun(saved);
       push("success", "The scan run was saved to project history.");
       try {
-        await refreshMetadata(saved.projectId);
+        await refreshMetadata(saved.projectId, generation);
       } catch {
         push("info", "The run was saved, but project history could not be refreshed.");
       }
     } catch (error) {
+      if (generation !== runLoadGenerationRef.current) return;
       const normalized = normalizeCommandError(error);
       setOperationError(normalized);
       setOperationRetry(normalized.retryable ? { kind: "save" } : null);
@@ -626,6 +684,7 @@ export function SourceScanPage(): JSX.Element {
         project={project}
         options={scanOptions}
         running={running}
+        blocked={Boolean(activeWork)}
         cancelling={cancelling}
         dropping={false}
         progress={progress}

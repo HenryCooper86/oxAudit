@@ -1,7 +1,7 @@
 import { Binary, Bot, Boxes, Bug, FileSearch } from "lucide-react";
 import { ToolLaunchCard } from "../components/workbench/ToolLaunchCard";
 import { ToolPage } from "../components/workbench/ToolPage";
-import { fmtDate } from "../lib/format";
+import { ProjectHome } from "../features/project-home/ProjectHome";
 import { useAppStore } from "../lib/stores";
 
 const tools = [
@@ -21,11 +21,7 @@ const toolIcons = {
 };
 
 export function Dashboard() {
-  const { recentScans, setPage, aiReadiness } = useAppStore();
-  const recentActivity = recentScans.slice(0, 6);
-  const activityAnnouncement = recentActivity.length === 0
-    ? "No recent activity."
-    : `${recentActivity.length} recent ${recentActivity.length === 1 ? "activity item" : "activity items"} shown.`;
+  const { setPage, aiReadiness } = useAppStore();
   const aiAnnouncement = {
     loading: "AI assistant settings are loading.",
     checking: "AI assistant endpoint is being checked.",
@@ -46,10 +42,11 @@ export function Dashboard() {
     aiReadiness.status === "loading" || aiReadiness.status === "checking";
 
   return (
-    <ToolPage title="Research Workbench" description="Choose a tool or resume recent work.">
+    <ToolPage title="Project home" description="Resume your project, review saved evidence, and check source and dependencies.">
       <p aria-live="polite" aria-atomic="true" className="sr-only">
-        {activityAnnouncement} {aiAnnouncement}
+        {aiAnnouncement}
       </p>
+      <ProjectHome />
       <section aria-label="Tools" className="grid gap-3 sm:grid-cols-2">
         {tools.map(([category, title, description, actionLabel, page]) => (
           <ToolLaunchCard
@@ -62,61 +59,6 @@ export function Dashboard() {
             onOpen={() => setPage(page)}
           />
         ))}
-      </section>
-
-      <section aria-labelledby="recent-activity-title">
-        <div className="flex items-center justify-between gap-3">
-          <h2 id="recent-activity-title" className="text-[13px] font-semibold text-text-primary">
-            Recent activity
-          </h2>
-          {recentActivity.length > 0 && (
-            <span className="text-[12px] text-text-muted">Latest {recentActivity.length}</span>
-          )}
-        </div>
-        <div className="mt-2 overflow-hidden rounded-sm border border-border bg-surface-secondary">
-          {recentActivity.length === 0 ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-              <p className="text-[13px] text-text-muted">No activity yet</p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPage("source-scan")}
-                  className="rounded-sm border border-border bg-surface-tertiary px-3 py-1.5 text-[13px] font-medium text-text-primary transition-colors hover:border-border-strong hover:bg-surface-active"
-                >
-                  Start source scan
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPage("deps-scan")}
-                  className="rounded-sm border border-border bg-surface-tertiary px-3 py-1.5 text-[13px] font-medium text-text-primary transition-colors hover:border-border-strong hover:bg-surface-active"
-                >
-                  Check dependencies
-                </button>
-              </div>
-            </div>
-          ) : (
-            <table className="w-full table-fixed text-left text-[13px]">
-              <thead className="border-b border-border text-[12px] text-text-muted">
-                <tr>
-                  <th scope="col" className="w-[45%] px-4 py-2.5 font-medium">Target</th>
-                  <th scope="col" className="w-[20%] px-4 py-2.5 font-medium">Tool</th>
-                  <th scope="col" className="w-[15%] px-4 py-2.5 text-right font-medium">Findings</th>
-                  <th scope="col" className="w-[20%] px-4 py-2.5 text-right font-medium">When</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {recentActivity.map((scan) => (
-                  <tr key={scan.id} className="text-text-secondary">
-                    <td className="truncate px-4 py-2.5 font-mono text-[12px]">{scan.path}</td>
-                    <td className="px-4 py-2.5">{scan.kind === "source" ? "Source Scan" : "Dependency Scan"}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">{scan.findings}</td>
-                    <td className="px-4 py-2.5 text-right text-[12px] text-text-muted">{fmtDate(scan.at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
       </section>
 
       <section aria-labelledby="assistant-status-title" className="border-t border-border pt-4">
