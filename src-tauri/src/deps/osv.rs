@@ -4,6 +4,33 @@ use std::error::Error;
 
 const OSV_BASE: &str = "https://api.osv.dev/v1";
 
+/// OSV requires all three package coordinates. Keep this predicate shared by
+/// request construction, progress accounting, and cache receipts so a package
+/// is never recorded as queried unless it was eligible for the request.
+pub fn is_queryable_dependency(dependency: &Dependency) -> bool {
+    dependency.ecosystem != "unknown"
+        && !dependency.name.trim().is_empty()
+        && !dependency.version.trim().is_empty()
+}
+
+pub fn queryable_dependencies(deps: &[Dependency]) -> impl Iterator<Item = &Dependency> {
+    deps.iter()
+        .filter(|dependency| is_queryable_dependency(dependency))
+}
+
+pub fn dependency_query_key(dependency: &Dependency) -> String {
+    format!(
+        "{}\u{0}{}\u{0}{}",
+        dependency.ecosystem, dependency.name, dependency.version
+    )
+}
+
+pub fn query_keys(deps: &[Dependency]) -> Vec<String> {
+    queryable_dependencies(deps)
+        .map(dependency_query_key)
+        .collect()
+}
+
 fn validate_query_count(count: usize) -> Result<(), String> {
     let limit = crate::deps::lockfiles::MAX_DEPENDENCIES;
     if count > limit {
@@ -13,6 +40,56 @@ fn validate_query_count(count: usize) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+/// A batch response only identifies advisory ids. Every one must have a full
+/// record before the scan can present the batch as an advisory result; omitting
+/// an unavailable detail record would turn a known candidate into a false
+/// "no vulnerabilities" result.
+fn ensure_advisory_records_complete(
+    required_ids: &std::collections::BTreeSet<String>,
+    records: &std::collections::HashMap<String, Value>,
+) -> Result<(), String> {
+    let missing = required_ids
+        .iter()
+        .filter(|id| !records.contains_key(*id))
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "OSV advisory detail coverage is incomplete; missing record(s): {}",
+        missing.join(", "),
+    ))
+}
+
+/// The OSV batch endpoint must answer once for every submitted query. A short
+/// response would otherwise omit packages, and a long response used to index
+/// past the submitted chunk. Pagination is not implemented here, so a token is
+/// an incomplete coverage error rather than an apparently clean partial page.
+fn decode_batch_results(response: &Value, expected_count: usize) -> Result<Vec<Value>, String> {
+    let results = response
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "OSV batch response is missing its results array".to_string())?;
+    if results.len() != expected_count {
+        return Err(format!(
+            "OSV batch response returned {} results for {expected_count} queries; advisory coverage is incomplete",
+            results.len()
+        ));
+    }
+    if results.iter().any(|result| {
+        result
+            .get("next_page_token")
+            .and_then(Value::as_str)
+            .is_some_and(|token| !token.is_empty())
+    }) {
+        return Err("OSV batch response is paginated; advisory coverage is incomplete".into());
+    }
+    Ok(results.clone())
 }
 
 pub struct OsvClient {
@@ -82,12 +159,9 @@ impl OsvClient {
         &self,
         deps: &[Dependency],
     ) -> Result<std::collections::HashMap<String, Vec<Vulnerability>>, String> {
-        validate_query_count(deps.len())?;
+        let queryable: Vec<&Dependency> = queryable_dependencies(deps).collect();
+        validate_query_count(queryable.len())?;
         let mut out = std::collections::HashMap::new();
-        let queryable: Vec<&Dependency> = deps
-            .iter()
-            .filter(|d| d.ecosystem != "unknown" && !d.name.is_empty() && !d.version.is_empty())
-            .collect();
         if queryable.is_empty() {
             return Ok(out);
         }
@@ -116,18 +190,14 @@ impl OsvClient {
                 .json()
                 .await
                 .map_err(|e| format!("OSV batch response parse failed: {e}"))?;
-            let results = json
-                .get("results")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
+            let results = decode_batch_results(&json, chunk.len())?;
             for (i, res) in results.iter().enumerate() {
                 let dep = chunk[i];
                 if let Some(vulns) = res.get("vulns").and_then(|v| v.as_array()) {
                     let parsed =
                         parse_vulns(vulns.clone(), &dep.ecosystem, &dep.name, &dep.version);
                     if !parsed.is_empty() {
-                        let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
+                        let key = dependency_query_key(dep);
                         out.insert(key, parsed);
                     }
                 }
@@ -152,20 +222,17 @@ impl OsvClient {
         const MAX_ADVISORY_IDS: usize = 600;
         let by_key: std::collections::HashMap<String, &Dependency> = deps
             .iter()
-            .map(|dep| {
-                (
-                    format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version),
-                    dep,
-                )
-            })
+            .map(|dep| (dependency_query_key(dep), dep))
             .collect();
         let mut ids = std::collections::BTreeSet::new();
         for vulns in candidates.values() {
             for vuln in vulns {
                 ids.insert(vuln.id.clone());
             }
-            if ids.len() >= MAX_ADVISORY_IDS {
-                break;
+            if ids.len() > MAX_ADVISORY_IDS {
+                return Err(format!(
+                    "OSV advisory detail coverage is incomplete: more than {MAX_ADVISORY_IDS} unique advisory records require resolution"
+                ));
             }
         }
 
@@ -175,20 +242,19 @@ impl OsvClient {
         for chunk in id_list.chunks(20) {
             let fetched = futures::future::join_all(chunk.iter().map(|id| {
                 let client = self;
-                async move {
-                    match client.get_vuln(id).await {
-                        Ok(Some(record)) => Some(((*id).clone(), record)),
-                        // A record deleted since the batch still resolves
-                        // for the rest of its package.
-                        _ => None,
-                    }
-                }
+                async move { ((*id).clone(), client.get_vuln(id).await) }
             }))
             .await;
-            for found in fetched.into_iter().flatten() {
-                records.insert(found.0, found.1);
+            for (id, fetched) in fetched {
+                let record = fetched
+                    .map_err(|error| {
+                        format!("OSV advisory detail lookup failed for {id}: {error}")
+                    })?
+                    .ok_or_else(|| format!("OSV advisory detail record is unavailable for {id}"))?;
+                records.insert(id, record);
             }
         }
+        ensure_advisory_records_complete(&ids, &records)?;
 
         let mut out = std::collections::HashMap::new();
         for (key, skeletons) in candidates {
@@ -606,6 +672,78 @@ mod tests {
         let error = validate_query_count(crate::deps::lockfiles::MAX_DEPENDENCIES + 1)
             .expect_err("oversized batch");
         assert!(error.contains("resource limit"), "{error}");
+    }
+
+    #[test]
+    fn query_keys_and_count_match_the_dependencies_sent_to_osv() {
+        let dependency = |ecosystem: &str, name: &str, version: &str| Dependency {
+            ecosystem: ecosystem.into(),
+            name: name.into(),
+            version: version.into(),
+            lockfile: "fixture.lock".into(),
+        };
+        let deps = vec![
+            dependency("npm", "complete", "1.0.0"),
+            dependency("unknown", "ignored", "1.0.0"),
+            dependency("npm", "", "1.0.0"),
+            dependency("npm", "no-version", ""),
+        ];
+
+        let sent = queryable_dependencies(&deps).collect::<Vec<_>>();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(query_keys(&deps), vec![dependency_query_key(sent[0])]);
+    }
+
+    #[test]
+    fn missing_advisory_detail_cannot_be_rendered_as_an_empty_result() {
+        let required = ["GHSA-present", "GHSA-missing"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let records = std::collections::HashMap::from([(
+            "GHSA-present".to_owned(),
+            serde_json::json!({ "id": "GHSA-present" }),
+        )]);
+
+        let error = ensure_advisory_records_complete(&required, &records)
+            .expect_err("a batch candidate must never disappear when detail lookup fails");
+
+        assert!(error.contains("incomplete"), "{error}");
+        assert!(error.contains("GHSA-missing"), "{error}");
+    }
+
+    #[test]
+    fn batch_response_requires_exactly_one_result_per_query() {
+        let exact = serde_json::json!({ "results": [{}, {}] });
+        assert_eq!(
+            decode_batch_results(&exact, 2)
+                .expect("exact response")
+                .len(),
+            2
+        );
+
+        for response in [
+            serde_json::json!({}),
+            serde_json::json!({ "results": [{}] }),
+            serde_json::json!({ "results": [{}, {}, {}] }),
+        ] {
+            let error = decode_batch_results(&response, 2).expect_err("incomplete response");
+            assert!(
+                error.contains("incomplete") || error.contains("missing"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_response_with_a_next_page_token_is_not_complete() {
+        let response = serde_json::json!({
+            "results": [{ "next_page_token": "more-results" }],
+        });
+
+        let error = decode_batch_results(&response, 1).expect_err("pagination is unsupported");
+
+        assert!(error.contains("paginated"), "{error}");
     }
 
     #[test]

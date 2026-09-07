@@ -212,13 +212,25 @@ pub struct Vulnerability {
     pub lockfile: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AdvisoryCoverage {
+    /// Every queryable package received a complete OSV advisory result.
+    Complete,
+    /// Older saved projections did not persist advisory coverage.
+    #[default]
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DepScanSummary {
     pub path: String,
     pub lockfiles_found: Vec<String>,
     pub packages_found: usize,
     pub packages_queried: usize,
+    #[serde(default)]
+    pub advisory_coverage: AdvisoryCoverage,
     pub vulnerabilities_found: usize,
     pub duration_ms: u64,
 }
@@ -559,5 +571,18 @@ mod tests {
         )
         .expect("deserialize with explicit false");
         assert!(!request.allow_compaction);
+    }
+
+    #[test]
+    fn old_dependency_projections_default_to_unknown_advisory_coverage() {
+        let summary: DepScanSummary = serde_json::from_str(
+            r#"{"path":"/project","lockfilesFound":[],"packagesFound":0,"packagesQueried":0,"vulnerabilitiesFound":0,"durationMs":0}"#,
+        )
+        .expect("old projection remains readable");
+
+        assert!(matches!(
+            summary.advisory_coverage,
+            AdvisoryCoverage::Unknown
+        ));
     }
 }

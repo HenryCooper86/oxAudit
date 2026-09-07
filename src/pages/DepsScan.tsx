@@ -458,8 +458,16 @@ export function DepsScanPage() {
         </section>
       )}
 
-      {result && vulns.length === 0 && (
+      {result && vulns.length === 0 && result.summary.advisoryCoverage === "complete" && (
         <InlineState tone="empty" title="OSV returned no published vulnerabilities for the queried packages." />
+      )}
+
+      {result && vulns.length === 0 && result.summary.advisoryCoverage !== "complete" && (
+        <InlineState
+          tone="unavailable"
+          title="Advisory coverage was not recorded for these saved results."
+          description="Run the dependency scan again before treating an empty advisory list as clean."
+        />
       )}
 
       {!result && error && !running && failedOperation && (

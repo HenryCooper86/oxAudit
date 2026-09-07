@@ -36,7 +36,7 @@ pub fn ecosystem_for_kind(kind: &str) -> &'static str {
         "npm" | "yarn" | "pnpm" => "npm",
         "cargo" => "crates.io",
         "go" => "Go",
-        "pipenv" => "PyPI",
+        "pipenv" | "pip" => "PyPI",
         "bundler" => "RubyGems",
         "composer" => "Packagist",
         "maven" => "Maven",
@@ -149,23 +149,81 @@ fn strip_version_ops(v: &str) -> String {
 fn parse_package_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     let root: serde_json::Value =
         serde_json::from_str(content).map_err(|e| format!("invalid package-lock.json: {e}"))?;
+    let root_object = root
+        .as_object()
+        .ok_or_else(|| "invalid package-lock.json: expected an object".to_string())?;
+    if !root_object.contains_key("packages") && !root_object.contains_key("dependencies") {
+        return Err(
+            "invalid package-lock.json: expected packages or dependencies inventory".into(),
+        );
+    }
     let mut out = Vec::new();
 
+    fn optional_nonempty_string<'a>(
+        object: &'a serde_json::Map<String, serde_json::Value>,
+        field: &str,
+        subject: &str,
+    ) -> Result<Option<&'a str>, String> {
+        match object.get(field) {
+            None => Ok(None),
+            Some(serde_json::Value::String(value)) if !value.trim().is_empty() => Ok(Some(value)),
+            Some(_) => Err(format!(
+                "invalid package-lock.json: {subject} has an invalid {field}"
+            )),
+        }
+    }
+
     // v2/v3: "packages" object keyed by node_modules/... path
-    if let Some(packages) = root.get("packages").and_then(|p| p.as_object()) {
+    if let Some(packages_value) = root.get("packages") {
+        let packages = packages_value
+            .as_object()
+            .ok_or_else(|| "invalid package-lock.json: packages must be an object".to_string())?;
         for (key, val) in packages {
             if key.is_empty() {
+                let root_metadata = val.as_object().ok_or_else(|| {
+                    "invalid package-lock.json: root package metadata must be an object".to_string()
+                })?;
+                // Root-only inventories are valid, but malformed metadata is
+                // not evidence that the project has no packages.
+                optional_nonempty_string(root_metadata, "name", "root package")?;
+                optional_nonempty_string(root_metadata, "version", "root package")?;
                 continue;
             }
-            let version = val
-                .get("version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let name = val
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+            let package = val.as_object().ok_or_else(|| {
+                format!("invalid package-lock.json: package {key:?} must be an object")
+            })?;
+            let is_link = match package.get("link") {
+                None => false,
+                Some(serde_json::Value::Bool(link)) => *link,
+                Some(_) => {
+                    return Err(format!(
+                        "invalid package-lock.json: package {key:?} has an invalid link flag"
+                    ))
+                }
+            };
+            if is_link {
+                // npm represents workspaces and file links without an
+                // installable registry version. They are complete inventory
+                // metadata, not an unversioned package to send to OSV.
+                if package.contains_key("resolved") {
+                    optional_nonempty_string(package, "resolved", &format!("package {key:?}"))?;
+                }
+                if package.contains_key("name") {
+                    optional_nonempty_string(package, "name", &format!("package {key:?}"))?;
+                }
+                if package.contains_key("version") {
+                    optional_nonempty_string(package, "version", &format!("package {key:?}"))?;
+                }
+                continue;
+            }
+            let version =
+                optional_nonempty_string(package, "version", &format!("package {key:?}"))?
+                    .ok_or_else(|| {
+                        format!("invalid package-lock.json: package {key:?} has no version")
+                    })?
+                    .to_string();
+            let name = optional_nonempty_string(package, "name", &format!("package {key:?}"))?
+                .map(str::to_owned)
                 .unwrap_or_else(|| {
                     key.trim_start_matches("node_modules/")
                         .split('/')
@@ -173,28 +231,46 @@ fn parse_package_lock(content: &str) -> Result<Vec<(String, String)>, String> {
                         .collect::<Vec<_>>()
                         .join("/")
                 });
-            if !name.is_empty() && !version.is_empty() {
-                out.push((name, version));
+            if name.is_empty() {
+                return Err(format!(
+                    "invalid package-lock.json: package {key:?} has no name"
+                ));
             }
+            out.push((name, version));
         }
     }
 
     // v1: "dependencies" object (recursive)
-    fn walk_deps(node: &serde_json::Value, out: &mut Vec<(String, String)>) {
-        if let Some(deps) = node.get("dependencies").and_then(|d| d.as_object()) {
+    fn walk_deps(node: &serde_json::Value, out: &mut Vec<(String, String)>) -> Result<(), String> {
+        if let Some(deps_value) = node.get("dependencies") {
+            let deps = deps_value.as_object().ok_or_else(|| {
+                "invalid package-lock.json: dependencies must be an object".to_string()
+            })?;
             for (name, val) in deps {
-                if let Some(v) = val.get("version").and_then(|v| v.as_str()) {
-                    out.push((name.clone(), v.to_string()));
+                let dependency = val.as_object().ok_or_else(|| {
+                    format!("invalid package-lock.json: dependency {name:?} must be an object")
+                })?;
+                let version = dependency
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        format!("invalid package-lock.json: dependency {name:?} has no version")
+                    })?;
+                if name.trim().is_empty() || version.trim().is_empty() {
+                    return Err(format!(
+                        "invalid package-lock.json: dependency {name:?} has no version"
+                    ));
                 }
-                walk_deps(val, out);
+                out.push((name.clone(), version.to_string()));
+                walk_deps(val, out)?;
             }
         }
+        Ok(())
     }
-    walk_deps(&root, &mut out);
+    walk_deps(&root, &mut out)?;
 
-    if out.is_empty() {
-        return Err("no packages found in package-lock.json".into());
-    }
+    // A supported lockfile that declares an empty inventory is complete: it
+    // should yield zero OSV queries, not be recast as a parser failure.
     Ok(out)
 }
 
@@ -594,7 +670,10 @@ pub fn dedupe_dependencies(deps: Vec<Dependency>) -> Vec<Dependency> {
 
 #[cfg(test)]
 mod pom_tests {
-    use super::{extend_dependencies_bounded, parse_lockfile_with_limit, parse_pom_xml};
+    use super::{
+        extend_dependencies_bounded, parse_lockfile, parse_lockfile_with_limit, parse_package_lock,
+        parse_pom_xml,
+    };
 
     /// A `pom.xml` comes from the repository under scan, so every property
     /// asserted here is a property of parsing *untrusted* input.
@@ -618,6 +697,113 @@ mod pom_tests {
 
         assert!(error.contains("resource limit"), "{error}");
         assert!(error.contains("8 bytes"), "{error}");
+    }
+
+    #[test]
+    fn npm_v3_root_only_inventory_is_a_valid_empty_result() {
+        let empty = parse_package_lock(
+            r#"{"name":"empty-app","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"empty-app","version":"1.0.0"}}}"#,
+        )
+        .expect("a root-only npm lockfile is a complete empty inventory");
+        assert!(empty.is_empty());
+
+        let populated = parse_package_lock(
+            r#"{"lockfileVersion":3,"packages":{"":{},"node_modules/example":{"version":"1.2.3"}}}"#,
+        )
+        .expect("a populated npm lockfile parses alongside the empty form");
+        assert_eq!(populated, vec![("example".into(), "1.2.3".into())]);
+    }
+
+    #[test]
+    fn valid_empty_and_populated_npm_lockfiles_parse_together() {
+        let directory = tempfile::tempdir().expect("temporary monorepo");
+        let empty_path = directory.path().join("package-lock.json");
+        let populated_path = directory.path().join("package").join("package-lock.json");
+        std::fs::create_dir_all(populated_path.parent().expect("nested package"))
+            .expect("nested directory");
+        std::fs::write(
+            &empty_path,
+            r#"{"lockfileVersion":3,"packages":{"":{"name":"empty-app","version":"1.0.0"}}}"#,
+        )
+        .expect("empty lockfile");
+        std::fs::write(
+            &populated_path,
+            r#"{"lockfileVersion":3,"packages":{"":{},"node_modules/example":{"version":"1.2.3"}}}"#,
+        )
+        .expect("populated lockfile");
+
+        assert!(parse_lockfile(&empty_path, "npm")
+            .expect("valid empty inventory")
+            .is_empty());
+        assert_eq!(
+            parse_lockfile(&populated_path, "npm")
+                .expect("populated inventory")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn npm_v1_dependency_without_a_version_is_malformed_not_queryable() {
+        let error = parse_package_lock(r#"{"dependencies":{"example":{"version":""}}}"#)
+            .expect_err("an unqueryable v1 dependency must not look complete");
+        assert!(error.contains("example"), "{error}");
+        assert!(error.contains("no version"), "{error}");
+    }
+
+    #[test]
+    fn npm_v3_rejects_missing_null_and_empty_package_versions() {
+        for package in [r#"{}"#, r#"{"version":null}"#, r#"{"version":""}"#] {
+            let error = parse_package_lock(&format!(
+                r#"{{"lockfileVersion":3,"packages":{{"node_modules/example":{package}}}}}"#
+            ))
+            .expect_err("a non-link package needs a queryable version");
+            assert!(error.contains("node_modules/example"), "{error}");
+            assert!(error.contains("version"), "{error}");
+        }
+    }
+
+    #[test]
+    fn npm_v3_validates_root_metadata_and_preserves_workspace_links() {
+        for root in [r#"null"#, r#"{"version":null}"#, r#"{"version":""}"#] {
+            let error = parse_package_lock(&format!(
+                r#"{{"lockfileVersion":3,"packages":{{"":{root}}}}}"#
+            ))
+            .expect_err("malformed root metadata must not make an empty inventory clean");
+            assert!(error.contains("root package"), "{error}");
+        }
+
+        let packages = parse_package_lock(
+            r#"{
+              "lockfileVersion": 3,
+              "packages": {
+                "": { "name": "workspace-root", "version": "1.0.0" },
+                "node_modules/workspace-package": {
+                  "resolved": "packages/workspace-package",
+                  "link": true
+                },
+                "node_modules/registry-package": { "version": "2.0.0" }
+              }
+            }"#,
+        )
+        .expect("workspace links are metadata rather than unversioned registry packages");
+
+        assert_eq!(packages, vec![("registry-package".into(), "2.0.0".into())]);
+    }
+
+    #[test]
+    fn npm_v1_nested_dependencies_are_walked_without_rebuilding_subtrees() {
+        let packages = parse_package_lock(
+            r#"{"dependencies":{"outer":{"version":"1.0.0","dependencies":{"inner":{"version":"2.0.0"}}}}}"#,
+        )
+        .expect("nested v1 dependencies parse");
+        assert_eq!(
+            packages,
+            vec![
+                ("outer".into(), "1.0.0".into()),
+                ("inner".into(), "2.0.0".into()),
+            ]
+        );
     }
 
     #[test]
