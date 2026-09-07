@@ -57,6 +57,13 @@ fn ensure_advisory_records_complete(
         .cloned()
         .collect::<Vec<_>>();
     if missing.is_empty() {
+        for id in required_ids {
+            if id.trim().is_empty()
+                || records[id].get("id").and_then(Value::as_str) != Some(id.as_str())
+            {
+                return Err(format!("OSV advisory detail coverage is incomplete: record identity does not match requested advisory {id}"));
+            }
+        }
         return Ok(());
     }
 
@@ -70,7 +77,10 @@ fn ensure_advisory_records_complete(
 /// response would otherwise omit packages, and a long response used to index
 /// past the submitted chunk. Pagination is not implemented here, so a token is
 /// an incomplete coverage error rather than an apparently clean partial page.
-fn decode_batch_results(response: &Value, expected_count: usize) -> Result<Vec<Value>, String> {
+pub(super) fn decode_batch_results(
+    response: &Value,
+    expected_count: usize,
+) -> Result<Vec<Value>, String> {
     let results = response
         .get("results")
         .and_then(Value::as_array)
@@ -81,13 +91,36 @@ fn decode_batch_results(response: &Value, expected_count: usize) -> Result<Vec<V
             results.len()
         ));
     }
-    if results.iter().any(|result| {
-        result
-            .get("next_page_token")
-            .and_then(Value::as_str)
-            .is_some_and(|token| !token.is_empty())
-    }) {
-        return Err("OSV batch response is paginated; advisory coverage is incomplete".into());
+    for result in results {
+        let result = result.as_object().ok_or_else(|| {
+            "OSV batch result must be an object; advisory coverage is incomplete".to_string()
+        })?;
+        if let Some(token) = result.get("next_page_token") {
+            let token = token.as_str().ok_or_else(|| {
+                "OSV batch pagination token must be a string; advisory coverage is incomplete"
+                    .to_string()
+            })?;
+            if !token.is_empty() {
+                return Err(
+                    "OSV batch response is paginated; advisory coverage is incomplete".into(),
+                );
+            }
+        }
+        if let Some(vulns) = result.get("vulns") {
+            let vulns = vulns.as_array().ok_or_else(|| {
+                "OSV batch vulns must be an array; advisory coverage is incomplete".to_string()
+            })?;
+            for vuln in vulns {
+                if !vuln.is_object()
+                    || vuln
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map_or(true, |id| id.trim().is_empty())
+                {
+                    return Err("OSV batch advisory requires a nonempty string id; advisory coverage is incomplete".into());
+                }
+            }
+        }
     }
     Ok(results.clone())
 }
@@ -781,6 +814,61 @@ mod tests {
         let error = decode_batch_results(&response, 1).expect_err("pagination is unsupported");
 
         assert!(error.contains("paginated"), "{error}");
+    }
+
+    #[test]
+    fn batch_response_rejects_malformed_package_results_and_advisory_ids() {
+        for result in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!({"vulns": {}}),
+            serde_json::json!({"vulns": null}),
+            serde_json::json!({"next_page_token": null}),
+            serde_json::json!({"next_page_token": 5}),
+            serde_json::json!({"next_page_token": false}),
+            serde_json::json!({"vulns": [null]}),
+            serde_json::json!({"vulns": [{}]}),
+            serde_json::json!({"vulns": [{"id": 5}]}),
+            serde_json::json!({"vulns": [{"id": ""}]}),
+            serde_json::json!({"vulns": [{"id": "  "}]}),
+        ] {
+            let response = serde_json::json!({"results": [result]});
+            assert!(
+                decode_batch_results(&response, 1).is_err(),
+                "accepted {response}"
+            );
+        }
+        for result in [
+            serde_json::json!({}),
+            serde_json::json!({"vulns": []}),
+            serde_json::json!({"next_page_token": "", "vulns": [{"id": "GHSA-valid"}]}),
+        ] {
+            assert!(decode_batch_results(&serde_json::json!({"results": [result]}), 1).is_ok());
+        }
+    }
+
+    #[test]
+    fn resolved_advisory_record_must_identify_the_requested_id() {
+        let required = std::collections::BTreeSet::from(["GHSA-requested".into()]);
+        for record in [
+            serde_json::json!(null),
+            serde_json::json!({}),
+            serde_json::json!({"id": ""}),
+            serde_json::json!({"id": " "}),
+            serde_json::json!({"id": 3}),
+            serde_json::json!({"id": "GHSA-other"}),
+        ] {
+            let records = std::collections::HashMap::from([("GHSA-requested".into(), record)]);
+            assert!(
+                ensure_advisory_records_complete(&required, &records).is_err(),
+                "accepted {records:?}"
+            );
+        }
+        let records = std::collections::HashMap::from([(
+            "GHSA-requested".into(),
+            serde_json::json!({"id": "GHSA-requested"}),
+        )]);
+        assert!(ensure_advisory_records_complete(&required, &records).is_ok());
     }
 
     #[test]

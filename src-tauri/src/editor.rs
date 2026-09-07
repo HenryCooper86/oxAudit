@@ -115,10 +115,11 @@ mod tests {
     use super::*;
     #[test]
     fn exact_uri_preserves_spaces_reserved_characters_and_utf16_position() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("space 😀 #&%.js");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("space 😀 #&%.js");
         std::fs::write(&path, "first\n😀é eval(input);\n").unwrap();
-        let uri = vscode_uri(root.path(), &path, 2, 8).unwrap();
+        let uri = vscode_uri(&root, &path, 2, 8).unwrap();
         assert!(uri.starts_with("vscode://file/"));
         assert!(
             uri.ends_with("space%20%F0%9F%98%80%20%23%26%25.js:2:5"),
@@ -127,36 +128,56 @@ mod tests {
     }
     #[test]
     fn rejects_invalid_positions_removed_files_and_non_utf8_boundaries() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("file.js");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("file.js");
         std::fs::write(&path, "😀eval(input)\n").unwrap();
-        for (line, column) in [(0, 1), (1, 0), (2, 1), (1, 2), (1, 200)] {
-            assert!(vscode_uri(root.path(), &path, line, column).is_err());
+        for (line, column, cause) in [
+            (0, 1, "must be positive"),
+            (1, 0, "must be positive"),
+            (2, 1, "recorded line"),
+            (1, 2, "character boundary"),
+            (1, 200, "character boundary"),
+        ] {
+            let error = vscode_uri(&root, &path, line, column).unwrap_err();
+            assert!(error.contains(cause), "{error}");
         }
         std::fs::remove_file(&path).unwrap();
-        assert!(vscode_uri(root.path(), &path, 1, 1).is_err());
+        assert!(vscode_uri(&root, &path, 1, 1)
+            .unwrap_err()
+            .contains("Finding file is unavailable"));
     }
     #[test]
     fn contained_reads_reject_outside_paths_and_symlink_replacements() {
-        let root = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
         let outside = tempfile::NamedTempFile::new().unwrap();
-        assert!(vscode_uri(root.path(), outside.path(), 1, 1).is_err());
+        assert!(vscode_uri(&root, outside.path(), 1, 1)
+            .unwrap_err()
+            .contains("escapes the captured root"));
         #[cfg(unix)]
         {
-            let replaced = root.path().join("replaced.js");
+            let replaced = root.join("replaced.js");
             std::os::unix::fs::symlink(outside.path(), &replaced).unwrap();
-            assert!(vscode_uri(root.path(), &replaced, 1, 1).is_err());
+            assert!(vscode_uri(&root, &replaced, 1, 1)
+                .unwrap_err()
+                .contains("Finding file is unavailable"));
         }
     }
     #[test]
     fn conversion_is_bounded_and_rejects_invalid_utf8() {
-        let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("app.js");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let file = root.join("app.js");
         std::fs::write(&file, [0xff, b'\n']).unwrap();
-        assert!(vscode_uri(root.path(), &file, 1, 1).is_err());
+        assert!(vscode_uri(&root, &file, 1, 1)
+            .unwrap_err()
+            .contains("not UTF-8"));
         let handle = std::fs::File::create(&file).unwrap();
         handle.set_len(8 * 1024 * 1024 + 1).unwrap();
-        assert!(vscode_uri(root.path(), &file, 1, 1).is_err());
+        assert!(vscode_uri(&root, &file, 1, 1)
+            .unwrap_err()
+            .contains("limited to files of 8 MiB"));
     }
     #[test]
     fn windows_uri_path_normalizes_drive_and_rejects_network_namespaces() {

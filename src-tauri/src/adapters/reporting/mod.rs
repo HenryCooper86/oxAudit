@@ -215,10 +215,11 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             })
         }
         ReportFormat::CycloneDxVex => {
+            let components = dependencies::ComponentIndex::new(data);
             let vulnerabilities = data.observations.iter().filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch).map(|record| serde_json::json!({
                 "id": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()),
                 "analysis": { "state": "exploitable", "detail": "Affected-range match observed by oxAudit; review status was not silently inferred." },
-                "affects": dependencies::affected_components(data, record).iter().map(|component| serde_json::json!({"ref": component.id.as_str()})).collect::<Vec<_>>(),
+                "affects": components.affected_components(record).iter().map(|component| serde_json::json!({"ref": component.id.as_str()})).collect::<Vec<_>>(),
                 "properties": [{ "name": "oxaudit:observationId", "value": record.observation.id.as_str() }]
             })).collect::<Vec<_>>();
             serde_json::json!({
@@ -250,12 +251,13 @@ fn cyclonedx_component(component: &Component) -> serde_json::Value {
 }
 
 fn vex_statements(data: &ReportData) -> Vec<serde_json::Value> {
+    let components = dependencies::ComponentIndex::new(data);
     data.observations
         .iter()
         .filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch)
         .map(|record| serde_json::json!({
             "vulnerability": { "name": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()) },
-            "products": dependencies::affected_components(data, record).iter().map(|component| serde_json::json!({ "@id": component.purl.clone().unwrap_or_else(|| format!("pkg:generic/{}@{}", component.name, component.version.clone().unwrap_or_else(|| "unknown".into()))) })).collect::<Vec<_>>(),
+            "products": components.affected_components(record).iter().map(|component| serde_json::json!({ "@id": component.purl.clone().unwrap_or_else(|| format!("pkg:generic/{}@{}", component.name, component.version.clone().unwrap_or_else(|| "unknown".into()))) })).collect::<Vec<_>>(),
             "status": "affected",
             "status_notes": "Affected-range match observed; no analyst disposition was inferred."
         }))

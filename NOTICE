@@ -73,3 +73,16 @@ oxAudit queries these services at runtime. It redistributes no data from them.
 
   NVD   https://nvd.nist.gov      National Vulnerability Database (NIST)
   OSV   https://osv.dev           Open Source Vulnerabilities (Google)
+
+--------------------------------------------------------------------------------
+Windows test executable manifest
+--------------------------------------------------------------------------------
+
+src-tauri/build.rs adapts the MSVC linker-manifest workaround from Tauri's
+examples/api/src-tauri/build.rs. src-tauri/windows-app-manifest.xml contains
+Tauri's Common-Controls dependency manifest from crates/tauri-build/src.
+Copyright 2019-2024 Tauri Programme within The Commons Conservancy.
+Used under the Apache License, Version 2.0 (see LICENSE).
+https://github.com/tauri-apps/tauri
+The oxAudit adaptation applies only to Windows MSVC targets and uses our local
+manifest path; it does not require Tauri's internal workspace environment flag.

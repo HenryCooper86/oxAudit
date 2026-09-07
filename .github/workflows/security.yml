@@ -51,6 +51,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -58,7 +59,27 @@ jobs:
         with:
           languages: javascript-typescript
           queries: security-extended
-      - uses: github/codeql-action/analyze@bb16b9baa2ec4010b29f5c606d57d01190139edd # v4.37.1
+      - name: Required CodeQL analysis
+        uses: github/codeql-action/analyze@bb16b9baa2ec4010b29f5c606d57d01190139edd # v4.37.1
+        with:
+          upload: never
+          upload-database: false
+          output: codeql-results
+      - name: Retain CodeQL SARIF
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-sarif
+          path: codeql-results/**/*.sarif
+          if-no-files-found: error
+      # Private repository code scanning is unavailable until the owner opts in
+      # to an eligible, enabled capability. Analysis and artifacts stay required.
+      - name: Publish CodeQL to code scanning (optional capability)
+        if: vars.OXAUDIT_CODE_SCANNING == 'true'
+        uses: github/codeql-action/upload-sarif@bb16b9baa2ec4010b29f5c606d57d01190139edd # v4.37.1
+        with:
+          sarif_file: codeql-results
+          category: codeql-javascript-typescript
 
   cargo-deny:
     name: Rust supply chain

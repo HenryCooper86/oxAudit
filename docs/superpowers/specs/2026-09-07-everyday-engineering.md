@@ -32,4 +32,4 @@ An engineer can reopen a project, inspect new issues, navigate to their editor, 
 - Phase 3: complete; saved baseline selection, Git path review, revision/coverage evidence, policy-aware counts, and CLI baseline safety verified.
 - Phase 4: complete; typed editor navigation, remediation examples, coverage-aware rechecks, and unsaved-result recovery verified.
 - Phase 5: complete; shared durable dependency workflow, CLI baseline gates, bounded npm relationships, advisory-based upgrade decisions and native rechecks verified.
-- Phase 6: pending; onboarding, reproducible pilot and CI corrections follow the completed dependency interfaces.
+- Phase 6: implementation complete; first-project onboarding, reproducible CLI/desktop pilot, local artifact and CI corrections verified locally and reviewed. Platform/security execution is confirmed by the phase commit’s GitHub Actions checks.

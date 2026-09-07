@@ -20,27 +20,31 @@ and a finding on a workstation are the same finding.
 
 ## Install
 
-> **No release has been cut yet.** Build from source for now — see
-> [Development](#development). The release pipeline is in place and unused.
-
-When the first release lands, builds for macOS, Windows, and Linux will be
-published on the [releases page](https://github.com/HenryCooper86/oxAudit/releases).
-Publishable macOS desktop bundles require Developer ID signing and notarization;
-Windows desktop bundles require Authenticode signing. Linux bundles and the
-standalone CLI do not claim a native platform signature. Every artifact receives
-a SHA-256 checksum and SLSA build-provenance attestation, and each release carries
-CycloneDX SBOMs for oxAudit's Rust and JavaScript dependency trees:
+Build the **local pilot from source** using the exact platform prerequisites and
+commands in [Getting started](docs/getting-started.md). Repository read access is
+required; no published release or public CLI download is available yet. Start
+with Node 22.22.2, the pinned Rust 1.97.1 toolchain, and the platform's Tauri
+prerequisites.
 
 ```bash
-sha256sum -c SHA256SUMS.txt
-gh attestation verify <file> --repo HenryCooper86/oxAudit
+npm ci
+rustup show active-toolchain
+cargo build --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli
+npm run pilot:smoke -- --cli ./src-tauri/target/debug/oxaudit-cli
 ```
 
-The desktop app and `oxaudit-cli` ship together.
+The guide includes desktop bundle/install commands and the first-project wizard.
+The [inert demo](examples/pilot/README.md), [pilot protocol](docs/pilot-validation.md),
+and [complete CI workflow](examples/ci/oxaudit.yml) make the first check repeatable.
+AI is optional. Local pilot bundles do not establish native signing or
+notarization; [the QA log](docs/qa/2026-09-07-everyday-workflow.md) records observed
+artifacts and limits.
 
-Tag builds fail before bundling if the macOS or Windows signing configuration is
-incomplete. Manually dispatched dry runs may be unsigned, but the workflow cannot
-publish them.
+Publishable release tags still require macOS signing/notarization and Windows
+Authenticode signing. Missing credentials stop publication; unsigned manual dry
+runs cannot publish. Release artifacts receive SHA-256 checksums, provenance
+attestations, and SBOMs when the release workflow actually runs. No release is
+claimed by these local pilot instructions.
 
 ## Project home
 
@@ -74,14 +78,10 @@ oxaudit-cli scan .
 oxaudit-cli scan . --format sarif --output oxaudit.sarif --fail-on high
 ```
 
-In GitHub Actions:
-
-```yaml
-- run: oxaudit-cli scan . --format sarif --output oxaudit.sarif
-- uses: github/codeql-action/upload-sarif@v4
-  with:
-    sarif_file: oxaudit.sarif
-```
+For GitHub Actions use the [complete pinned example](examples/ci/oxaudit.yml)
+and its [access/baseline instructions](docs/getting-started.md#complete-consumer-ci-example).
+It builds a trusted CLI, checks PR code as data, preserves reports on findings,
+and fails on missing baselines or incomplete scans.
 
 Adopting a scanner on an existing codebase means meeting a backlog. Gate on what
 the change introduced and leave the rest visible:
@@ -372,18 +372,13 @@ Parser and range semantics follow the [npm lockfile documentation](https://githu
 
 ### In GitHub Actions
 
-```yaml
-- name: Scan
-  run: oxaudit-cli scan . --format sarif --output oxaudit.sarif
-
-- name: Upload to code scanning
-  uses: github/codeql-action/upload-sarif@v4
-  with:
-    sarif_file: oxaudit.sarif
-```
-
-oxAudit runs this against its own repository on every push
-([`self-scan.yml`](.github/workflows/self-scan.yml)).
+Use the [complete consumer workflow](examples/ci/oxaudit.yml). The
+[installation guide](docs/getting-started.md#complete-consumer-ci-example) explains
+private tool access, fork restrictions, main baseline authority, canonical
+single-run JSON/SARIF export, and report retention. oxAudit's own
+[self-scan](.github/workflows/self-scan.yml) retains downloadable SARIF on every
+completed scan. Code-scanning publication is a separately enabled repository
+capability; analysis and artifacts remain required.
 
 ## Detection quality
 
@@ -396,8 +391,6 @@ rule. See the [corpus documentation](docs/corpus.md) for provenance and limits.
 | Corpus precision | 46.2% | **100% on the committed authored scenarios** |
 | Corpus recall | 85.7% | **100% on the committed authored scenarios** |
 | Corpus size | 26 fixtures | **198 fixtures** |
-| Findings on this repository | 142 | **33** |
-| …still shown after scope triage | 142 | **6** |
 
 The corpus is 198 fixtures: 89 positives and 109 negatives. It includes observed
 false-positive shapes from oxAudit's own source or dependency trees — type
@@ -410,23 +403,14 @@ concatenated versus parameterized SQL, and request-derived versus fixed outbound
 URLs. Those pairs are executable regression scenarios, not an independent or
 representative real-world accuracy benchmark.
 
-The corpus is deliberately vulnerable, so it is excluded from the repository
-figure above: a full scan of this checkout returns 122 findings, 89 of which are
-the fixtures doing their job.
-
-A corpus you tuned against proves little, so the last two rows are the ones that
-matter: this repository is held-out data, and the fixtures that were tuned
-against are excluded from it.
-
-All 33 findings that remain are secrets. Twenty-five are deliberately fake
-credentials in oxAudit's own tests and detector tables, and two are prose in a
-planning document.
-None of those are suppressed — they are *classified*, and the difference is the
-point of the next section. What is left in the default view is six findings:
-two UI labels, the corpus builder's own detector strings, the code that
-searches for PEM headers, and the redaction adapter's own "credential material"
-label. A scanner that looks for credential shapes will always contain credential
-shapes.
+The intentionally vulnerable `benchmarks` and `examples/pilot` fixtures are
+excluded from production self-scans with `--ignore-dir benchmarks --ignore-dir pilot` (along with generated `node_modules`, `target`, and `dist`). Old self-scan
+figures of 142 → 33 findings, six after scope triage, and 122 with the then-current
+fixtures are historical observations from an earlier checkout. They are not
+current counts or detection-accuracy evidence. Some historical findings were
+synthetic credentials, prose, UI labels and detector strings in this repository.
+Use the authored corpus only within its stated limits; this changing repository
+is not an independent accuracy benchmark.
 
 ### Measured against ground truth nobody here wrote
 
@@ -1046,16 +1030,17 @@ append-only review history, and the shared professional report model.
 
 ## Development
 
-Prerequisites: [Node.js ≥ 20](https://nodejs.org), [Rust ≥ 1.77](https://rustup.rs),
-and the platform Tauri prerequisites (Xcode CLT on macOS, WebView2 on Windows,
-webkit2gtk on Linux — see [Tauri docs](https://v2.tauri.app/start/prerequisites/)).
+Use Node 22.22.2 and the Rust 1.97.1 pin in `rust-toolchain.toml`. See
+[Getting started](docs/getting-started.md) for native prerequisites and exact
+platform install paths.
 
 ```bash
-npm install
+npm ci
+rustup show active-toolchain
 npm run tauri dev        # run the app with hot reload
 npm run build            # type-check + build the frontend
-cd src-tauri && cargo test --workspace --all-features  # run every Rust package
-npm run tauri build      # produce a distributable bundle
+cargo test --locked --manifest-path src-tauri/Cargo.toml --workspace --all-features
+npm run tauri build      # produce a local bundle for this platform
 ```
 
 ### Choosing grammars at build time
