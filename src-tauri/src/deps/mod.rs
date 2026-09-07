@@ -1,5 +1,7 @@
 pub mod lockfiles;
 pub mod osv;
+pub mod relationships;
+pub mod service;
 
 const MAX_FAILED_LOCKFILES_IN_MESSAGE: usize = 5;
 const MAX_PARSE_ERROR_CHARS: usize = 280;

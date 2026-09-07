@@ -21,6 +21,7 @@
 //! until someone deliberately asks it to gate one.
 
 pub mod baseline;
+mod dependency_baseline;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -187,13 +188,25 @@ struct ScanArgs {
 
 #[derive(Args, Debug)]
 struct DepsArgs {
+    /// Persist this run and complete advisory receipts in a shared database.
+    #[arg(long)]
+    db: Option<PathBuf>,
+    /// Reuse a validated receipt from --db; never contact providers.
+    #[arg(long)]
+    offline: bool,
+    /// Previous complete dependency JSON report.
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
+    /// Gate only advisory/package/version identities absent from --baseline.
+    #[arg(long, value_enum, default_value_t = FailOn::None)]
+    fail_on_new: FailOn,
+
     /// Directory to search for lockfiles.
     path: PathBuf,
 
-    /// Output format. Dependency runs are not persisted, so the standards
-    /// formats that read a stored run are not offered here.
-    #[arg(long, value_enum, default_value_t = DepsFormat::Text)]
-    format: DepsFormat,
+    /// Output format, including canonical standards exports.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
 
     /// Write the report here instead of stdout.
     #[arg(long, short)]
@@ -227,8 +240,20 @@ struct ExportArgs {
     output: Option<PathBuf>,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum RunListKind {
+    Source,
+    Dependencies,
+    Binary,
+    All,
+}
+
 #[derive(Args, Debug)]
 struct RunsArgs {
+    /// Explicit canonical run listing. Omit to retain the source project summary format.
+    #[arg(long, value_enum)]
+    kind: Option<RunListKind>,
+
     /// Database to list runs from.
     #[arg(long)]
     db: PathBuf,
@@ -276,12 +301,6 @@ impl OutputFormat {
             Self::CyclonedxVex => Some(ReportFormat::CycloneDxVex),
         }
     }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum DepsFormat {
-    Text,
-    Json,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -594,127 +613,110 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
     if !args.path.is_dir() {
         return Err(usage(format!("{} is not a directory", args.path.display())));
     }
+    if args.fail_on_new != FailOn::None && args.baseline.is_none() {
+        return Err(usage("--fail-on-new needs --baseline to compare against"));
+    }
+    // Read and validate before opening storage or writing output, including aliases.
+    let previous = args
+        .baseline
+        .as_deref()
+        .map(dependency_baseline::load)
+        .transpose()
+        .map_err(usage)?;
     let root = args
         .path
         .canonicalize()
-        .map_err(|error| usage(format!("cannot resolve {}: {error}", args.path.display())))?;
-
-    if !quiet {
-        eprintln!("Discovering lockfiles under {}", root.display());
-    }
-    let lockfiles = crate::fs_utils::discover_lockfiles_bounded(
-        &root,
-        &root,
-        &args.ignore_dirs,
-        crate::deps::lockfiles::MAX_LOCKFILES,
-        None,
-    )
-    .map_err(|error| failure(error.to_string()))?;
-    if lockfiles.is_empty() {
-        return Err(failure(format!(
-            "no lockfiles found under {}",
-            root.display()
-        )));
-    }
-
-    let mut dependencies: Vec<Dependency> = Vec::new();
-    let mut parse_errors: Vec<String> = Vec::new();
-    for lockfile in &lockfiles {
-        let name = lockfile
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        let kind = crate::deps::lockfiles::lockfile_kind(name);
-        match crate::deps::lockfiles::parse_lockfile(lockfile, kind) {
-            Ok(parsed) => crate::deps::lockfiles::extend_dependencies_bounded(
-                &mut dependencies,
-                parsed,
-                crate::deps::lockfiles::MAX_DEPENDENCIES,
-            )
-            .map_err(failure)?,
-            Err(error) if crate::deps::lockfiles::is_resource_limit_error(&error) => {
-                return Err(failure(format!("{}: {error}", lockfile.display())));
-            }
-            Err(error) => parse_errors.push(format!("{}: {error}", lockfile.display())),
-        }
-    }
-    crate::deps::ensure_complete_lockfile_coverage(&parse_errors).map_err(failure)?;
-    let dependencies = crate::deps::lockfiles::dedupe_dependencies(dependencies);
-    if !quiet {
-        eprintln!(
-            "Found {} package(s) across {} lockfile(s); querying OSV",
-            dependencies.len(),
-            lockfiles.len()
-        );
-    }
-
+        .map_err(|error| usage(error.to_string()))?;
+    let repository = match &args.db {
+        Some(path) => open_repository(path)?,
+        None => FindingsRepository::open_in_memory().map_err(|error| failure(error.to_string()))?,
+    };
+    let service = FindingsService::new(repository);
     let http = build_http_client()?;
     let osv = crate::deps::osv::OsvClient::new(http.clone());
-    let matches = block_on(osv.query_batch_full(&dependencies))
-        .map_err(|error| failure(format!("OSV query failed: {error}")))?;
-
-    let mut vulnerabilities: Vec<_> = matches.into_values().flatten().collect();
-    // Exploitation and reachability signals: the same sources the desktop
-    // asks, attached best-effort so a failing feed never sinks the report.
-    // The local usage index runs first and needs no network at all.
-    let usage_index = crate::reachability::UsageIndex::for_project(&root, &args.ignore_dirs);
-    let cve_ids: Vec<String> = vulnerabilities
-        .iter()
-        .filter_map(|vulnerability| {
-            crate::exploit::cve_among(
-                std::iter::once(vulnerability.id.as_str())
-                    .chain(vulnerability.aliases.iter().map(String::as_str)),
-            )
-        })
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let (kev, epss, _) = block_on(crate::exploit::fetch(&http, &cve_ids));
-    let (poc, _) = {
-        let cache_dir = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
-        block_on(crate::exploit::fetch_poc_set(&http, &cache_dir))
+    let providers = crate::deps::service::NetworkProviders {
+        osv: &osv,
+        http: &http,
     };
-    for vulnerability in &mut vulnerabilities {
-        vulnerability.direct_usage =
-            usage_index.lookup(&vulnerability.ecosystem, &vulnerability.package_name);
-        if let Some(cve) = crate::exploit::cve_among(
-            std::iter::once(vulnerability.id.as_str())
-                .chain(vulnerability.aliases.iter().map(String::as_str)),
-        ) {
-            let signal = crate::exploit::combine(&kev, &epss, &cve);
-            vulnerability.known_exploited = signal.known_exploited;
-            vulnerability.ransomware = signal.ransomware;
-            vulnerability.epss = signal.epss;
-            vulnerability.epss_percentile = signal.epss_percentile;
-            vulnerability.public_exploit = poc.has(&cve);
-        }
-    }
-    vulnerabilities.sort_by(|left, right| {
-        severity_rank(right.severity.as_deref().unwrap_or(""))
-            .cmp(&severity_rank(left.severity.as_deref().unwrap_or("")))
-            .then_with(|| left.package_name.cmp(&right.package_name))
-            .then_with(|| left.id.cmp(&right.id))
-    });
-
+    // Ephemeral invocations also leave no enrichment cache in the project.
+    let temporary_cache = tempfile::tempdir().map_err(|error| failure(error.to_string()))?;
+    let cache_path = args
+        .db
+        .as_ref()
+        .and_then(|db| db.parent())
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(temporary_cache.path());
+    let cancel = AtomicBool::new(false);
+    let result = block_on(crate::deps::service::scan(
+        crate::deps::service::ScanRequest {
+            root: &root,
+            ignored_dirs: &args.ignore_dirs,
+            offline: args.offline,
+            repository: service.repository(),
+            providers: &providers,
+            cancel: &cancel,
+            events: &StderrEvents { quiet },
+            cache_path,
+        },
+    ))
+    .map_err(failure)?;
     let rendered = match args.format {
-        DepsFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
-            "lockfiles": lockfiles.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
-            "packages": dependencies.len(),
-            "vulnerabilities": vulnerabilities,
-        }))
-        .map_err(|error| failure(error.to_string()))?,
-        DepsFormat::Text => render_deps_text(&lockfiles, &dependencies, &vulnerabilities),
+        OutputFormat::Json => serde_json::to_vec_pretty(&dependency_baseline::report(&result))
+            .map_err(|error| failure(error.to_string()))?,
+        OutputFormat::Text => {
+            let mut bytes = render_deps_text(
+                &result
+                    .summary
+                    .lockfiles_found
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>(),
+                &result.dependencies,
+                &result.vulnerabilities,
+            );
+            bytes.extend_from_slice(
+                format!(
+                    "\nRun {}; advisory coverage complete ({}).\n",
+                    result.summary.run_id.as_deref().unwrap_or("unknown"),
+                    result.summary.advisory_source
+                )
+                .as_bytes(),
+            );
+            for warning in &result.summary.enrichment.warnings {
+                bytes.extend_from_slice(format!("warning: {warning}\n").as_bytes());
+            }
+            bytes
+        }
+        other => render_stored_run(
+            &service,
+            result
+                .summary
+                .run_id
+                .as_deref()
+                .expect("service returns run identity"),
+            other.as_report_format().unwrap(),
+            quiet,
+        )?,
     };
-
     write_output(args.output.as_deref(), &rendered)?;
-
-    Ok(gate(
-        vulnerabilities
+    let existing = gate(
+        result
+            .vulnerabilities
             .iter()
-            .map(|vulnerability| severity_rank(vulnerability.severity.as_deref().unwrap_or(""))),
+            .map(|v| severity_rank(v.severity.as_deref().unwrap_or(""))),
         args.fail_on,
         quiet,
-    ))
+    );
+    let new = gate(
+        result
+            .vulnerabilities
+            .iter()
+            .filter(|v| previous.as_ref().is_some_and(|p| !p.contains(v)))
+            .map(|v| severity_rank(v.severity.as_deref().unwrap_or(""))),
+        args.fail_on_new,
+        quiet,
+    );
+    Ok(if existing == EXIT_OK { new } else { existing })
 }
 
 // ------------------------------------------------------------------- export
@@ -730,6 +732,33 @@ fn run_export(args: &ExportArgs) -> CliResult {
 
 fn run_runs(args: &RunsArgs) -> CliResult {
     let service = FindingsService::new(open_repository(&args.db)?);
+    if let Some(kind) = args.kind {
+        let kind = match kind {
+            RunListKind::Source => Some("source"),
+            RunListKind::Dependencies => Some("dependencies"),
+            RunListKind::Binary => Some("binary"),
+            RunListKind::All => None,
+        };
+        let runs = service
+            .repository()
+            .canonical_list_runs(kind, args.limit)
+            .map_err(|error| failure(error.to_string()))?;
+        let bytes = if args.json {
+            serde_json::to_vec_pretty(&runs).map_err(|error| failure(error.to_string()))?
+        } else {
+            runs.iter()
+                .map(|run| {
+                    format!(
+                        "{} {:?} {:?} {}\n",
+                        run.id, run.kind, run.state, run.target_label
+                    )
+                })
+                .collect::<String>()
+                .into_bytes()
+        };
+        write_output(None, &bytes)?;
+        return Ok(EXIT_OK);
+    }
     let projects = service
         .list_recent_projects(args.limit)
         .map_err(|error| failure(error.to_string()))?;
@@ -831,12 +860,8 @@ fn run_benchmark(args: &BenchmarkArgs, quiet: bool) -> CliResult {
 // ------------------------------------------------------------------ helpers
 
 fn open_repository(path: &Path) -> Result<FindingsRepository, CliError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| failure(format!("cannot create {}: {error}", parent.display())))?;
-        }
-    }
+    // The repository creates missing parents with owner-only permissions. A
+    // generic create_dir_all here creates an insecure parent that it rejects.
     FindingsRepository::open(path)
         .map_err(|error| failure(format!("cannot open {}: {error}", path.display())))
 }
@@ -1207,6 +1232,35 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
+    fn dependency_flags_expose_durable_offline_baseline_and_standards() {
+        Cli::try_parse_from([
+            "oxaudit",
+            "deps",
+            ".",
+            "--db",
+            "runs.sqlite",
+            "--offline",
+            "--baseline",
+            "old.json",
+            "--fail-on-new",
+            "high",
+            "--format",
+            "cyclonedx",
+        ])
+        .expect("shared dependency workflow flags must parse");
+        Cli::try_parse_from([
+            "oxaudit",
+            "runs",
+            "--db",
+            "runs.sqlite",
+            "--kind",
+            "dependencies",
+            "--json",
+        ])
+        .expect("dependency history must be discoverable");
+    }
+
+    #[test]
     fn the_argument_parser_is_internally_consistent() {
         // Catches duplicate short flags, bad defaults, and malformed help long
         // before a user does.
@@ -1319,7 +1373,11 @@ mod tests {
         std::fs::write(&lockfile, "{ this is not JSON").expect("invalid fixture");
         let args = DepsArgs {
             path: directory.path().to_path_buf(),
-            format: DepsFormat::Text,
+            format: OutputFormat::Text,
+            db: None,
+            offline: false,
+            baseline: None,
+            fail_on_new: FailOn::None,
             output: None,
             fail_on: FailOn::None,
             ignore_dirs: Vec::new(),
@@ -1357,7 +1415,11 @@ mod tests {
             .expect("invalid fixture");
         let args = DepsArgs {
             path: directory.path().to_path_buf(),
-            format: DepsFormat::Text,
+            format: OutputFormat::Text,
+            db: None,
+            offline: false,
+            baseline: None,
+            fail_on_new: FailOn::None,
             output: None,
             fail_on: FailOn::None,
             ignore_dirs: Vec::new(),
@@ -1383,7 +1445,11 @@ mod tests {
         .expect("valid empty lockfile");
         let args = DepsArgs {
             path: directory.path().to_path_buf(),
-            format: DepsFormat::Text,
+            format: OutputFormat::Text,
+            db: None,
+            offline: false,
+            baseline: None,
+            fail_on_new: FailOn::None,
             output: None,
             fail_on: FailOn::None,
             ignore_dirs: Vec::new(),
@@ -1406,7 +1472,11 @@ mod tests {
         .expect("malformed lockfile");
         let args = DepsArgs {
             path: directory.path().to_path_buf(),
-            format: DepsFormat::Text,
+            format: OutputFormat::Text,
+            db: None,
+            offline: false,
+            baseline: None,
+            fail_on_new: FailOn::None,
             output: None,
             fail_on: FailOn::None,
             ignore_dirs: Vec::new(),
@@ -1435,7 +1505,11 @@ mod tests {
             .expect("malformed fixture");
         let args = DepsArgs {
             path: directory.path().to_path_buf(),
-            format: DepsFormat::Text,
+            format: OutputFormat::Text,
+            db: None,
+            offline: false,
+            baseline: None,
+            fail_on_new: FailOn::None,
             output: None,
             fail_on: FailOn::None,
             ignore_dirs: Vec::new(),

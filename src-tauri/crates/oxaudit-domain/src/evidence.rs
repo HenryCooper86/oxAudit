@@ -74,6 +74,8 @@ pub struct BinaryMatchEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageDeclarationEvidence {
+    #[serde(default)]
+    pub install_path: Option<String>,
     pub artifact_id: ArtifactId,
     pub ecosystem: String,
     pub package_name: String,
@@ -83,6 +85,8 @@ pub struct PackageDeclarationEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdvisoryMatchEvidence {
+    #[serde(default)]
+    pub install_path: Option<String>,
     pub component_id: ComponentId,
     pub provider_snapshot_id: ProviderSnapshotId,
     pub advisory_id: String,

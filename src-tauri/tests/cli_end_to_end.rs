@@ -855,3 +855,340 @@ fn skipped_or_deleted_baseline_file_is_not_claimed_resolved() {
     );
     assert!(!stderr.contains("resolved"), "{stderr}");
 }
+
+// Dependency fixtures use complete local receipts only; no test calls public providers.
+fn empty_dependency_project() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("package-lock.json"),
+        r#"{"packages":{}}"#,
+    )
+    .unwrap();
+    directory
+}
+
+#[test]
+fn dependency_runs_are_durable_discoverable_and_exportable() {
+    let project = empty_dependency_project();
+    let storage = tempfile::tempdir().unwrap();
+    let db = storage.path().join("private/runs.sqlite");
+    let output = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--db",
+        &db.to_string_lossy(),
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["schemaVersion"], 1);
+    assert_eq!(report["kind"], "dependencies");
+    assert_eq!(report["summary"]["advisoryCoverage"], "complete");
+    let id = report["summary"]["runId"].as_str().unwrap();
+    let listed = run(&[
+        "runs",
+        "--db",
+        &db.to_string_lossy(),
+        "--kind",
+        "dependencies",
+        "--json",
+    ]);
+    assert_eq!(code(&listed), 0);
+    let runs: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(runs[0]["id"], id);
+    assert_eq!(runs[0]["kind"], "dependencies");
+    assert_eq!(runs[0]["state"], "completed");
+    let legacy = run(&["runs", "--db", &db.to_string_lossy(), "--json"]);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&legacy.stdout).unwrap(),
+        serde_json::json!([])
+    );
+    for format in [
+        "sarif",
+        "oxaudit-json",
+        "cyclonedx",
+        "spdx",
+        "openvex",
+        "cyclonedx-vex",
+    ] {
+        let exported = run(&[
+            "export",
+            "--db",
+            &db.to_string_lossy(),
+            "--run",
+            id,
+            "--format",
+            format,
+        ]);
+        assert_eq!(
+            code(&exported),
+            0,
+            "{format}: {}",
+            String::from_utf8_lossy(&exported.stderr)
+        );
+        let _: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+        let direct = run(&[
+            "deps",
+            &project.path().to_string_lossy(),
+            "--offline",
+            "--format",
+            format,
+        ]);
+        assert_eq!(
+            code(&direct),
+            0,
+            "{format}: {}",
+            String::from_utf8_lossy(&direct.stderr)
+        );
+        let _: serde_json::Value = serde_json::from_slice(&direct.stdout).unwrap();
+    }
+}
+
+#[test]
+fn dependency_default_is_ephemeral_and_offline_cache_is_required_for_packages() {
+    let project = empty_dependency_project();
+    let output = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&output), 0);
+    assert_eq!(std::fs::read_dir(project.path()).unwrap().count(), 1);
+    std::fs::write(project.path().join("requirements.txt"), "example==1.0.0\n").unwrap();
+    let output = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&output), 3);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no cached OSV"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn dependency_invalid_baseline_and_missing_gate_never_write_output_or_database() {
+    let project = empty_dependency_project();
+    let storage = tempfile::tempdir().unwrap();
+    let db = storage.path().join("private/runs.sqlite");
+    let output_path = storage.path().join("report.json");
+    for invalid in [
+        r#"{"kind":"source"}"#,
+        "not json",
+        r#"{"schemaVersion":1,"kind":"dependencies","summary":{"advisoryCoverage":"unknown"},"dependencies":[],"vulnerabilities":[]}"#,
+    ] {
+        std::fs::write(&output_path, invalid).unwrap();
+        let output = run(&[
+            "deps",
+            &project.path().to_string_lossy(),
+            "--offline",
+            "--db",
+            &db.to_string_lossy(),
+            "--baseline",
+            &output_path.to_string_lossy(),
+            "--output",
+            &output_path.to_string_lossy(),
+            "--fail-on-new",
+            "high",
+        ]);
+        assert_eq!(code(&output), 2);
+        assert_eq!(std::fs::read_to_string(&output_path).unwrap(), invalid);
+        assert!(!db.exists());
+    }
+    let output = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--output",
+        &output_path.to_string_lossy(),
+        "--fail-on-new",
+        "high",
+    ]);
+    assert_eq!(code(&output), 2);
+    let output = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--baseline",
+        &storage.path().join("missing.json").to_string_lossy(),
+    ]);
+    assert_eq!(code(&output), 2);
+}
+
+fn seed_dependency_receipt(database: &Path) {
+    use sha2::{Digest, Sha256};
+    let _repository =
+        oxaudit_lib::findings::repository::FindingsRepository::open(database).unwrap();
+    let mut results = serde_json::Map::new();
+    let mut keys = Vec::new();
+    for (name, version) in [
+        ("example", "1.0.0"),
+        ("example", "2.0.0"),
+        ("another", "1.0.0"),
+    ] {
+        let key = format!("PyPI\0{name}\0{version}");
+        keys.push(key.clone());
+        results.insert(key, serde_json::json!([{
+            "id":"GHSA-shared", "aliases":["CVE-2026-0001"], "summary":"fixture advisory", "details":"complete local OSV details", "severity":"high", "cvssScore":8.1,
+            "ecosystem":"PyPI", "packageName":name, "installedVersion":version, "fixedVersions":["3.0.0"], "affectedRange":"< 3.0.0", "references":[], "published":null,"modified":null,"lockfile":"original/location"
+        }]));
+    }
+    let payload = serde_json::json!({"schemaVersion":2,"advisoryCoverage":"complete","queryKeys":keys,"results":results,"recordCount":3});
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    rusqlite::Connection::open(database)
+        .unwrap()
+        .execute(
+            "INSERT INTO provider_snapshots VALUES (?1,?2,?3,?4,?5)",
+            rusqlite::params![
+                "provider_fixture",
+                "osv-query",
+                1000,
+                format!("{:x}", Sha256::digest(&bytes)),
+                String::from_utf8(bytes).unwrap()
+            ],
+        )
+        .unwrap();
+}
+
+#[test]
+fn dependency_new_only_gate_tracks_advisory_package_version_and_ignores_lockfile_moves() {
+    let project = empty_dependency_project();
+    let storage = tempfile::tempdir().unwrap();
+    let db = storage.path().join("private/runs.sqlite");
+    seed_dependency_receipt(&db);
+    let baseline = storage.path().join("baseline.json");
+    std::fs::write(project.path().join("requirements.txt"), "example==1.0.0\n").unwrap();
+    let source_secret = "ghp_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    std::fs::write(
+        project.path().join("secrets.js"),
+        format!("const token = '{source_secret}';"),
+    )
+    .unwrap();
+    let first = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--db",
+        &db.to_string_lossy(),
+        "--format",
+        "json",
+        "--output",
+        &baseline.to_string_lossy(),
+    ]);
+    assert_eq!(
+        code(&first),
+        0,
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let initial = std::fs::read(&baseline).unwrap();
+    assert!(!String::from_utf8_lossy(&initial).contains(source_secret));
+    let report: serde_json::Value = serde_json::from_slice(&initial).unwrap();
+    assert_eq!(
+        report["vulnerabilities"].as_array().unwrap().len(),
+        1,
+        "receipt must be filtered to inventory"
+    );
+    assert_eq!(
+        report["vulnerabilities"][0]["details"],
+        "complete local OSV details"
+    );
+    // The same advisory in a second lockfile is existing, while both occurrences survive.
+    std::fs::create_dir(project.path().join("workspace")).unwrap();
+    std::fs::write(
+        project.path().join("workspace/requirements.txt"),
+        "example==1.0.0\n",
+    )
+    .unwrap();
+    let repeated = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--db",
+        &db.to_string_lossy(),
+        "--baseline",
+        &baseline.to_string_lossy(),
+        "--fail-on-new",
+        "high",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&repeated), 0);
+    let repeated_report: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    assert_eq!(
+        repeated_report["vulnerabilities"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(repeated_report["summary"]["packagesQueried"], 1);
+    // A known advisory on a newly introduced package or version is a new identity.
+    for changed in ["another==1.0.0\n", "example==2.0.0\n"] {
+        std::fs::write(project.path().join("requirements.txt"), changed).unwrap();
+        std::fs::write(&baseline, &initial).unwrap();
+        let output = run(&[
+            "deps",
+            &project.path().to_string_lossy(),
+            "--offline",
+            "--db",
+            &db.to_string_lossy(),
+            "--baseline",
+            &baseline.to_string_lossy(),
+            "--fail-on-new",
+            "high",
+            "--format",
+            "json",
+            "--output",
+            &baseline.to_string_lossy(),
+        ]);
+        assert_eq!(
+            code(&output),
+            1,
+            "{changed}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_ne!(
+            std::fs::read(&baseline).unwrap(),
+            initial,
+            "baseline read precedes aliased report output"
+        );
+    }
+    for format in [
+        "sarif",
+        "oxaudit-json",
+        "cyclonedx",
+        "spdx",
+        "openvex",
+        "cyclonedx-vex",
+    ] {
+        let output = run(&[
+            "deps",
+            &project.path().to_string_lossy(),
+            "--offline",
+            "--db",
+            &db.to_string_lossy(),
+            "--format",
+            format,
+        ]);
+        assert_eq!(
+            code(&output),
+            0,
+            "{format}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            stdout(&output).contains("example"),
+            "{format} should retain package evidence"
+        );
+    }
+}

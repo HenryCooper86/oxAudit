@@ -1,0 +1,40 @@
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { expect, test, vi } from 'vitest';
+import { UpgradeDecisions } from './UpgradeDecisions';
+import type { DependencyScanResult, Vulnerability } from '../../lib/types';
+const advisory: Vulnerability={id:'GHSA-one',ecosystem:'npm',packageName:'leaf',installedVersion:'1.0.0',lockfile:'/repo/package-lock.json',summary:'original advisory',details:'complete detail',aliases:[],severity:'high',cvssScore:8,epss:null,epssPercentile:null,knownExploited:false,ransomware:false,publicExploit:false,directUsage:{referenced:null,referencedFiles:0,exampleFile:null},fixedVersions:['1.0.1'],affectedRange:null,references:[],published:null,modified:null};
+const result:DependencyScanResult={summary:{path:'/repo',lockfilesFound:['/repo/package-lock.json'],packagesFound:1,packagesQueried:1,vulnerabilitiesFound:1,durationMs:0},dependencies:[],vulnerabilities:[advisory]};
+test('historical evidence is explicitly unknown, original advisories remain selectable, and recheck is accessible',()=>{
+  let selected: Vulnerability|null=null;let rechecked=false;
+  render(<UpgradeDecisions result={result} onSelect={v=>{selected=v;}} onRecheck={()=>{rechecked=true;}} disabled={false}/>);
+  expect(screen.getByText(/Advisory source: unknown/)).toBeInTheDocument();
+  expect(screen.getByText(/Absent KEV, EPSS, and public-exploit signals are unknown/)).toBeInTheDocument();
+  expect(screen.getByText(/Manual decision: no supplied candidate/, {selector:"p"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'Review GHSA-one'}));expect(selected).toBe(advisory);
+  fireEvent.click(screen.getByRole('button',{name:'Recheck dependencies'}));expect(rechecked).toBe(true);
+  expect(screen.queryByRole('button',{name:'Copy npm command'})).not.toBeInTheDocument();
+});
+test('group detail preserves location and copies a checklist, displaying partial enrichment warnings',async()=>{
+  const copy=vi.fn().mockResolvedValue(undefined);Object.defineProperty(navigator,'clipboard',{value:{writeText:copy},configurable:true});
+  render(<UpgradeDecisions result={{...result,summary:{...result.summary,advisorySource:'cache',advisoryFetchedAtMs:1000,enrichment:{status:'partial',checkedAtMs:2000,pocCacheUpdatedAtMs:null,warnings:['EPSS response could not be read']}}}} onSelect={()=>{}} onRecheck={()=>{}} disabled/>);
+  expect(screen.getByText('EPSS response could not be read')).toBeInTheDocument();
+  expect(screen.getByText(/Cached advisory evidence/)).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Recheck dependencies'})).toBeDisabled();
+  fireEvent.click(screen.getByRole('button',{name:'Copy remediation checklist'}));
+  expect(await screen.findByRole('status')).toHaveTextContent('Copied remediation checklist');
+  expect(copy.mock.calls[0][0]).toContain('/repo/package-lock.json');
+  expect(within(screen.getByLabelText('Selected upgrade group')).getByText('/repo/package-lock.json')).toBeInTheDocument();
+});
+test('distinct installation groups navigate and direct command copy never executes an upgrade',async()=>{
+  const copy=vi.fn().mockResolvedValue(undefined);Object.defineProperty(navigator,'clipboard',{value:{writeText:copy},configurable:true});
+  const direct:Vulnerability={...advisory,affectedEvidence:{ecosystem:'npm',packageName:'leaf',records:[{package:{ecosystem:'npm',name:'leaf'},ranges:[{type:'SEMVER',events:[{introduced:'0'},{fixed:'1.0.1'}]}]}]},occurrence:{status:'available',warnings:[],installPath:'node_modules/leaf',paths:[{workspace:'',entryPoint:'leaf',chain:[{name:'leaf',packageName:'leaf',installPath:'node_modules/leaf',dependencyType:'dev',declared:'^1.0.0'}]}]}};
+  const other={...direct,lockfile:'/repo/other/package-lock.json',details:'other installation'};
+  let selection:Vulnerability|null=null;
+  render(<UpgradeDecisions result={{...result,vulnerabilities:[direct,other]}} onSelect={v=>{selection=v;}} onRecheck={()=>{}} disabled={false}/>);
+  expect(screen.getByRole('heading',{name:'Upgrade decisions · 2 groups'})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:/leaf@1.0.0.*\/repo\/other\/package-lock.json/}));
+  fireEvent.click(screen.getByRole('button',{name:'Review GHSA-one'}));expect(selection).toBe(other);
+  fireEvent.click(screen.getByRole('button',{name:'Copy npm command'}));
+  expect(await screen.findByRole('status')).toHaveTextContent('Copied npm command');
+  expect(copy.mock.calls[0][0]).toBe("npm install --ignore-scripts --save-dev -- 'leaf@1.0.1'");
+});

@@ -2,6 +2,7 @@ use oxaudit_application::ObservationRecord;
 use oxaudit_domain::{Artifact, Component, Evidence, Run};
 
 pub mod compliance;
+mod dependencies;
 pub mod import;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +93,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                         | oxaudit_domain::ObservationKind::SemanticDataFlow
                 )
             });
-            let results =
+            let mut results =
                 applicable
                     .map(|record| {
                         let location = record.evidence.iter().find_map(|evidence| match &evidence
@@ -140,8 +141,11 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                         result
                     })
                     .collect::<Vec<_>>();
+            if data.run.kind == oxaudit_domain::RunKind::Dependencies {
+                results.extend(dependencies::sarif_results(data)?);
+            }
             if results.is_empty() {
-                warnings.push("This run has no source, secret, policy, or semantic observations that map to SARIF.".into());
+                warnings.push("This run has no observations that map to SARIF.".into());
             }
             // `tool.driver.rules` is where a SARIF consumer finds what a rule
             // means and how to fix it. Emitting only the rules that fired keeps
@@ -214,6 +218,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             let vulnerabilities = data.observations.iter().filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch).map(|record| serde_json::json!({
                 "id": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()),
                 "analysis": { "state": "exploitable", "detail": "Affected-range match observed by oxAudit; review status was not silently inferred." },
+                "affects": dependencies::affected_components(data, record).iter().map(|component| serde_json::json!({"ref": component.id.as_str()})).collect::<Vec<_>>(),
                 "properties": [{ "name": "oxaudit:observationId", "value": record.observation.id.as_str() }]
             })).collect::<Vec<_>>();
             serde_json::json!({
@@ -250,7 +255,7 @@ fn vex_statements(data: &ReportData) -> Vec<serde_json::Value> {
         .filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch)
         .map(|record| serde_json::json!({
             "vulnerability": { "name": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()) },
-            "products": data.components.iter().map(|component| serde_json::json!({ "@id": component.purl.clone().unwrap_or_else(|| format!("pkg:generic/{}@{}", component.name, component.version.clone().unwrap_or_else(|| "unknown".into()))) })).collect::<Vec<_>>(),
+            "products": dependencies::affected_components(data, record).iter().map(|component| serde_json::json!({ "@id": component.purl.clone().unwrap_or_else(|| format!("pkg:generic/{}@{}", component.name, component.version.clone().unwrap_or_else(|| "unknown".into()))) })).collect::<Vec<_>>(),
             "status": "affected",
             "status_notes": "Affected-range match observed; no analyst disposition was inferred."
         }))

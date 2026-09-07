@@ -469,12 +469,14 @@ mod tests {
     fn dedupe_keeps_first() {
         let deps = vec![
             crate::models::Dependency {
+                occurrence: Default::default(),
                 ecosystem: "npm".into(),
                 name: "lodash".into(),
                 version: "4.17.15".into(),
                 lockfile: "a".into(),
             },
             crate::models::Dependency {
+                occurrence: Default::default(),
                 ecosystem: "npm".into(),
                 name: "lodash".into(),
                 version: "4.17.15".into(),

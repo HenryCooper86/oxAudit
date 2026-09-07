@@ -390,53 +390,62 @@ fn parse_vulns(
         // severity: prefer CVSS score, fall back to affected[].database_specific.severity
         let (severity, cvss_score) = extract_cvss(&v);
 
-        // fixed versions + affected range from affected[].ranges[].events
-        let mut fixed: Vec<String> = Vec::new();
-        let mut range_parts: Vec<String> = Vec::new();
-        if let Some(affected) = v.get("affected").and_then(|a| a.as_array()) {
-            for aff in affected {
-                if let Some(ranges) = aff.get("ranges").and_then(|r| r.as_array()) {
-                    for r in ranges {
-                        let mut introduced: Option<String> = None;
-                        let mut fixed_v: Option<String> = None;
-                        if let Some(events) = r.get("events").and_then(|e| e.as_array()) {
-                            for ev in events {
-                                if let Some(i) = ev.get("introduced").and_then(|x| x.as_str()) {
-                                    introduced = Some(i.to_string());
-                                }
-                                if let Some(f) = ev.get("fixed").and_then(|x| x.as_str()) {
-                                    fixed_v = Some(f.to_string());
-                                }
-                                if let Some(l) = ev.get("last_affected").and_then(|x| x.as_str()) {
-                                    introduced = Some("0".into());
-                                    fixed_v = Some(format!("{l} (last affected)"));
-                                }
-                            }
-                        }
-                        match (introduced, fixed_v) {
-                            (Some(i), Some(f)) => {
-                                if !f.contains("last affected") {
-                                    fixed.push(f.clone());
-                                }
-                                range_parts.push(format!(">= {i}, < {f}"));
-                            }
-                            (Some(i), None) => {
-                                range_parts.push(format!(">= {i}"));
-                            }
-                            (None, Some(f)) => {
-                                fixed.push(f.clone());
-                                range_parts.push(format!("< {f}"));
-                            }
-                            _ => {}
-                        }
+        // Keep matching package entries intact: ranges and explicit versions are a union.
+        // Display strings are descriptive only; consumers must use structured evidence.
+        let records = v
+            .get("affected")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|aff| {
+                aff.pointer("/package/ecosystem").and_then(Value::as_str) == Some(ecosystem)
+                    && aff.pointer("/package/name").and_then(Value::as_str) == Some(package_name)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let affected_evidence = if records.is_empty() {
+            None
+        } else {
+            Some(crate::models::AffectedEvidence {
+                ecosystem: ecosystem.into(),
+                package_name: package_name.into(),
+                records: records.clone(),
+            })
+        };
+        let mut fixed = Vec::new();
+        let mut range_parts = Vec::new();
+        for aff in &records {
+            for range in aff
+                .get("ranges")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let kind = range
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let mut events = Vec::new();
+                for event in range
+                    .get("events")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(fix) = event.get("fixed").and_then(Value::as_str) {
+                        fixed.push(fix.to_owned());
                     }
+                    events.push(event.to_string());
                 }
+                range_parts.push(format!("{kind}: {}", events.join(" → ")));
             }
         }
         fixed.sort();
         fixed.dedup();
 
         out.push(Vulnerability {
+            occurrence: Default::default(),
+            affected_evidence,
             id,
             aliases,
             summary,
@@ -649,6 +658,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fixes_match_queried_package_and_preserve_every_interval() {
+        let result = super::parse_vulns(
+            vec![serde_json::json!({"id":"OSV-test","affected":[
+              {"package":{"ecosystem":"npm","name":"other"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"9.0.0"}]}]},
+              {"package":{"ecosystem":"npm","name":"target"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"1.0.1"},{"introduced":"2.0.0"},{"fixed":"2.0.1"}]}]}
+            ]})],
+            "npm",
+            "target",
+            "1.0.0",
+        );
+        assert_eq!(result[0].fixed_versions, vec!["1.0.1", "2.0.1"]);
+        let evidence = result[0].affected_evidence.as_ref().unwrap();
+        assert_eq!(evidence.records.len(), 1);
+        assert_eq!(
+            evidence.records[0]["ranges"][0]["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(evidence.records[0]["package"]["name"], "target");
+        let decoded: crate::models::Vulnerability =
+            serde_json::from_value(serde_json::to_value(&result[0]).unwrap()).unwrap();
+        assert_eq!(decoded.affected_evidence.unwrap().records, evidence.records);
+    }
+
+    #[test]
     fn cvss31_vectors() {
         // well-known vectors from NVD calculator
         assert_eq!(
@@ -677,6 +713,7 @@ mod tests {
     #[test]
     fn query_keys_and_count_match_the_dependencies_sent_to_osv() {
         let dependency = |ecosystem: &str, name: &str, version: &str| Dependency {
+            occurrence: Default::default(),
             ecosystem: ecosystem.into(),
             name: name.into(),
             version: version.into(),
