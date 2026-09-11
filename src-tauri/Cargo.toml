@@ -102,8 +102,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 csv = "1"
-dirs = "6"
-toml = "0.8"
+dirs = "7"
+toml = "1.1"
 regex = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 libc = "0.2"
@@ -111,8 +111,8 @@ walkdir = "2"
 ignore = "0.4"
 rayon = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "stream"] }
-sha2 = "0.10"
-sha1 = "0.10"
+sha2 = "0.11"
+sha1 = "0.11"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -122,11 +122,11 @@ log = "0.4"
 percent-encoding = "2"
 tokio = { version = "1", features = ["time", "rt-multi-thread", "macros", "process", "io-util", "net"] }
 futures = "0.3"
-printpdf = { version = "0.8.2", default-features = false }
+printpdf = { version = "0.12.8", default-features = false }
 keyring = { version = "3.6.3", default-features = false }
 zeroize = "1.8"
 clap = { version = "4", features = ["derive"] }
-tree-sitter = "0.26.13"
+tree-sitter = "0.27.0"
 # Each grammar is optional and selected by a `grammar-*` feature. See the
 # [features] section for what a build without one actually does.
 tree-sitter-javascript = { version = "0.25.0", optional = true }
