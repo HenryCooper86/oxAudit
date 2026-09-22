@@ -187,7 +187,7 @@ async fn run_native(
 
     let scanned = native::scan(target, cancel.clone(), on_progress.clone())?;
     let mut result = scanned.result;
-    let mut notes = Vec::new();
+    let mut notes = scanned.notes;
 
     let Some(cve) = cve else {
         if !scanned.queries.is_empty() {

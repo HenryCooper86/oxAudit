@@ -21,6 +21,7 @@
 
 pub mod bytes;
 pub mod enrich;
+pub mod extract;
 pub mod filetype;
 pub mod package_note;
 pub mod scan;

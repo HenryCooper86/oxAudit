@@ -21,6 +21,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 use walkdir::WalkDir;
 
+use super::extract;
 use super::filetype::{self, Classification, PROBE_BYTES};
 use super::package_note::{self, upstream_version};
 use super::signature::{Evidence, SignatureSet, SIGNATURES};
@@ -80,8 +81,13 @@ pub struct Detection {
 }
 
 /// Read a file's prefix, decide whether it is worth scanning, and if so pull
-/// out its detections.
-pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
+/// out its detections — including everything inside it, when it is an
+/// archive. Notes about extraction budgets land in `notes`.
+pub fn scan_file(
+    path: &Path,
+    signatures: &SignatureSet,
+    notes: &mut Vec<String>,
+) -> Vec<Detection> {
     let Ok(file) = std::fs::File::open(path) else {
         return Vec::new();
     };
@@ -91,14 +97,71 @@ pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
     let Ok(extracted) = strings::read_capped(file) else {
         return Vec::new();
     };
-    let bytes = &extracted.bytes;
 
+    let display = path.to_string_lossy().into_owned();
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    scan_buffer(
+        &display,
+        &file_name,
+        &extracted.bytes,
+        extracted.truncated,
+        signatures,
+        notes,
+    )
+}
+
+/// The scan of one already-read buffer: classification, extraction when the
+/// buffer is an archive, package-note and signature detection otherwise.
+fn scan_buffer(
+    display: &str,
+    file_name: &str,
+    bytes: &[u8],
+    truncated: bool,
+    signatures: &SignatureSet,
+    notes: &mut Vec<String>,
+) -> Vec<Detection> {
     let classification = filetype::classify(&bytes[..bytes.len().min(PROBE_BYTES)]);
     if !classification.is_scannable() {
         return Vec::new();
     }
 
-    let display = path.to_string_lossy().into_owned();
+    if let Classification::Archive(_) = classification {
+        let budget = extract::ExtractBudget::default();
+        let extracted = extract::extract(file_name, bytes, &budget);
+        if !extracted.members.is_empty() {
+            if let Some(note) = extracted.stats.note(display) {
+                notes.push(note);
+            }
+            let mut detections = Vec::new();
+            for member in &extracted.members {
+                let member_name = member
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&member.path)
+                    .to_string();
+                detections.extend(scan_buffer(
+                    &member.path,
+                    &member_name,
+                    &member.bytes,
+                    false,
+                    signatures,
+                    notes,
+                ));
+            }
+            return detections;
+        }
+        // An archive that yielded nothing — empty, unreadable, or stopped by
+        // a budget before the first member — falls back to scanning its own
+        // bytes, which is what this scanner did before extraction existed.
+        if let Some(note) = extracted.stats.note(display) {
+            notes.push(note);
+        }
+    }
+
     let mut detections = Vec::new();
 
     if matches!(
@@ -123,20 +186,16 @@ pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
                 raw_version: (!raw.is_empty()).then_some(raw),
                 ecosystem: super::enrich::osv_ecosystem(&note.kind, &note.os),
                 package_name: Some(note.name),
-                path: display.clone(),
+                path: display.to_string(),
                 source: DetectionSource::PackageNote,
-                truncated: extracted.truncated,
+                truncated,
             });
         }
     }
 
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let blob = strings::extract(bytes);
 
-    for hit in signatures.detect(&file_name, &blob, bytes) {
+    for hit in signatures.detect(file_name, &blob, bytes) {
         detections.push(Detection {
             vendor: hit.vendor,
             product: hit.product,
@@ -144,9 +203,9 @@ pub fn scan_file(path: &Path, signatures: &SignatureSet) -> Vec<Detection> {
             version: hit.version,
             ecosystem: None,
             package_name: None,
-            path: display.clone(),
+            path: display.to_string(),
             source: hit.evidence.into(),
-            truncated: extracted.truncated,
+            truncated,
         });
     }
 
@@ -278,6 +337,9 @@ pub struct NativeScan {
     /// One entry per component that can be looked up, carrying both version
     /// forms and the ecosystem — see [`super::enrich`].
     pub queries: Vec<super::enrich::ComponentQuery>,
+    /// What extraction did, when it did anything: budgets hit, members
+    /// skipped. Honest coverage statements, not decoration.
+    pub notes: Vec<String>,
 }
 
 /// Scan a file or directory.
@@ -296,6 +358,7 @@ pub fn scan(
         .thread_name(|index| format!("oxaudit-binscan-{index}"))
         .build()
         .map_err(|error| format!("cannot prepare binary scan workers: {error}"))?;
+    let extraction_notes = std::sync::Mutex::new(Vec::<String>::new());
     let detections: Vec<Detection> = pool.install(|| {
         files
             .par_iter()
@@ -303,21 +366,30 @@ pub fn scan(
                 if cancel.load(Ordering::Relaxed) {
                     return Vec::new().into_iter();
                 }
-                scan_file(path, signatures).into_iter()
+                let mut file_notes = Vec::new();
+                let detections = scan_file(path, signatures, &mut file_notes);
+                if !file_notes.is_empty() {
+                    if let Ok(mut notes) = extraction_notes.lock() {
+                        notes.extend(file_notes);
+                    }
+                }
+                detections.into_iter()
             })
             .collect()
     });
 
     if cancel.load(Ordering::Relaxed) {
-        return Err("scan cancelled".to_string());
+        return Err("scan cancelled".into());
     }
 
     let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
     on_progress(format!("{} components detected", components.len()));
+    let notes = extraction_notes.into_inner().unwrap_or_default();
 
     Ok(NativeScan {
         queries,
+        notes,
         result: BinaryScanResult {
             target: root.to_string_lossy().into_owned(),
             summary: BinaryScanSummary {
@@ -487,6 +559,87 @@ mod tests {
         assert_eq!(result.components[0].product, "busybox");
         assert_eq!(result.components[0].version, "1.38.0");
         assert_eq!(result.components[0].detected_by, vec![NATIVE]);
+    }
+
+    #[test]
+    fn a_firmware_archive_is_scanned_through_its_members() {
+        // The gap this closes: a vendor firmware image is one opaque file,
+        // and the components inside it used to be invisible.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut member = vec![0u8, 0, 0, 0];
+        member.extend_from_slice(b"BusyBox is a multi-call binary\0BusyBox v1.38.0 (2026-05-13)\0");
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(member.len() as u64);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "bin/busybox", member.as_slice())
+            .expect("tar member");
+        let tar = builder.into_inner().expect("tar bytes");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, &tar).expect("gzip");
+        let gz = encoder.finish().expect("gzip bytes");
+        std::fs::write(dir.path().join("fw.tar.gz"), &gz).expect("write archive");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+        assert_eq!(scanned.result.components.len(), 1);
+        assert_eq!(scanned.result.components[0].product, "busybox");
+        assert_eq!(scanned.result.components[0].version, "1.38.0");
+        // The finding names the member, not the container.
+        assert_eq!(
+            scanned.result.components[0].paths,
+            vec!["fw.tar!/bin/busybox".to_string()]
+        );
+        // Extraction did something worth saying.
+        assert!(
+            scanned
+                .notes
+                .iter()
+                .any(|note| note.contains("extracted 1 member")),
+            "{:?}",
+            scanned.notes
+        );
+    }
+
+    #[test]
+    fn a_saved_container_image_finds_components_in_its_layers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut member = vec![0u8, 0, 0, 0];
+        member.extend_from_slice(b"BusyBox is a multi-call binary\0BusyBox v1.36.1 (2024-01-01)\0");
+        let mut layer_builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(member.len() as u64);
+        header.set_cksum();
+        layer_builder
+            .append_data(&mut header, "bin/busybox", member.as_slice())
+            .expect("layer member");
+        let layer = layer_builder.into_inner().expect("layer tar");
+        let mut image_builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(layer.len() as u64);
+        header.set_cksum();
+        image_builder
+            .append_data(&mut header, "layer.tar", layer.as_slice())
+            .expect("image member");
+        let image = image_builder.into_inner().expect("image tar");
+        std::fs::write(dir.path().join("image.tar"), &image).expect("write image");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+        assert_eq!(scanned.result.components.len(), 1);
+        assert_eq!(
+            scanned.result.components[0].paths,
+            vec!["image.tar!/layer.tar!/bin/busybox".to_string()]
+        );
     }
 
     #[test]

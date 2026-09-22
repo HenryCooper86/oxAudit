@@ -16,8 +16,12 @@
 pub enum Classification {
     /// A recognized executable or shared-object format.
     Executable(Format),
+    /// An archive or compressed stream the extractor can open. Scanned via
+    /// its members; raw strings are only read when extraction yields
+    /// nothing, so a member's finding names the member, not the container.
+    Archive(ArchiveKind),
     /// Binary data with no header we recognize — a firmware image, a resource
-    /// blob, a compressed archive. Worth scanning.
+    /// blob. Worth scanning.
     OpaqueBinary,
     /// Text. Skipped: a version string in a README is not evidence that this
     /// build of the library is present.
@@ -35,9 +39,21 @@ pub enum Format {
     Elf,
     MachO,
     Pe,
-    /// A Java class or jar; version strings live in the constant pool.
+    /// A Java class file; version strings live in the constant pool.
     Java,
-    /// `.a` / `.deb` static archive.
+}
+
+/// Which archive family a payload belongs to, by magic bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveKind {
+    /// POSIX/GNU tar, including inside any compression wrapper.
+    Tar,
+    Gzip,
+    Xz,
+    Zstd,
+    Bzip2,
+    Zip,
+    /// An `ar` archive — a `.a` static library or a `.deb` package.
     Ar,
 }
 
@@ -46,7 +62,9 @@ impl Classification {
     pub fn is_scannable(self) -> bool {
         matches!(
             self,
-            Classification::Executable(_) | Classification::OpaqueBinary
+            Classification::Executable(_)
+                | Classification::OpaqueBinary
+                | Classification::Archive(_)
         )
     }
 }
@@ -63,6 +81,9 @@ pub fn classify(prefix: &[u8]) -> Classification {
     if let Some(format) = executable_format(prefix) {
         return Classification::Executable(format);
     }
+    if let Some(kind) = archive_kind(prefix) {
+        return Classification::Archive(kind);
+    }
     // gettext MO magic, either endianness (0x950412de).
     if prefix.starts_with(&[0xde, 0x12, 0x04, 0x95])
         || prefix.starts_with(&[0x95, 0x04, 0x12, 0xde])
@@ -76,12 +97,41 @@ pub fn classify(prefix: &[u8]) -> Classification {
     }
 }
 
+/// Recognize an archive family by magic. `ar` moved here from the executable
+/// formats because its members — not its own strings — are what matters.
+pub fn archive_kind(prefix: &[u8]) -> Option<ArchiveKind> {
+    if prefix.starts_with(b"\x1f\x8b") {
+        return Some(ArchiveKind::Gzip);
+    }
+    if prefix.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
+        return Some(ArchiveKind::Xz);
+    }
+    if prefix.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        return Some(ArchiveKind::Zstd);
+    }
+    if prefix.starts_with(b"BZh") && prefix.len() > 4 && prefix[3].is_ascii_digit() {
+        return Some(ArchiveKind::Bzip2);
+    }
+    if prefix.starts_with(b"PK\x03\x04")
+        || prefix.starts_with(b"PK\x05\x06")
+        || prefix.starts_with(b"PK\x07\x08")
+    {
+        return Some(ArchiveKind::Zip);
+    }
+    if prefix.starts_with(b"!<arch>\n") {
+        return Some(ArchiveKind::Ar);
+    }
+    // The tar magic sits at offset 257 (`ustar`), written by both POSIX and
+    // GNU tar; ancient v7 tar predates it and stays an opaque blob.
+    if prefix.len() >= 262 && &prefix[257..262] == b"ustar" {
+        return Some(ArchiveKind::Tar);
+    }
+    None
+}
+
 fn executable_format(prefix: &[u8]) -> Option<Format> {
     if prefix.starts_with(b"\x7fELF") {
         return Some(Format::Elf);
-    }
-    if prefix.starts_with(b"!<arch>\n") {
-        return Some(Format::Ar);
     }
     // Java class files and the ZIP-based jar share no magic; only the class
     // file is identified here. A jar reads as OpaqueBinary, which still gets
@@ -193,10 +243,63 @@ mod tests {
     #[test]
     fn headerless_binary_data_is_still_scanned() {
         // Firmware images are the reason this scanner exists and they rarely
-        // carry a header we know.
-        let blob = [0x1fu8, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xfe];
+        // carry a header we know. This blob carries none of the archive
+        // magics either.
+        let blob = [0x00u8, 0x01, 0x02, 0xfe, 0xff, 0x80, 0x7f, 0x00, 0x11];
         assert_eq!(classify(&blob), Classification::OpaqueBinary);
         assert!(classify(&blob).is_scannable());
+    }
+
+    #[test]
+    fn archives_are_recognized_by_magic_and_remain_scannable() {
+        let tar = {
+            let mut bytes = vec![0u8; 600];
+            bytes[257..262].copy_from_slice(b"ustar");
+            bytes
+        };
+        assert_eq!(classify(&tar), Classification::Archive(ArchiveKind::Tar));
+        assert_eq!(
+            classify(b"\x1f\x8b\x08\x00\x00\x00\x00\x00"),
+            Classification::Archive(ArchiveKind::Gzip)
+        );
+        assert_eq!(
+            classify(&[0xfd, b'7', b'z', b'X', b'Z', 0x00, 0x00, 0x01]),
+            Classification::Archive(ArchiveKind::Xz)
+        );
+        assert_eq!(
+            classify(&[0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00]),
+            Classification::Archive(ArchiveKind::Zstd)
+        );
+        assert_eq!(
+            classify(b"BZh9aaaa"),
+            Classification::Archive(ArchiveKind::Bzip2)
+        );
+        assert_eq!(
+            classify(b"PK\x03\x04\x14\x00\x00\x00"),
+            Classification::Archive(ArchiveKind::Zip)
+        );
+        assert_eq!(
+            classify(b"!<arch>\ndebian-binary"),
+            Classification::Archive(ArchiveKind::Ar)
+        );
+        for kind in [
+            ArchiveKind::Tar,
+            ArchiveKind::Gzip,
+            ArchiveKind::Xz,
+            ArchiveKind::Zstd,
+            ArchiveKind::Bzip2,
+            ArchiveKind::Zip,
+            ArchiveKind::Ar,
+        ] {
+            assert!(Classification::Archive(kind).is_scannable());
+        }
+    }
+
+    #[test]
+    fn a_tar_without_the_ustar_magic_stays_opaque() {
+        // Ancient v7 tar predates the magic; it is scanned raw rather than
+        // misparsed, and a 300-byte blob of zeros is not a tar by default.
+        assert_eq!(classify(&[0u8; 300]), Classification::OpaqueBinary);
     }
 
     #[test]

@@ -117,9 +117,11 @@ merge into one row today.
 - **Signatures are build-dependent.** cve-bin-tool misses zstd on Homebrew
   because its checker requires the version adjacent to an error string and that
   build lays it out differently. Ours will have equivalent blind spots.
-- **A detection is not a vulnerability.** The scanner reports components; CVE
-  enrichment through oxAudit's existing NVD and OSV clients is the next step and
-  is not built yet.
+- **A detection is not a vulnerability.** The scanner reports components;
+  CVE enrichment runs through oxAudit's existing NVD and OSV clients
+  (`native/enrich.rs`: signature detections to NVD by CPE, package-note
+  detections to OSV by distro ecosystem, then KEV/EPSS/Exploit-DB signals on
+  whatever was found).
 
 
 ## 6. Versions compiled in as numbers
@@ -420,10 +422,20 @@ only **1.1%** of the image is printable. The payload is an xz-compressed
 squashfs at `0x1f8718`; the readable remainder is the OpenWrt metadata JSON and
 a build id. There is genuinely nothing to read.
 
-**oxAudit does not extract filesystems or archives.** This is the one thing
-cve-bin-tool does that we do not, and on a vendor firmware blob it is the
-difference between 0 findings and 28. Extraction has to happen first —
-`unsquashfs`, `binwalk` or equivalent. Worth making explicit in the UI.
+**oxAudit extracts archives, not filesystems.** Since 2026-09-22 the native
+scanner opens tar (and anything wrapped around one — `.tar.gz`, `.tar.xz`,
+`.tar.zst`, `.tar.bz2`), zip, gzip, xz, zstd, bzip2, and `ar` — which covers
+`.deb` packages, `.a` static libraries, and a saved `docker`/OCI image (a tar
+of layer tars) — in memory, with depth, member-count, per-member, and
+total-expansion budgets that a decompression bomb trips loudly rather than
+fatally. Members scan under virtual paths (`image.tar!/layer.tar!/bin/busybox`),
+directories/symlinks/whiteouts are skipped rather than honored, and nothing is
+written to disk. What it still does not do is unpack *filesystem* images —
+squashfs, CramFS, UBI — the binwalk/unsquashfs territory; those need their own
+extractors with their own fuzzing stories, and they still scan as opaque
+blobs. For this image that means the squashfs payload remains invisible until
+it is unpacked, exactly as this section originally recorded when *nothing*
+was extracted.
 
 ### Extracted, it finds real vulnerabilities
 
