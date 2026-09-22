@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -26,6 +26,9 @@ pub fn lockfile_kind(name: &str) -> &'static str {
         "composer.lock" => "composer",
         "pom.xml" => "maven",
         "requirements.txt" => "pip",
+        "gradle.lockfile" => "gradle",
+        "packages.lock.json" => "nuget",
+        "poetry.lock" => "poetry",
         _ => "unknown",
     }
 }
@@ -36,10 +39,11 @@ pub fn ecosystem_for_kind(kind: &str) -> &'static str {
         "npm" | "yarn" | "pnpm" => "npm",
         "cargo" => "crates.io",
         "go" => "Go",
-        "pipenv" | "pip" => "PyPI",
+        "pipenv" | "pip" | "poetry" => "PyPI",
         "bundler" => "RubyGems",
         "composer" => "Packagist",
-        "maven" => "Maven",
+        "maven" | "gradle" => "Maven",
+        "nuget" => "NuGet",
         _ => "unknown",
     }
 }
@@ -99,6 +103,9 @@ fn parse_lockfile_with_limit(
         "composer.lock" => parse_composer_lock(&content)?,
         "pom.xml" => parse_pom_xml(&content)?,
         "requirements.txt" => parse_requirements(&content)?,
+        "gradle.lockfile" => parse_gradle_lockfile(&content)?,
+        "packages.lock.json" => parse_packages_lock_json(&content)?,
+        "poetry.lock" => parse_poetry_lock(&content)?,
         _ => return Err("unsupported lockfile".into()),
     };
 
@@ -589,6 +596,104 @@ fn parse_requirements(content: &str) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
+/// Gradle's dependency-locking format: one `group:artifact:version=classifiers`
+/// entry per resolved module, grouped by module with a blank line and a
+/// `# comment` header between groups. Coordinates become the same
+/// `group:artifact` OSV Maven name a `pom.xml` produces.
+fn parse_gradle_lockfile(content: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((coordinate, _classifiers)) = line.split_once('=') else {
+            continue;
+        };
+        // `empty=` is Gradle's marker for a module with no dependencies.
+        if coordinate == "empty" {
+            continue;
+        }
+        let parts: Vec<&str> = coordinate.split(':').collect();
+        if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
+            continue;
+        }
+        // Extra colon-separated segments exist for classifier coordinates
+        // (`group:artifact:version:classifier`); the first three fields are
+        // the identity OSV matches on.
+        out.push((format!("{}:{}", parts[0], parts[1]), parts[2].to_string()));
+    }
+    if out.is_empty() {
+        return Err("no locked modules found in gradle.lockfile".into());
+    }
+    Ok(out)
+}
+
+/// NuGet's restore lock format. Every target framework (including RID-specific
+/// ones like `net8.0/linux-x64`) repeats the packages that apply to it; the
+/// same pinned package under several targets is one dependency. Project
+/// references carry no `resolved` version and are not registry packages.
+fn parse_packages_lock_json(content: &str) -> Result<Vec<(String, String)>, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(content).map_err(|e| format!("invalid packages.lock.json: {e}"))?;
+    let dependencies = root
+        .get("dependencies")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "invalid packages.lock.json: no dependencies inventory".to_string())?;
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for (_framework, packages) in dependencies {
+        let Some(packages) = packages.as_object() else {
+            return Err("invalid packages.lock.json: framework inventory must be an object".into());
+        };
+        for (name, details) in packages {
+            let Some(version) = details.get("resolved").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if name.trim().is_empty() || version.trim().is_empty() {
+                continue;
+            }
+            if seen.insert((name.clone(), version.to_string())) {
+                out.push((name.clone(), version.to_string()));
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err("no packages found in packages.lock.json".into());
+    }
+    Ok(out)
+}
+
+/// Poetry's lock format: `[[package]]` tables with `name` and `version`, the
+/// same shape a `Cargo.lock` carries. Optional and dev packages are pinned
+/// too, so they stay in the inventory.
+fn parse_poetry_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+    let root: toml::Value =
+        toml::from_str(content).map_err(|e| format!("invalid poetry.lock: {e}"))?;
+    let mut out = Vec::new();
+    if let Some(packages) = root.get("package").and_then(|p| p.as_array()) {
+        for pkg in packages {
+            let name = pkg
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let version = pkg
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !name.is_empty() && !version.is_empty() {
+                out.push((name, version));
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err("no packages found in poetry.lock".into());
+    }
+    Ok(out)
+}
+
 /// Deduplicate dependencies by (ecosystem, name, version), keeping first occurrence.
 pub fn dedupe_dependencies(deps: Vec<Dependency>) -> Vec<Dependency> {
     let mut seen: BTreeMap<(String, String, String), Dependency> = BTreeMap::new();
@@ -602,7 +707,8 @@ pub fn dedupe_dependencies(deps: Vec<Dependency>) -> Vec<Dependency> {
 #[cfg(test)]
 mod pom_tests {
     use super::{
-        extend_dependencies_bounded, parse_lockfile, parse_lockfile_with_limit, parse_package_lock,
+        extend_dependencies_bounded, parse_gradle_lockfile, parse_lockfile,
+        parse_lockfile_with_limit, parse_package_lock, parse_packages_lock_json, parse_poetry_lock,
         parse_pom_xml,
     };
 
@@ -1012,5 +1118,203 @@ mod pom_tests {
         );
         let out = parse_pom_xml(&xml).expect("attributes are skipped, not enumerated");
         assert_eq!(out, vec![("g:a".into(), "1".into())]);
+    }
+
+    // ------------------------------------------------------ gradle.lockfile
+
+    #[test]
+    fn gradle_locked_modules_become_maven_coordinates() {
+        let out = parse_gradle_lockfile(
+            "# This is a Gradle generated file for dependency locking.\n\
+             # Manual edits can break the build and are not advised.\n\
+             com.google.guava:guava:32.1.1-jre=compileClasspath,runtimeClasspath\n\
+             org.slf4j:slf4j-api:1.7.36=compileClasspath\n\
+             \n\
+             # Another module's block\n\
+             org.junit.jupiter:junit-jupiter:5.10.1=testCompileClasspath\n\
+             empty=\n",
+        )
+        .expect("a generated gradle.lockfile parses");
+        assert_eq!(
+            out,
+            vec![
+                ("com.google.guava:guava".into(), "32.1.1-jre".into()),
+                ("org.slf4j:slf4j-api".into(), "1.7.36".into()),
+                ("org.junit.jupiter:junit-jupiter".into(), "5.10.1".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn gradle_classifier_coordinates_keep_their_identity() {
+        let out = parse_gradle_lockfile(
+            "org.example:lib:1.0.0:sources=compileClasspath\norg.example:lib:1.0.0=runtimeClasspath\n",
+        )
+        .expect("classifier and plain entries both parse");
+        assert_eq!(
+            out,
+            vec![
+                ("org.example:lib".into(), "1.0.0".into()),
+                ("org.example:lib".into(), "1.0.0".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gradle_lockfile_with_no_modules_is_reported() {
+        let error = parse_gradle_lockfile("# only comments\n\nempty=\n")
+            .expect_err("an empty inventory must not look like a parsed one");
+        assert!(error.contains("no locked modules"), "got: {error}");
+    }
+
+    #[test]
+    fn gradle_kind_maps_to_the_maven_ecosystem() {
+        assert_eq!(super::lockfile_kind("gradle.lockfile"), "gradle");
+        assert_eq!(super::ecosystem_for_kind("gradle"), "Maven");
+    }
+
+    // --------------------------------------------------- packages.lock.json
+
+    #[test]
+    fn nuget_lock_parses_frameworks_and_deduplicates_targets() {
+        let out = parse_packages_lock_json(
+            r#"{
+              "version": 1,
+              "dependencies": {
+                "net8.0": {
+                  "Newtonsoft.Json": {
+                    "type": "Direct",
+                    "requested": "[13.0.3, )",
+                    "resolved": "13.0.3",
+                    "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3vDE+f5sL6xRx9GmnNlbA5J6JpPj4iGH9MDm5fzq"
+                  },
+                  "Microsoft.Extensions.Primitives": {
+                    "type": "Transitive",
+                    "resolved": "2.2.0"
+                  }
+                },
+                "net8.0/linux-x64": {
+                  "Newtonsoft.Json": {
+                    "type": "Direct",
+                    "resolved": "13.0.3"
+                  }
+                },
+                "netstandard2.0": {}
+              }
+            }"#,
+        )
+        .expect("a restore lock with two targets parses");
+        assert_eq!(
+            out,
+            vec![
+                ("Microsoft.Extensions.Primitives".into(), "2.2.0".into()),
+                ("Newtonsoft.Json".into(), "13.0.3".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn nuget_project_references_have_no_version_and_are_skipped() {
+        let out = parse_packages_lock_json(
+            r#"{"version":1,"dependencies":{"net8.0":{
+              "MyApp.Core":{"type":"Project"},
+              "Serilog":{"type":"Direct","resolved":"3.1.1"}
+            }}}"#,
+        )
+        .expect("project entries are not registry packages");
+        assert_eq!(out, vec![("Serilog".into(), "3.1.1".into())]);
+    }
+
+    #[test]
+    fn a_nuget_lock_without_an_inventory_is_malformed() {
+        let error = parse_packages_lock_json(r#"{"version":1}"#)
+            .expect_err("no dependencies key means the file is not a restore lock");
+        assert!(error.contains("no dependencies inventory"), "got: {error}");
+    }
+
+    #[test]
+    fn nuget_kind_maps_to_its_own_ecosystem() {
+        assert_eq!(super::lockfile_kind("packages.lock.json"), "nuget");
+        assert_eq!(super::ecosystem_for_kind("nuget"), "NuGet");
+    }
+
+    // ---------------------------------------------------------- poetry.lock
+
+    #[test]
+    fn poetry_lock_parses_packages_and_ignores_metadata() {
+        let out = parse_poetry_lock(
+            "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\noptional = false\n\n\
+             [[package]]\nname = \"certifi\"\nversion = \"2024.2.2\"\n\n\
+             [metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.8\"\n",
+        )
+        .expect("a poetry lock with two packages parses");
+        assert_eq!(
+            out,
+            vec![
+                ("requests".into(), "2.31.0".into()),
+                ("certifi".into(), "2024.2.2".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_poetry_lock_with_no_packages_is_reported() {
+        let error = parse_poetry_lock("[metadata]\nlock-version = \"2.0\"\n")
+            .expect_err("an empty poetry lock must not look complete");
+        assert!(error.contains("no packages"), "got: {error}");
+    }
+
+    #[test]
+    fn poetry_kind_maps_to_the_pypi_ecosystem() {
+        assert_eq!(super::lockfile_kind("poetry.lock"), "poetry");
+        assert_eq!(super::ecosystem_for_kind("poetry"), "PyPI");
+    }
+
+    // ------------------------------------------- end-to-end through the CLI path
+
+    #[test]
+    fn new_lockfiles_parse_through_the_shared_entry_point_with_kinds() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let gradle = directory.path().join("gradle.lockfile");
+        std::fs::write(
+            &gradle,
+            "org.apache.commons:commons-text:1.9=runtimeClasspath\n",
+        )
+        .expect("gradle fixture");
+        let deps = parse_lockfile(&gradle, "gradle").expect("gradle parses");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "Maven");
+        assert_eq!(deps[0].name, "org.apache.commons:commons-text");
+        assert_eq!(deps[0].version, "1.9");
+
+        let nuget = directory.path().join("packages.lock.json");
+        std::fs::write(
+            &nuget,
+            r#"{"version":1,"dependencies":{"net6.0":{"NLog":{"type":"Direct","resolved":"5.2.8"}}}}"#,
+        )
+        .expect("nuget fixture");
+        let deps = parse_lockfile(&nuget, "nuget").expect("nuget parses");
+        assert_eq!(deps[0].ecosystem, "NuGet");
+        assert_eq!(deps[0].name, "NLog");
+
+        let poetry = directory.path().join("poetry.lock");
+        std::fs::write(
+            &poetry,
+            "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n",
+        )
+        .expect("poetry fixture");
+        let deps = parse_lockfile(&poetry, "poetry").expect("poetry parses");
+        assert_eq!(deps[0].ecosystem, "PyPI");
+        assert_eq!(deps[0].name, "flask");
+    }
+
+    #[test]
+    fn the_new_lockfile_names_are_discovered() {
+        for name in ["gradle.lockfile", "packages.lock.json", "poetry.lock"] {
+            assert!(
+                crate::fs_utils::is_lockfile_name(name),
+                "{name} must be discovered"
+            );
+        }
     }
 }

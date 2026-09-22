@@ -149,6 +149,9 @@ pub fn is_lockfile_name(name: &str) -> bool {
             | "composer.lock"
             | "pom.xml"
             | "requirements.txt"
+            | "gradle.lockfile"
+            | "packages.lock.json"
+            | "poetry.lock"
     )
 }
 
