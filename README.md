@@ -975,6 +975,34 @@ and export no standards formats; they are an incident-response surface, not a
 second workbench. Rotation, not deletion, closes a leaked credential —
 deleting the file never revoked anything.
 
+### Live validation, opt-in
+
+`--validate-secrets` sends each found credential to **its own provider** and
+records whether it was accepted — the difference between an emergency and a
+hygiene item.
+
+```bash
+oxaudit-cli history . --validate-secrets
+```
+
+The rules it runs under, because a tool that promises your code never leaves
+your machine does not get to put your credentials on the wire casually:
+
+- **Opt-in only.** A default scan never sends a credential anywhere.
+- **Fixed endpoints.** A GitHub token validates against `api.github.com` and
+  nowhere else; there is no configurable URL, so the secret cannot be aimed
+  at another host by a typo or a setting. Only the HTTP status is read —
+  response bodies and account identities are discarded, and nothing about the
+  credential is logged.
+- **Honest verdicts.** `VERIFIED LIVE` means the provider authenticated it:
+  rotate now. `rejected by provider` is **not** a licence to skip rotation —
+  the credential may work elsewhere or be re-enabled. Unchecked stays
+  unchecked: no validator exists for that credential type, or the provider
+  could not answer. At most twenty credentials leave the machine per run.
+- **Raw values are transient.** Credential material exists only between the
+  scanner hit and the validation call; findings, reports, and logs carry
+  redacted evidence only.
+
 ## Suppressing a finding
 
 A finding that has been reviewed and dismissed should not be raised again on

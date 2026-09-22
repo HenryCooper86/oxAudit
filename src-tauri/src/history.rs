@@ -79,17 +79,30 @@ pub struct HistoryScanOutcome {
     /// are returned, never discarded.
     pub truncated: bool,
     pub limit_note: Option<String>,
+    /// Raw credential values, present only when the caller asked for them so
+    /// live validation can run. Never populated by the default scan: an
+    /// ordinary history run never retains credential material.
+    pub raw_secrets: Vec<crate::secrets_validation::RawSecret>,
 }
 
 /// Scan every blob reachable from any ref for leaked credentials.
 pub fn scan_history_secrets(root: &Path) -> Result<HistoryScanOutcome, String> {
+    scan_history_secrets_with_options(root, false)
+}
+
+/// The same scan, with control over whether raw credential values are
+/// retained for opt-in live validation.
+pub fn scan_history_secrets_with_options(
+    root: &Path,
+    collect_raw_secrets: bool,
+) -> Result<HistoryScanOutcome, String> {
     let target = root.canonicalize().map_err(|_| UNAVAILABLE.to_owned())?;
     if !target.is_dir() {
         return Err(UNAVAILABLE.into());
     }
     let deadline = Instant::now() + TIMEOUT;
 
-    let mut outcome = scan_history_secrets_bounded(&target, deadline)?;
+    let mut outcome = scan_history_secrets_bounded(&target, deadline, collect_raw_secrets)?;
     let note = outcome.limit_note.take();
     dedupe_revisions(&mut outcome.findings);
     crate::findings::fingerprint::assign_fingerprints(&mut outcome.findings);
@@ -120,6 +133,7 @@ fn dedupe_revisions(findings: &mut Vec<Finding>) {
 fn scan_history_secrets_bounded(
     target: &Path,
     deadline: Instant,
+    collect_raw_secrets: bool,
 ) -> Result<HistoryScanOutcome, String> {
     let candidates = enumerate_history_blobs(target, deadline)?;
     let mut truncated_note = candidates.truncation_note;
@@ -135,6 +149,7 @@ fn scan_history_secrets_bounded(
 
     let (mut child, receiver) = spawn_batch_reader(target, &by_oid, deadline)?;
     let mut findings: Vec<Finding> = Vec::new();
+    let mut raw_secrets: Vec<crate::secrets_validation::RawSecret> = Vec::new();
     let mut blobs_scanned = 0usize;
     let mut blobs_skipped = candidates.skipped_count;
     let mut total_bytes = 0u64;
@@ -169,9 +184,15 @@ fn scan_history_secrets_bounded(
         }
         total_bytes += byte_count;
         blobs_scanned += 1;
-        match crate::scanners::scan_text_for_secrets(&text, &blob.path, usize::MAX) {
-            Some(mut found) => {
+        match crate::scanners::scan_text_for_secrets_with_raw(
+            &text,
+            &blob.path,
+            usize::MAX,
+            collect_raw_secrets,
+        ) {
+            Some((mut found, mut raw)) => {
                 findings.append(&mut found);
+                raw_secrets.append(&mut raw);
                 if findings.len() >= MAX_FINDINGS {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -195,6 +216,7 @@ fn scan_history_secrets_bounded(
         blobs_skipped,
         truncated: truncated_note.is_some(),
         limit_note: truncated_note,
+        raw_secrets,
     })
 }
 

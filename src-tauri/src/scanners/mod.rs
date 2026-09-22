@@ -276,6 +276,19 @@ pub fn scan_text_for_secrets(
     relative_path: &str,
     max_findings: usize,
 ) -> Option<Vec<Finding>> {
+    Some(scan_text_for_secrets_with_raw(content, relative_path, max_findings, false)?.0)
+}
+
+/// The same scan, optionally retaining the raw credential values so a caller
+/// can validate them against their providers. The values exist only for the
+/// validating run and never reach a finding, a report, or a log; everything a
+/// finding carries stays redacted.
+pub fn scan_text_for_secrets_with_raw(
+    content: &str,
+    relative_path: &str,
+    max_findings: usize,
+    collect_raw: bool,
+) -> Option<(Vec<Finding>, Vec<crate::secrets_validation::RawSecret>)> {
     let (hits, overflow) = secrets::scan_content_bounded(content, max_findings.saturating_add(1));
     if overflow || hits.len() > max_findings {
         return None;
@@ -283,6 +296,7 @@ pub fn scan_text_for_secrets(
     let secret_values = secret_redaction_values(&hits);
     let starts = fs_utils::line_starts(content);
     let mut findings = Vec::new();
+    let mut raw = Vec::new();
     for hit in hits {
         let rule = &secrets::SECRET_RULES[hit.rule_index];
         let (line, col) = fs_utils::line_col(&starts, hit.offset);
@@ -292,8 +306,16 @@ pub fn scan_text_for_secrets(
             240,
         );
         let context = redact_detected_secrets(&context, &secret_values);
+        let id = uuid::Uuid::new_v4().to_string();
+        if collect_raw {
+            raw.push(crate::secrets_validation::RawSecret {
+                finding_id: id.clone(),
+                rule_id: rule.id.into(),
+                value: hit.secret_value.clone(),
+            });
+        }
         findings.push(Finding {
-            id: uuid::Uuid::new_v4().to_string(),
+            id,
             category: "secret".into(),
             rule_id: rule.id.into(),
             rule_name: rule.name.into(),
@@ -326,7 +348,7 @@ pub fn scan_text_for_secrets(
             diff_status: None,
         });
     }
-    Some(findings)
+    Some((findings, raw))
 }
 
 /// Scan a single file and produce findings. Returns an empty vec when the file

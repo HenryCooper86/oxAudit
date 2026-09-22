@@ -22,6 +22,7 @@ mod presentation;
 mod private_storage;
 pub mod quality;
 pub mod reachability;
+mod secrets_validation;
 // Public so benches/scanning.rs can measure the rule engines directly. The
 // benchmark exists to catch a rule change that quietly makes matching
 // quadratic, which means it has to reach the same functions a scan does.

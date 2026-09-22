@@ -1330,3 +1330,37 @@ fn history_without_git_fails_rather_than_reporting_clean() {
         "a failed scan must not look like a clean report"
     );
 }
+
+#[test]
+fn validation_is_opt_in_and_reports_unchecked_without_a_validator() {
+    let repository = history_project();
+    // The fixture's AWS key has no validator (validating AWS requires the
+    // paired secret key and SigV4), so this exercises the full opt-in path
+    // without any credential leaving the machine.
+    let output = run(&[
+        "history",
+        &repository.path().to_string_lossy(),
+        "--validate-secrets",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&output), 0);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("validated 0 secret(s)"),
+        "the summary line reports what validation did: {stderr}"
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let validation = &document["summary"]["validation"];
+    assert_eq!(validation["enabled"], serde_json::json!(true));
+    assert_eq!(validation["skippedNoValidator"], serde_json::json!(1));
+    // Without the flag nothing about validation appears at all.
+    let output = run(&[
+        "history",
+        &repository.path().to_string_lossy(),
+        "--format",
+        "json",
+    ]);
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(document["summary"]["validation"].is_null());
+}

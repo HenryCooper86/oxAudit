@@ -213,6 +213,12 @@ struct HistoryArgs {
     /// Exit 1 only for findings this run added over --baseline.
     #[arg(long, value_enum, default_value_t = FailOn::None, value_name = "SEVERITY")]
     fail_on_new: FailOn,
+
+    /// Send each found credential to its own provider (fixed endpoints, TLS)
+    /// and record whether it was accepted. Opt-in: a default run never puts a
+    /// credential on the wire.
+    #[arg(long)]
+    validate_secrets: bool,
 }
 
 #[derive(Args, Debug)]
@@ -664,8 +670,24 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
         eprintln!("Scanning git history of {}", args.path.display());
     }
     let started = std::time::Instant::now();
-    let outcome = crate::history::scan_history_secrets(&args.path)
-        .map_err(|error| failure(error.to_string()))?;
+    let mut outcome =
+        crate::history::scan_history_secrets_with_options(&args.path, args.validate_secrets)
+            .map_err(|error| failure(error.to_string()))?;
+    let validation_summary = if args.validate_secrets {
+        let http = build_http_client()?;
+        let raw = std::mem::take(&mut outcome.raw_secrets);
+        let summary = block_on(crate::secrets_validation::validate_raw_secrets(
+            &mut outcome.findings,
+            raw,
+            &http,
+        ));
+        if !quiet {
+            eprintln!("{}", summary.describe());
+        }
+        Some(summary)
+    } else {
+        None
+    };
     if !quiet {
         eprintln!(
             "Scanned {} distinct blob(s) ({} skipped) in {} ms",
@@ -682,7 +704,7 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
     }
 
     let rendered = match args.format {
-        OutputFormat::Text => render_history_text(&outcome),
+        OutputFormat::Text => render_history_text(&outcome, validation_summary.as_ref()),
         OutputFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
             "summary": {
                 "blobsScanned": outcome.blobs_scanned,
@@ -690,6 +712,15 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
                 "durationMs": started.elapsed().as_millis(),
                 "truncated": outcome.truncated,
                 "limitNote": outcome.limit_note,
+                "validation": validation_summary.as_ref().map(|summary| serde_json::json!({
+                    "enabled": true,
+                    "checked": summary.checked,
+                    "live": summary.live,
+                    "rejected": summary.rejected,
+                    "skippedNoValidator": summary.skipped_no_validator,
+                    "skippedLimit": summary.skipped_limit,
+                    "skippedNotKept": summary.skipped_not_kept,
+                })),
             },
             "findings": outcome.findings,
         }))
@@ -735,7 +766,10 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
     Ok(if gated == EXIT_OK { gated_new } else { gated })
 }
 
-fn render_history_text(outcome: &crate::history::HistoryScanOutcome) -> Vec<u8> {
+fn render_history_text(
+    outcome: &crate::history::HistoryScanOutcome,
+    validation_summary: Option<&crate::secrets_validation::ValidationSummary>,
+) -> Vec<u8> {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
@@ -755,16 +789,31 @@ fn render_history_text(outcome: &crate::history::HistoryScanOutcome) -> Vec<u8> 
             findings.sort_by_key(|finding| (finding.line, finding.column));
             let _ = writeln!(out, "\n{file}");
             for finding in findings {
+                // The verdict is the difference between an emergency and a
+                // hygiene item; rejected is not safe, only quieter.
+                let verdict = match finding.verified {
+                    Some(true) => "  VERIFIED LIVE",
+                    Some(false) => "  rejected by provider",
+                    None => "",
+                };
                 let _ = writeln!(
                     out,
-                    "  {}:{}  {:<8} {}  [{}]",
+                    "  {}:{}  {:<8} {}  [{}]{}",
                     finding.line,
                     finding.column,
                     finding.severity.to_uppercase(),
                     finding.title,
                     finding.rule_id,
+                    verdict,
                 );
             }
+        }
+        if let Some(summary) = validation_summary.filter(|summary| summary.live > 0) {
+            let _ = writeln!(
+                out,
+                "\n{} credential(s) were accepted by their provider. Rotate them now; a purge without rotation revokes nothing.",
+                summary.live
+            );
         }
         let _ = writeln!(
             out,
