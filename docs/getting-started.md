@@ -106,6 +106,17 @@ advisory access, or a complete compatible saved receipt with `deps --offline`.
 The smoke harness explicitly refuses optional network requests in its child
 processes and does not supply fake advisory data.
 
+The CLI also answers the incident-response question *was this credential ever
+committed?* — including in files deleted long ago:
+
+```bash
+oxaudit-cli history . --fail-on high
+```
+
+See the README's “Git history secret scanning” section for what it covers and
+its stated limits. History runs are a CLI surface today; the desktop workbench
+scans the working tree.
+
 ## Complete consumer CI example
 
 Copy [examples/ci/oxaudit.yml](../examples/ci/oxaudit.yml) to

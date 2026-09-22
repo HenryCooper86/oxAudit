@@ -251,6 +251,15 @@ oxaudit-cli scan . --baseline baseline.json --fail-on-new high
 # Lockfiles against OSV
 oxaudit-cli deps . --format json
 
+# Was this credential ever committed — including in files deleted long ago?
+oxaudit-cli history .
+
+# Gate incident response: report every historical leak at high or above
+oxaudit-cli history . --fail-on high --format json --output history.json
+
+# After a purge, prove the history is clean against the pre-purge report
+oxaudit-cli history . --baseline history.json --fail-on-new high
+
 # Complete dependency baseline and a new-only CI gate
 oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --format json --output deps-baseline.json
 oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --baseline deps-baseline.json --fail-on-new high
@@ -916,6 +925,50 @@ Every finding records how far oxAudit could qualify it:
 A language without a grammar is never suppressed on a guess. A false negative in
 a security scanner is worse than a false positive, so the absence of a parser
 means every match stands and says so.
+
+## Git history secret scanning
+
+`scan` answers *what is in the project now*. `history` answers the
+incident-response question: **was this credential ever committed?** — including
+in files deleted long ago. A key removed from the working tree is still live
+until rotated and purged from history, and the first step of that response is
+seeing the leak at all.
+
+```bash
+oxaudit-cli history .
+```
+
+Every blob reachable from any ref — branches, tags, and remote refs — is read
+through the same hardened, read-only git plumbing the review panel uses (no
+hooks, no network, no filters) and run through the same secret rules, entropy
+floors, and placeholder filtering as a working-tree scan. Findings keep plain
+repository-relative paths, so a leak both scanners can see is the same finding
+by fingerprint, and `.oxaudit/policy.json` suppressions apply. One credential
+in one file is one finding, however many revisions it survived.
+
+Four limits, stated because they bound what the result means:
+
+- **Reachable objects only.** Dangling objects that no ref points at are not
+  enumerated; `git fsck --lost-found` is the tool for those.
+- **Text blobs at the text tier.** Non-UTF-8 content is skipped, and there is
+  no grammar parse, so a credential in a comment is still reported — history
+  scanning errs toward recall.
+- **Bounded work.** Distinct blobs (100,000), per-blob size (1 MiB), total
+  scanned bytes (256 MiB), and wall clock (120 s) all have budgets. Exceeding
+  one keeps the findings already collected and reports `truncated` with the
+  reason; a history that silently stopped early would be worse than one that
+  says so.
+- **No introducing commit.** Which commit first carried a blob is not computed
+  — per-object `--find-object` walks are prohibitively expensive on real
+  histories, and "rotate, then purge" does not need it. `git log --all --
+  <path>` finds the commit once you have the path.
+
+`--fail-on`, `--baseline`, and `--fail-on-new` behave exactly as they do for
+`scan`, so a post-purge history can be gated against the pre-purge report.
+History runs are not stored as canonical runs and export no standards formats;
+they are an incident-response surface, not a second workbench. Rotation, not
+deletion, closes a leaked credential — deleting the file never revoked
+anything.
 
 ## Suppressing a finding
 

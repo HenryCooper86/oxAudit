@@ -14,6 +14,7 @@ pub mod external;
 pub mod findings;
 mod fs_utils;
 pub mod git_context;
+mod history;
 mod migration;
 mod models;
 pub mod observability;
@@ -142,7 +143,6 @@ pub fn run() {
             commands::cve::search_cves,
             commands::cve::cve_detail,
             commands::cve::osv_package_vulns,
-            commands::assistant::chat,
             commands::assistant::stream_chat,
             commands::assistant::cancel_chat,
             commands::assistant::steer_chat,
@@ -154,7 +154,6 @@ pub fn run() {
             commands::assistant::respond_permission,
             commands::assistant::respond_interaction,
             commands::settings::set_active_project,
-            commands::assistant::analyze_finding,
             commands::assistant::research_cve,
             commands::assistant::test_ai,
             commands::assistant::test_ai_with,

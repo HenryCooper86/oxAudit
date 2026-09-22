@@ -68,6 +68,9 @@ struct Cli {
 enum Command {
     /// Scan source files for dangerous patterns and leaked secrets.
     Scan(ScanArgs),
+    /// Scan git history for secrets committed at any point, including in files
+    /// deleted long ago.
+    History(HistoryArgs),
     /// Resolve lockfiles and check every pinned package against OSV.
     Deps(DepsArgs),
     /// Re-export a stored run in a standards format.
@@ -184,6 +187,32 @@ struct ScanArgs {
     /// Run even when the project's policy file is invalid.
     #[arg(long)]
     ignore_invalid_policy: bool,
+}
+
+#[derive(Args, Debug)]
+struct HistoryArgs {
+    /// Git repository (or any directory inside one) whose history to scan.
+    path: PathBuf,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+
+    /// Write the report here instead of stdout.
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+
+    /// Exit 1 when a finding at this severity or higher is reported.
+    #[arg(long, value_enum, default_value_t = FailOn::None)]
+    fail_on: FailOn,
+
+    /// A previous `history --format json` report to compare against.
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
+
+    /// Exit 1 only for findings this run added over --baseline.
+    #[arg(long, value_enum, default_value_t = FailOn::None, value_name = "SEVERITY")]
+    fail_on_new: FailOn,
 }
 
 #[derive(Args, Debug)]
@@ -423,6 +452,7 @@ pub fn run() -> i32 {
 
     let result = match &cli.command {
         Command::Scan(args) => run_scan(args, cli.quiet),
+        Command::History(args) => run_history(args, cli.quiet),
         Command::Deps(args) => run_deps(args, cli.quiet),
         Command::Export(args) => run_export(args),
         Command::Runs(args) => run_runs(args),
@@ -605,6 +635,154 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     // "is this codebase clean?" and "did this change make it worse?" — and a
     // pipeline may reasonably ask both.
     Ok(if gated == EXIT_OK { gated_new } else { gated })
+}
+
+// ------------------------------------------------------------------ history
+
+fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
+    if !args.path.is_dir() {
+        return Err(usage(format!("{} is not a directory", args.path.display())));
+    }
+    if args.fail_on_new != FailOn::None && args.baseline.is_none() {
+        return Err(usage("--fail-on-new needs --baseline to compare against"));
+    }
+    // History runs are not stored as canonical runs, so the standards exports
+    // (which read a stored run graph) have nothing to read.
+    if !matches!(args.format, OutputFormat::Text | OutputFormat::Json) {
+        return Err(usage(
+            "history supports --format text and --format json; standards exports read stored runs",
+        ));
+    }
+    let previous = args
+        .baseline
+        .as_deref()
+        .map(baseline::load)
+        .transpose()
+        .map_err(|error| usage(error.to_string()))?;
+
+    if !quiet {
+        eprintln!("Scanning git history of {}", args.path.display());
+    }
+    let started = std::time::Instant::now();
+    let outcome = crate::history::scan_history_secrets(&args.path)
+        .map_err(|error| failure(error.to_string()))?;
+    if !quiet {
+        eprintln!(
+            "Scanned {} distinct blob(s) ({} skipped) in {} ms",
+            outcome.blobs_scanned,
+            outcome.blobs_skipped,
+            started.elapsed().as_millis()
+        );
+        if outcome.truncated {
+            eprintln!(
+                "History scan stopped early: {}. Findings below are partial.",
+                outcome.limit_note.as_deref().unwrap_or("budget reached")
+            );
+        }
+    }
+
+    let rendered = match args.format {
+        OutputFormat::Text => render_history_text(&outcome),
+        OutputFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
+            "summary": {
+                "blobsScanned": outcome.blobs_scanned,
+                "blobsSkipped": outcome.blobs_skipped,
+                "durationMs": started.elapsed().as_millis(),
+                "truncated": outcome.truncated,
+                "limitNote": outcome.limit_note,
+            },
+            "findings": outcome.findings,
+        }))
+        .map_err(|error| failure(error.to_string()))?,
+        // Validation above rejects every other format before any work starts.
+        _ => unreachable!("history format validated up front"),
+    };
+    write_output(args.output.as_deref(), &rendered)?;
+
+    let comparison = previous.as_ref().map(|previous| {
+        let comparison = baseline::compare(previous, &outcome.findings);
+        if !quiet {
+            eprintln!(
+                "Against {}: {}",
+                args.baseline.as_ref().unwrap().display(),
+                baseline::describe(&comparison)
+            );
+        }
+        comparison
+    });
+
+    let gated = gate(
+        outcome
+            .findings
+            .iter()
+            .filter(|finding| gates_the_build(finding))
+            .map(|finding| severity_rank(&finding.severity)),
+        args.fail_on,
+        quiet,
+    );
+    let gated_new = match &comparison {
+        Some(comparison) => gate(
+            comparison
+                .introduced
+                .iter()
+                .filter(|finding| gates_the_build(finding))
+                .map(|finding| severity_rank(&finding.severity)),
+            args.fail_on_new,
+            quiet,
+        ),
+        None => EXIT_OK,
+    };
+    Ok(if gated == EXIT_OK { gated_new } else { gated })
+}
+
+fn render_history_text(outcome: &crate::history::HistoryScanOutcome) -> Vec<u8> {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    if outcome.findings.is_empty() {
+        let _ = writeln!(
+            out,
+            "No secrets in history ({} blob(s) scanned).",
+            outcome.blobs_scanned
+        );
+    } else {
+        let mut by_file: BTreeMap<&str, Vec<&crate::models::Finding>> = BTreeMap::new();
+        for finding in &outcome.findings {
+            by_file.entry(&finding.file_path).or_default().push(finding);
+        }
+        for (file, mut findings) in by_file {
+            findings.sort_by_key(|finding| (finding.line, finding.column));
+            let _ = writeln!(out, "\n{file}");
+            for finding in findings {
+                let _ = writeln!(
+                    out,
+                    "  {}:{}  {:<8} {}  [{}]",
+                    finding.line,
+                    finding.column,
+                    finding.severity.to_uppercase(),
+                    finding.title,
+                    finding.rule_id,
+                );
+            }
+        }
+        let _ = writeln!(
+            out,
+            "\n{} secret finding(s) in history.",
+            outcome.findings.len()
+        );
+    }
+    if let Some(note) = &outcome.limit_note {
+        let _ = writeln!(
+            out,
+            "\nHistory scan stopped early: {note}. Findings above are partial."
+        );
+    }
+    let _ = writeln!(
+        out,
+        "Paths in findings are historical; the file may no longer exist. Rotation, not deletion, closes a leaked credential."
+    );
+    out.into_bytes()
 }
 
 // --------------------------------------------------------------------- deps

@@ -262,6 +262,73 @@ pub(crate) fn redact_secrets_in_text(text: &str) -> String {
     redact_detected_secrets(text, &values)
 }
 
+/// Scan in-memory text for secrets the way the git-history scanner needs:
+/// no file on disk, no grammar, text tier only.
+///
+/// History blobs often no longer correspond to any working-tree file, so a
+/// syntax parse of "the same" language would be guessing. A credential inside
+/// a comment is still a credential someone committed, so nothing is suppressed:
+/// history scanning errs toward recall. Returns `None` when the content
+/// produced more than `max_findings` hits, mirroring the per-file limit a
+/// working-tree scan enforces.
+pub fn scan_text_for_secrets(
+    content: &str,
+    relative_path: &str,
+    max_findings: usize,
+) -> Option<Vec<Finding>> {
+    let (hits, overflow) = secrets::scan_content_bounded(content, max_findings.saturating_add(1));
+    if overflow || hits.len() > max_findings {
+        return None;
+    }
+    let secret_values = secret_redaction_values(&hits);
+    let starts = fs_utils::line_starts(content);
+    let mut findings = Vec::new();
+    for hit in hits {
+        let rule = &secrets::SECRET_RULES[hit.rule_index];
+        let (line, col) = fs_utils::line_col(&starts, hit.offset);
+        let context = fs_utils::context_lines(content, &starts, line - 1, 2);
+        let match_text = secrets::truncate(
+            &redact_detected_secrets(&hit.match_text, &secret_values),
+            240,
+        );
+        let context = redact_detected_secrets(&context, &secret_values);
+        findings.push(Finding {
+            id: uuid::Uuid::new_v4().to_string(),
+            category: "secret".into(),
+            rule_id: rule.id.into(),
+            rule_name: rule.name.into(),
+            severity: rule.severity.into(),
+            title: rule.name.into(),
+            description: rule.description.into(),
+            file_path: relative_path.to_string(),
+            line,
+            column: col,
+            match_text,
+            context,
+            language: String::new(),
+            cwe_exploited: false,
+            cwe_exploited_count: 0,
+            cwe: None,
+            recommendation: rule.recommendation.into(),
+            entropy: Some(hit.entropy),
+            verified: None,
+            analysis: crate::models::AnalysisTier::Text,
+            analysis_gates: Vec::new(),
+            observation_run_id: String::new(),
+            resolved_by_run_id: None,
+            fingerprint_version: 0,
+            fingerprint: String::new(),
+            in_test_region: false,
+            scope: None,
+            scope_reason: None,
+            review: None,
+            review_history: Vec::new(),
+            diff_status: None,
+        });
+    }
+    Some(findings)
+}
+
 /// Scan a single file and produce findings. Returns an empty vec when the file
 /// is binary, too large, or unreadable.
 #[cfg(test)]

@@ -1192,3 +1192,141 @@ fn dependency_new_only_gate_tracks_advisory_package_version_and_ignores_lockfile
         );
     }
 }
+
+// ----------------------------------------------------------------- history
+
+/// A throwaway git repository whose history contains a leaked AWS key in a
+/// file that was deleted before the tip, plus a clean file at the tip.
+fn history_project() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("temporary repository");
+    let root = directory.path();
+
+    fn git(root: &Path, arguments: &[&str]) {
+        let output = Command::new("git")
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .current_dir(root)
+            .args(arguments)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.email", "e2e@example.invalid"]);
+    git(root, &["config", "user.name", "E2E"]);
+    std::fs::create_dir(root.join("src")).expect("src");
+    // Not a placeholder: a synthetic key the placeholder filter lets through.
+    std::fs::write(
+        root.join("src/deploy.sh"),
+        "#!/bin/sh\nexport AWS_ACCESS_KEY_ID=AKIAZ9X8W7U6T5S4R3Q2\n",
+    )
+    .expect("leak fixture");
+    std::fs::write(root.join("src/app.js"), "console.log('clean');\n").expect("clean fixture");
+    git(root, &["add", "."]);
+    git(root, &["commit", "-m", "leak"]);
+    std::fs::remove_file(root.join("src/deploy.sh")).expect("remove leak");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-m", "remove leak"]);
+    directory
+}
+
+#[test]
+fn history_reports_secrets_deleted_before_the_tip() {
+    let repository = history_project();
+    let output = run(&["history", &repository.path().to_string_lossy()]);
+    assert_eq!(
+        code(&output),
+        0,
+        "findings without --fail-on report without failing: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = stdout(&output);
+    assert!(text.contains("src/deploy.sh"), "historical path reported");
+    assert!(text.contains("aws-access-key-id"), "rule reported");
+    // The finding exists only in history: the file is gone from the tip.
+    assert!(!repository.path().join("src/deploy.sh").exists());
+}
+
+#[test]
+fn history_gate_fails_only_when_asked() {
+    let repository = history_project();
+    let output = run(&[
+        "history",
+        &repository.path().to_string_lossy(),
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(code(&output), 1);
+    let output = run(&[
+        "history",
+        &repository.path().to_string_lossy(),
+        "--fail-on",
+        "critical",
+    ]);
+    assert_eq!(code(&output), 0, "a high finding is below the gate");
+}
+
+#[test]
+fn history_json_is_a_valid_baseline_document() {
+    let repository = history_project();
+    let output = run(&[
+        "history",
+        &repository.path().to_string_lossy(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code(&output), 0);
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let findings = document["findings"].as_array().expect("findings array");
+    assert_eq!(findings.len(), 1);
+    let fingerprint = findings[0]["fingerprint"].as_str().unwrap();
+    assert!(
+        !fingerprint.trim().is_empty() && fingerprint.chars().all(|c| !c.is_whitespace()),
+        "identity a --baseline round trip requires"
+    );
+    // And the round trip itself: the same history against its own baseline
+    // introduces nothing.
+    let baseline = repository.path().join("baseline.json");
+    std::fs::write(&baseline, &output.stdout).unwrap();
+    let report = repository.path().join("report.txt");
+    let output = run(&[
+        "history",
+        &repository.path().to_string_lossy(),
+        "--baseline",
+        &baseline.to_string_lossy(),
+        "--fail-on-new",
+        "high",
+        "--output",
+        &report.to_string_lossy(),
+    ]);
+    assert_eq!(code(&output), 0);
+    assert!(
+        stdout(&output).is_empty(),
+        "the report went to --output, not stdout"
+    );
+    assert!(report.exists());
+}
+
+#[test]
+fn history_without_git_fails_rather_than_reporting_clean() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = run(&["history", &directory.path().to_string_lossy()]);
+    assert_eq!(code(&output), 3);
+    assert!(
+        stdout(&output).is_empty(),
+        "a failed scan must not look like a clean report"
+    );
+}

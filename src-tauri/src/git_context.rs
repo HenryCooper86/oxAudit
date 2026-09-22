@@ -49,54 +49,62 @@ struct Git {
     root: PathBuf,
     deadline: Instant,
 }
+/// A git command with the hardened environment every inspection in this
+/// repository uses. Shared with `crate::history` so the two inspection
+/// surfaces cannot drift on process safety.
+pub(crate) fn hardened_git_command(root: &Path) -> Command {
+    // Clear GIT_DIR/WORK_TREE/INDEX_FILE, injected config and alternate object
+    // stores. Only object/index plumbing is allowed here. In particular never
+    // add status, diff-files, checkout, or hash-object without --no-filters.
+    let mut command = Command::new("git");
+    command.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    // Windows process loading needs these OS directories. Preserve only
+    // this narrow OS allowlist, never inherited Git configuration/paths.
+    #[cfg(windows)]
+    for key in ["SystemRoot", "WINDIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .current_dir(root)
+        .args([
+            "--no-pager",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "diff.external=",
+            "-c",
+            "core.pager=cat",
+        ]);
+    command
+}
 impl Git {
     fn run(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         if Instant::now() >= self.deadline {
             return Err(UNAVAILABLE.into());
         }
-        // Clear GIT_DIR/WORK_TREE/INDEX_FILE, injected config and alternate object
-        // stores. Only object/index plumbing is allowed here. In particular never
-        // add status, diff-files, checkout, or hash-object without --no-filters.
-        let mut command = Command::new("git");
-        command.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            command.env("PATH", path);
-        }
-        // Windows process loading needs these OS directories. Preserve only
-        // this narrow OS allowlist, never inherited Git configuration/paths.
-        #[cfg(windows)]
-        for key in ["SystemRoot", "WINDIR"] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
+        let mut command = hardened_git_command(&self.root);
         command
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env(
-                "GIT_CONFIG_GLOBAL",
-                if cfg!(windows) { "NUL" } else { "/dev/null" },
-            )
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .env("GIT_NO_LAZY_FETCH", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_LITERAL_PATHSPECS", "1")
-            .env("GIT_NO_REPLACE_OBJECTS", "1")
-            .current_dir(&self.root)
-            .args([
-                "--no-pager",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "core.untrackedCache=false",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "protocol.allow=never",
-                "-c",
-                "diff.external=",
-                "-c",
-                "core.pager=cat",
-            ])
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
