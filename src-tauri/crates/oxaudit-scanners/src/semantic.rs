@@ -221,6 +221,226 @@ impl SemanticAnalyzer for DisabledSemanticAnalyzer {
 mod tests {
     use super::*;
 
+    /// Build a minimal ELF64 little-endian relocatable object: one function
+    /// symbol in `.text`, external calls through `.rela.text` relocations.
+    /// Assembling the bytes by hand keeps the fixture deterministic and
+    /// cross-platform — no toolchain needed at test time — while still being
+    /// a structurally real object file that the `object` crate parses.
+    struct Reloc {
+        offset: u64,
+        symbol: u32,
+    }
+
+    fn object_file(relocations: &[Reloc], symbols: &[(&str, Option<u64>, u64)]) -> Vec<u8> {
+        // symbols: (name, Some(function byte range start), size) for defined
+        // functions; (name, None, _) for undefined externals.
+        let mut text = vec![0x90u8; 64];
+        text[8] = 0xc3; // somewhere inside the function, for realism
+        let mut symtab = Vec::new();
+        // Null symbol first, as the format requires.
+        symtab.extend_from_slice(&[0u8; 24]);
+        let mut strtab = vec![0u8];
+        let name_offset = |strtab: &mut Vec<u8>, name: &str| -> u32 {
+            let offset = strtab.len() as u32;
+            strtab.extend_from_slice(name.as_bytes());
+            strtab.push(0);
+            offset
+        };
+        for (name, address, size) in symbols {
+            let st_name = name_offset(&mut strtab, name);
+            let (st_info, st_shndx, st_value) = match address {
+                Some(start) => (0x12u8, 1u16, *start), // GLOBAL FUNC, .text
+                None => (0x10, 0, 0),                  // GLOBAL NOTYPE, UNDEF
+            };
+            symtab.extend_from_slice(&st_name.to_le_bytes());
+            symtab.push(st_info);
+            symtab.push(0);
+            symtab.extend_from_slice(&st_shndx.to_le_bytes());
+            symtab.extend_from_slice(&st_value.to_le_bytes());
+            symtab.extend_from_slice(&size.to_le_bytes());
+        }
+        let mut rela = Vec::new();
+        for reloc in relocations {
+            rela.extend_from_slice(&reloc.offset.to_le_bytes());
+            rela.extend_from_slice(&((u64::from(reloc.symbol) << 32) | 4).to_le_bytes()); // R_X86_64_PLT32
+            rela.extend_from_slice(&0i64.to_le_bytes());
+        }
+        let shstrtab_names = [".text", ".rela.text", ".symtab", ".strtab", ".shstrtab"];
+        let mut shstrtab = vec![0u8];
+        let offsets: Vec<u32> = shstrtab_names
+            .iter()
+            .map(|name| name_offset(&mut shstrtab, name))
+            .collect();
+
+        let mut out = Vec::new();
+        let mut ehdr = [0u8; 64];
+        ehdr[0..4].copy_from_slice(b"\x7fELF");
+        ehdr[4] = 2; // ELFCLASS64
+        ehdr[5] = 1; // little-endian
+        ehdr[6] = 1; // version
+        ehdr[0x10..0x12].copy_from_slice(&1u16.to_le_bytes()); // ET_REL
+        ehdr[0x12..0x14].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+        out.extend_from_slice(&ehdr);
+        let text_off = out.len() as u64;
+        out.extend_from_slice(&text);
+        let rela_off = out.len() as u64;
+        out.extend_from_slice(&rela);
+        let symtab_off = out.len() as u64;
+        out.extend_from_slice(&symtab);
+        let strtab_off = out.len() as u64;
+        out.extend_from_slice(&strtab);
+        let shstrtab_off = out.len() as u64;
+        out.extend_from_slice(&shstrtab);
+        while out.len() % 8 != 0 {
+            out.push(0);
+        }
+        let shoff = out.len() as u64;
+        let section = |name: u32,
+                       kind: u32,
+                       offset: u64,
+                       size: u64,
+                       link: u32,
+                       info: u32,
+                       entsize: u64,
+                       out: &mut Vec<u8>| {
+            let mut header = [0u8; 64];
+            header[0..4].copy_from_slice(&name.to_le_bytes());
+            header[4..8].copy_from_slice(&kind.to_le_bytes());
+            header[0x18..0x20].copy_from_slice(&offset.to_le_bytes());
+            header[0x20..0x28].copy_from_slice(&size.to_le_bytes());
+            header[0x28..0x2c].copy_from_slice(&link.to_le_bytes());
+            header[0x2c..0x30].copy_from_slice(&info.to_le_bytes());
+            header[0x38..0x40].copy_from_slice(&entsize.to_le_bytes());
+            out.extend_from_slice(&header);
+        };
+        let text_size = text.len() as u64;
+        let rela_size = rela.len() as u64;
+        let symtab_size = symtab.len() as u64;
+        let strtab_size = strtab.len() as u64;
+        let shstrtab_size = shstrtab.len() as u64;
+        // NULL section, then the five real ones, in index order.
+        out.extend_from_slice(&[0u8; 64]);
+        section(offsets[0], 1, text_off, text_size, 0, 0, 0, &mut out);
+        section(offsets[1], 4, rela_off, rela_size, 3, 1, 24, &mut out);
+        section(offsets[2], 2, symtab_off, symtab_size, 4, 1, 24, &mut out);
+        section(offsets[3], 3, strtab_off, strtab_size, 0, 0, 0, &mut out);
+        section(
+            offsets[4],
+            3,
+            shstrtab_off,
+            shstrtab_size,
+            0,
+            0,
+            0,
+            &mut out,
+        );
+        let shnum = 6u16;
+        let shstrndx = 5u16;
+        let total = out.len() as u64;
+        out[0x28..0x30].copy_from_slice(&shoff.to_le_bytes());
+        out[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes());
+        out[0x3c..0x3e].copy_from_slice(&shnum.to_le_bytes());
+        out[0x3e..0x40].copy_from_slice(&shstrndx.to_le_bytes());
+        let _ = total;
+        out
+    }
+
+    fn limits() -> SemanticAnalysisLimits {
+        SemanticAnalysisLimits {
+            max_input_bytes: 1024 * 1024,
+            max_functions: 100,
+            max_basic_blocks: 100,
+            max_seconds: 10,
+        }
+    }
+
+    #[test]
+    fn a_call_relocation_to_system_is_reported_with_data_flow_evidence() {
+        // worker_fn occupies [8, 40) of .text; the relocation to the external
+        // `system` sits at offset 16, inside it.
+        let bytes = object_file(
+            &[Reloc {
+                offset: 16,
+                symbol: 2,
+            }],
+            &[("worker_fn", Some(8), 32), ("system", None, 0)],
+        );
+        let report = BoundedObjectAnalyzer
+            .analyze(SemanticInput {
+                artifact_id: ArtifactId::new().to_string(),
+                architecture: String::new(),
+                bytes,
+                limits: limits(),
+            })
+            .expect("analysis");
+        assert_eq!(report.functions_analyzed, 1);
+        assert_eq!(report.call_edges, 1);
+        assert_eq!(report.findings.len(), 1);
+        let finding = &report.findings[0];
+        assert_eq!(finding.rule_id, "semantic.call.system");
+        assert_eq!(finding.function_address, 8);
+        assert_eq!(finding.confidence, 0.75);
+        let Evidence::DataFlow(evidence) = &finding.evidence[0] else {
+            panic!("expected data-flow evidence");
+        };
+        assert_eq!(evidence.entry_point, 8);
+        assert_eq!(evidence.sink, "system");
+        assert_eq!(evidence.nodes[0].label, "worker_fn");
+        assert_eq!(evidence.nodes[1].kind, "external_sink");
+        assert_eq!(evidence.edges[0].relationship, "relocation_call");
+        assert!(
+            finding
+                .limitations
+                .iter()
+                .any(|note| note.contains("reachability and attacker control were not established")),
+            "the honesty clause must ride with the finding"
+        );
+    }
+
+    #[test]
+    fn a_call_relocation_to_a_benign_external_counts_but_reports_nothing() {
+        let bytes = object_file(
+            &[Reloc {
+                offset: 20,
+                symbol: 2,
+            }],
+            &[("allocator_init", Some(8), 32), ("malloc", None, 0)],
+        );
+        let report = BoundedObjectAnalyzer
+            .analyze(SemanticInput {
+                artifact_id: ArtifactId::new().to_string(),
+                architecture: String::new(),
+                bytes,
+                limits: limits(),
+            })
+            .expect("analysis");
+        assert_eq!(report.call_edges, 1, "the edge is counted");
+        assert!(report.findings.is_empty(), "malloc is not a sink");
+    }
+
+    #[test]
+    fn a_relocation_outside_any_function_is_unresolved_not_a_finding() {
+        // Offset 48 sits past worker_fn's [8, 40) range.
+        let bytes = object_file(
+            &[Reloc {
+                offset: 48,
+                symbol: 2,
+            }],
+            &[("worker_fn", Some(8), 32), ("system", None, 0)],
+        );
+        let report = BoundedObjectAnalyzer
+            .analyze(SemanticInput {
+                artifact_id: ArtifactId::new().to_string(),
+                architecture: String::new(),
+                bytes,
+                limits: limits(),
+            })
+            .expect("analysis");
+        assert_eq!(report.call_edges, 0);
+        assert_eq!(report.unresolved_edges, 1);
+        assert!(report.findings.is_empty());
+    }
+
     #[test]
     fn limits_are_enforced_before_parsing() {
         let error = BoundedObjectAnalyzer

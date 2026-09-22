@@ -128,6 +128,39 @@ fn scan_buffer(
         return Vec::new();
     }
 
+    // A raw firmware blob is usually a header, a kernel, and a squashfs
+    // partition bolted together — opaque to magic classification, but the
+    // filesystem inside is the entire finding surface. The search is the
+    // smallest useful slice of binwalk: one magic at erase-block alignment,
+    // behind the same budgets as every other container.
+    if classification == Classification::OpaqueBinary {
+        let budget = extract::ExtractBudget::default();
+        let embedded = extract::extract_embedded_squashfs(file_name, bytes, &budget);
+        if !embedded.members.is_empty() {
+            if let Some(note) = embedded.stats.note(display) {
+                notes.push(note);
+            }
+            let mut detections = Vec::new();
+            for member in &embedded.members {
+                let member_name = member
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&member.path)
+                    .to_string();
+                detections.extend(scan_buffer(
+                    &member.path,
+                    &member_name,
+                    &member.bytes,
+                    false,
+                    signatures,
+                    notes,
+                ));
+            }
+            return detections;
+        }
+    }
+
     if let Classification::Archive(_) = classification {
         let budget = extract::ExtractBudget::default();
         let extracted = extract::extract(file_name, bytes, &budget);
@@ -639,6 +672,57 @@ mod tests {
         assert_eq!(
             scanned.result.components[0].paths,
             vec!["image.tar!/layer.tar!/bin/busybox".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_raw_firmware_blob_finds_components_in_its_embedded_squashfs() {
+        // The Archer-C7 shape this scanner used to score zero on: junk
+        // first, squashfs at an erase-block boundary.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut member = vec![0u8, 0, 0, 0];
+        member.extend_from_slice(b"BusyBox is a multi-call binary\0BusyBox v1.33.2\0");
+        let mut writer = backhand::FilesystemWriter::default();
+        writer.set_compressor(
+            backhand::FilesystemCompressor::new(backhand::v4::compressor::Compressor::Gzip, None)
+                .expect("gzip compressor"),
+        );
+        let header = backhand::NodeHeader {
+            permissions: 0o755,
+            uid: 0,
+            gid: 0,
+            mtime: 0,
+        };
+        writer
+            .push_dir_all(std::path::Path::new("/bin"), header)
+            .expect("dir");
+        writer
+            .push_file(
+                member.as_slice(),
+                std::path::Path::new("/bin/busybox"),
+                header,
+            )
+            .expect("member");
+        let mut image = Vec::new();
+        writer
+            .write(&mut std::io::Cursor::new(&mut image))
+            .expect("squashfs");
+        let mut blob = vec![0x00u8; 8192];
+        blob.extend_from_slice(&image);
+        std::fs::write(dir.path().join("vendor-firmware.bin"), &blob).expect("write");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+        assert_eq!(scanned.result.components.len(), 1);
+        assert_eq!(scanned.result.components[0].product, "busybox");
+        assert_eq!(scanned.result.components[0].version, "1.33.2");
+        assert_eq!(
+            scanned.result.components[0].paths,
+            vec!["vendor-firmware.bin!sqfs@0x2000!/bin/busybox".to_string()]
         );
     }
 

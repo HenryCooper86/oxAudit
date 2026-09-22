@@ -422,20 +422,27 @@ only **1.1%** of the image is printable. The payload is an xz-compressed
 squashfs at `0x1f8718`; the readable remainder is the OpenWrt metadata JSON and
 a build id. There is genuinely nothing to read.
 
-**oxAudit extracts archives, not filesystems.** Since 2026-09-22 the native
-scanner opens tar (and anything wrapped around one — `.tar.gz`, `.tar.xz`,
-`.tar.zst`, `.tar.bz2`), zip, gzip, xz, zstd, bzip2, and `ar` — which covers
-`.deb` packages, `.a` static libraries, and a saved `docker`/OCI image (a tar
-of layer tars) — in memory, with depth, member-count, per-member, and
+**oxAudit extracts archives, and now squashfs too.** Since 2026-09-22 the
+native scanner opens tar (and anything wrapped around one — `.tar.gz`,
+`.tar.xz`, `.tar.zst`, `.tar.bz2`), zip, gzip, xz, zstd, bzip2, `ar` — which
+covers `.deb` packages and `.a` static libraries — RPM packages (a
+hand-parsed lead/header skip over a compressed cpio payload, xz included
+through the same liblzma `.tar.xz` uses), and a saved `docker`/OCI image (a
+tar of layer tars) — in memory, with depth, member-count, per-member, and
 total-expansion budgets that a decompression bomb trips loudly rather than
-fatally. Members scan under virtual paths (`image.tar!/layer.tar!/bin/busybox`),
-directories/symlinks/whiteouts are skipped rather than honored, and nothing is
-written to disk. What it still does not do is unpack *filesystem* images —
-squashfs, CramFS, UBI — the binwalk/unsquashfs territory; those need their own
-extractors with their own fuzzing stories, and they still scan as opaque
-blobs. For this image that means the squashfs payload remains invisible until
-it is unpacked, exactly as this section originally recorded when *nothing*
-was extracted.
+fatally. Squashfs v4 unpacks through the maintained, fuzzed `backhand`
+reader, and a raw firmware blob gets a bounded 4 KiB-aligned magic search for
+embedded squashfs within its first 256 MiB. Honest limit, stated because it
+bounds the result: this very image's squashfs sits at `0x1f8718`, which is
+*not* 4 KiB-aligned, so the aligned search would still miss it — the
+alignment is a deliberate conservatism against false positives and scan cost,
+and dropping to unaligned sliding-window search is future work with its own
+measurement story. Members scan under virtual paths
+(`fw.bin!sqfs@0x1f8718!/bin/busybox`), directories/symlinks/whiteouts are
+skipped rather than honored, and nothing is written to disk. Still not
+unpacked: CramFS, UBI, and the long tail of vendor filesystems, plus
+squashfs v3 (pre-2009) — each needs its own vetted reader, and those blobs
+still scan raw, exactly as before.
 
 ### Extracted, it finds real vulnerabilities
 

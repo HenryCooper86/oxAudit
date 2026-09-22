@@ -55,6 +55,10 @@ pub enum ArchiveKind {
     Zip,
     /// An `ar` archive — a `.a` static library or a `.deb` package.
     Ar,
+    /// An RPM package: lead, two headers, and a compressed cpio payload.
+    Rpm,
+    /// A squashfs filesystem image, little- or big-endian superblock.
+    Squashfs,
 }
 
 impl Classification {
@@ -120,6 +124,14 @@ pub fn archive_kind(prefix: &[u8]) -> Option<ArchiveKind> {
     }
     if prefix.starts_with(b"!<arch>\n") {
         return Some(ArchiveKind::Ar);
+    }
+    // RPM lead magic, byte order declared big-endian.
+    if prefix.starts_with(&[0xed, 0xab, 0xee, 0xdb]) {
+        return Some(ArchiveKind::Rpm);
+    }
+    // squashfs superblock magic, either byte order.
+    if prefix.starts_with(b"hsqs") || prefix.starts_with(b"sqsh") {
+        return Some(ArchiveKind::Squashfs);
     }
     // The tar magic sits at offset 257 (`ustar`), written by both POSIX and
     // GNU tar; ancient v7 tar predates it and stays an opaque blob.
@@ -282,6 +294,18 @@ mod tests {
             classify(b"!<arch>\ndebian-binary"),
             Classification::Archive(ArchiveKind::Ar)
         );
+        assert_eq!(
+            classify(b"hsqs"),
+            Classification::Archive(ArchiveKind::Squashfs)
+        );
+        assert_eq!(
+            classify(b"sqsh"),
+            Classification::Archive(ArchiveKind::Squashfs)
+        );
+        assert_eq!(
+            classify(&[0xed, 0xab, 0xee, 0xdb, 0x03, 0x00]),
+            Classification::Archive(ArchiveKind::Rpm)
+        );
         for kind in [
             ArchiveKind::Tar,
             ArchiveKind::Gzip,
@@ -290,6 +314,8 @@ mod tests {
             ArchiveKind::Bzip2,
             ArchiveKind::Zip,
             ArchiveKind::Ar,
+            ArchiveKind::Squashfs,
+            ArchiveKind::Rpm,
         ] {
             assert!(Classification::Archive(kind).is_scannable());
         }
