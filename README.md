@@ -384,10 +384,12 @@ Parser and range semantics follow the [npm lockfile documentation](https://githu
 Use the [complete consumer workflow](examples/ci/oxaudit.yml). The
 [installation guide](docs/getting-started.md#complete-consumer-ci-example) explains
 private tool access, fork restrictions, main baseline authority, canonical
-single-run JSON/SARIF export, and report retention. oxAudit's own
-[self-scan](.github/workflows/self-scan.yml) retains downloadable SARIF on every
-completed scan. Code-scanning publication is a separately enabled repository
-capability; analysis and artifacts remain required.
+single-run JSON/SARIF export, and report retention. Setting the repository
+variable `OXAUDIT_CODE_SCANNING=true` additionally uploads the SARIF to code
+scanning, so findings appear inline in pull requests and in the Security tab —
+opt-in because repositories without that capability would fail the step. oxAudit's
+own [self-scan](.github/workflows/self-scan.yml) retains downloadable SARIF on
+every completed scan; its publication uses the same variable.
 
 ## Detection quality
 

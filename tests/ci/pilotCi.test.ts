@@ -32,7 +32,7 @@ import fs from 'node:fs';
 const args=process.argv.slice(2),arg=(flag)=>args[args.indexOf(flag)+1];
 if(args[0]==='scan') {fs.writeFileSync(arg('--output'), JSON.stringify({summary:{filesScanned:1}, findings:[{ruleId:'js-eval'}]}));process.exitCode=Number(process.env.SCAN_FAULT_EXIT||0);}
 else if(args[0]==='runs')console.log(JSON.stringify([{id:'canonical-123',kind:'source',state:process.env.SCAN_FAULT_STATE||'completed'}]));
-else if(args[0]==='export'){if(arg('--run')!=='canonical-123')throw Error('Wrong run exported');fs.writeFileSync(arg('--output'),JSON.stringify({version:'2.1.0',runs:[{results:[{ruleId:'js-eval'}]}]}));}
+else if(args[0]==='export'){if(arg('--run')!=='canonical-123')throw Error('Wrong run exported');fs.writeFileSync(arg('--output'),JSON.stringify({version:'2.1.0',runs:[{results:[{ruleId:'js-eval',locations:[{physicalLocation:{artifactLocation:{uri:'src/handler.js'}}}]}]}]}));}
 else throw Error('Unexpected CLI command');
 `;
 async function shell(script: string, root: string, env: NodeJS.ProcessEnv) {
@@ -50,7 +50,11 @@ for (const exit of [0, 1]) test(`consumer scan exits ${exit}: exports completed 
     assert.equal(provenance.workflowRunId, "123");
     const gate=shell(gateShell,ctx.root,{ ...ctx.env, COMPLETED:"true", SCAN_EXIT:String(exit) });
     if(exit===0) await gate; else await assert.rejects(gate);
-    assert.ok(JSON.parse(await readFile(path.join(ctx.root,"reports/source.sarif"),"utf8")).runs.length);
+    const sarif=JSON.parse(await readFile(path.join(ctx.root,"reports/source.sarif"),"utf8"));
+    assert.ok(sarif.runs.length);
+    // Code scanning resolves SARIF paths against the repository root; the
+    // target was checked out under target/, so the step must have prefixed it.
+    assert.equal(sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri,"target/src/handler.js");
   } finally { await rm(ctx.root,{recursive:true,force:true}); }
 });
 for (const fault of ["missing-cli", "missing-baseline", "failed-run", "incomplete-exit"]) test(`consumer cannot pass ${fault}`, async () => {
@@ -77,6 +81,22 @@ test("consumer baseline provenance rejects another commit, tool, run, or incompl
       await assert.rejects(shell(provenanceShell,ctx.root,env));
     }
   } finally {await rm(ctx.root,{recursive:true,force:true});}
+});
+test("completed scans reach code scanning, and only with SHA-pinned actions", () => {
+  // The upload must be conditioned on a completed scan so a failed tool,
+  // baseline, or scan never uploads anything, and must precede the gate so
+  // findings appear in the Security tab even when the gate then fails. It is
+  // opt-in via OXAUDIT_CODE_SCANNING: repos without the capability must be
+  // able to adopt the workflow unchanged.
+  const uploadIndex = workflow.indexOf("- name: Upload SARIF to code scanning");
+  const gateIndex = workflow.indexOf("- name: Enforce scan completion and findings gate");
+  assert.ok(uploadIndex > 0, "Missing SARIF upload step");
+  assert.ok(gateIndex > uploadIndex, "SARIF upload must run before the findings gate");
+  const uploadStep = workflow.slice(uploadIndex, gateIndex);
+  assert.match(uploadStep, /if: vars\.OXAUDIT_CODE_SCANNING == 'true' && steps\.scan\.outputs\.completed == 'true'/);
+  assert.match(uploadStep, /github\/codeql-action\/upload-sarif@[0-9a-f]{40}/);
+  assert.match(uploadStep, /category: oxaudit-source/);
+  assert.match(workflow, /security-events: write/, "Code scanning upload needs security-events: write");
 });
 // Optional local integration: the same workflow shell against a freshly built
 // CLI. The caller supplies child-only refusing proxy variables (see task report).

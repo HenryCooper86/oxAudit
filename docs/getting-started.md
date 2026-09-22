@@ -171,16 +171,21 @@ silently mark the automated job passed or expose the token with
 maintainer workflow is future work; this example does not invent either.
 See GitHub's [fork workflow restrictions](https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#workflows-in-forked-repositories).
 
-The example uploads downloadable Actions artifacts and requires `contents: read`
-and `actions: read`. It does not require paid code-scanning publication. In this
-repository, CodeQL analysis and SARIF artifact retention stay required, as does
-the self-scan. Only publication to GitHub code scanning is optional, enabled by
-the explicit repository variable **`OXAUDIT_CODE_SCANNING=true`** after an owner
-has verified availability and enabled the capability. On 2026-09-07 the repository
-API returned 403, “Code scanning is not enabled for this repository.” No capability,
-payment, or visibility setting was changed. Upload jobs include `actions: read`,
-`contents: read`, and `security-events: write`; unavailable opt-in uploads fail
-visibly. See GitHub's [SARIF upload requirements](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file).
+The example uploads downloadable Actions artifacts and requires `contents: read`,
+`actions: read`, and `security-events: write`. It can also upload the same SARIF to
+GitHub code scanning — which is what puts findings inline in pull requests and in
+the repository Security tab — for any completed scan, including one that then fails
+the findings gate. That upload is opt-in: it runs only after a repository owner
+verifies the code-scanning capability is available and sets the repository variable
+**`OXAUDIT_CODE_SCANNING=true`**, because a repository without the capability would
+fail the step. SARIF paths are prefixed with `target/` before upload so code
+scanning resolves them against the repository root. The tool commit must not
+reorder or remove that prefix while the target is checked out under `target/`.
+In this repository, CodeQL analysis and SARIF artifact retention stay required, as
+does the self-scan, and its own publication uses the same variable; on 2026-09-07
+the repository API returned 403, “Code scanning is not enabled for this
+repository,” so the opt-in remains unverified here. See GitHub's
+[SARIF upload requirements](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/integrate-with-existing-tools/upload-sarif-file).
 
 Local actionlint and executable shell checks validate the example, but do not
 establish that it ran in a consumer's GitHub repository. The pilot record states
