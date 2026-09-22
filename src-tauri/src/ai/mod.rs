@@ -11,9 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::credentials::ResolvedAiSettings;
-use crate::models::{
-    AiSettings, AiStatus, ChatMessage, ChatRequest, ChatResponse, CveItem, Finding, Usage,
-};
+use crate::models::{AiSettings, AiStatus, ChatMessage, ChatRequest, ChatResponse, CveItem, Usage};
 
 use errors::LlmError;
 
@@ -460,47 +458,6 @@ impl AiClient {
             latency_ms: latency,
         })
     }
-}
-
-/// Build a message list analyzing a scan finding.
-pub fn analyze_finding_messages(finding: &Finding, settings: &AiSettings) -> Vec<ChatMessage> {
-    let user = format!(
-        "Analyze this vulnerability finding from a source code scan and explain it \
-in depth, then give concrete remediation steps for THIS code.\n\n\
---- Finding ---\n\
-Category: {}\n\
-Rule: {} ({})\n\
-Severity: {}\n\
-CWE: {}\n\
-Description: {}\n\
-File: {}:{}\n\
-Matched code:\n```\n{}\n```\n\n\
-Context:\n```\n{}\n```\n\n\
-Recommendation from scanner: {}\n\n\
-Answer in markdown with sections: 1) What this is and why it matters, \
-2) Exploitability assessment, 3) Fix for this specific code, 4) Prevention.",
-        finding.category,
-        finding.rule_name,
-        finding.rule_id,
-        finding.severity,
-        finding.cwe.as_deref().unwrap_or("n/a"),
-        finding.description,
-        finding.file_path,
-        finding.line,
-        finding.match_text,
-        finding.context,
-        finding.recommendation,
-    );
-    vec![
-        ChatMessage {
-            role: "system".into(),
-            content: settings.system_prompt.clone(),
-        },
-        ChatMessage {
-            role: "user".into(),
-            content: user,
-        },
-    ]
 }
 
 /// Build a message list for researching a CVE.

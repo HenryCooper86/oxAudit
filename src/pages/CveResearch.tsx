@@ -507,6 +507,22 @@ function PackageResults({
           ))}
         </ul>
       )}
+      {advisories.length > 15 && (
+        <p className="mt-2 text-[12px] text-text-muted">
+          Showing 15 of {advisories.length} advisories.{" "}
+          <button
+            type="button"
+            onClick={() =>
+              void onOpenUrl(
+                `https://osv.dev/list?ecosystem=${encodeURIComponent(ecosystem)}&q=${encodeURIComponent(packageName)}`,
+              )
+            }
+            className="text-info hover:underline"
+          >
+            See the full list on osv.dev
+          </button>
+        </p>
+      )}
     </div>
   );
 }

@@ -30,7 +30,7 @@ use crate::findings::{
 };
 use crate::fs_utils;
 use crate::models::{
-    AppSettings, ChatRequest, ChatResponse, DependencyScanResult, Finding, LockfileInfo,
+    AppSettings, ChatRequest, ChatResponse, DependencyScanResult, LockfileInfo,
     SaveSettingsRequest, SaveSettingsResult, ScanOptions, ScanSettings, StreamStarted,
     TestAiRequest,
 };

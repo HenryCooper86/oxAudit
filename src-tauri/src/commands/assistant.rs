@@ -7,49 +7,6 @@
 use super::*;
 
 #[tauri::command]
-pub async fn chat(
-    state: State<'_, AppState>,
-    request: ChatRequest,
-) -> Result<ChatResponse, String> {
-    let public = state.settings.lock().unwrap().ai.clone();
-    if !public.enabled {
-        return Err("AI is disabled — enable it in Settings and configure an endpoint.".into());
-    }
-    let settings =
-        crate::credentials::resolve_ai_settings(&public, state.credentials.as_ref(), None)
-            .map_err(|error| error.to_string())?;
-    state.ai.chat(&settings, request).await
-}
-
-#[tauri::command]
-pub async fn analyze_finding(
-    state: State<'_, AppState>,
-    finding: Finding,
-) -> Result<ChatResponse, String> {
-    let public = state.settings.lock().unwrap().ai.clone();
-    if !public.enabled {
-        return Err("AI is disabled — enable it in Settings and configure an endpoint.".into());
-    }
-    let settings =
-        crate::credentials::resolve_ai_settings(&public, state.credentials.as_ref(), None)
-            .map_err(|error| error.to_string())?;
-    let messages = crate::ai::analyze_finding_messages(&finding, &public);
-    state
-        .ai
-        .chat(
-            &settings,
-            ChatRequest {
-                messages,
-                temperature: None,
-                max_tokens: None,
-                conversation_id: None,
-                allow_compaction: true,
-            },
-        )
-        .await
-}
-
-#[tauri::command]
 pub async fn research_cve(
     state: State<'_, AppState>,
     cve: crate::models::CveItem,

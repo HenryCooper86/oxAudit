@@ -25,6 +25,7 @@ import { ResultViewTabs } from "../features/source-scan/ResultViewTabs";
 import {
   countViews,
   filterFindings,
+  sortFindings,
   nextSelection,
   sanitizeExport,
 } from "../features/source-scan/resultsModel";
@@ -98,6 +99,7 @@ const DEFAULT_QUERY: ResultsQuery = {
   scope: "all",
   language: "all",
   search: "",
+  sort: "severity",
 };
 
 export function SourceScanPage(): JSX.Element {
@@ -663,7 +665,11 @@ export function SourceScanPage(): JSX.Element {
   const findings = reviewChanges.findings;
   const counts = useMemo(() => countViews(findings), [findings]);
   const filtered = useMemo(
-    () => filterFindings(findings, { ...query, newOnly: query.newOnly && reviewChanges.hasBaseline }),
+    () =>
+      sortFindings(
+        filterFindings(findings, { ...query, newOnly: query.newOnly && reviewChanges.hasBaseline }),
+        query.sort,
+      ),
     [findings, query, reviewChanges.hasBaseline],
   );
   const effectiveSelection = nextSelection(filtered, selectedFingerprint);
@@ -923,6 +929,11 @@ export function SourceScanPage(): JSX.Element {
                 <Select aria-label="Finding language" value={query.language} onChange={(event) => setQuery((current) => ({ ...current, language: event.target.value }))} variant="compact">
                   <option value="all">All languages</option>
                   {languages.map((language) => <option key={language} value={language}>{language}</option>)}
+                </Select>
+                <Select aria-label="Sort findings" value={query.sort} onChange={(event) => setQuery((current) => ({ ...current, sort: event.target.value as ResultsQuery["sort"] }))} variant="compact">
+                  <option value="severity">Sort: severity</option>
+                  <option value="file">Sort: file</option>
+                  <option value="rule">Sort: rule</option>
                 </Select>
               </>
             }

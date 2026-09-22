@@ -1,5 +1,5 @@
 import type { Finding, FindingScope, ReviewState } from "../../lib/types";
-import type { ResultsQuery, ResultView, ViewCounts } from "./types";
+import type { FindingsSort, ResultsQuery, ResultView, ViewCounts } from "./types";
 
 const OPEN_SCOPES = new Set<FindingScope>([
   "production",
@@ -55,6 +55,58 @@ export function filterFindings(
       .toLocaleLowerCase();
     return haystack.includes(search);
   });
+}
+
+const SEVERITY_RANK: Record<string, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
+function severityRank(finding: Finding): number {
+  return SEVERITY_RANK[finding.severity] ?? Number.MAX_SAFE_INTEGER;
+}
+
+function compareText(left: string, right: string): number {
+  return left.localeCompare(right);
+}
+
+/**
+ * Order the filtered list. Severity puts the worst first (ties by location),
+ * file groups by path for line-by-line review, rule groups same-rule findings
+ * so one decision can inform the next.
+ */
+export function sortFindings(
+  findings: readonly Finding[],
+  sort: FindingsSort,
+): Finding[] {
+  const sorted = [...findings];
+  sorted.sort((a, b) => {
+    if (sort === "file") {
+      return (
+        compareText(a.filePath, b.filePath) ||
+        a.line - b.line ||
+        a.column - b.column
+      );
+    }
+    if (sort === "rule") {
+      return (
+        compareText(a.ruleId, b.ruleId) ||
+        severityRank(a) - severityRank(b) ||
+        compareText(a.filePath, b.filePath) ||
+        a.line - b.line
+      );
+    }
+    return (
+      severityRank(a) - severityRank(b) ||
+      compareText(a.filePath, b.filePath) ||
+      a.line - b.line ||
+      a.column - b.column
+    );
+  });
+  return sorted;
 }
 
 export function nextSelection(

@@ -3,6 +3,7 @@ import {
   useScanWorkStore,
 } from "../../features/project-home/coordinator";
 import type { JSX } from "react";
+import { version } from "../../../package.json";
 import { useAppStore } from "../../lib/stores";
 
 const STATUS_MARKER = {
@@ -56,7 +57,7 @@ export function StatusBar(): JSX.Element {
         </button>
       )}
       <span className="shrink-0">AI {aiStatusLabel}</span>
-      <span className="shrink-0">oxAudit v0.1.0</span>
+      <span className="shrink-0">oxAudit v{version}</span>
     </footer>
   );
 }

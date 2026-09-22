@@ -144,7 +144,6 @@ export const api = {
   cveDetail: (id: string) => invoke<CveDetail>("cve_detail", { id }),
   osvPackageVulns: (ecosystem: string, name: string) =>
     invoke<unknown[]>("osv_package_vulns", { ecosystem, name }),
-  chat: (request: ChatRequest) => invoke<ChatResponse>("chat", { request }),
   streamChat: (request: ChatRequest, runId?: string) =>
     invoke<StreamStarted>("stream_chat", {
       request,
@@ -178,8 +177,6 @@ export const api = {
   sessionDelete: (sessionId: string) => invoke<void>("session_delete", { sessionId }),
   sessionTruncate: (sessionId: string, keepCount: number) =>
     invoke<void>("session_truncate", { sessionId, keepCount }),
-  analyzeFinding: (finding: Finding) =>
-    invoke<ChatResponse>("analyze_finding", { finding }),
   researchCve: (cve: CveItem, osv: unknown | null) =>
     invoke<ChatResponse>("research_cve", { cve, osv }),
   testAi: () => invoke<AiStatus>("test_ai"),

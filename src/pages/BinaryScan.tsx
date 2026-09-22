@@ -277,7 +277,7 @@ export function BinaryScanPage(): JSX.Element {
   if (checkingTool && !toolStatus) {
     return (
       <ToolPage title="Binary Scan" description="Detect vulnerable components inside compiled binaries, firmware images, and archives.">
-        <InlineState tone="running" title="Looking for cve-bin-tool" />
+        <InlineState tone="running" title="Checking scanner availability" />
       </ToolPage>
     );
   }
