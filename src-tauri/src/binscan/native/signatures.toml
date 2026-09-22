@@ -154,6 +154,19 @@ aliases = ["xz-utils", "liblzma5", "liblzma", "lzma", "xz"]
   max = 59999999
   note = "lzma_version_number, AArch64"
 
+  # MIPS16e2 (OpenWrt mips_24kc): the same literal-pool shape as sqlite —
+  # load, return, four raw big-endian bytes. Verified against OpenWrt
+  # 23.05.5's liblzma_5.4.6-1: one occurrence, decoding to 0x2FB8CFE =
+  # 50040062, which the stability formula reduces to 5.4.6.
+  [[signature.byte_patterns]]
+  pattern = "b2 01 e8 a0 .. .. .. .."
+  capture_offset = 4
+  encoding = "u32-be"
+  formula = "decimal-10000000-stability"
+  min = 50000000
+  max = 59999999
+  note = "lzma_version_number, MIPS16e2 literal pool"
+
 # --- transfer and parsing ---------------------------------------------------
 
 # curl: 'curl 8.14.1 (aarch64-unknown-linux-gnu) %s'
@@ -377,6 +390,21 @@ aliases = ["libsqlite3-0", "libsqlite3", "sqlite3", "sqlite"]
   min = 3000000
   max = 3999999
   note = "sqlite3_libversion_number, AArch64"
+
+  # MIPS16e2 (OpenWrt mips_24kc): the accessor is a PC-relative load, a
+  # return, and the constant sitting in the literal pool as four raw
+  # big-endian bytes — the architecture hands the value over without any
+  # instruction-level decoding. Verified against OpenWrt 23.05.5's
+  # libsqlite3-0_3410200 (sqlite 3.41.2): one occurrence of the shape in the
+  # file, decoding to 0x2E66EA = 3041002.
+  [[signature.byte_patterns]]
+  pattern = "b2 01 e8 a0 .. .. .. .."
+  capture_offset = 4
+  encoding = "u32-be"
+  formula = "decimal-1000000"
+  min = 3000000
+  max = 3999999
+  note = "sqlite3_libversion_number, MIPS16e2 literal pool"
 
 # pcre2 gets no byte pattern, deliberately.
 #

@@ -6,8 +6,8 @@ authors = ["oxAudit contributors"]
 source = "Independently known-version binaries and repository-authored regression fixtures; see docs/binary-signatures.md"
 license = "Apache-2.0"
 creation_method = "independently-derived"
-signatures_sha256 = "52af907e9835d17c2507910aad7ba74d226416eeaa9addeec5121909e5da2dee"
-architectures = ["architecture-independent strings", "x86-64", "aarch64"]
+signatures_sha256 = "5d30161b1065d1ff29ebb4a362879095f4491795fe6eaa2f3f0f1afd694a3582"
+architectures = ["architecture-independent strings", "x86-64", "aarch64", "mips16e2"]
 
 [fixtures]
 positive_suites = [

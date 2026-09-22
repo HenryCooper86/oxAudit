@@ -3728,6 +3728,7 @@ dependencies = [
  "libc",
  "liblzma",
  "log",
+ "memchr",
  "once_cell",
  "oxaudit-application",
  "oxaudit-benchmark",

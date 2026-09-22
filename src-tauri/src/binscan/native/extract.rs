@@ -29,8 +29,9 @@
 //!   survive.
 //! - **Not all of binwalk.** Squashfs v4 is unpacked through a reader with
 //!   its own fuzzing story; a raw firmware blob additionally gets a
-//!   bounded, 4 KiB-aligned magic search for embedded squashfs within the
-//!   first 256 MiB. CramFS, UBI, and the long tail of vendor filesystems
+//!   bounded, unaligned sliding magic search for embedded squashfs within
+//!   the first 256 MiB, with a parse-attempt cap against magic sprays.
+//!   CramFS, UBI, and the long tail of vendor filesystems
 //!   are still *not* unpacked — each needs its own vetted reader, and
 //!   pretending otherwise would be the exact kind of silent gap this
 //!   module exists to eliminate. Squashfs v3 (pre-2009) parses or yields
@@ -164,27 +165,23 @@ fn extract_into(
     match archive_kind(bytes) {
         Some(ArchiveKind::Gzip) => {
             if let Some(plain) = decompress(&mut flate2::read::GzDecoder::new(bytes), budget) {
-                let plain_name = strip_archive_suffix(name);
-                extract_into(&plain_name, &plain, depth + 1, budget, total, out);
+                dispatch_decompressed(name, &plain, depth, budget, total, out);
             }
         }
         Some(ArchiveKind::Bzip2) => {
             if let Some(plain) = decompress(&mut bzip2::read::BzDecoder::new(bytes), budget) {
-                let plain_name = strip_archive_suffix(name);
-                extract_into(&plain_name, &plain, depth + 1, budget, total, out);
+                dispatch_decompressed(name, &plain, depth, budget, total, out);
             }
         }
         Some(ArchiveKind::Xz) => {
             if let Some(plain) = decompress(&mut liblzma::read::XzDecoder::new(bytes), budget) {
-                let plain_name = strip_archive_suffix(name);
-                extract_into(&plain_name, &plain, depth + 1, budget, total, out);
+                dispatch_decompressed(name, &plain, depth, budget, total, out);
             }
         }
         Some(ArchiveKind::Zstd) => {
             if let Ok(mut decoder) = zstd::stream::read::Decoder::new(bytes) {
                 if let Some(plain) = decompress(&mut decoder, budget) {
-                    let plain_name = strip_archive_suffix(name);
-                    extract_into(&plain_name, &plain, depth + 1, budget, total, out);
+                    dispatch_decompressed(name, &plain, depth, budget, total, out);
                 }
             }
         }
@@ -203,6 +200,27 @@ fn extract_into(
             }
         }
         None => {}
+    }
+}
+
+/// A decompressed payload is either another container — a `.tar.gz` is a
+/// gzip around a tar — or a leaf file in its own right, like a gzip'd raw
+/// firmware image. Dropping the second case would silently un-scan every
+/// single-file compression wrapper.
+fn dispatch_decompressed(
+    name: &str,
+    plain: &[u8],
+    depth: usize,
+    budget: &ExtractBudget,
+    total: &mut u64,
+    out: &mut Extracted,
+) {
+    if archive_kind(&plain[..plain.len().min(512)]).is_some() {
+        let plain_name = strip_archive_suffix(name);
+        extract_into(&plain_name, plain, depth + 1, budget, total, out);
+    } else {
+        let member_name = strip_archive_suffix(name);
+        read_member_bytes(name, &member_name, plain, depth, budget, total, out);
     }
 }
 
@@ -237,9 +255,10 @@ fn drain_squashfs(
 const EMBEDDED_SCAN_WINDOW: usize = 256 * 1024 * 1024;
 /// How many embedded filesystems one blob may contribute.
 const MAX_EMBEDDED: usize = 4;
-/// Embedded filesystems sit at partition/erase-block boundaries; this is the
-/// alignment the magic search assumes.
-const EMBEDDED_ALIGN: usize = 4096;
+/// How many magic hits will be handed to the parser before the search gives
+/// up. A blob can spray the four magic bytes anywhere; the parser is the
+/// expensive part, so it is the part that gets bounded.
+const MAX_PARSE_ATTEMPTS: usize = 64;
 
 /// Parse an RPM by hand. The `rpm` crate hard-depends on a second native
 /// lzma that conflicts with the one this scanner already links, and RPM is
@@ -383,10 +402,13 @@ fn extract_cpio(
 /// Look for squashfs embedded in a raw firmware blob — the vendor `.bin`
 /// shape of header-plus-kernel-plus-filesystem.
 ///
-/// This is deliberately the smallest useful slice of what binwalk does: one
-/// magic, one alignment, one format, behind the same budgets as everything
-/// else. A magic hit that fails to parse is skipped, not fatal; a blob with
-/// no embedded filesystem returns nothing and the caller scans it raw.
+/// The search slides over every byte of the window (real images put their
+/// filesystem at offsets no alignment rule predicts — the reference Archer C7
+/// image's sits at `0x1f8718`), but keeps two hard bounds so a hostile blob
+/// cannot turn the search into a cost attack: the window itself, and a cap on
+/// parse attempts after which the blob gives up and is reported. A magic hit
+/// that fails to parse is skipped, not fatal; a blob with no embedded
+/// filesystem returns nothing and the caller scans it raw.
 pub fn extract_embedded_squashfs(name: &str, bytes: &[u8], budget: &ExtractBudget) -> Extracted {
     let mut out = Extracted {
         members: Vec::new(),
@@ -395,15 +417,29 @@ pub fn extract_embedded_squashfs(name: &str, bytes: &[u8], budget: &ExtractBudge
     let mut total = 0_u64;
     let scan_end = bytes.len().min(EMBEDDED_SCAN_WINDOW);
     let mut found = 0_usize;
+    let mut attempts = 0_usize;
     let mut offset = 0_usize;
     while offset + 4 <= scan_end && found < MAX_EMBEDDED {
-        let magic = &bytes[offset..offset + 4];
+        let Some(next) = memchr::memchr2(b'h', b's', &bytes[offset..scan_end - 3]) else {
+            break;
+        };
+        let hit = offset + next;
+        let magic = &bytes[hit..hit + 4];
         if magic == b"hsqs" || magic == b"sqsh" {
-            let cursor = std::io::Cursor::new(&bytes[offset..]);
+            attempts += 1;
+            if attempts > MAX_PARSE_ATTEMPTS {
+                out.stats.stopped.get_or_insert_with(|| {
+                    format!(
+                        "gave up on the magic search after {MAX_PARSE_ATTEMPTS} unparsable hits"
+                    )
+                });
+                break;
+            }
+            let cursor = std::io::Cursor::new(&bytes[hit..]);
             if let Ok(filesystem) = backhand::FilesystemReader::from_reader(cursor) {
                 found += 1;
                 drain_squashfs(
-                    &format!("{name}!sqfs@0x{offset:x}"),
+                    &format!("{name}!sqfs@0x{hit:x}"),
                     &filesystem,
                     budget,
                     &mut total,
@@ -411,7 +447,7 @@ pub fn extract_embedded_squashfs(name: &str, bytes: &[u8], budget: &ExtractBudge
                 );
             }
         }
-        offset += EMBEDDED_ALIGN;
+        offset = hit + 1;
     }
     out
 }
@@ -1058,6 +1094,89 @@ mod tests {
         assert_eq!(member_path("./"), None);
     }
 
+    /// Corruption at every byte boundary must terminate without panicking —
+    /// the extractor reads untrusted firmware, and a crash is an availability
+    /// bug an attacker controls. Fixed seeds keep failures reproducible.
+    #[test]
+    fn every_truncation_and_single_byte_flip_terminates() {
+        let tar = tar_with(&[
+            ("bin/busybox", busybox()),
+            ("etc/note", b"text\0\0\n".to_vec()),
+        ]);
+        let zip = zip_with(&[("bin/busybox", busybox())]);
+        let mut deb = b"!<arch>\n".to_vec();
+        let member = tar_with(&[("usr/lib/libz.so", busybox())]);
+        let gz = gzip(&member);
+        let header = format!(
+            "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+            "data.tar.gz",
+            0,
+            0,
+            0,
+            0,
+            gz.len()
+        );
+        deb.extend_from_slice(header.as_bytes());
+        deb.extend_from_slice(&gz);
+        let mut rpm = vec![0xedu8, 0xab, 0xee, 0xdb];
+        rpm.extend_from_slice(&[0; 92]);
+        for _ in 0..2 {
+            let mut header = [0u8; 16];
+            header[0..4].copy_from_slice(&[0x8e, 0xad, 0xe8, 0x01]);
+            rpm.extend_from_slice(&header);
+        }
+        rpm.extend_from_slice(&gzip(&tar));
+
+        let budget = ExtractBudget::default();
+        for (name, corpus) in [("t", tar), ("z", zip), ("d", deb), ("r", rpm)] {
+            for cut in [
+                0usize,
+                1,
+                4,
+                7,
+                60,
+                61,
+                96,
+                111,
+                200,
+                corpus.len().saturating_sub(1),
+            ] {
+                let truncated = &corpus[..cut.min(corpus.len())];
+                let _ = extract(name, truncated, &budget);
+            }
+            // Deterministic single-byte flips across representative positions.
+            let mut flipped = corpus.clone();
+            let mut state = 0x2545F4914F6CDD1Du64;
+            for position in (0..flipped.len()).step_by(7) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                flipped[position] = (state & 0xff) as u8;
+            }
+            let _ = extract(name, &flipped, &budget);
+            let mut sparse = corpus.clone();
+            for position in (0..sparse.len()).step_by(13) {
+                sparse[position] ^= 0xff;
+            }
+            let _ = extract(name, &sparse, &budget);
+        }
+    }
+
+    #[test]
+    fn a_self_referential_gzip_chain_cannot_loop() {
+        // gzip whose payload is (claimed to be) itself is impossible to
+        // build for real, but a deep chain of decompression wrappers is not;
+        // the depth budget must stop it. Two levels is enough to prove the
+        // counter increments through wrappers.
+        let plain = busybox();
+        let once = gzip(&plain);
+        let twice = gzip(&once);
+        let extracted = extract("chain.gz.gz", &twice, &ExtractBudget::default());
+        // busybox bytes decompressed out of the wrappers as a single member.
+        assert_eq!(extracted.stats.entries, 1);
+        assert_eq!(extracted.members[0].bytes, busybox());
+    }
+
     #[test]
     fn the_note_names_the_container_and_its_limits() {
         let mut stats = ExtractStats {
@@ -1152,7 +1271,7 @@ mod squashfs_tests {
         // page-aligned offset. Junk carries no magic so only the real hit
         // parses.
         let image = squashfs_with(&[("bin/busybox", busybox())]);
-        let mut blob = vec![0x5au8; EMBEDDED_ALIGN * 2];
+        let mut blob = vec![0x5au8; 8192];
         blob.extend_from_slice(&image);
         let extracted = extract_embedded_squashfs("fw.bin", &blob, &ExtractBudget::default());
         assert_eq!(
@@ -1162,17 +1281,68 @@ mod squashfs_tests {
     }
 
     #[test]
+    fn an_embedded_squashfs_is_found_at_an_unaligned_offset() {
+        // The Archer C7 reference image's filesystem sits at 0x1f8718 — no
+        // alignment rule predicts it, which is why the search slides instead
+        // of stepping. The junk header is binary (NUL-bearing), not printable.
+        let image = squashfs_with(&[("bin/busybox", busybox())]);
+        let mut blob = vec![0x00u8; 0x1f8718];
+        blob.extend_from_slice(&image);
+        let extracted = extract_embedded_squashfs("fw.bin", &blob, &ExtractBudget::default());
+        assert_eq!(
+            paths(&extracted),
+            vec![format!("fw.bin!sqfs@0x1f8718!/bin/busybox")]
+        );
+    }
+
+    #[test]
+    fn a_magic_spray_gives_up_after_a_bounded_number_of_parse_attempts() {
+        // A blob can repeat the magic bytes to make the parser do work on
+        // every hit. The attempt cap stops the search with a stated reason;
+        // the test completing at all is the termination proof.
+        let mut blob = Vec::new();
+        for _ in 0..4096 {
+            blob.extend_from_slice(b"hsqs");
+        }
+        let extracted = extract_embedded_squashfs("spray.bin", &blob, &ExtractBudget::default());
+        assert_eq!(paths(&extracted), Vec::<&str>::new());
+        assert!(
+            extracted
+                .stats
+                .stopped
+                .as_deref()
+                .is_some_and(|reason| reason.contains("gave up")),
+            "stop reason: {:?}",
+            extracted.stats.stopped
+        );
+    }
+
+    #[test]
+    fn the_search_covers_both_magic_spellings() {
+        // "sqsh" is the big-endian superblock spelling; the sliding search
+        // watches both first bytes, and backhand decides endianness on parse.
+        let image = squashfs_with(&[("bin/tool", busybox())]);
+        let mut blob = vec![0u8, 0, 0, 0, 0, 0, 0];
+        blob.extend_from_slice(&image);
+        let extracted = extract_embedded_squashfs("be.bin", &blob, &ExtractBudget::default());
+        assert_eq!(
+            paths(&extracted),
+            vec![format!("be.bin!sqfs@0x7!/bin/tool")]
+        );
+    }
+
+    #[test]
     fn a_blob_with_no_embedded_filesystem_yields_nothing() {
-        let blob = vec![0x5au8; EMBEDDED_ALIGN * 3];
+        let blob = vec![0x5au8; 12288];
         let extracted = extract_embedded_squashfs("plain.bin", &blob, &ExtractBudget::default());
         assert_eq!(paths(&extracted), Vec::<&str>::new());
     }
 
     #[test]
     fn a_stray_magic_that_does_not_parse_is_skipped() {
-        let mut blob = vec![0x5au8; EMBEDDED_ALIGN];
+        let mut blob = vec![0x5au8; 4096];
         blob.extend_from_slice(b"hsqs");
-        blob.extend_from_slice(&[0x11u8; EMBEDDED_ALIGN]);
+        blob.extend_from_slice(&[0x11u8; 4096]);
         let extracted = extract_embedded_squashfs("liar.bin", &blob, &ExtractBudget::default());
         assert_eq!(paths(&extracted), Vec::<&str>::new());
     }

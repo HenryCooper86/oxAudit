@@ -1109,7 +1109,7 @@ zero CVEs rather than an error"
     /// dpkg recorded.
     ///
     /// `(product, identifying string, accessor bytes, expected version)`.
-    const CONSTANT_GROUND_TRUTH: [(&str, &str, &[u8], &str); 5] = [
+    const CONSTANT_GROUND_TRUTH: [(&str, &str, &[u8], &str); 7] = [
         (
             "nghttp2",
             "nghttp2_session_client_new",
@@ -1155,6 +1155,24 @@ zero CVEs rather than an error"
                 0x00, 0x00, 0xf3, 0x0f, 0x1e, 0xfa, 0xb8, 0x0a, 0x00, 0x00, 0x00, 0xc3,
             ],
             "3.10",
+        ),
+        (
+            "sqlite",
+            "attempt to write a readonly database",
+            // OpenWrt 23.05.5 libsqlite3-0_3410200 (mips_24kc, MIPS16e2):
+            // PC-relative load; jrc ra; the constant itself in the literal
+            // pool as raw big-endian bytes, 0x2E66EA = 3041002.
+            &[0xb2, 0x01, 0xe8, 0xa0, 0x00, 0x2e, 0x66, 0xea],
+            "3.41.2",
+        ),
+        (
+            "xz",
+            "Unsupported flags to lzma_str_to_filters()",
+            // OpenWrt 23.05.5 liblzma_5.4.6-1 (mips_24kc, MIPS16e2): the same
+            // literal-pool shape, 0x2FB8CFE = 50040062 — the stability digit
+            // the formula drops, leaving 5.4.6.
+            &[0xb2, 0x01, 0xe8, 0xa0, 0x02, 0xfb, 0x8c, 0xfe],
+            "5.4.6",
         ),
     ];
 

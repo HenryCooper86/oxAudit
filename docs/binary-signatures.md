@@ -431,13 +431,13 @@ through the same liblzma `.tar.xz` uses), and a saved `docker`/OCI image (a
 tar of layer tars) — in memory, with depth, member-count, per-member, and
 total-expansion budgets that a decompression bomb trips loudly rather than
 fatally. Squashfs v4 unpacks through the maintained, fuzzed `backhand`
-reader, and a raw firmware blob gets a bounded 4 KiB-aligned magic search for
-embedded squashfs within its first 256 MiB. Honest limit, stated because it
-bounds the result: this very image's squashfs sits at `0x1f8718`, which is
-*not* 4 KiB-aligned, so the aligned search would still miss it — the
-alignment is a deliberate conservatism against false positives and scan cost,
-and dropping to unaligned sliding-window search is future work with its own
-measurement story. Members scan under virtual paths
+reader, and a raw firmware blob gets a bounded sliding magic search for
+embedded squashfs within its first 256 MiB — every offset, no alignment
+assumption, since this very image's filesystem sits at the unaligned
+`0x1f8718` and would be missed by any aligned step. Two caps keep a hostile
+blob from turning the search into a cost attack: the window, and a limit of
+64 parse attempts after which the search gives up and says so. Members scan
+under virtual paths
 (`fw.bin!sqfs@0x1f8718!/bin/busybox`), directories/symlinks/whiteouts are
 skipped rather than honored, and nothing is written to disk. Still not
 unpacked: CramFS, UBI, and the long tail of vendor filesystems, plus
@@ -477,13 +477,23 @@ embedding a literal.
 So on hardened firmware, string signatures give identity and often not a
 version. That is exactly the case byte patterns answer — except:
 
-### Byte patterns are x86-64 and AArch64 only, and this is MIPS
+### Byte patterns were x86-64 and AArch64 only — MIPS has since arrived, partially
 
 Verified rather than assumed: the busybox binary contains **zero** occurrences
 of either the x86-64 `endbr64` or the AArch64 `ret` encoding. All eight
 detections came from strings and filenames; no byte pattern could fire. Reaching
 MIPS, ARM32 and the other embedded targets means a pattern per architecture per
 library, and `patfind`-style architecture tagging (see `vulhunt-study.md` §4).
+
+Since that run, sqlite and liblzma gained MIPS16e2 patterns derived from real
+OpenWrt `mips_24kc` packages (23.05.5's libsqlite3 3.41.2 and liblzma 5.4.6,
+versions known independently from the package filenames): on that compressed
+instruction set, the 32-bit accessors end in a PC-relative load, a return, and
+the constant sitting in the literal pool as four raw big-endian bytes — no
+instruction decoding needed at all. zstd deliberately did **not** get one: its
+16-bit accessor uses the EXTEND+LI pair, whose immediate encoding resisted
+derivation from four real binaries (1.4.5, 1.4.9, 1.5.2, 1.5.7) and will not be
+guessed. ARM32 remains unstarted.
 
 ### Two honest caveats on the findings
 
