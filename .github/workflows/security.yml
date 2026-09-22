@@ -114,4 +114,8 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked
       - name: Fuzz bounded rule-pack parsing
-        run: cargo +nightly fuzz run rule_pack -- -max_total_time=90 -timeout=5
+        working-directory: src-tauri
+        run: cargo +nightly fuzz run rule_pack -- -max_total_time=60 -timeout=5
+      - name: Fuzz archive extraction
+        working-directory: src-tauri
+        run: cargo +nightly fuzz run extract_archive -- -max_total_time=60 -timeout=5

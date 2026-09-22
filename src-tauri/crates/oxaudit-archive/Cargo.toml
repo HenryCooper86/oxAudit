@@ -1,0 +1,20 @@
+[package]
+name = "oxaudit-archive"
+version = "0.1.0"
+description = "Bounded in-memory archive and filesystem-image extraction for binary scanning"
+authors = ["Henry Cooper"]
+license = "Apache-2.0"
+edition = "2021"
+# Internal to the oxAudit workspace; not published to crates.io.
+publish = false
+
+[dependencies]
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+zstd = "0.14.0"
+liblzma = "0.4.8"
+bzip2 = "0.5.2"
+tar = "0.4.46"
+zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
+backhand = "0.25.3"
+memchr = "2.8.3"
+serde = { version = "1", features = ["derive"] }

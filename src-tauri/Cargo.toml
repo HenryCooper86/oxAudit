@@ -6,6 +6,7 @@ members = [
   "crates/oxaudit-benchmark",
   "crates/oxaudit-compliance",
   "crates/oxaudit-scanners",
+  "crates/oxaudit-archive",
 ]
 resolver = "2"
 
@@ -95,6 +96,7 @@ oxaudit-application = { path = "crates/oxaudit-application" }
 oxaudit-benchmark = { path = "crates/oxaudit-benchmark" }
 oxaudit-compliance = { path = "crates/oxaudit-compliance" }
 oxaudit-scanners = { path = "crates/oxaudit-scanners" }
+oxaudit-archive = { path = "crates/oxaudit-archive" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
@@ -145,14 +147,6 @@ tree-sitter-cpp = { version = "0.23", optional = true }
 tree-sitter-c-sharp = { version = "0.23", optional = true }
 tree-sitter-kotlin-ng = { version = "1.1", optional = true }
 tree-sitter-swift = { version = "0.7", optional = true }
-tar = "0.4.46"
-flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
-zstd = "0.14.0"
-bzip2 = "0.5.2"
-zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
-backhand = "0.25.3"
-liblzma = "0.4.8"
-memchr = "2.8.3"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
@@ -171,6 +165,9 @@ codegen-units = 1
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+tar = "0.4.46"
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+backhand = "0.25.3"
 
 [[bench]]
 name = "scanning"

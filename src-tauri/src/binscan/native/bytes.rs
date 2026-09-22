@@ -254,6 +254,14 @@ pub enum Encoding {
     /// to r0 by the pattern itself.
     #[serde(rename = "arm-movw-imm16")]
     ArmMovwImm16,
+    /// MIPS16e2 `EXTEND; li v0, imm16`: four bytes big-endian, an EXTEND
+    /// word around a LI word. The combined immediate is a bit permutation,
+    /// not an integer read: the EXTEND word's low five bits land above the
+    /// LI immediate and its upper six below it. The EXTEND opcode itself is
+    /// validated here because the pattern's first byte only pins four of
+    /// its five bits.
+    #[serde(rename = "mips16-extend-li-imm16")]
+    Mips16ExtendLiImm16,
 }
 
 /// Decode an AArch64 wide-immediate move, returning `(imm16, hw)`.
@@ -304,6 +312,22 @@ impl Encoding {
                 // The pattern pins the opcode; what is read here is only the
                 // split immediate: imm4 in bits 19:16 over imm12 in 11:0.
                 Some((u64::from((word >> 16) & 0xf) << 12) | u64::from(word & 0xfff))
+            }
+            Encoding::Mips16ExtendLiImm16 => {
+                let bytes = window.get(..4)?;
+                let extend = u16::from_be_bytes([bytes[0], bytes[1]]);
+                let li = u16::from_be_bytes([bytes[2], bytes[3]]);
+                // EXTEND: opcode 11110 in bits 15:11; the remaining eleven
+                // bits are the upper part of the combined immediate.
+                if extend >> 11 != 0b11110 {
+                    return None;
+                }
+                let fields = extend & 0x7ff;
+                // Measured against four real accessors (zstd 1.4.5, 1.4.9,
+                // 1.5.2, 1.5.7 for mips_24kc): bits 4:0 land above the LI
+                // immediate, bits 10:5 below it.
+                let upper = ((fields & 0x1f) << 6) | ((fields >> 5) & 0x3f);
+                Some((u64::from(upper) << 5) | u64::from(li & 0x1f))
             }
             Encoding::Arm64MovzMovkImm32 => {
                 let bytes = window.get(..8)?;

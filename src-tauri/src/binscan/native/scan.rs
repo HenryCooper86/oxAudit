@@ -727,6 +727,31 @@ mod tests {
     }
 
     #[test]
+    fn a_cramfs_image_finds_components_through_its_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let image = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/crates/oxaudit-archive/tests/fixtures/rootfs.cramfs"
+        ))
+        .expect("fixture");
+        std::fs::write(dir.path().join("vendorfs"), &image).expect("write");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+        assert_eq!(scanned.result.components.len(), 1);
+        assert_eq!(scanned.result.components[0].product, "busybox");
+        assert_eq!(scanned.result.components[0].version, "1.36.1");
+        assert_eq!(
+            scanned.result.components[0].paths,
+            vec!["vendorfs!/bin/busybox".to_string()]
+        );
+    }
+
+    #[test]
     fn a_cancelled_scan_reports_cancellation_rather_than_an_empty_result() {
         // Returning Ok with no components would be indistinguishable from a
         // clean scan, which is the worst possible outcome for a security tool.

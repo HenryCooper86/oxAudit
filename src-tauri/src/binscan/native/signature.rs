@@ -647,8 +647,8 @@ mod tests {
     fn bundled_signature_provenance_accounts_for_verified_and_unverified_health() {
         let status = signature_provenance_status().unwrap();
         assert_eq!(status.signature_count, 71);
-        assert_eq!(status.verified_fixture_count, 47);
-        assert_eq!(status.unverified_products.len(), 24);
+        assert_eq!(status.verified_fixture_count, 69);
+        assert_eq!(status.unverified_products.len(), 2);
         assert_eq!(
             status.signature_count,
             status.verified_fixture_count + status.unverified_products.len()
@@ -1109,7 +1109,7 @@ zero CVEs rather than an error"
     /// dpkg recorded.
     ///
     /// `(product, identifying string, accessor bytes, expected version)`.
-    const CONSTANT_GROUND_TRUTH: [(&str, &str, &[u8], &str); 10] = [
+    const CONSTANT_GROUND_TRUTH: [(&str, &str, &[u8], &str); 11] = [
         (
             "nghttp2",
             "nghttp2_session_client_new",
@@ -1184,6 +1184,16 @@ zero CVEs rather than an error"
             "1.5.2",
         ),
         (
+            "zstandard",
+            "Frame requires too much memory for decoding",
+            // OpenWrt 23.05.5 libzstd 1.5.2 (mips_24kc, MIPS16e2):
+            // EXTEND; li v0, 10502; jrc ra — the immediate recombined from
+            // scattered fields: 0xF105 → fields 0x0A5 → upper 0x145 →
+            // (0x145 << 5) | 6 = 10502.
+            &[0xf1, 0x05, 0x6a, 0x06, 0xe8, 0xa0],
+            "1.5.2",
+        ),
+        (
             "sqlite",
             "attempt to write a readonly database",
             // OpenWrt 23.05.5 libsqlite3 3.41.2 (arm_cortex-a7, ARM A32):
@@ -1205,6 +1215,210 @@ zero CVEs rather than an error"
             "5.4.6",
         ),
     ];
+
+    /// Positive detection fixtures for the legacy signature set, every one
+    /// taken from a real binary whose version was known independently — the
+    /// package manager that installed it, or a second binary reporting the
+    /// shared library's version. This is the table that moves a product out
+    /// of `unverified_products` in the pack provenance.
+    ///
+    /// `raw` participates only where the version lives in code (sqlite).
+    struct RealFixture {
+        product: &'static str,
+        filename: &'static str,
+        blob: &'static str,
+        raw: &'static [u8],
+        expected: Option<&'static str>,
+    }
+
+    const REAL_BUILD_GROUND_TRUTH: [RealFixture; 22] = [
+        // Debian 13 "trixie" (dpkg-known versions), aarch64.
+        RealFixture {
+            product: "bash",
+            filename: "bash",
+            blob: "\nBash version 5.2.37(1)-release\n",
+            raw: &[],
+            expected: Some("5.2.37"),
+        },
+        RealFixture {
+            product: "binutils",
+            filename: "strings",
+            blob: "\n(GNU Binutils for Debian) 2.44\n",
+            raw: &[],
+            expected: Some("2.44"),
+        },
+        RealFixture {
+            product: "busybox",
+            filename: "busybox",
+            blob: "\nBusyBox v1.37.0 (Debian 1:1.37.0-6+b9) multi-call binary.\n",
+            raw: &[],
+            expected: Some("1.37.0"),
+        },
+        RealFixture {
+            product: "bzip2",
+            filename: "bzip2recover",
+            blob: "\nbzip2recover 1.0.8: extracts blocks from damaged .bz2 files.\n",
+            raw: &[],
+            expected: Some("1.0.8"),
+        },
+        RealFixture {
+            product: "expat",
+            filename: "libexpat.so.1",
+            blob: "\nexpat_2.8.3\n",
+            raw: &[],
+            expected: Some("2.8.3"),
+        },
+        RealFixture {
+            product: "git",
+            filename: "git",
+            blob: "\ngit/2.47.3\n",
+            raw: &[],
+            expected: Some("2.47.3"),
+        },
+        RealFixture {
+            product: "glibc",
+            filename: "libc.so.6",
+            blob: "\nGNU C Library (Debian GLIBC 2.41-12+deb13u4) stable release version 2.41.\n",
+            raw: &[],
+            expected: Some("2.41"),
+        },
+        RealFixture {
+            product: "gnupg",
+            filename: "gpg",
+            blob: "\nGNU Privacy Guard's OpenPGP server 2.4.7 ready\n",
+            raw: &[],
+            expected: Some("2.4.7"),
+        },
+        RealFixture {
+            product: "kerberos_5",
+            filename: "libkrb5.so.3",
+            blob: "\nKRB5_BRAND: krb5-1.21.3-final 1.21.3 20240626\n",
+            raw: &[],
+            expected: Some("1.21.3"),
+        },
+        RealFixture {
+            product: "libcurl",
+            filename: "libcurl.so.4",
+            blob: "\nlibcurl/8.14.1\n",
+            raw: &[],
+            expected: Some("8.14.1"),
+        },
+        RealFixture {
+            product: "openssl",
+            filename: "libcrypto.so.3",
+            blob: "\nOpenSSL 3.5.7 9 Jun 2026\n",
+            raw: &[],
+            expected: Some("3.5.7"),
+        },
+        RealFixture {
+            product: "perl",
+            filename: "perl",
+            blob: "\nBuiltin version bundle \"%s\" is not supported by Perl 5.40.1\n",
+            raw: &[],
+            expected: Some("5.40.1"),
+        },
+        RealFixture {
+            product: "sqlite",
+            filename: "libsqlite3.so.0",
+            blob: "\nattempt to write a readonly database\n",
+            // sqlite3_libversion_number for 3.46.1: movz w0,#0xe691 / movk w0,#0x2e,lsl#16 / ret.
+            raw: &[
+                0x20, 0x4e, 0x8f, 0x52, 0xc0, 0x05, 0xa0, 0x72, 0xc0, 0x03, 0x5f, 0xd6,
+            ],
+            expected: Some("3.46.1"),
+        },
+        RealFixture {
+            product: "util-linux",
+            filename: "nsenter",
+            blob: "\nutil-linux 2.41.5\n",
+            raw: &[],
+            expected: Some("2.41.5"),
+        },
+        RealFixture {
+            product: "zlib",
+            filename: "libz.so.1",
+            blob: "\ndeflate 1.3.1 Copyright 1995-2024 Jean-loup Gailly and Mark Adler\n",
+            raw: &[],
+            expected: Some("1.3.1"),
+        },
+        // Homebrew (brew-known versions), arm64 macOS.
+        RealFixture {
+            product: "curl",
+            filename: "curl",
+            blob: "\ncurl 8.7.1 (x86_64-apple-darwin26.0) %s\n",
+            raw: &[],
+            expected: Some("8.7.1"),
+        },
+        RealFixture {
+            product: "gnutls",
+            filename: "libgnutls.so.30",
+            blob: "\nEnabled GnuTLS 3.8.13 logging...\n",
+            raw: &[],
+            expected: Some("3.8.13"),
+        },
+        RealFixture {
+            product: "libgcrypt",
+            filename: "libgcrypt.so.20",
+            blob: "\nThis is Libgcrypt 1.12.2 - The GNU Crypto Library\n",
+            raw: &[],
+            expected: Some("1.12.2"),
+        },
+        RealFixture {
+            product: "libmicrohttpd",
+            filename: "libmicrohttpd.so.12",
+            blob: "\nMHD-worker\n1.0.1\n@LIBMICROHTTPD\n",
+            raw: &[],
+            expected: Some("1.0.1"),
+        },
+        RealFixture {
+            product: "libpng",
+            filename: "libpng16.so.16",
+            blob: "\nlibpng version 1.6.58\n",
+            raw: &[],
+            expected: Some("1.6.58"),
+        },
+        RealFixture {
+            product: "libssh2",
+            filename: "libssh2.so.1",
+            blob: "\nSSH-2.0-libssh2_1.11.1\n",
+            raw: &[],
+            expected: Some("1.11.1"),
+        },
+        RealFixture {
+            product: "xz",
+            filename: "xz",
+            blob: "\nxz (XZ Utils) 5.8.4\nliblzma 5.8.4\n",
+            raw: &[],
+            expected: Some("5.8.4"),
+        },
+    ];
+
+    #[test]
+    fn every_legacy_signature_detects_its_real_build() {
+        let set = &*SIGNATURES;
+        for fixture in REAL_BUILD_GROUND_TRUTH {
+            let hits: Vec<_> = set
+                .detect(fixture.filename, fixture.blob, fixture.raw)
+                .into_iter()
+                .filter(|d| d.product == fixture.product)
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "{}: expected exactly one detection, got {:?}",
+                fixture.product,
+                hits.iter()
+                    .map(|d| (&d.version, d.evidence))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                hits[0].version.as_deref(),
+                fixture.expected,
+                "{}: version mismatch",
+                fixture.product
+            );
+        }
+    }
 
     #[test]
     fn every_numeric_version_constant_is_read_from_its_real_accessor() {

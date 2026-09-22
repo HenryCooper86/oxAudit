@@ -3714,7 +3714,6 @@ name = "oxaudit"
 version = "0.1.0"
 dependencies = [
  "backhand",
- "bzip2",
  "chrono",
  "clap",
  "criterion",
@@ -3726,11 +3725,10 @@ dependencies = [
  "include_dir",
  "keyring",
  "libc",
- "liblzma",
  "log",
- "memchr",
  "once_cell",
  "oxaudit-application",
+ "oxaudit-archive",
  "oxaudit-benchmark",
  "oxaudit-compliance",
  "oxaudit-domain",
@@ -3776,8 +3774,6 @@ dependencies = [
  "walkdir",
  "windows-sys 0.61.2",
  "zeroize",
- "zip",
- "zstd 0.14.0",
 ]
 
 [[package]]
@@ -3789,6 +3785,21 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "toml 0.8.2",
+]
+
+[[package]]
+name = "oxaudit-archive"
+version = "0.1.0"
+dependencies = [
+ "backhand",
+ "bzip2",
+ "flate2",
+ "liblzma",
+ "memchr",
+ "serde",
+ "tar",
+ "zip",
+ "zstd 0.14.0",
 ]
 
 [[package]]

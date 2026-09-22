@@ -1,0 +1,31 @@
+[package]
+name = "oxaudit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Built with sanitizer flags that must not leak into the app workspace.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxaudit-scanners = { path = "../crates/oxaudit-scanners" }
+oxaudit-archive = { path = "../crates/oxaudit-archive" }
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+
+[[bin]]
+name = "rule_pack"
+path = "fuzz_targets/rule_pack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "extract_archive"
+path = "fuzz_targets/extract_archive.rs"
+test = false
+doc = false
+bench = false

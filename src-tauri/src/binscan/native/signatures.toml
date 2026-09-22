@@ -369,6 +369,22 @@ aliases = ["libzstd", "zstd"]
   max = 19999
   note = "ZSTD_versionNumber, ARM (movw r0, imm16; bx lr)"
 
+  # MIPS16e2 (OpenWrt mips_24kc): EXTEND; li v0, imm16; jrc ra. The combined
+  # immediate is a bit permutation — the EXTEND word's low five bits land
+  # above the LI immediate, its upper six below it — measured against four
+  # real accessors (zstd 1.4.5, 1.4.9, 1.5.2, 1.5.7) and decoded by the
+  # mips16-extend-li-imm16 encoding. Verified against OpenWrt 23.05.5's
+  # libzstd 1.5.2: three li-then-return sites in the library, exactly one
+  # plausible version (10502).
+  [[signature.byte_patterns]]
+  pattern = "f. .. 6a .. e8 a0"
+  capture_offset = 0
+  encoding = "mips16-extend-li-imm16"
+  formula = "decimal-10000"
+  min = 10000
+  max = 19999
+  note = "ZSTD_versionNumber, MIPS16e2 (EXTEND; li v0, imm16; jrc ra)"
+
 # sqlite3 embeds SQLITE_VERSION_NUMBER (major*1000000 + minor*1000 + patch) in
 # sqlite3_libversion_number(). The library does carry a bare "3.46.1" string,
 # but with nothing adjacent to anchor on — `SQLite format 3` establishes

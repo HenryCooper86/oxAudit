@@ -434,15 +434,24 @@ fatally. Squashfs v4 unpacks through the maintained, fuzzed `backhand`
 reader, and a raw firmware blob gets a bounded sliding magic search for
 embedded squashfs within its first 256 MiB — every offset, no alignment
 assumption, since this very image's filesystem sits at the unaligned
-`0x1f8718` and would be missed by any aligned step. Two caps keep a hostile
+`0x1f8718` and would be missed by any aligned step. CramFS, RPM packages,
+tar and every compression wrapper around one, zip, and `ar` (so `.deb`)
+open through the same path. Two caps keep a hostile
 blob from turning the search into a cost attack: the window, and a limit of
 64 parse attempts after which the search gives up and says so. Members scan
 under virtual paths
 (`fw.bin!sqfs@0x1f8718!/bin/busybox`), directories/symlinks/whiteouts are
 skipped rather than honored, and nothing is written to disk. Still not
-unpacked: CramFS, UBI, and the long tail of vendor filesystems, plus
+unpacked: UBI/UBIFS and the long tail of vendor filesystems, plus
 squashfs v3 (pre-2009) — each needs its own vetted reader, and those blobs
-still scan raw, exactly as before. Squashfs v3 was investigated and
+still scan raw, exactly as before. CramFS is now unpacked (2026-09-22): a
+hand-rolled reader following the kernel's own `fs/cramfs/inode.c`, verified
+end to end against a genuine `mkfs.cramfs` image committed as a fixture —
+the block-pointer table, where each pointer names its block's *end* and the
+first block starts immediately after the table, was the detail the kernel
+comments settled. Refused variants, each falling back to a raw scan: the
+shifted-root-offset flag, the wrong-signature flag, and legacy direct block
+pointers. Squashfs v3 was investigated and
 deliberately left out, with the measurement: the plain-zlib v3 kinds in the
 `backhand` reader could not be verified against any obtainable standard
 image, and the v3 images that actually dominate old firmware — OpenWrt
@@ -452,6 +461,13 @@ rejects under every kind (measured against 8.09.2's
 `openwrt-atheros-root.squashfs`: all four kinds fail). The vendor-LZMA kinds
 that might read them require a C++ 7zip-era dependency that does not build
 cleanly. Unverifiable parse paths do not ship; that is the rule.
+
+UBI/UBIFS is scoped out with a reason rather than a date: reading it means
+parsing erase-block association and volume tables, then a second filesystem
+(UBIFS) with its own journal and LPT model on top — a project comparable to
+the squashfs reader on its own. `backhand` does not cover it and no
+maintained Rust reader exists to adopt. UBI images carry no magic the
+extractor recognizes, so they scan as opaque blobs, exactly as before.
 
 ### Extracted, it finds real vulnerabilities
 
@@ -501,10 +517,15 @@ independently from the package filenames):
 - **MIPS16e2** (`mips_24kc`, big-endian): the 32-bit accessors end in a
   PC-relative load, a return, and the constant sitting in the literal pool as
   four raw big-endian bytes — no instruction decoding needed at all. sqlite
-  and liblzma both use this shape. zstd deliberately did **not** get a MIPS
-  pattern: its 16-bit accessor uses the EXTEND+LI pair, whose immediate
-  encoding resisted derivation from four real binaries (1.4.5, 1.4.9, 1.5.2,
-  1.5.7) and will not be guessed.
+  and liblzma both use this shape. zstd's 16-bit accessor is the
+  EXTEND+LI pair, whose immediate is a bit permutation rather than an
+  integer: the EXTEND word's low five bits land above the LI immediate and
+  its upper six below it. That mapping resisted four rounds of manual
+  derivation and was then settled empirically — a sweep of 2,048 EXTEND
+  words disassembled through GNU objdump isolated each bit's contribution,
+  and the resulting formula reproduces all four real accessors exactly
+  (zstd 1.4.5, 1.4.9, 1.5.2, 1.5.7). Three li-then-return sites in the real
+  libzstd 1.5.2, exactly one plausible version.
 - **ARM (A32)** (`arm_cortex-a7`, little-endian): zstd's accessor is
   `movw r0, #imm16; bx lr` — the immediate split across the instruction word
   as imm4 over imm12, exactly one movw-then-return site in the real library.
@@ -618,6 +639,27 @@ only where the bus daemon actually is.
 The lesson repeating across all three: an anchor must belong to the library, not
 to its protocol, its translations, or its ancestry. Each was caught by measuring
 what a signature matches across a real tree, not by reading it.
+
+## The legacy signature set is now fixture-verified
+
+The 24 signatures that carried `unverified` provenance ("legacy
+independently-derived, lacks one committed positive fixture") are resolved:
+**22 of 24** moved to verified through `REAL_BUILD_GROUND_TRUTH`, a committed
+table of positive detections whose every entry is a real banner string lifted
+from a real binary whose version was known independently — Debian trixie
+packages (dpkg) for bash 5.2.37, binutils 2.44, busybox 1.37.0, bzip2 1.0.8,
+expat 2.8.3, git 2.47.3, glibc 2.41, GnuPG 2.4.7, krb5 1.21.3, libcurl 8.14.1,
+OpenSSL 3.5.7, perl 5.40.1, sqlite 3.46.1, util-linux 2.41.5, zlib 1.3.1;
+Homebrew kegs for curl 8.7.1, GnuTLS 3.8.13, libgcrypt 1.12.2,
+libmicrohttpd 1.0.1, libpng 1.6.58, libssh2 1.11.1, xz 5.8.4.
+
+The remaining two are unverified for a sharper reason than a missing
+fixture, because measuring found something worse: **neither ICU nor
+libxml2's identity anchors exist in real modern builds**. `ICU 7x` occurs
+nowhere in Homebrew's icu4c 78.3 or Debian's libicu 76.1; `libxml2 version`
+and `xmlsoft.org` occur nowhere in Debian's libxml2 2.9.14. Those two
+signatures would never fire on a real modern binary and need re-derivation —
+which is a more useful fact to record than a TODO.
 
 ## 11. Exploitation signal: KEV and EPSS
 
