@@ -4,6 +4,7 @@ import {
   Boxes,
   Bug,
   FileSearch,
+  History,
   LayoutDashboard,
   Library,
   PackageSearch,
@@ -37,6 +38,7 @@ const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
     label: "Scanning",
     items: [
       { page: "source-scan", label: "Source Scan", icon: FileSearch },
+      { page: "history-scan", label: "History Scan", icon: History },
       { page: "deps-scan", label: "Dependencies", icon: Boxes },
       { page: "binary-scan", label: "Binary Scan", icon: Binary },
     ],

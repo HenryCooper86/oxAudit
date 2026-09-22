@@ -28,6 +28,7 @@ import type {
   DependencyScanResult,
   Finding,
   GitContext,
+  HistoryScanResult,
   LockfileInfo,
   ScanOptions,
   ScanRunDetail,
@@ -62,6 +63,8 @@ export const api = {
   recheckSourceRun: (originalRunId: string, projectId: string) =>
     invoke<RecheckSourceResult>("recheck_source_run", { originalRunId, projectId }),
   cancelScan: () => invoke<void>("cancel_scan"),
+  scanHistorySecrets: (path: string) =>
+    invoke<HistoryScanResult>("scan_history_secrets", { path }),
   inspectSourceProject: (path: string) =>
     invoke<ProjectContext>("inspect_source_project", { path }),
   listSourceProjects: (limit = 12) =>

@@ -1111,3 +1111,17 @@ export interface GitContext {
   partiallyStaged: boolean;
   inspectedAt: string;
 }
+
+/**
+ * The whole result of a git-history secret scan. Not a stored run: findings
+ * describe objects in git history, not the working tree a canonical run's
+ * projection is indexed against, so the response is the entire run and is
+ * gone when the page is.
+ */
+export interface HistoryScanResult {
+  findings: Finding[];
+  blobsScanned: number;
+  blobsSkipped: number;
+  truncated: boolean;
+  limitNote: string | null;
+}

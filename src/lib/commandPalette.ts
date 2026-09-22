@@ -53,6 +53,7 @@ export type PaletteCommand = NavigateCommand | ProjectCommand;
 const KEYWORDS: Record<Page, string[]> = {
   dashboard: ["home", "overview", "start"],
   "source-scan": ["code", "secrets", "sast", "patterns", "grep"],
+  "history-scan": ["git", "incident", "leaked", "credential", "revoked", "bfg", "purge"],
   "deps-scan": ["dependencies", "packages", "lockfile", "osv", "sca", "npm", "cargo"],
   "binary-scan": ["firmware", "elf", "executable", "sbom", "components"],
   inventory: ["components", "packages", "purl", "cpe", "bom"],

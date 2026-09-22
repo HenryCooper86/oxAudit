@@ -18,6 +18,9 @@ import type { Page as PageName } from "./lib/workbench";
 const SourceScanPage = lazy(() =>
   import("./pages/SourceScan").then((module) => ({ default: module.SourceScanPage })),
 );
+const HistoryScanPage = lazy(() =>
+  import("./pages/HistoryScan").then((module) => ({ default: module.HistoryScanPage })),
+);
 const DepsScanPage = lazy(() =>
   import("./pages/DepsScan").then((module) => ({ default: module.DepsScanPage })),
 );
@@ -64,6 +67,8 @@ function Page({ page }: { page: PageName }) {
       return <Dashboard />;
     case "source-scan":
       return <SourceScanPage />;
+    case "history-scan":
+      return <HistoryScanPage />;
     case "deps-scan":
       return <DepsScanPage />;
     case "binary-scan":

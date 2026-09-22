@@ -1,6 +1,7 @@
 export type Page =
   | "dashboard"
   | "source-scan"
+  | "history-scan"
   | "deps-scan"
   | "binary-scan"
   | "inventory"
@@ -38,6 +39,7 @@ export interface AssistantHandoff {
 export const PAGE_META: Record<Page, PageMeta> = {
   dashboard: { title: "Dashboard", group: "Overview" },
   "source-scan": { title: "Source Scan", group: "Scanning" },
+  "history-scan": { title: "History Scan", group: "Scanning" },
   "deps-scan": { title: "Dependencies", group: "Scanning" },
   "binary-scan": { title: "Binary Scan", group: "Scanning" },
   inventory: { title: "Inventory", group: "System" },

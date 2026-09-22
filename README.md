@@ -205,6 +205,7 @@ with a reason, an expiry, and a pull request.
 
 - **Dashboard** — overview and quick actions
 - **Source Scan** — folder picker, scan options, live progress, filterable findings grouped by file, JSON report export
+- **History Scan** — the same secret rules over every blob reachable from any ref; findings at their historical paths, redacted evidence, truncation stated when a budget stopped the scan
 - **Dependencies** — lockfile discovery, OSV check, vulnerable-package table with fixed versions and reference links
 - **Binary Scan** — file/folder target, cve-bin-tool detection with a first-class "not installed" state, live progress, components grouped with their CVEs
 - **Inventory** — all normalized components, versions, aliases, purl/CPE identities, source artifacts, confidence, and advisory matches—including components with no match
@@ -967,10 +968,12 @@ Four limits, stated because they bound what the result means:
 
 `--fail-on`, `--baseline`, and `--fail-on-new` behave exactly as they do for
 `scan`, so a post-purge history can be gated against the pre-purge report.
-History runs are not stored as canonical runs and export no standards formats;
-they are an incident-response surface, not a second workbench. Rotation, not
-deletion, closes a leaked credential — deleting the file never revoked
-anything.
+The desktop workbench runs the same engine from **History Scan** — results
+appear at their historical paths with redacted evidence and are not saved;
+leaving the page discards them. History runs are not stored as canonical runs
+and export no standards formats; they are an incident-response surface, not a
+second workbench. Rotation, not deletion, closes a leaked credential —
+deleting the file never revoked anything.
 
 ## Suppressing a finding
 

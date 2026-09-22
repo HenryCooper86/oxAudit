@@ -1,6 +1,7 @@
 pub mod assistant;
 pub mod cve;
 pub mod dependencies;
+pub mod history;
 pub mod quality;
 pub mod reporting;
 pub mod sessions;

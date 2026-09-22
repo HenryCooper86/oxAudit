@@ -110,6 +110,7 @@ pub fn run() {
             commands::save_finding_reviews,
             commands::scan_project,
             commands::recheck_source_run,
+            commands::history::scan_history_secrets,
             commands::cancel_scan,
             commands::open_scan_finding,
             commands::inspect_source_project,
