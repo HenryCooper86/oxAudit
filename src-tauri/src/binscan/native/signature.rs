@@ -1109,7 +1109,7 @@ zero CVEs rather than an error"
     /// dpkg recorded.
     ///
     /// `(product, identifying string, accessor bytes, expected version)`.
-    const CONSTANT_GROUND_TRUTH: [(&str, &str, &[u8], &str); 7] = [
+    const CONSTANT_GROUND_TRUTH: [(&str, &str, &[u8], &str); 10] = [
         (
             "nghttp2",
             "nghttp2_session_client_new",
@@ -1172,6 +1172,36 @@ zero CVEs rather than an error"
             // literal-pool shape, 0x2FB8CFE = 50040062 — the stability digit
             // the formula drops, leaving 5.4.6.
             &[0xb2, 0x01, 0xe8, 0xa0, 0x02, 0xfb, 0x8c, 0xfe],
+            "5.4.6",
+        ),
+        (
+            "zstandard",
+            "Frame requires too much memory for decoding",
+            // OpenWrt 23.05.5 libzstd 1.5.2 (arm_cortex-a7, ARM A32):
+            // movw r0, #0x2906; bx lr — the immediate split across the
+            // instruction word, imm4 over imm12, recombined by the decoder.
+            &[0x06, 0x09, 0x02, 0xe3, 0x1e, 0xff, 0x2f, 0xe1],
+            "1.5.2",
+        ),
+        (
+            "sqlite",
+            "attempt to write a readonly database",
+            // OpenWrt 23.05.5 libsqlite3 3.41.2 (arm_cortex-a7, ARM A32):
+            // ldr r0, [pc, #0]; bx lr; then 0x002E66EA in the pool as four
+            // little-endian bytes = 3041002.
+            &[
+                0x00, 0x00, 0x9f, 0xe5, 0x1e, 0xff, 0x2f, 0xe1, 0xea, 0x66, 0x2e, 0x00,
+            ],
+            "3.41.2",
+        ),
+        (
+            "xz",
+            "Unsupported flags to lzma_str_to_filters()",
+            // OpenWrt 23.05.5 liblzma 5.4.6 (arm_cortex-a7, ARM A32): the
+            // same pool shape, little-endian this time — 0x02FB8CFE.
+            &[
+                0x00, 0x00, 0x9f, 0xe5, 0x1e, 0xff, 0x2f, 0xe1, 0xfe, 0x8c, 0xfb, 0x02,
+            ],
             "5.4.6",
         ),
     ];

@@ -442,7 +442,16 @@ under virtual paths
 skipped rather than honored, and nothing is written to disk. Still not
 unpacked: CramFS, UBI, and the long tail of vendor filesystems, plus
 squashfs v3 (pre-2009) — each needs its own vetted reader, and those blobs
-still scan raw, exactly as before.
+still scan raw, exactly as before. Squashfs v3 was investigated and
+deliberately left out, with the measurement: the plain-zlib v3 kinds in the
+`backhand` reader could not be verified against any obtainable standard
+image, and the v3 images that actually dominate old firmware — OpenWrt
+Kamikaze/8.09-era vendor builds — are LZMA-patched hybrids with
+mixed-endian headers (`sqsh` magic, little-endian fields) that backhand
+rejects under every kind (measured against 8.09.2's
+`openwrt-atheros-root.squashfs`: all four kinds fail). The vendor-LZMA kinds
+that might read them require a C++ 7zip-era dependency that does not build
+cleanly. Unverifiable parse paths do not ship; that is the rule.
 
 ### Extracted, it finds real vulnerabilities
 
@@ -485,15 +494,23 @@ detections came from strings and filenames; no byte pattern could fire. Reaching
 MIPS, ARM32 and the other embedded targets means a pattern per architecture per
 library, and `patfind`-style architecture tagging (see `vulhunt-study.md` §4).
 
-Since that run, sqlite and liblzma gained MIPS16e2 patterns derived from real
-OpenWrt `mips_24kc` packages (23.05.5's libsqlite3 3.41.2 and liblzma 5.4.6,
-versions known independently from the package filenames): on that compressed
-instruction set, the 32-bit accessors end in a PC-relative load, a return, and
-the constant sitting in the literal pool as four raw big-endian bytes — no
-instruction decoding needed at all. zstd deliberately did **not** get one: its
-16-bit accessor uses the EXTEND+LI pair, whose immediate encoding resisted
-derivation from four real binaries (1.4.5, 1.4.9, 1.5.2, 1.5.7) and will not be
-guessed. ARM32 remains unstarted.
+Since that run, sqlite, liblzma, and zstd gained embedded-architecture
+patterns derived from real OpenWrt packages (23.05.5, versions known
+independently from the package filenames):
+
+- **MIPS16e2** (`mips_24kc`, big-endian): the 32-bit accessors end in a
+  PC-relative load, a return, and the constant sitting in the literal pool as
+  four raw big-endian bytes — no instruction decoding needed at all. sqlite
+  and liblzma both use this shape. zstd deliberately did **not** get a MIPS
+  pattern: its 16-bit accessor uses the EXTEND+LI pair, whose immediate
+  encoding resisted derivation from four real binaries (1.4.5, 1.4.9, 1.5.2,
+  1.5.7) and will not be guessed.
+- **ARM (A32)** (`arm_cortex-a7`, little-endian): zstd's accessor is
+  `movw r0, #imm16; bx lr` — the immediate split across the instruction word
+  as imm4 over imm12, exactly one movw-then-return site in the real library.
+  sqlite and liblzma use `ldr r0, [pc, #..]; bx lr` with the constant in the
+  pool as four little-endian bytes (two pool sites in libsqlite3, one in
+  range; one in liblzma).
 
 ### Two honest caveats on the findings
 

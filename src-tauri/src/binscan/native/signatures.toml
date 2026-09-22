@@ -167,6 +167,18 @@ aliases = ["xz-utils", "liblzma5", "liblzma", "lzma", "xz"]
   max = 59999999
   note = "lzma_version_number, MIPS16e2 literal pool"
 
+  # ARM (A32): the same literal-pool shape as sqlite. Verified against
+  # OpenWrt 23.05.5's liblzma 5.4.6 for arm_cortex-a7 — one pool site,
+  # 0x2FB8CFE = 50040062, which the stability formula reduces to 5.4.6.
+  [[signature.byte_patterns]]
+  pattern = ".. .0 9f e5 1e ff 2f e1 .. .. .. .."
+  capture_offset = 8
+  encoding = "u32-le"
+  formula = "decimal-10000000-stability"
+  min = 50000000
+  max = 59999999
+  note = "lzma_version_number, ARM literal pool"
+
 # --- transfer and parsing ---------------------------------------------------
 
 # curl: 'curl 8.14.1 (aarch64-unknown-linux-gnu) %s'
@@ -345,6 +357,18 @@ aliases = ["libzstd", "zstd"]
   max = 19999
   note = "ZSTD_versionNumber, AArch64 (movz w0, imm16; ret)"
 
+  # ARM (A32): movw r0, #imm16; bx lr. Verified against OpenWrt 23.05.5's
+  # libzstd 1.5.2 for arm_cortex-a7 — exactly one movw-then-return site in
+  # the whole library, decoding to 10502.
+  [[signature.byte_patterns]]
+  pattern = ".. 0. 0. e3 1e ff 2f e1"
+  capture_offset = 0
+  encoding = "arm-movw-imm16"
+  formula = "decimal-10000"
+  min = 10000
+  max = 19999
+  note = "ZSTD_versionNumber, ARM (movw r0, imm16; bx lr)"
+
 # sqlite3 embeds SQLITE_VERSION_NUMBER (major*1000000 + minor*1000 + patch) in
 # sqlite3_libversion_number(). The library does carry a bare "3.46.1" string,
 # but with nothing adjacent to anchor on — `SQLite format 3` establishes
@@ -405,6 +429,19 @@ aliases = ["libsqlite3-0", "libsqlite3", "sqlite3", "sqlite"]
   min = 3000000
   max = 3999999
   note = "sqlite3_libversion_number, MIPS16e2 literal pool"
+
+  # ARM (A32): ldr r0, [pc, #..]; bx lr; the constant in the literal pool as
+  # four raw little-endian bytes. Verified against OpenWrt 23.05.5's
+  # libsqlite3 3.41.2 for arm_cortex-a7 — two pool sites in the library,
+  # exactly this one inside the range (0x2E66EA = 3041002).
+  [[signature.byte_patterns]]
+  pattern = ".. .0 9f e5 1e ff 2f e1 .. .. .. .."
+  capture_offset = 8
+  encoding = "u32-le"
+  formula = "decimal-1000000"
+  min = 3000000
+  max = 3999999
+  note = "sqlite3_libversion_number, ARM literal pool"
 
 # pcre2 gets no byte pattern, deliberately.
 #

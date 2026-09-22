@@ -248,6 +248,12 @@ pub enum Encoding {
     /// halves are recombined.
     #[serde(rename = "arm64-movz-movk-imm32")]
     Arm64MovzMovkImm32,
+    /// ARM (A32) `movw r0, #imm16`: the immediate is split across the
+    /// instruction word — imm4 in bits 19:16, imm12 in bits 11:0 — so it
+    /// cannot be read as a plain integer. The destination register is pinned
+    /// to r0 by the pattern itself.
+    #[serde(rename = "arm-movw-imm16")]
+    ArmMovwImm16,
 }
 
 /// Decode an AArch64 wide-immediate move, returning `(imm16, hw)`.
@@ -291,6 +297,13 @@ impl Encoding {
                 // A shifted MOVZ loads the value into a different half of the
                 // register; reading it as the whole number would be wrong.
                 (shift == 0).then_some(imm as u64)
+            }
+            Encoding::ArmMovwImm16 => {
+                let bytes = window.get(..4)?;
+                let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                // The pattern pins the opcode; what is read here is only the
+                // split immediate: imm4 in bits 19:16 over imm12 in 11:0.
+                Some((u64::from((word >> 16) & 0xf) << 12) | u64::from(word & 0xfff))
             }
             Encoding::Arm64MovzMovkImm32 => {
                 let bytes = window.get(..8)?;
@@ -513,6 +526,16 @@ mod tests {
             Some(10507),
             "the operand is bits 5..21, not a plain little-endian integer"
         );
+    }
+
+    #[test]
+    fn an_arm_movw_immediate_is_recombined_from_its_split_fields() {
+        // `movw r0, #0x2906` — the instruction word 0xE3020906 stored
+        // little-endian, taken from OpenWrt 23.05.5's libzstd 1.5.2 for
+        // arm_cortex-a7 at ZSTD_versionNumber. The immediate is imm4 in
+        // bits 19:16 over imm12 in bits 11:0, not a plain integer read.
+        let instruction = [0x06, 0x09, 0x02, 0xe3];
+        assert_eq!(Encoding::ArmMovwImm16.read(&instruction), Some(10_502));
     }
 
     #[test]

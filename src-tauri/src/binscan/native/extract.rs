@@ -192,8 +192,18 @@ fn extract_into(
         Some(ArchiveKind::Squashfs) => {
             // backhand is the maintained, fuzzed reader for this format;
             // hand-rolling one was explicitly rejected when this module was
-            // written. v4 images parse; v3 (pre-2009) and malformed images
-            // yield nothing and the caller scans the blob raw.
+            // written. v4 images parse; everything else yields nothing and
+            // the caller scans the blob raw.
+            //
+            // v3 was tried and deliberately not shipped: the plain-zlib v3
+            // kinds could not be verified against any obtainable image, and
+            // the v3 images that actually dominate old firmware — OpenWrt
+            // Kamikaze/8.09-era vendor builds — are LZMA-patched hybrids
+            // with mixed-endian headers that backhand rejects under every
+            // kind (measured against 8.09.2's openwrt-atheros-root.squashfs:
+            // all four kinds fail). The vendor-LZMA kinds that might read
+            // them need a C++ 7zip-era dependency that does not build
+            // cleanly. Those blobs still scan raw, as before.
             let cursor = std::io::Cursor::new(bytes);
             if let Ok(filesystem) = backhand::FilesystemReader::from_reader(cursor) {
                 drain_squashfs(name, &filesystem, budget, total, out);
