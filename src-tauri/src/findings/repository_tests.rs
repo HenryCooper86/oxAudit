@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::findings::coverage::CoverageManifest;
 use crate::findings::domain::{
     DiffStatus, FindingScope, PolicyStatus, RetentionPolicy, ReviewOrigin, ReviewRecord,
-    ReviewState, RunPersistence, RunStatus, ScanRunDetail, FINGERPRINT_VERSION,
+    ReviewState, RunPersistence, RunStatus, ScanRunDetail, SeverityCounts, FINGERPRINT_VERSION,
 };
 use crate::models::{Finding, ScanOptions, ScanSummary};
 
@@ -1350,6 +1350,57 @@ fn list_runs_is_bounded_instant_ordered_and_counts_comparisons_without_payload_l
             .code,
         crate::findings::error::ErrorCode::NotFound
     );
+}
+
+#[test]
+fn list_runs_reports_each_runs_severity_mix_and_zeroes_unfinished_runs() {
+    let repository = FindingsRepository::open_in_memory().expect("open repository");
+    let coverage = CoverageManifest::from_entries([("src/config.rs", ["secret"])]);
+    let mut critical = finding("f-critical", "fp-critical");
+    critical.severity = "critical".into();
+    let mut info = finding("f-info", "fp-info");
+    info.severity = "info".into();
+    let high = finding("f-high", "fp-high");
+    complete_project_run(
+        &repository,
+        "project-1",
+        "/project",
+        "mixed-run",
+        "2026-08-20T08:00:00Z",
+        vec![critical, high, info],
+        &coverage,
+    );
+    prepare_project_run_at(
+        &repository,
+        "project-1",
+        "/project",
+        "unfinished-run",
+        "2026-08-20T09:00:00Z",
+    );
+
+    let runs = repository.list_runs("project-1", 20).expect("list runs");
+    let mixed = runs.iter().find(|run| run.run_id == "mixed-run").unwrap();
+    assert_eq!(
+        (
+            mixed.severity_counts.critical,
+            mixed.severity_counts.high,
+            mixed.severity_counts.medium,
+            mixed.severity_counts.low,
+            mixed.severity_counts.info
+        ),
+        (1, 1, 0, 0, 1)
+    );
+    assert_eq!(
+        mixed.severity_counts.total(),
+        mixed.total_findings,
+        "the severity mix accounts for every finding"
+    );
+    let unfinished = runs
+        .iter()
+        .find(|run| run.run_id == "unfinished-run")
+        .unwrap();
+    assert_ne!(unfinished.status, RunStatus::Completed);
+    assert_eq!(unfinished.severity_counts, SeverityCounts::default());
 }
 
 #[test]

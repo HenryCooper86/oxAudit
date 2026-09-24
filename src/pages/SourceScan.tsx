@@ -38,6 +38,7 @@ import {
   type Selection,
 } from "../features/source-scan/selectionModel";
 import { RunHistory } from "../features/source-scan/RunHistory";
+import { SeverityTrend } from "../features/source-scan/SeverityTrend";
 import { RunTimeline } from "../features/runs/RunTimeline";
 import { SourceTargetPanel } from "../features/source-scan/SourceTargetPanel";
 import type { ResultsQuery } from "../features/source-scan/types";
@@ -850,17 +851,20 @@ export function SourceScanPage(): JSX.Element {
 
       {project && (
         <div className="grid items-start gap-4 min-[980px]:grid-cols-[minmax(0,1fr)_20rem]">
-          {run ? (
-            <section aria-label="Scan summary" className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[700px]:grid-cols-5">
-              <SummaryMetric label="Files" value={run.summary.filesScanned.toLocaleString()} />
-              <SummaryMetric label="Secrets" value={run.summary.secretsFound.toLocaleString()} />
-              <SummaryMetric label="Vulnerabilities" value={run.summary.vulnerabilitiesFound.toLocaleString()} />
-              <SummaryMetric label="Critical / High" value={`${run.summary.critical} / ${run.summary.high}`} />
-              <SummaryMetric label="Scanned" value={`${fmtBytes(run.summary.bytesScanned)} · ${fmtDuration(run.summary.durationMs)}`} />
-            </section>
-          ) : (
-            <InlineState tone="idle" title="Project ready" description="No completed source scan has been saved for this project yet." />
-          )}
+          <div className="grid gap-4">
+            <SeverityTrend runs={runs} />
+            {run ? (
+              <section aria-label="Scan summary" className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[700px]:grid-cols-5">
+                <SummaryMetric label="Files" value={run.summary.filesScanned.toLocaleString()} />
+                <SummaryMetric label="Secrets" value={run.summary.secretsFound.toLocaleString()} />
+                <SummaryMetric label="Vulnerabilities" value={run.summary.vulnerabilitiesFound.toLocaleString()} />
+                <SummaryMetric label="Critical / High" value={`${run.summary.critical} / ${run.summary.high}`} />
+                <SummaryMetric label="Scanned" value={`${fmtBytes(run.summary.bytesScanned)} · ${fmtDuration(run.summary.durationMs)}`} />
+              </section>
+            ) : (
+              <InlineState tone="idle" title="Project ready" description="No completed source scan has been saved for this project yet." />
+            )}
+          </div>
           <RunHistory
             runs={runs}
             selectedRunId={run?.runId ?? null}

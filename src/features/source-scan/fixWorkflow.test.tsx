@@ -171,7 +171,7 @@ test("unsaved recheck remains recoverable after a failed history load keeps its 
   vi.spyOn(api, "recheckSourceRun").mockResolvedValue(unsavedReceipt);
   const save = vi.spyOn(api, "retrySourceRunSave").mockResolvedValue(receipt.run);
   const compare = vi.spyOn(api, "compareSourceRuns").mockResolvedValue([{ ...finding, diffStatus: "resolved", resolvedByRunId: "next" }]);
-  vi.mocked(api.listSourceRuns).mockResolvedValue([{ runId: "historic", projectId: original.projectId, status: "completed", startedAt: original.startedAt, completedAt: original.completedAt, totalFindings: 99, newFindings: 99, resolvedFindings: 0 }]);
+  vi.mocked(api.listSourceRuns).mockResolvedValue([{ runId: "historic", projectId: original.projectId, status: "completed", startedAt: original.startedAt, completedAt: original.completedAt, totalFindings: 99, newFindings: 99, resolvedFindings: 0, severityCounts: { critical: 99, high: 0, medium: 0, low: 0, info: 0 } }]);
   vi.mocked(api.loadSourceRun).mockImplementation(async id => {
     if (id === "historic") throw new Error("Historical run unavailable");
     return original;

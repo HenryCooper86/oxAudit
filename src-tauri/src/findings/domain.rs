@@ -164,6 +164,39 @@ pub struct ScanRunSummary {
     pub total_findings: usize,
     pub new_findings: usize,
     pub resolved_findings: usize,
+    /// The run's findings by severity, so a caller can draw the trend over
+    /// time without loading payloads. Zeroed for runs that never completed.
+    #[serde(default)]
+    pub severity_counts: SeverityCounts,
+}
+
+/// One run's findings split across the five severity levels. Unknown
+/// severity strings are ignored rather than guessed into a bucket.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SeverityCounts {
+    pub critical: usize,
+    pub high: usize,
+    pub medium: usize,
+    pub low: usize,
+    pub info: usize,
+}
+
+impl SeverityCounts {
+    pub fn total(&self) -> usize {
+        self.critical + self.high + self.medium + self.low + self.info
+    }
+
+    pub fn record(&mut self, severity: &str) {
+        match severity {
+            "critical" => self.critical += 1,
+            "high" => self.high += 1,
+            "medium" => self.medium += 1,
+            "low" => self.low += 1,
+            "info" => self.info += 1,
+            _ => {}
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -75,6 +75,7 @@ test("durable home maps source IDs through projects and keeps latest failed depe
       totalFindings: 3,
       newFindings: 2,
       resolvedFindings: 0,
+      severityCounts: { critical: 0, high: 3, medium: 0, low: 0, info: 0 },
     },
   ]);
   vi.spyOn(api, "listCanonicalRuns").mockResolvedValue([

@@ -204,7 +204,7 @@ with a reason, an expiry, and a pull request.
 ## Screens
 
 - **Dashboard** — overview and quick actions
-- **Source Scan** — folder picker, scan options, live progress, filterable findings grouped by file, JSON report export
+- **Source Scan** — folder picker, scan options, live progress, filterable findings grouped by file, JSON report export, and a severity trend over stored runs (findings by severity per completed scan, oldest to newest, with the latest run's new/resolved counts against its baseline)
 - **History Scan** — the same secret rules over every blob reachable from any ref; findings at their historical paths, redacted evidence, truncation stated when a budget stopped the scan
 - **Dependencies** — lockfile discovery, OSV check, vulnerable-package table with fixed versions and reference links
 - **Binary Scan** — file/folder target, cve-bin-tool detection with a first-class "not installed" state, live progress, components grouped with their CVEs

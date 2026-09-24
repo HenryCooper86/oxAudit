@@ -15,7 +15,7 @@ use super::{
     domain::{
         DiffStatus, FindingScope, PolicyStatus, ProjectContext, RecentProject, RetentionPolicy,
         ReviewOrigin, ReviewRecord, ReviewState, RunPersistence, RunStatus, ScanRunDetail,
-        ScanRunSummary,
+        ScanRunSummary, SeverityCounts,
     },
     error::CommandError,
     policy::PolicyAuthority,
@@ -1968,7 +1968,10 @@ impl FindingsRepository {
             .iter()
             .flat_map(|run| std::iter::once(run.run_id.clone()).chain(run.baseline_run_id.clone()))
             .collect::<BTreeSet<_>>();
-        let mut observations = BTreeMap::<String, Vec<ObservationIdentity>>::new();
+        // Severity rides along for the per-run counts; it deliberately stays
+        // out of ObservationIdentity so a severity relabel between runs is
+        // not miscounted as a new or resolved finding.
+        let mut observations = BTreeMap::<String, Vec<(ObservationIdentity, String)>>::new();
         if !relevant_run_ids.is_empty() {
             let placeholders = std::iter::repeat("?")
                 .take(relevant_run_ids.len())
@@ -1976,7 +1979,8 @@ impl FindingsRepository {
                 .join(",");
             let sql = format!(
                 r#"SELECT run_id, fingerprint_version, fingerprint, category,
-                          json_extract(payload_json, '$.filePath')
+                          json_extract(payload_json, '$.filePath'),
+                          json_extract(payload_json, '$.severity')
                    FROM findings WHERE run_id IN ({placeholders}) ORDER BY run_id, rowid"#
             );
             let mut statement = connection.prepare(&sql).map_err(persistence_error)?;
@@ -1984,19 +1988,25 @@ impl FindingsRepository {
                 .query_map(rusqlite::params_from_iter(relevant_run_ids.iter()), |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        ObservationIdentity {
-                            fingerprint_version: row.get(1)?,
-                            fingerprint: row.get(2)?,
-                            category: row.get(3)?,
-                            file_path: row.get(4)?,
-                        },
+                        (
+                            ObservationIdentity {
+                                fingerprint_version: row.get(1)?,
+                                fingerprint: row.get(2)?,
+                                category: row.get(3)?,
+                                file_path: row.get(4)?,
+                            },
+                            row.get::<_, String>(5)?,
+                        ),
                     ))
                 })
                 .map_err(persistence_error)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(persistence_error)?;
-            for (run_id, identity) in rows {
-                observations.entry(run_id).or_default().push(identity);
+            for (run_id, (identity, severity)) in rows {
+                observations
+                    .entry(run_id)
+                    .or_default()
+                    .push((identity, severity));
             }
         }
 
@@ -2014,7 +2024,7 @@ impl FindingsRepository {
                         .unwrap_or_default();
                     let current_keys = current
                         .iter()
-                        .map(|observation| {
+                        .map(|(observation, _)| {
                             (
                                 observation.fingerprint_version,
                                 observation.fingerprint.as_str(),
@@ -2023,7 +2033,7 @@ impl FindingsRepository {
                         .collect::<BTreeSet<_>>();
                     let baseline_keys = baseline
                         .iter()
-                        .map(|observation| {
+                        .map(|(observation, _)| {
                             (
                                 observation.fingerprint_version,
                                 observation.fingerprint.as_str(),
@@ -2037,7 +2047,7 @@ impl FindingsRepository {
                     let new_findings = current_keys.difference(&baseline_keys).count();
                     let resolved_findings = baseline
                         .iter()
-                        .filter(|observation| {
+                        .filter(|(observation, _)| {
                             !current_keys.contains(&(
                                 observation.fingerprint_version,
                                 observation.fingerprint.as_str(),
@@ -2048,6 +2058,15 @@ impl FindingsRepository {
                 } else {
                     (current.len(), current.len(), 0)
                 };
+                let severity_counts = if run.status != RunStatus::Completed {
+                    SeverityCounts::default()
+                } else {
+                    let mut counts = SeverityCounts::default();
+                    for (_, severity) in &current {
+                        counts.record(severity);
+                    }
+                    counts
+                };
                 Ok(ScanRunSummary {
                     run_id: run.run_id,
                     project_id: run.project_id,
@@ -2057,6 +2076,7 @@ impl FindingsRepository {
                     total_findings,
                     new_findings,
                     resolved_findings,
+                    severity_counts,
                 })
             })
             .collect()

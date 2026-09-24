@@ -588,6 +588,14 @@ export interface RecentProject {
   high: number;
 }
 
+export interface SeverityCounts {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  info: number;
+}
+
 export interface ScanRunSummary {
   runId: string;
   projectId: string;
@@ -597,6 +605,8 @@ export interface ScanRunSummary {
   totalFindings: number;
   newFindings: number;
   resolvedFindings: number;
+  /** The run's findings by severity; zeroed for runs that never completed. */
+  severityCounts: SeverityCounts;
 }
 
 export interface ReviewRequest {
