@@ -15,6 +15,8 @@ const FORMATS: Array<{ id: ExportFormat; label: string; description: string }> =
   { id: "spdx", label: "SPDX 2.3", description: "Portable software-package inventory with purl references." },
   { id: "openvex", label: "OpenVEX", description: "Advisory affected statements without inventing an analyst disposition." },
   { id: "cyclonedx-vex", label: "CycloneDX VEX", description: "CycloneDX inventory plus vulnerability analysis records." },
+  { id: "github-issues-csv", label: "GitHub Issues CSV", description: "One importable issue per finding: title, description with location and recommendation, labels." },
+  { id: "jira-csv", label: "Jira CSV", description: "One importable issue per finding: summary, task type, description, mapped priority, labels." },
 ];
 
 export function ExportCenterPage(): JSX.Element {
@@ -69,7 +71,7 @@ export function ExportCenterPage(): JSX.Element {
     if (!preview) return;
     const destination = await save({
       defaultPath: preview.suggestedFileName,
-      filters: [{ name: selectedFormat.label, extensions: ["json"] }],
+      filters: [{ name: selectedFormat.label, extensions: [selectedFormat.id.endsWith("-csv") ? "csv" : "json"] }],
     });
     if (!destination) return;
     try {

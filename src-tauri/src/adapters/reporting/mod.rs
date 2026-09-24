@@ -13,6 +13,8 @@ pub enum ReportFormat {
     Spdx,
     OpenVex,
     CycloneDxVex,
+    GithubIssuesCsv,
+    JiraCsv,
 }
 
 impl ReportFormat {
@@ -24,6 +26,8 @@ impl ReportFormat {
             "spdx" => Ok(Self::Spdx),
             "openvex" => Ok(Self::OpenVex),
             "cyclonedx-vex" => Ok(Self::CycloneDxVex),
+            "github-issues-csv" => Ok(Self::GithubIssuesCsv),
+            "jira-csv" => Ok(Self::JiraCsv),
             _ => Err("unsupported export format".into()),
         }
     }
@@ -35,6 +39,7 @@ impl ReportFormat {
             Self::Spdx => "application/spdx+json",
             Self::OpenVex => "application/openvex+json",
             Self::OxAuditJson => "application/vnd.oxaudit.run+json",
+            Self::GithubIssuesCsv | Self::JiraCsv => "text/csv",
         }
     }
 
@@ -46,6 +51,8 @@ impl ReportFormat {
             Self::Spdx => "spdx.json",
             Self::OpenVex => "openvex.json",
             Self::CycloneDxVex => "cdx-vex.json",
+            Self::GithubIssuesCsv => "github-issues.csv",
+            Self::JiraCsv => "jira.csv",
         }
     }
 }
@@ -65,6 +72,12 @@ pub struct GeneratedReport {
 }
 
 pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedReport, String> {
+    if matches!(
+        format,
+        ReportFormat::GithubIssuesCsv | ReportFormat::JiraCsv
+    ) {
+        return generate_ticket_csv(data, format);
+    }
     let mut warnings = Vec::new();
     let value = match format {
         ReportFormat::OxAuditJson => serde_json::json!({
@@ -231,10 +244,121 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                 "vulnerabilities": vulnerabilities
             })
         }
+        // Ticket CSVs return from generate before this JSON-shaped match.
+        ReportFormat::GithubIssuesCsv | ReportFormat::JiraCsv => {
+            unreachable!("ticket CSV formats never build a JSON value")
+        }
     };
     validate(&value, format)?;
     let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
     Ok(GeneratedReport { bytes, warnings })
+}
+
+// ----------------------------------------------------------------- ticketing
+
+/// One CSV cell, quoted per RFC 4180 whenever it contains anything the
+/// importer would otherwise split on. Descriptions are multi-line markdown,
+/// so quoting is the norm here, not the exception.
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
+}
+
+/// The shared body of a handed-off ticket: everything a triager needs
+/// before opening the file, and the fingerprint that ties the ticket back
+/// to this finding when it comes back as "fixed".
+fn ticket_body(data: &ReportData, finding: &crate::models::Finding) -> String {
+    format!(
+        "**{severity}** — {rule}\n\n`{path}:{line}:{column}`\n\n{description}\n\n**Recommendation:** {recommendation}\n\n_Finding fingerprint `{fingerprint}` · oxAudit run `{run}`_",
+        severity = finding.severity,
+        rule = finding.rule_id,
+        path = finding.file_path,
+        line = finding.line,
+        column = finding.column,
+        description = finding.description,
+        recommendation = finding.recommendation,
+        fingerprint = finding.fingerprint,
+        run = data.run.id.as_str(),
+    )
+}
+
+/// GitHub's issue importer expects exactly `title,description,labels`.
+fn github_issues_row(data: &ReportData, finding: &crate::models::Finding) -> String {
+    [
+        csv_cell(&format!(
+            "[{severity}] {title}",
+            severity = finding.severity,
+            title = finding.title
+        )),
+        csv_cell(&ticket_body(data, finding)),
+        csv_cell(&format!(
+            "security,oxaudit,{severity}",
+            severity = finding.severity
+        )),
+    ]
+    .join(",")
+}
+
+/// Jira's CSV importer maps columns onto fields by header name.
+fn jira_priority(severity: &str) -> &'static str {
+    match severity {
+        "critical" => "Highest",
+        "high" => "High",
+        "medium" => "Medium",
+        "low" | "info" => "Low",
+        _ => "Medium",
+    }
+}
+
+fn jira_row(data: &ReportData, finding: &crate::models::Finding) -> String {
+    [
+        csv_cell(&format!(
+            "[{severity}] {title}",
+            severity = finding.severity,
+            title = finding.title
+        )),
+        csv_cell("Task"),
+        csv_cell(&ticket_body(data, finding)),
+        csv_cell(jira_priority(&finding.severity)),
+        csv_cell("security,oxaudit"),
+    ]
+    .join(",")
+}
+
+/// Ticket handoff exports: one importable row per finding, for the two
+/// trackers whose CSV import shapes are stable and documented (GitHub
+/// Issues: `title,description,labels`; Jira: `Summary,Issue Type,
+/// Description,Priority,Labels`). The structural contract is checked here
+/// rather than in [`validate`], which is JSON-only: the header must be
+/// exact and the row count must equal the finding count, so an importer
+/// can never silently drop rows.
+fn generate_ticket_csv(data: &ReportData, format: ReportFormat) -> Result<GeneratedReport, String> {
+    let (header, row): (&str, fn(&ReportData, &crate::models::Finding) -> String) = match format {
+        ReportFormat::GithubIssuesCsv => ("title,description,labels", github_issues_row),
+        ReportFormat::JiraCsv => ("Summary,Issue Type,Description,Priority,Labels", jira_row),
+        _ => unreachable!("caller checked the format is a ticket CSV"),
+    };
+    let mut warnings = Vec::new();
+    if data.findings.is_empty() {
+        warnings.push("This run has no findings to hand off; the CSV is header-only.".into());
+    }
+    let mut lines = vec![header.to_owned()];
+    lines.extend(data.findings.iter().map(|finding| row(data, finding)));
+    let text = lines.join("\r\n") + "\r\n";
+    let body_rows = lines.len() - 1;
+    if body_rows != data.findings.len() {
+        return Err("ticket CSV failed its structural contract".into());
+    }
+    if !text.starts_with(header) {
+        return Err("ticket CSV failed its structural contract".into());
+    }
+    Ok(GeneratedReport {
+        bytes: text.into_bytes(),
+        warnings,
+    })
 }
 
 fn cyclonedx_component(component: &Component) -> serde_json::Value {
@@ -266,6 +390,8 @@ fn vex_statements(data: &ReportData) -> Vec<serde_json::Value> {
 
 fn validate(value: &serde_json::Value, format: ReportFormat) -> Result<(), String> {
     let valid = match format {
+        // Ticket CSVs carry their own structural check in generate_ticket_csv.
+        ReportFormat::GithubIssuesCsv | ReportFormat::JiraCsv => true,
         ReportFormat::OxAuditJson => {
             value.get("schemaVersion") == Some(&serde_json::json!(1)) && value.get("run").is_some()
         }
@@ -342,6 +468,154 @@ mod tests {
             let report = generate(&data, format).expect("generate report");
             serde_json::from_slice::<serde_json::Value>(&report.bytes).expect("valid JSON");
         }
+    }
+
+    fn ticket_fixture() -> ReportData {
+        let mut data = ReportData {
+            run: completed_run(),
+            artifacts: Vec::new(),
+            components: Vec::new(),
+            observations: Vec::new(),
+            findings: vec![crate::models::Finding {
+                id: "finding-1".into(),
+                category: "vulnerability".into(),
+                rule_id: "js-eval".into(),
+                rule_name: "eval() of dynamic input".into(),
+                severity: "high".into(),
+                title: "eval() with attacker-influenced input".into(),
+                description: "The input reaches eval(), \"quoted\", with a comma, and\na newline."
+                    .into(),
+                file_path: "src/render.js".into(),
+                line: 42,
+                column: 9,
+                match_text: "eval(input)".into(),
+                context: "eval(input)".into(),
+                language: "javascript".into(),
+                cwe: Some("CWE-95".into()),
+                cwe_exploited: false,
+                cwe_exploited_count: 0,
+                recommendation: "Parse, don't evaluate.".into(),
+                entropy: None,
+                verified: None,
+                analysis: Default::default(),
+                analysis_gates: Vec::new(),
+                observation_run_id: String::new(),
+                resolved_by_run_id: None,
+                fingerprint_version: 1,
+                fingerprint: "fingerprint-1".into(),
+                in_test_region: false,
+                scope: None,
+                scope_reason: None,
+                review: None,
+                review_history: Vec::new(),
+                diff_status: None,
+            }],
+            projection: None,
+        };
+        data.findings.push(crate::models::Finding {
+            id: "finding-2".into(),
+            severity: "critical".into(),
+            title: "Leaked credential".into(),
+            rule_id: "github-token".into(),
+            description: "A token was committed.".into(),
+            recommendation: "Rotate the token.".into(),
+            fingerprint: "fingerprint-2".into(),
+            ..data.findings[0].clone()
+        });
+        data
+    }
+
+    /// RFC 4180: the quote inside the description doubles, the commas and
+    /// newlines sit inside one quoted cell, and the importer sees one row
+    /// per finding — not one row per line of description.
+    #[test]
+    fn github_issues_csv_matches_the_importer_shape_and_escapes_cells() {
+        let report = generate(&ticket_fixture(), ReportFormat::GithubIssuesCsv)
+            .expect("generate github csv");
+        let text = String::from_utf8(report.bytes).unwrap();
+        let mut lines = text.split("\r\n");
+        assert_eq!(lines.next(), Some("title,description,labels"));
+        let rows: Vec<&str> = lines
+            .collect::<Vec<_>>()
+            .iter()
+            .filter(|line| !line.is_empty())
+            .copied()
+            .collect();
+        assert_eq!(rows.len(), 2, "one row per finding");
+        assert!(rows[0].starts_with("[high] eval() with attacker-influenced input,\"**high**"));
+        assert!(rows[0].contains("\"\"quoted\"\""), "inner quotes double");
+        assert!(rows[0].ends_with("\"security,oxaudit,high\""));
+        assert!(rows[1].ends_with("\"security,oxaudit,critical\""));
+        assert!(
+            text.contains("fingerprint-1"),
+            "tickets carry the fingerprint"
+        );
+    }
+
+    #[test]
+    fn jira_csv_maps_priority_and_keeps_its_five_columns() {
+        let report = generate(&ticket_fixture(), ReportFormat::JiraCsv).expect("generate jira csv");
+        let text = String::from_utf8(report.bytes).unwrap();
+        let mut lines = text.split("\r\n");
+        assert_eq!(
+            lines.next(),
+            Some("Summary,Issue Type,Description,Priority,Labels")
+        );
+        let rows: Vec<&str> = lines
+            .collect::<Vec<_>>()
+            .iter()
+            .filter(|line| !line.is_empty())
+            .copied()
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].contains(",High,\"security,oxaudit\""));
+        assert!(rows[1].contains(",Highest,"), "critical maps to Highest");
+        assert!(rows[0].contains(",Task,"));
+    }
+
+    #[test]
+    fn a_run_without_findings_hands_off_an_honest_header_only_csv() {
+        let data = ReportData {
+            run: completed_run(),
+            artifacts: Vec::new(),
+            components: Vec::new(),
+            observations: Vec::new(),
+            findings: Vec::new(),
+            projection: None,
+        };
+        for format in [ReportFormat::GithubIssuesCsv, ReportFormat::JiraCsv] {
+            let report = generate(&data, format).expect("generate empty csv");
+            assert_eq!(
+                report.warnings,
+                vec!["This run has no findings to hand off; the CSV is header-only.".to_owned()]
+            );
+            let text = String::from_utf8(report.bytes).unwrap();
+            assert_eq!(text.lines().count(), 1, "header only");
+        }
+    }
+
+    #[test]
+    fn ticket_formats_parse_and_carry_csv_metadata() {
+        assert_eq!(
+            ReportFormat::parse("github-issues-csv").unwrap(),
+            ReportFormat::GithubIssuesCsv
+        );
+        assert_eq!(
+            ReportFormat::parse("jira-csv").unwrap(),
+            ReportFormat::JiraCsv
+        );
+        assert_eq!(ReportFormat::GithubIssuesCsv.media_type(), "text/csv");
+        assert_eq!(ReportFormat::GithubIssuesCsv.suffix(), "github-issues.csv");
+        assert_eq!(ReportFormat::JiraCsv.suffix(), "jira.csv");
+        assert!(ReportFormat::parse("github-csv").is_err());
+    }
+
+    #[test]
+    fn csv_cells_quote_only_what_requires_it() {
+        assert_eq!(csv_cell("plain"), "plain");
+        assert_eq!(csv_cell("with,comma"), "\"with,comma\"");
+        assert_eq!(csv_cell("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_cell("two\nlines"), "\"two\nlines\"");
     }
 }
 

@@ -139,7 +139,9 @@ export type ExportFormat =
   | "cyclonedx"
   | "spdx"
   | "openvex"
-  | "cyclonedx-vex";
+  | "cyclonedx-vex"
+  | "github-issues-csv"
+  | "jira-csv";
 
 export interface ExportPreview {
   format: ExportFormat;

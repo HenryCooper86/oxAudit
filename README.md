@@ -212,7 +212,7 @@ with a reason, an expiry, and a pull request.
 - **Rule Library** — built-in provenance/fixture health plus safe validation of external declarative TOML packs without installation or script execution
 - **Quality Lab** — reproducible ground-truth metrics, misses, false positives, limitations, history, and regression state
 - **Data Sources** — provider source/terms, immutable snapshot hashes, refresh state, and honest offline readiness
-- **Export Center** — validated JSON/SARIF/SBOM/VEX preview/export plus bounded import and conflict preview
+- **Export Center** — validated JSON/SARIF/SBOM/VEX preview/export plus bounded import and conflict preview, and ticket handoff: GitHub Issues and Jira CSV exports with one importable row per finding (severity-mapped priorities, RFC 4180 escaping, the finding fingerprint carried for traceability)
 - **Verification** — producer-independent human verification bound to immutable finding evidence
 - **Compliance Center** — framework selection, bounded local evidence collection, durable control matrices, and append-only human decisions
 - **Report Studio** — professional multi-format report metadata, disclosure controls, preview, atomic save, and content receipts
