@@ -653,13 +653,34 @@ OpenSSL 3.5.7, perl 5.40.1, sqlite 3.46.1, util-linux 2.41.5, zlib 1.3.1;
 Homebrew kegs for curl 8.7.1, GnuTLS 3.8.13, libgcrypt 1.12.2,
 libmicrohttpd 1.0.1, libpng 1.6.58, libssh2 1.11.1, xz 5.8.4.
 
-The remaining two are unverified for a sharper reason than a missing
+The remaining two were unverified for a sharper reason than a missing
 fixture, because measuring found something worse: **neither ICU nor
 libxml2's identity anchors exist in real modern builds**. `ICU 7x` occurs
 nowhere in Homebrew's icu4c 78.3 or Debian's libicu 76.1; `libxml2 version`
 and `xmlsoft.org` occur nowhere in Debian's libxml2 2.9.14. Those two
 signatures would never fire on a real modern binary and need re-derivation —
 which is a more useful fact to record than a TODO.
+
+Both were re-derived on 2026-09-24, and the set is now **24 of 24
+fixture-verified** (71 products total):
+
+- **ICU** identifies by its mangled C++ symbol namespace — `_ZN6icu_78…`,
+  present in every library build regardless of stripping — and libicuuc
+  alone embeds `U_ICU_VERSION` as the only bare `major.minor` string in its
+  string table (measured unique in Debian libicu 76.1 and 78.3;
+  libicui18n's bare dotted strings are ln(2)/log10(e) constants with
+  one-digit majors, which the two-digit-major pattern excludes). The
+  bare-digits version line is not allowed to imply identity, per authoring
+  rule 2. Ground truth transcribed from both Debian builds.
+- **libxml2** identifies by its link-mismatch fatal prose (`Fatal: program
+  compiled against libxml %d using libxml %d`, stable since the 2.x era)
+  and deliberately reports **no version**: the only version-shaped text in
+  a stripped modern build is the `LIBXML2_2.x` symbol-tag history — 2.9.14
+  still tags 2.4.30 — which authoring rule 1 forbids capturing because
+  those are the ABIs the library can serve, not what it is. The ELF package
+  note reports the exact version wherever the distro left one. Ground truth
+  from Debian bookworm and trixie 2.9.14 builds, with the tag lines present
+  in the fixture to prove none of them is captured.
 
 ## 11. Exploitation signal: KEV and EPSS
 

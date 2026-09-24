@@ -647,8 +647,8 @@ mod tests {
     fn bundled_signature_provenance_accounts_for_verified_and_unverified_health() {
         let status = signature_provenance_status().unwrap();
         assert_eq!(status.signature_count, 71);
-        assert_eq!(status.verified_fixture_count, 69);
-        assert_eq!(status.unverified_products.len(), 2);
+        assert_eq!(status.verified_fixture_count, 71);
+        assert_eq!(status.unverified_products.len(), 0);
         assert_eq!(
             status.signature_count,
             status.verified_fixture_count + status.unverified_products.len()
@@ -1231,7 +1231,7 @@ zero CVEs rather than an error"
         expected: Option<&'static str>,
     }
 
-    const REAL_BUILD_GROUND_TRUTH: [RealFixture; 22] = [
+    const REAL_BUILD_GROUND_TRUTH: [RealFixture; 25] = [
         // Debian 13 "trixie" (dpkg-known versions), aarch64.
         RealFixture {
             product: "bash",
@@ -1390,6 +1390,35 @@ zero CVEs rather than an error"
             blob: "\nxz (XZ Utils) 5.8.4\nliblzma 5.8.4\n",
             raw: &[],
             expected: Some("5.8.4"),
+        },
+        // Debian libicu 78.3-2, libicuuc.so.78.3: identity from the mangled
+        // C++ symbol namespace, version from the bare U_ICU_VERSION literal
+        // (transcribed from the real string table).
+        RealFixture {
+            product: "international_components_for_unicode",
+            filename: "libicuuc.so.78.3",
+            blob: "\n_ZN6icu_7810Appendable12appendStringEPKDsi\n78.3\n",
+            raw: &[],
+            expected: Some("78.3"),
+        },
+        // Debian libicu 76.1-4, libicuuc.so.76.1: same shape, older release.
+        RealFixture {
+            product: "international_components_for_unicode",
+            filename: "libicuuc.so.76.1",
+            blob: "\n_ZN6icu_7610Appendable12appendStringEPKDsi\n76.1\n",
+            raw: &[],
+            expected: Some("76.1"),
+        },
+        // Debian bookworm libxml2 2.9.14 (2.9.14+dfsg-1.3~deb12u6),
+        // libxml2.so.2.9.14: the mismatch-fatal prose identifies the
+        // library; the tag and zlib-version lines are present to prove the
+        // re-derived entry captures no version from any of them.
+        RealFixture {
+            product: "libxml2",
+            filename: "libxml2.so.2.9.14",
+            blob: "\nFatal: program compiled against libxml %d using libxml %d\nLIBXML2_2.9.11\n1.2.13\n",
+            raw: &[],
+            expected: None,
         },
     ];
 

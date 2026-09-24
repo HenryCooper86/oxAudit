@@ -6,7 +6,7 @@ authors = ["oxAudit contributors"]
 source = "Independently known-version binaries and repository-authored regression fixtures; see docs/binary-signatures.md"
 license = "Apache-2.0"
 creation_method = "independently-derived"
-signatures_sha256 = "716389d0b8578470332eb055c8a35c9c7ae43614fc37fb90f7b2d670213b12a7"
+signatures_sha256 = "2a7423fe8c360414f551ea011265aff884a884e752702bfda69a91c013e94d3f"
 architectures = ["architecture-independent strings", "x86-64", "aarch64", "mips16e2", "arm32"]
 
 [fixtures]
@@ -53,6 +53,7 @@ verified_products = [
   "gnutls",
   "hostapd",
   "iptables",
+  "international_components_for_unicode",
   "jansson",
   "json-c",
   "kerberos_5",
@@ -74,6 +75,7 @@ verified_products = [
   "libtirpc",
   "libuci",
   "libwebsockets",
+  "libxml2",
   "lighttpd",
   "lua",
   "mbed_tls",
@@ -102,8 +104,5 @@ verified_products = [
   "zlib",
   "zstandard",
 ]
-unverified_products = [
-  "international_components_for_unicode",
-  "libxml2",
-]
-unverified_reason = "Identity anchors measured absent from real modern builds: neither 'ICU 7x' nor 'libxml2 version'/'xmlsoft.org' occurs anywhere in Homebrew icu4c 78.3, Debian trixie's libicu 76.1, or Debian's libxml2 2.9.14. These signatures need re-derivation against a real modern binary before they can claim anything, and are not included in verified coverage."
+unverified_products = []
+unverified_reason = "No product remains unverified. The last two were re-derived 2026-09-24 from real builds after their original anchors were measured absent from every modern binary examined: ICU now identifies by its mangled C++ symbol namespace and versions from libicuuc's bare U_ICU_VERSION literal (Debian libicu 76.1 and 78.3, transcribed into REAL_BUILD_GROUND_TRUTH); libxml2 identifies by its link-mismatch fatal prose and deliberately reports no version, because the only version-shaped text in a stripped build is the LIBXML2_2.x symbol-tag history that authoring rule 1 forbids capturing (Debian bookworm and trixie 2.9.14 builds)."

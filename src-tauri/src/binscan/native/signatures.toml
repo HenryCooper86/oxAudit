@@ -216,14 +216,20 @@ contains = ['libpng version']
 version_patterns = ['libpng version ([0-9]+\.[0-9]+\.[0-9]+)']
 aliases = ["libpng16-16", "libpng16-16t64", "libpng"]
 
-# libxml2 carries only LIBXML2_2.x symbol tags in the build examined, so the
-# only safe anchor is the parser's own banner when it is present.
+# libxml2, re-derived from Debian bookworm and trixie builds (both 2.9.14):
+# the anchors this entry used to carry ('libxml2 version', 'xmlsoft.org')
+# exist in neither — measured, not assumed. No version string exists at all
+# in these builds; the only version-shaped text is the LIBXML2_2.x
+# symbol-version tags, which rule 1 forbids capturing (2.9.14 still tags
+# 2.4.30 — those are the ABIs it can serve, not what it is). The identity
+# anchor is the link-mismatch fatal prose, which has named the library since
+# the 2.x era. Version stays unknown here; ELF package notes report it
+# exactly wherever the distro left one.
 [[signature]]
 vendor = "xmlsoft"
 product = "libxml2"
 filename_patterns = ['^libxml2\.so', '^libxml2\.[0-9.]*dylib']
-contains = ['libxml2 version', 'xmlsoft.org']
-version_patterns = ['libxml2 version ([0-9]+\.[0-9]+\.[0-9]+)']
+contains = ['program compiled against libxml']
 aliases = ["libxml2"]
 
 # --- system -----------------------------------------------------------------
@@ -298,13 +304,22 @@ version_patterns = [
   "GNU Privacy Guard's [^\\n]{0,30} ([0-9]+\\.[0-9]+\\.[0-9]+) ready",
 ]
 
-# ICU 76.1: '%s v2.1  ICU 76.1'
+# ICU, re-derived from Debian's libicu 76.1 and 78.3: the banner this entry
+# used to anchor on ('%s v2.1  ICU 76.1') exists in no modern library —
+# measured across every libicu*.so in both packages. What every build does
+# carry is the versioned C++ symbol namespace, `_ZN6icu_78…` (identity), and
+# libicuuc alone embeds U_ICU_VERSION as the only bare `major.minor` string
+# in its string table. libicui18n's bare dotted strings are ln(2)/log10(e)
+# constants with one-digit majors, which the two-digit-major pattern
+# excludes — so libicui18n identifies without a version. The bare-digits
+# version line is deliberately NOT allowed to imply identity (rule 2).
 [[signature]]
 vendor = "unicode"
 product = "international_components_for_unicode"
 filename_patterns = ['^libicuuc\.so', '^libicui18n\.so']
-contains = ['ICU [0-9]+\.[0-9]']
-version_patterns = ['ICU ([0-9]+\.[0-9]+(?:\.[0-9]+)?)']
+contains = ['icu_[0-9]{2}']
+version_patterns = ['(?m)^([0-9]{2}\.[0-9]+)$']
+version_implies_identity = false
 
 # --- versions read out of code, not text ------------------------------------
 
