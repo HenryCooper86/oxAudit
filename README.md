@@ -209,7 +209,7 @@ with a reason, an expiry, and a pull request.
 - **Dependencies** — lockfile discovery, OSV check, vulnerable-package table with fixed versions and reference links
 - **Binary Scan** — file/folder target, cve-bin-tool detection with a first-class "not installed" state, live progress, components grouped with their CVEs
 - **Inventory** — all normalized components, versions, aliases, purl/CPE identities, source artifacts, confidence, and advisory matches—including components with no match
-- **Rule Library** — built-in provenance/fixture health plus safe validation of external declarative TOML packs without installation or script execution
+- **Rule Library** — built-in provenance/fixture health plus safe validation and installation of external declarative TOML packs: enabled packs' text-engine rules run beside the built-ins in every source scan (findings carry a `pack/rule` id), with per-pack enable/disable and stated engine limits — nothing executes
 - **Quality Lab** — reproducible ground-truth metrics, misses, false positives, limitations, history, and regression state
 - **Data Sources** — provider source/terms, immutable snapshot hashes, refresh state, and honest offline readiness
 - **Export Center** — validated JSON/SARIF/SBOM/VEX preview/export plus bounded import and conflict preview, and ticket handoff: GitHub Issues and Jira CSV exports with one importable row per finding (severity-mapped priorities, RFC 4180 escaping, the finding fingerprint carried for traceability)

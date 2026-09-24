@@ -1,6 +1,7 @@
 pub mod config_values;
 pub mod dataflow;
 pub mod patterns;
+pub mod rulepacks;
 pub mod secrets;
 pub mod syntax;
 pub mod testscope;
@@ -254,6 +255,17 @@ fn redact_detected_secrets(text: &str, values: &[String]) -> String {
     })
 }
 
+/// Redact one credential value for pack-sourced secret findings, held to
+/// the same evidence rules as built-in secret matches.
+pub(crate) fn redact_secret_value(text: &str, value: &str) -> String {
+    redaction::redact_exact(text, value)
+}
+
+/// The match-evidence truncation length every match surface uses.
+pub(crate) fn truncate_match(text: &str) -> String {
+    secrets::truncate(text, 240)
+}
+
 /// Remove credential material from arbitrary text before it crosses an AI,
 /// event, transcript, log, or report boundary.
 pub(crate) fn redact_secrets_in_text(text: &str) -> String {
@@ -407,6 +419,7 @@ fn scan_file_with_relative_path_and_limit(
         scan_vulnerabilities,
         &config_values::ProjectConfig::default(),
         max_findings,
+        &rulepacks::AppliedRulePacks::empty(),
     )
 }
 
@@ -424,6 +437,28 @@ pub fn scan_file_in_project(
     scan_vulnerabilities: bool,
     config: &config_values::ProjectConfig,
 ) -> ScanFileOutcome {
+    scan_file_in_project_with_packs(
+        path,
+        relative_path,
+        max_file_size_kb,
+        scan_secrets,
+        scan_vulnerabilities,
+        config,
+        &rulepacks::AppliedRulePacks::empty(),
+    )
+}
+
+/// The same scan with installed rule packs applied: every enabled pack's
+/// text-engine rules run beside the built-ins under the same budgets.
+pub fn scan_file_in_project_with_packs(
+    path: &Path,
+    relative_path: &str,
+    max_file_size_kb: u64,
+    scan_secrets: bool,
+    scan_vulnerabilities: bool,
+    config: &config_values::ProjectConfig,
+    packs: &rulepacks::AppliedRulePacks,
+) -> ScanFileOutcome {
     scan_file_in_project_and_limit(
         path,
         relative_path,
@@ -432,9 +467,11 @@ pub fn scan_file_in_project(
         scan_vulnerabilities,
         config,
         MAX_FINDINGS_PER_FILE,
+        packs,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan_file_in_project_and_limit(
     path: &Path,
     relative_path: &str,
@@ -443,6 +480,7 @@ fn scan_file_in_project_and_limit(
     scan_vulnerabilities: bool,
     config: &config_values::ProjectConfig,
     max_findings: usize,
+    packs: &rulepacks::AppliedRulePacks,
 ) -> ScanFileOutcome {
     let max_bytes = max_file_size_kb.saturating_mul(1024);
     let content = match fs_utils::read_text_file(path, max_bytes) {
@@ -628,6 +666,27 @@ fn scan_file_in_project_and_limit(
                 });
             }
         }
+    }
+
+    if !packs.is_empty() {
+        let pack_findings = packs.scan(
+            &content,
+            &rel,
+            detected_language,
+            &|offset| spans.allows_secret_match(offset),
+            scan_secrets,
+            scan_vulnerabilities,
+        );
+        if findings.len() + pack_findings.len() > max_findings {
+            return ScanFileOutcome {
+                findings: Vec::new(),
+                covered_families,
+                limit_error: Some(FindingLimitError::PerFile {
+                    limit: max_findings,
+                }),
+            };
+        }
+        findings.extend(pack_findings);
     }
 
     ScanFileOutcome {

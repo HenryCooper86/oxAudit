@@ -55,6 +55,9 @@ pub struct RuleDefinition {
     pub version: String,
     pub title: String,
     pub description: String,
+    /// What to do about a match, carried into the finding so a pack-sourced
+    /// finding is as actionable as a built-in one.
+    pub recommendation: String,
     pub engine: RuleEngine,
     pub severity: Severity,
     pub scope: RuleScope,
@@ -243,6 +246,7 @@ fn validate_rule(rule: &RuleDefinition) -> Result<(), RulePackError> {
         ("version", rule.version.as_str()),
         ("title", rule.title.as_str()),
         ("description", rule.description.as_str()),
+        ("recommendation", rule.recommendation.as_str()),
     ] {
         if value.trim().is_empty() {
             return Err(RulePackError::InvalidRule {
@@ -333,6 +337,36 @@ impl CompiledRulePack {
         &self.pack.pack
     }
 
+    /// The pack's rule definitions, in authored order.
+    pub fn rules(&self) -> &[RuleDefinition] {
+        &self.pack.rules
+    }
+
+    /// Run one rule (by index into [`Self::rules`]) over text. Callers use
+    /// this when they have already decided the rule applies — scope gates,
+    /// engine selection, and span filtering live with the caller because
+    /// only the caller knows the scan's context.
+    pub fn scan_rule(&self, rule_index: usize, text: &str) -> Vec<RuleMatch> {
+        let Some(rule) = self.pack.rules.get(rule_index) else {
+            return Vec::new();
+        };
+        let Some(regex) = self.regexes.get(rule_index) else {
+            return Vec::new();
+        };
+        regex
+            .captures_iter(text)
+            .filter_map(move |captures| {
+                let matched = captures.get(0)?;
+                Some(RuleMatch {
+                    rule_id: rule.id.clone(),
+                    start: matched.start(),
+                    end: matched.end(),
+                    captured_value: captures.get(1).map(|value| value.as_str().to_string()),
+                })
+            })
+            .collect()
+    }
+
     pub fn scan_text(&self, engine: RuleEngine, text: &str) -> Vec<RuleMatch> {
         self.pack
             .rules
@@ -385,6 +419,7 @@ mod tests {
             version: "1".into(),
             title: "Dynamic evaluation".into(),
             description: "Finds eval calls".into(),
+            recommendation: "Avoid eval on dynamic input.".into(),
             engine: RuleEngine::SourceRegex,
             severity: Severity::High,
             scope: RuleScope {

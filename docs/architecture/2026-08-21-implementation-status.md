@@ -11,7 +11,7 @@
 | Compiler boundaries | `oxaudit-domain`, `oxaudit-application`, `oxaudit-scanners`, and `oxaudit-benchmark` workspace crates plus dependency-wall tests | Capabilities are presented through feature workbenches rather than crate concepts |
 | Shared durable runs | Canonical SQLite runs, artifacts, components, observations, evidence, findings, projections, provider snapshots, benchmark history, and verification records | Source, Dependency, and Binary screens rehydrate completed results and share a run timeline |
 | Run integrity | Typed state machine, sequenced events, persistence retries/recovery, stage manifest reconciliation, cancellation, and explicit warnings | Lifecycle, cancellation, warnings, and retained last results remain visible |
-| Rules and provenance | Bounded declarative TOML compiler, immutable content hashes, fixture hashes, provenance validation, path containment, signature provenance registry, and parser fuzz target | Rule Library shows built-ins and safely validates a selected public pack without installing or executing it |
+| Rules and provenance | Bounded declarative TOML compiler, immutable content hashes, fixture hashes, provenance validation, path containment, signature provenance registry, parser fuzz target, and a managed install store with per-pack enable state | Rule Library shows built-ins, validates a selected public pack, and installs it; enabled packs' source_regex/secret_regex rules apply to every source scan with pack-qualified rule ids |
 | Quality | Resumable ground-truth runner, committed source smoke corpus, precision/recall/miss/runtime output, and persisted regression baseline | Quality Lab states corpus size and limitations rather than presenting a vanity score |
 | Advisory data | Immutable content-addressed provider records; exact OSV query snapshots for Dependency scans; binary advisory receipts; representative NVD/OSV/EPSS refresh and full KEV snapshot | Data Sources shows source, terms, hash, age, validation, offline readiness, and limitations |
 | Inventory | Components persist independently of advisory matches with identities, artifacts, aliases, confidence, and purl/CPE fields | Inventory shows vulnerable and unflagged components from durable Dependency, Binary, and Import runs |
@@ -27,6 +27,11 @@
 - Built-in source and secret rules remain compiled snapshots while the public
   declarative compiler and safe validation boundary mature. The Rule Library
   labels fixture gaps instead of claiming complete provenance coverage.
+- Installed packs apply only their text-engine (source_regex, secret_regex)
+  rules today; dependency, binary, and semantic engine rules validate and
+  display but do not run. Runs record the pack ids they applied; snapshot
+  hashes live in the pack store, and CLI application of installed packs is
+  future work.
 - OSV dependency snapshots are exact query receipts, not a bundled mirror of
   the entire OSV corpus. The Data Sources page reports that distinction.
 - SARIF and VEX imports stop at a conflict/unmapped preview. They cannot mutate

@@ -739,6 +739,7 @@ pub async fn scan_project(
     state: State<'_, AppState>,
     findings: State<'_, FindingsState>,
     cve: State<'_, CveState>,
+    rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
     options: ScanOptions,
 ) -> Result<ScanRunDetail, CommandError> {
     let saved_scan_settings = state.settings.lock().unwrap().scan.clone();
@@ -759,9 +760,35 @@ pub async fn scan_project(
         }
     }
 
+    // Installed packs apply to every scan: the enabled state is the user's
+    // selection, and a scan that quietly skipped enabled rules would be a
+    // lie. A pack whose snapshot no longer validates is skipped with its
+    // reason logged — the scan proceeds with the packs that hold.
+    let packs = match rule_packs.store() {
+        Ok(store) => {
+            let resolved = store.resolve_enabled();
+            for (id, reason) in &resolved.skipped {
+                tracing::warn!(pack = %id, reason = %reason, "enabled rule pack skipped");
+            }
+            crate::scanners::rulepacks::AppliedRulePacks::from_compiled(resolved.packs)
+        }
+        // An unavailable store degrades to built-in rules only; the scan
+        // itself must not fail over pack management.
+        Err(error) => {
+            tracing::warn!(reason = %error, "rule packs not applied");
+            crate::scanners::rulepacks::AppliedRulePacks::empty()
+        }
+    };
+
     findings
         .service()?
-        .scan(durable_options, &cve, &state.cancel_scan, &TauriEvents(app))
+        .scan_with_packs(
+            durable_options,
+            &cve,
+            &state.cancel_scan,
+            &TauriEvents(app),
+            &packs,
+        )
         .await
 }
 

@@ -15,6 +15,7 @@ import type {
   CanonicalRun,
   CanonicalRunKind,
   RuleLibraryPackStatus,
+  InstalledRulePack,
   RulePackValidationPreview,
   QualityStatus,
   DataSourceStatus,
@@ -90,6 +91,14 @@ export const api = {
     invoke<RuleLibraryPackStatus[]>("rule_library_status"),
   validateRulePack: (path: string) =>
     invoke<RulePackValidationPreview>("validate_rule_pack", { path }),
+  installRulePack: (path: string) =>
+    invoke<InstalledRulePack>("install_rule_pack", { path }),
+  listInstalledRulePacks: () =>
+    invoke<InstalledRulePack[]>("list_installed_rule_packs"),
+  setRulePackEnabled: (id: string, enabled: boolean) =>
+    invoke<void>("set_rule_pack_enabled", { id, enabled }),
+  removeRulePack: (id: string) =>
+    invoke<void>("remove_rule_pack", { id }),
   qualityStatus: () => invoke<QualityStatus>("quality_status"),
   listDataSources: () => invoke<DataSourceStatus[]>("list_data_sources"),
   refreshDataSource: (providerId: string) =>

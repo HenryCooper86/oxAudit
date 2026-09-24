@@ -96,6 +96,19 @@ export interface RulePackValidationPreview {
   validation: string;
 }
 
+/** A pack installed into the managed store; enabled packs apply to every source scan. */
+export interface InstalledRulePack {
+  id: string;
+  name: string;
+  version: string;
+  tomlSha256: string;
+  contentSha256: string;
+  ruleCount: number;
+  engines: string[];
+  enabled: boolean;
+  installedAt: string;
+}
+
 export interface QualityStatus {
   schemaVersion: number;
   suiteId: string;

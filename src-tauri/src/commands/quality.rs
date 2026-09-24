@@ -6,6 +6,63 @@
 
 use super::*;
 
+// ------------------------------------------------------------ rule packs
+
+/// Install a validated pack file into the managed store. The same
+/// validation the preview runs gates installation; fixtures are checked
+/// against the directory the file was loaded from.
+#[tauri::command]
+pub fn install_rule_pack(
+    rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
+    path: String,
+) -> Result<crate::rulepack_store::InstalledRulePack, String> {
+    const MAX_PACK_BYTES: u64 = 2 * 1024 * 1024;
+    let path = Path::new(&path)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the rule pack: {error}"))?;
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("cannot inspect the rule pack: {error}"))?;
+    if !metadata.is_file() {
+        return Err("the selected rule pack is not a file".into());
+    }
+    if metadata.len() > MAX_PACK_BYTES {
+        return Err("the rule pack exceeds the 2 MiB manifest limit".into());
+    }
+    let input = std::fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read the rule pack: {error}"))?;
+    let root = path
+        .parent()
+        .ok_or_else(|| "the rule pack has no containing directory".to_string())?;
+    rule_packs
+        .store()?
+        .install(&input, root, &chrono::Utc::now().to_rfc3339())
+}
+
+#[tauri::command]
+pub fn list_installed_rule_packs(
+    rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
+) -> Result<Vec<crate::rulepack_store::InstalledRulePack>, String> {
+    Ok(rule_packs.store()?.list())
+}
+
+#[tauri::command]
+pub fn set_rule_pack_enabled(
+    rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    rule_packs.store()?.set_enabled(&id, enabled)
+}
+
+#[tauri::command]
+pub fn remove_rule_pack(
+    rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
+    id: String,
+) -> Result<(), String> {
+    rule_packs.store()?.remove(&id)
+}
+
 #[tauri::command]
 pub fn list_data_sources(
     findings: State<'_, FindingsState>,

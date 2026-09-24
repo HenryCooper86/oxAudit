@@ -496,6 +496,28 @@ impl FindingsService {
         cancel: &AtomicBool,
         events: &E,
     ) -> Result<ScanRunDetail, CommandError> {
+        self.scan_with_packs(
+            options,
+            cve,
+            cancel,
+            events,
+            &crate::scanners::rulepacks::AppliedRulePacks::empty(),
+        )
+        .await
+    }
+
+    /// The same scan with installed rule packs applied: every enabled
+    /// pack's text-engine rules run beside the built-ins, and the run
+    /// records which pack identities were in force.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scan_with_packs<E: ScanEventSink + ?Sized>(
+        &self,
+        options: ScanOptions,
+        cve: &CveState,
+        cancel: &AtomicBool,
+        events: &E,
+        packs: &crate::scanners::rulepacks::AppliedRulePacks,
+    ) -> Result<ScanRunDetail, CommandError> {
         let started_instant = Instant::now();
         let canonical = Path::new(&options.path)
             .canonicalize()
@@ -567,6 +589,11 @@ impl FindingsService {
         );
         canonical_run.id = oxaudit_domain::RunId::parse(run_id.clone())
             .map_err(|_| CommandError::persistence_unavailable())?;
+        canonical_run.rule_pack_ids = packs
+            .ids()
+            .into_iter()
+            .filter_map(|id| oxaudit_domain::RulePackId::parse(id).ok())
+            .collect();
         let mut managed_run = Some(
             coordinator
                 .begin(canonical_run)
@@ -657,13 +684,14 @@ impl FindingsService {
                         .project_relative_path
                         .to_string_lossy()
                         .replace('\\', "/");
-                    let outcome = scanners::scan_file_in_project(
+                    let outcome = scanners::scan_file_in_project_with_packs(
                         &file.canonical_path,
                         &relative,
                         options.max_file_size_kb.max(1),
                         options.scan_secrets,
                         options.scan_vulnerabilities,
                         &project_config,
+                        packs,
                     );
                     let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
                     if done % 25 == 0 || done == total {

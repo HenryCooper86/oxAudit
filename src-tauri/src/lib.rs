@@ -22,6 +22,7 @@ mod presentation;
 mod private_storage;
 pub mod quality;
 pub mod reachability;
+mod rulepack_store;
 mod secrets_validation;
 // Public so benches/scanning.rs can measure the rule engines directly. The
 // benchmark exists to catch a rule change that quietly makes matching
@@ -90,6 +91,23 @@ pub fn run() {
                 ),
             };
             app.manage(findings_state);
+            let rule_packs_state = match app.path().app_data_dir() {
+                Ok(data_dir) => {
+                    match crate::rulepack_store::RulePackStore::open(
+                        &data_dir.join("rule-packs.sqlite3"),
+                    ) {
+                        Ok(store) => crate::rulepack_store::RulePacksState::available(store),
+                        Err(error) => {
+                            log::warn!("rule-pack store unavailable: {error}");
+                            crate::rulepack_store::RulePacksState::unavailable(error)
+                        }
+                    }
+                }
+                Err(_) => crate::rulepack_store::RulePacksState::unavailable(
+                    "no application data directory available".into(),
+                ),
+            };
+            app.manage(rule_packs_state);
             // Load public settings after the identity/credential migration.
             let settings = if let Some(app_state) = app.try_state::<AppState>() {
                 settings::load(app.handle(), app_state.credentials.as_ref()).unwrap_or_else(
@@ -127,6 +145,10 @@ pub fn run() {
             commands::reporting::load_canonical_projection,
             commands::quality::rule_library_status,
             commands::quality::validate_rule_pack,
+            commands::quality::install_rule_pack,
+            commands::quality::list_installed_rule_packs,
+            commands::quality::set_rule_pack_enabled,
+            commands::quality::remove_rule_pack,
             commands::quality::quality_status,
             commands::quality::list_data_sources,
             commands::quality::refresh_data_source,

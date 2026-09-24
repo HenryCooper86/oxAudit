@@ -1,20 +1,26 @@
-import { CheckCircle2, FileCheck2, Search, ShieldCheck, TriangleAlert } from "lucide-react";
+import { CheckCircle2, FileCheck2, PackagePlus, Search, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useState, type JSX } from "react";
-import { Button } from "../components/ui";
+import { Button, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
-import type { RuleLibraryPackStatus, RulePackValidationPreview } from "../lib/types";
+import { useToastStore } from "../lib/stores";
+import type { InstalledRulePack, RuleLibraryPackStatus, RulePackValidationPreview } from "../lib/types";
 
 export function RuleLibraryPage(): JSX.Element {
+  const push = useToastStore((state) => state.push);
   const [packs, setPacks] = useState<RuleLibraryPackStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [externalPreview, setExternalPreview] = useState<RulePackValidationPreview | null>(null);
+  const [externalPath, setExternalPath] = useState<string | null>(null);
   const [externalError, setExternalError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installed, setInstalled] = useState<InstalledRulePack[] | null>(null);
+  const [installedError, setInstalledError] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -30,6 +36,55 @@ export function RuleLibraryPage(): JSX.Element {
       disposed = true;
     };
   }, []);
+
+  const refreshInstalled = async () => {
+    try {
+      setInstalled(await api.listInstalledRulePacks());
+      setInstalledError(null);
+    } catch (cause) {
+      setInstalledError(String(cause));
+    }
+  };
+
+  useEffect(() => {
+    void refreshInstalled();
+  }, []);
+
+  const installValidatedPack = async () => {
+    if (!externalPath || installing) return;
+    setInstalling(true);
+    try {
+      const pack = await api.installRulePack(externalPath);
+      push("success", `Installed ${pack.name} — its enabled rules apply to every source scan.`);
+      await refreshInstalled();
+    } catch (cause) {
+      push("error", "The pack could not be installed.");
+      setInstalledError(String(cause));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const togglePack = async (pack: InstalledRulePack, enabled: boolean) => {
+    try {
+      await api.setRulePackEnabled(pack.id, enabled);
+      await refreshInstalled();
+    } catch (cause) {
+      push("error", "The pack state could not be changed.");
+      setInstalledError(String(cause));
+    }
+  };
+
+  const removePack = async (pack: InstalledRulePack) => {
+    try {
+      await api.removeRulePack(pack.id);
+      push("success", `Removed ${pack.name}. Past runs keep the findings they already recorded.`);
+      await refreshInstalled();
+    } catch (cause) {
+      push("error", "The pack could not be removed.");
+      setInstalledError(String(cause));
+    }
+  };
 
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -60,8 +115,10 @@ export function RuleLibraryPage(): JSX.Element {
     setValidating(true);
     setExternalError(null);
     setExternalPreview(null);
+    setExternalPath(null);
     try {
       setExternalPreview(await api.validateRulePack(selected));
+      setExternalPath(selected);
     } catch (cause) {
       setExternalError(String(cause));
     } finally {
@@ -77,8 +134,8 @@ export function RuleLibraryPage(): JSX.Element {
       <section className="rounded-sm border border-border bg-surface-secondary p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="max-w-2xl">
-            <h2 className="text-[13px] font-semibold text-text-primary">Validate a public pack</h2>
-            <p className="mt-1 text-[12px] leading-relaxed text-text-muted">Inspect an oxAudit declarative TOML pack locally. Validation checks provenance, immutable hashes, bounded regexes, fixture hashes, and path containment. It does not install the pack or execute scripts.</p>
+            <h2 className="text-[13px] font-semibold text-text-primary">Install a public pack</h2>
+            <p className="mt-1 text-[12px] leading-relaxed text-text-muted">Inspect an oxAudit declarative TOML pack locally. Validation checks provenance, immutable hashes, bounded regexes, fixture hashes, and path containment — nothing executes. A validated pack can be installed; every enabled pack's text-engine rules then run beside the built-ins in each source scan, with findings prefixed by the pack id.</p>
           </div>
           <Button type="button" variant="outline" size="md" onClick={() => void validateExternalPack()} disabled={validating}>
             <FileCheck2 size={13} aria-hidden="true" />{validating ? "Validating…" : "Choose pack…"}
@@ -92,9 +149,54 @@ export function RuleLibraryPage(): JSX.Element {
             <p className="mt-1 text-[11px] text-text-secondary">{externalPreview.ruleCount} rules · {externalPreview.fixtureCount} fixtures · {externalPreview.engines.join(", ")} · {externalPreview.license}</p>
             <p className="mt-1 text-[11px] text-text-muted">{externalPreview.validation}. Source: {externalPreview.source}</p>
             <p className="mt-1 break-all font-mono text-[10px] text-text-muted">Snapshot: {externalPreview.contentSha256}</p>
+            <div className="mt-2">
+              <Button type="button" variant="primary" size="md" onClick={() => void installValidatedPack()} disabled={installing}>
+                <PackagePlus size={13} aria-hidden="true" />{installing ? "Installing…" : "Install pack"}
+              </Button>
+            </div>
           </div>
         )}
       </section>
+
+      <section aria-labelledby="installed-packs-title" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <div className="border-b border-border px-4 py-3">
+          <h2 id="installed-packs-title" className="text-[13px] font-semibold text-text-primary">Installed packs</h2>
+          <p className="mt-1 text-[12px] text-text-muted">
+            Enabled packs apply to every source scan: their rules run beside the built-ins under the same budgets and redaction, and their findings carry a <span className="font-mono">pack/rule</span> id. Only the text engines (source_regex, secret_regex) apply today; dependency, binary, and semantic engine rules validate but do not yet run. A pack whose stored snapshot no longer validates is skipped with its reason instead of failing the scan.
+          </p>
+        </div>
+        {installedError && <div className="px-4 py-3"><InlineState compact tone="error" title="The pack store is unavailable" description={installedError} /></div>}
+        {installed && installed.length === 0 && (
+          <p className="px-4 py-4 text-[12px] text-text-muted">No packs installed. Validate a pack above to install it.</p>
+        )}
+        {installed && installed.length > 0 && (
+          <ul className="divide-y divide-border">
+            {installed.map((pack) => (
+              <li key={pack.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-medium text-text-primary">
+                    {pack.name} <span className="font-mono text-[10px] text-text-muted">v{pack.version}</span>
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-text-muted">
+                    {pack.ruleCount} rules · {pack.engines.join(", ")} · <span className="font-mono">{pack.id}</span>
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Switch
+                    checked={pack.enabled}
+                    onChange={(enabled) => void togglePack(pack, enabled)}
+                    label={pack.enabled ? "Applies to scans" : "Disabled"}
+                  />
+                  <Button type="button" variant="outline" size="md" onClick={() => void removePack(pack)}>
+                    <Trash2 size={13} aria-hidden="true" />Remove
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {!packs && !error && <InlineState tone="running" title="Validating built-in rule packs" />}
       {error && <InlineState tone="error" title="Rule metadata is unavailable" description={error} />}
       {packs && (
