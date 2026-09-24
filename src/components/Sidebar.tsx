@@ -5,6 +5,7 @@ import {
   Bug,
   FileSearch,
   History,
+  FolderKanban,
   LayoutDashboard,
   Library,
   PackageSearch,
@@ -32,7 +33,10 @@ type NavigationItem = {
 const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
   {
     label: "Overview",
-    items: [{ page: "dashboard", label: "Dashboard", icon: LayoutDashboard }],
+    items: [
+      { page: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { page: "portfolio", label: "Portfolio", icon: FolderKanban },
+    ],
   },
   {
     label: "Scanning",

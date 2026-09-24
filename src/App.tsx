@@ -61,10 +61,16 @@ const SettingsPage = lazy(() =>
   import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })),
 );
 
+const PortfolioPage = lazy(() =>
+  import("./pages/Portfolio").then((module) => ({ default: module.PortfolioPage })),
+);
+
 function Page({ page }: { page: PageName }) {
   switch (page) {
     case "dashboard":
       return <Dashboard />;
+    case "portfolio":
+      return <PortfolioPage />;
     case "source-scan":
       return <SourceScanPage />;
     case "history-scan":

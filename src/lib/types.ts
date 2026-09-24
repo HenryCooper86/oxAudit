@@ -97,6 +97,21 @@ export interface RulePackValidationPreview {
 }
 
 /** A pack installed into the managed store; enabled packs apply to every source scan. */
+export interface ScanScheduleRecord {
+  projectId: string;
+  canonicalPath: string;
+  displayName: string;
+  intervalHours: number;
+  enabled: boolean;
+  /** RFC 3339 timestamp of the last scan this schedule actually started. */
+  lastStartedAt: string | null;
+}
+
+export interface ScanScheduleStatus extends ScanScheduleRecord {
+  /** Knowable only when enabled and started at least once. */
+  nextDueAt: string | null;
+}
+
 export interface InstalledRulePack {
   id: string;
   name: string;

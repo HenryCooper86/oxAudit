@@ -16,6 +16,8 @@ import type {
   CanonicalRunKind,
   RuleLibraryPackStatus,
   InstalledRulePack,
+  ScanScheduleRecord,
+  ScanScheduleStatus,
   RulePackValidationPreview,
   QualityStatus,
   DataSourceStatus,
@@ -99,6 +101,25 @@ export const api = {
     invoke<void>("set_rule_pack_enabled", { id, enabled }),
   removeRulePack: (id: string) =>
     invoke<void>("remove_rule_pack", { id }),
+  listScanSchedules: () => invoke<ScanScheduleStatus[]>("list_scan_schedules"),
+  setScanSchedule: (
+    projectId: string,
+    canonicalPath: string,
+    displayName: string,
+    intervalHours: number,
+    enabled: boolean,
+  ) =>
+    invoke<ScanScheduleRecord>("set_scan_schedule", {
+      projectId,
+      canonicalPath,
+      displayName,
+      intervalHours,
+      enabled,
+    }),
+  removeScanSchedule: (projectId: string) =>
+    invoke<void>("remove_scan_schedule", { projectId }),
+  runScanNow: (projectId: string, canonicalPath: string) =>
+    invoke<ScanRunDetail>("run_scan_now", { projectId, canonicalPath }),
   qualityStatus: () => invoke<QualityStatus>("quality_status"),
   listDataSources: () => invoke<DataSourceStatus[]>("list_data_sources"),
   refreshDataSource: (providerId: string) =>

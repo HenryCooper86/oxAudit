@@ -203,6 +203,7 @@ with a reason, an expiry, and a pull request.
 
 ## Screens
 
+- **Portfolio** — every known project with its latest evidence, staleness, and a re-scan cadence (hourly to monthly): scheduled scans run while the app is open, one at a time, through the same engine and enabled rule packs as a manual scan, and a failed or policy-blocked scheduled scan surfaces instead of silently skipping
 - **Dashboard** — overview and quick actions
 - **Source Scan** — folder picker, scan options, live progress, filterable findings grouped by file, JSON report export, and a severity trend over stored runs (findings by severity per completed scan, oldest to newest, with the latest run's new/resolved counts against its baseline)
 - **History Scan** — the same secret rules over every blob reachable from any ref; findings at their historical paths, redacted evidence, truncation stated when a budget stopped the scan

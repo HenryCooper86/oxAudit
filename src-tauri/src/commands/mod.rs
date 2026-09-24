@@ -4,6 +4,7 @@ pub mod dependencies;
 pub mod history;
 pub mod quality;
 pub mod reporting;
+pub mod schedule;
 pub mod sessions;
 pub mod settings;
 

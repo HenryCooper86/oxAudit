@@ -23,6 +23,7 @@ mod private_storage;
 pub mod quality;
 pub mod reachability;
 mod rulepack_store;
+mod schedule_store;
 mod secrets_validation;
 // Public so benches/scanning.rs can measure the rule engines directly. The
 // benchmark exists to catch a rule change that quietly makes matching
@@ -108,6 +109,61 @@ pub fn run() {
                 ),
             };
             app.manage(rule_packs_state);
+            let schedule_state = match app.path().app_data_dir() {
+                Ok(data_dir) => {
+                    match crate::schedule_store::ScheduleStore::open(
+                        &data_dir.join("schedules.sqlite3"),
+                    ) {
+                        Ok(store) => crate::schedule_store::ScheduleState::available(store),
+                        Err(error) => {
+                            log::warn!("schedule store unavailable: {error}");
+                            crate::schedule_store::ScheduleState::unavailable(error)
+                        }
+                    }
+                }
+                Err(_) => crate::schedule_store::ScheduleState::unavailable(
+                    "no application data directory available".into(),
+                ),
+            };
+            app.manage(schedule_state);
+            // The re-scan scheduler: one tick a minute, sequential scans,
+            // alive only while the app is — the stated limit of scheduling
+            // inside a desktop app rather than a service.
+            let scheduler = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                ticker.tick().await; // the first tick fires immediately; skip it
+                loop {
+                    ticker.tick().await;
+                    let Some(state) = scheduler.try_state::<crate::schedule_store::ScheduleState>()
+                    else {
+                        continue;
+                    };
+                    let Ok(store) = state.store() else {
+                        continue;
+                    };
+                    let schedules = store.list();
+                    let due = crate::schedule_store::due(&schedules, chrono::Utc::now());
+                    for schedule in due {
+                        // Marked before launching so a long scan does not
+                        // re-fire every minute; a launch that collides with a
+                        // user scan waits out the interval, visibly.
+                        let _ = store
+                            .mark_started(&schedule.project_id, &chrono::Utc::now().to_rfc3339());
+                        tracing::info!(
+                            project = %schedule.project_id,
+                            "scheduled rescan starting"
+                        );
+                        let _ = commands::schedule::run_scheduled_scan(
+                            &scheduler,
+                            &schedule.project_id,
+                            &schedule.canonical_path,
+                        )
+                        .await;
+                    }
+                }
+            });
             // Load public settings after the identity/credential migration.
             let settings = if let Some(app_state) = app.try_state::<AppState>() {
                 settings::load(app.handle(), app_state.credentials.as_ref()).unwrap_or_else(
@@ -149,6 +205,10 @@ pub fn run() {
             commands::quality::list_installed_rule_packs,
             commands::quality::set_rule_pack_enabled,
             commands::quality::remove_rule_pack,
+            commands::schedule::list_scan_schedules,
+            commands::schedule::set_scan_schedule,
+            commands::schedule::remove_scan_schedule,
+            commands::schedule::run_scan_now,
             commands::quality::quality_status,
             commands::quality::list_data_sources,
             commands::quality::refresh_data_source,
