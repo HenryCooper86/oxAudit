@@ -79,6 +79,11 @@ enum Command {
     Runs(RunsArgs),
     /// Measure the scanners against the committed ground-truth corpus.
     Benchmark(BenchmarkArgs),
+    /// Install, list, enable, disable, or remove rule packs in a pack store.
+    RulePack {
+        #[command(subcommand)]
+        command: RulePackCommand,
+    },
     /// List the language grammars compiled into this binary.
     Languages,
     /// Score against the OWASP Benchmark: ground truth oxAudit did not write.
@@ -125,6 +130,56 @@ struct BenchmarkArgs {
     /// Exit 1 if recall falls below this percentage.
     #[arg(long, value_name = "PERCENT")]
     min_recall: Option<f64>,
+}
+
+#[derive(Subcommand, Debug)]
+enum RulePackCommand {
+    /// Validate a pack file and install (or replace) it in the store.
+    Install {
+        /// The rule-pack store database.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+
+        /// Pack TOML file; fixtures must sit beside it.
+        path: PathBuf,
+    },
+    /// List the packs in a store.
+    List {
+        /// The rule-pack store database.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable a pack for default application (desktop scans).
+    Enable {
+        /// The rule-pack store database.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+
+        /// Pack id.
+        id: String,
+    },
+    /// Disable a pack for default application (desktop scans).
+    Disable {
+        /// The rule-pack store database.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+
+        /// Pack id.
+        id: String,
+    },
+    /// Remove a pack from the store.
+    Remove {
+        /// The rule-pack store database.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+
+        /// Pack id.
+        id: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -187,6 +242,20 @@ struct ScanArgs {
     /// Run even when the project's policy file is invalid.
     #[arg(long)]
     ignore_invalid_policy: bool,
+
+    /// Validate and apply this rule pack file for this run only (never
+    /// installed). Repeatable; fixtures resolve beside the file.
+    #[arg(long = "rule-pack-file", value_name = "FILE")]
+    rule_pack_files: Vec<PathBuf>,
+
+    /// Apply these pack ids installed in the store named by --rule-pack-db.
+    /// Explicit selection applies the pack as stored, enabled or not.
+    #[arg(long = "rule-pack", value_name = "ID")]
+    rule_packs: Vec<String>,
+
+    /// Rule-pack store holding the packs --rule-pack selects.
+    #[arg(long = "rule-pack-db", value_name = "FILE")]
+    rule_pack_db: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -463,6 +532,7 @@ pub fn run() -> i32 {
         Command::Export(args) => run_export(args),
         Command::Runs(args) => run_runs(args),
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
+        Command::RulePack { command } => run_rule_pack(command),
         Command::Languages => run_languages(),
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
     };
@@ -505,6 +575,73 @@ fn failure(message: impl Into<String>) -> CliError {
 type CliResult = Result<i32, CliError>;
 
 // --------------------------------------------------------------------- scan
+
+fn run_rule_pack(command: &RulePackCommand) -> CliResult {
+    use crate::rulepack_store::RulePackStore;
+    let now = chrono::Utc::now().to_rfc3339();
+    match command {
+        RulePackCommand::Install { db, path } => {
+            let (_, toml_text) = crate::rulepack_store::compile_pack_file(path).map_err(usage)?;
+            let root = path
+                .parent()
+                .ok_or_else(|| usage("the rule pack has no containing directory"))?;
+            let store = RulePackStore::open(db).map_err(failure)?;
+            let installed = store.install(&toml_text, root, &now).map_err(failure)?;
+            println!(
+                "installed {} ({}) v{} — {} rule(s): {}",
+                installed.id,
+                installed.name,
+                installed.version,
+                installed.rule_count,
+                installed.engines.join(", ")
+            );
+            Ok(0)
+        }
+        RulePackCommand::List { db, json } => {
+            let store = RulePackStore::open(db).map_err(failure)?;
+            let packs = store.list();
+            if *json {
+                let rendered = serde_json::to_vec_pretty(&packs)
+                    .map_err(|error| failure(error.to_string()))?;
+                write_output(None, &rendered)?;
+                return Ok(0);
+            }
+            if packs.is_empty() {
+                println!("no rule packs installed in this store");
+                return Ok(0);
+            }
+            for pack in packs {
+                println!(
+                    "{:<40} {:<10} {:>3} rule(s)  {}  {}",
+                    pack.id,
+                    format!("v{}", pack.version),
+                    pack.rule_count,
+                    if pack.enabled { "enabled" } else { "disabled" },
+                    pack.engines.join(",")
+                );
+            }
+            Ok(0)
+        }
+        RulePackCommand::Enable { db, id } => {
+            let store = RulePackStore::open(db).map_err(failure)?;
+            store.set_enabled(id, true).map_err(failure)?;
+            println!("{id} enabled — applies to every desktop source scan");
+            Ok(0)
+        }
+        RulePackCommand::Disable { db, id } => {
+            let store = RulePackStore::open(db).map_err(failure)?;
+            store.set_enabled(id, false).map_err(failure)?;
+            println!("{id} disabled for default application; --rule-pack still selects it");
+            Ok(0)
+        }
+        RulePackCommand::Remove { db, id } => {
+            let store = RulePackStore::open(db).map_err(failure)?;
+            store.remove(id).map_err(failure)?;
+            println!("{id} removed; stored runs keep the findings they recorded");
+            Ok(0)
+        }
+    }
+}
 
 fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     if !args.path.is_dir() {
@@ -560,16 +697,62 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     let cancel = AtomicBool::new(false);
     let events = StderrEvents { quiet };
 
-    let detail = block_on(service.scan(options, &cve, &cancel, &events)).map_err(|error| {
-        // "Nothing matched your filters" is something the caller can fix, so it
-        // exits 2 like any other unusable invocation rather than 3, which means
-        // the scan itself broke. A pipeline distinguishes the two.
-        if error.code == crate::findings::error::ErrorCode::NothingToScan {
-            usage(error.to_string())
-        } else {
-            failure(format!("scan failed: {error}"))
+    // Rule packs resolve before any scanning starts: a pack that fails
+    // validation is a caller-fixable problem (exit 2), and a selected pack
+    // that cannot be applied fails loudly (exit 3) rather than letting a
+    // pipeline report clean with rules silently missing.
+    let mut compiled_packs = Vec::new();
+    for pack_path in &args.rule_pack_files {
+        let (compiled, _) = crate::rulepack_store::compile_pack_file(pack_path).map_err(usage)?;
+        if !quiet {
+            eprintln!(
+                "Rule pack {} v{} validated ({} rules)",
+                compiled.metadata().id,
+                compiled.metadata().version,
+                compiled.rules().len()
+            );
         }
-    })?;
+        compiled_packs.push(std::sync::Arc::new(compiled));
+    }
+    if !args.rule_packs.is_empty() {
+        let store_db = args
+            .rule_pack_db
+            .as_deref()
+            .ok_or_else(|| usage("--rule-pack selects installed packs and needs --rule-pack-db"))?;
+        let store = crate::rulepack_store::RulePackStore::open(store_db).map_err(failure)?;
+        let resolved = store.resolve_selected(&args.rule_packs);
+        if !resolved.skipped.is_empty() {
+            let reasons = resolved
+                .skipped
+                .iter()
+                .map(|(id, reason)| format!("{id}: {reason}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(failure(format!(
+                "selected rule pack(s) could not be applied — {reasons}"
+            )));
+        }
+        compiled_packs.extend(resolved.packs);
+    }
+    if !quiet && !compiled_packs.is_empty() {
+        eprintln!(
+            "Applying {} rule pack(s); pack findings carry pack/rule ids",
+            compiled_packs.len()
+        );
+    }
+    let packs = crate::scanners::rulepacks::AppliedRulePacks::from_compiled(compiled_packs);
+
+    let detail = block_on(service.scan_with_packs(options, &cve, &cancel, &events, &packs))
+        .map_err(|error| {
+            // "Nothing matched your filters" is something the caller can fix, so it
+            // exits 2 like any other unusable invocation rather than 3, which means
+            // the scan itself broke. A pipeline distinguishes the two.
+            if error.code == crate::findings::error::ErrorCode::NothingToScan {
+                usage(error.to_string())
+            } else {
+                failure(format!("scan failed: {error}"))
+            }
+        })?;
 
     let summary = &detail.summary;
     if !quiet {

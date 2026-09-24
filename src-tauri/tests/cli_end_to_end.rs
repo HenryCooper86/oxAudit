@@ -1366,3 +1366,221 @@ fn validation_is_opt_in_and_reports_unchecked_without_a_validator() {
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(document["summary"]["validation"].is_null());
 }
+
+// ------------------------------------------------------------------ rule packs
+
+/// A real, valid pack on disk: two fixture files beside the TOML, hashes
+/// matching, provenance complete — everything installation checks.
+fn rule_pack_fixture(directory: &std::path::Path) -> std::path::PathBuf {
+    use oxaudit_scanners::{
+        CompiledRulePack, FixtureExpectation, RuleDefinition, RuleEngine, RulePack,
+        RulePackMetadata, RuleScope,
+    };
+    let hash_of = |content: &str| {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(content.as_bytes()))
+    };
+    let provenance = |hash: &str| oxaudit_domain::Provenance {
+        authors: vec!["e2e fixture".into()],
+        source: "independent fixture".into(),
+        license: "Apache-2.0".into(),
+        creation_method: oxaudit_domain::CreationMethod::IndependentlyDerived,
+        content_sha256: hash.into(),
+    };
+    let rules = vec![RuleDefinition {
+        id: "source.e2e-marker".into(),
+        version: "1".into(),
+        title: "E2E marker rule".into(),
+        description: "Matches the e2e marker call.".into(),
+        recommendation: "Remove the marker call.".into(),
+        engine: RuleEngine::SourceRegex,
+        severity: oxaudit_domain::Severity::High,
+        scope: RuleScope {
+            languages: vec!["javascript".into()],
+            platforms: Vec::new(),
+            architectures: Vec::new(),
+            file_extensions: Vec::new(),
+        },
+        pattern: r"e2eMarkerCall\(([^)]+)\)".into(),
+        classifications: vec!["CWE-95".into()],
+        provenance: provenance(&"b".repeat(64)),
+        positive_fixtures: vec![FixtureExpectation {
+            id: "positive".into(),
+            path: "positive.txt".into(),
+            sha256: hash_of("e2eMarkerCall(x)\n"),
+            expected_values: Vec::new(),
+        }],
+        negative_fixtures: vec![FixtureExpectation {
+            id: "negative".into(),
+            path: "negative.txt".into(),
+            sha256: hash_of("clean code\n"),
+            expected_values: Vec::new(),
+        }],
+    }];
+    let content_hash = RulePack::computed_content_sha256(&rules).unwrap();
+    let pack = RulePack {
+        pack: RulePackMetadata {
+            schema_version: 1,
+            id: oxaudit_domain::RulePackId::parse("rulepack.e2e").unwrap(),
+            name: "E2E rules".into(),
+            version: "1.0.0".into(),
+            minimum_oxaudit_version: "0.1.0".into(),
+            content_sha256: content_hash.clone(),
+            provenance: provenance(&content_hash),
+        },
+        rules,
+    };
+    // Prove the pack is sound before writing it: an unsound fixture would
+    // make these tests assert the wrong behavior.
+    CompiledRulePack::compile(pack.clone()).expect("e2e pack compiles");
+    std::fs::write(directory.join("positive.txt"), "e2eMarkerCall(x)\n").unwrap();
+    std::fs::write(directory.join("negative.txt"), "clean code\n").unwrap();
+    let path = directory.join("pack.toml");
+    std::fs::write(&path, toml::to_string(&pack).unwrap()).unwrap();
+    path
+}
+
+fn rule_pack_project() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("src")).unwrap();
+    std::fs::write(
+        directory.path().join("src/marker.js"),
+        "function go() { e2eMarkerCall(payload); }\n",
+    )
+    .unwrap();
+    directory
+}
+
+#[test]
+fn scan_applies_an_ephemeral_rule_pack_file_with_pack_qualified_ids() {
+    let packs = tempfile::tempdir().unwrap();
+    let pack_path = rule_pack_fixture(packs.path());
+    let project = rule_pack_project();
+
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--rule-pack-file",
+        &pack_path.to_string_lossy(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rules: Vec<&str> = document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|finding| finding["ruleId"].as_str())
+        .collect();
+    assert!(
+        rules.contains(&"rulepack.e2e/source.e2e-marker"),
+        "pack finding present with its pack-qualified id: {rules:?}"
+    );
+}
+
+#[test]
+fn an_invalid_rule_pack_file_is_a_usage_error_before_any_scanning() {
+    let packs = tempfile::tempdir().unwrap();
+    let bad = packs.path().join("bad.toml");
+    std::fs::write(&bad, "[pack]\n").unwrap();
+    let project = rule_pack_project();
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--rule-pack-file",
+        &bad.to_string_lossy(),
+    ]);
+    assert_eq!(code(&output), 2, "caller-fixable, not a scan failure");
+    assert!(
+        stdout(&output).is_empty(),
+        "no report from a run that never scanned"
+    );
+}
+
+#[test]
+fn rule_packs_round_trip_through_the_store_and_apply_by_selection() {
+    let packs = tempfile::tempdir().unwrap();
+    let pack_path = rule_pack_fixture(packs.path());
+    let store = packs.path().join("store.sqlite3");
+
+    let output = run(&[
+        "rule-pack",
+        "install",
+        "--db",
+        &store.to_string_lossy(),
+        &pack_path.to_string_lossy(),
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout(&output).contains("rulepack.e2e"));
+
+    let output = run(&[
+        "rule-pack",
+        "list",
+        "--db",
+        &store.to_string_lossy(),
+        "--json",
+    ]);
+    assert_eq!(code(&output), 0);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listed[0]["id"], "rulepack.e2e");
+    assert_eq!(listed[0]["ruleCount"], 1);
+
+    // Disable for default application, then select explicitly: explicit
+    // selection applies the pack as stored, enabled or not.
+    let output = run(&[
+        "rule-pack",
+        "disable",
+        "--db",
+        &store.to_string_lossy(),
+        "rulepack.e2e",
+    ]);
+    assert_eq!(code(&output), 0);
+
+    let project = rule_pack_project();
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--rule-pack",
+        "rulepack.e2e",
+        "--rule-pack-db",
+        &store.to_string_lossy(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["ruleId"] == "rulepack.e2e/source.e2e-marker"));
+
+    // A selected id that is not installed fails loudly instead of scanning
+    // without the rules the caller asked for.
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--rule-pack",
+        "rulepack.absent",
+        "--rule-pack-db",
+        &store.to_string_lossy(),
+    ]);
+    assert_eq!(code(&output), 3);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("rulepack.absent"));
+}

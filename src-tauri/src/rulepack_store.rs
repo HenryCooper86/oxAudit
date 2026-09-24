@@ -279,6 +279,86 @@ impl RulePacksState {
     }
 }
 
+/// Read, fully validate, and compile a pack file — the shared gate behind
+/// both installation and ephemeral `--rule-pack-file` application. Fixtures
+/// resolve against the file's own directory, exactly as the desktop's
+/// validate command does.
+pub fn compile_pack_file(path: &Path) -> Result<(CompiledRulePack, String), String> {
+    const MAX_PACK_BYTES: u64 = 2 * 1024 * 1024;
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the rule pack: {error}"))?;
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("cannot inspect the rule pack: {error}"))?;
+    if !metadata.is_file() {
+        return Err("the selected rule pack is not a file".into());
+    }
+    if metadata.len() > MAX_PACK_BYTES {
+        return Err("the rule pack exceeds the 2 MiB manifest limit".into());
+    }
+    let toml_text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read the rule pack: {error}"))?;
+    let root = path
+        .parent()
+        .ok_or_else(|| "the rule pack has no containing directory".to_string())?;
+    let pack = RulePack::parse_toml(&toml_text).map_err(|error| error.to_string())?;
+    pack.validate().map_err(|error| error.to_string())?;
+    pack.validate_fixture_files(root)
+        .map_err(|error| error.to_string())?;
+    let compiled = CompiledRulePack::compile(pack).map_err(|error| error.to_string())?;
+    Ok((compiled, toml_text))
+}
+
+impl RulePackStore {
+    /// Compile specific installed packs by id, re-validating each snapshot.
+    /// Explicit selection applies the pack as stored; the enabled flag only
+    /// governs default application (the desktop's every-scan behavior).
+    pub fn resolve_selected(&self, ids: &[String]) -> ResolvedPacks {
+        let mut resolved = ResolvedPacks::default();
+        let Ok(connection) = self.connection.lock() else {
+            return resolved;
+        };
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT id, toml FROM rule_packs WHERE id IN ({placeholders})");
+        let Ok(mut statement) = connection.prepare(&sql) else {
+            return resolved;
+        };
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+            .unwrap_or_default();
+        drop(statement);
+        drop(connection);
+        let mut found = std::collections::BTreeSet::new();
+        for (id, toml_text) in &rows {
+            found.insert(id.clone());
+            match RulePack::parse_toml(toml_text)
+                .map_err(|error| error.to_string())
+                .and_then(|pack| {
+                    pack.validate().map_err(|error| error.to_string())?;
+                    CompiledRulePack::compile(pack).map_err(|error| error.to_string())
+                }) {
+                Ok(compiled) => resolved.packs.push(std::sync::Arc::new(compiled)),
+                Err(reason) => resolved.skipped.push((id.clone(), reason)),
+            }
+        }
+        for id in ids {
+            if !found.contains(id) {
+                resolved
+                    .skipped
+                    .push((id.clone(), "not installed in this store".into()));
+            }
+        }
+        resolved
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,4 +500,3 @@ mod tests {
         assert!(store.list().is_empty(), "nothing stored: {error}");
     }
 }
-

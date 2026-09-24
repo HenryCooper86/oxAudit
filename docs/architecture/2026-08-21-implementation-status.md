@@ -30,8 +30,11 @@
 - Installed packs apply only their text-engine (source_regex, secret_regex)
   rules today; dependency, binary, and semantic engine rules validate and
   display but do not run. Runs record the pack ids they applied; snapshot
-  hashes live in the pack store, and CLI application of installed packs is
-  future work.
+  hashes live in the pack store. The CLI applies packs two ways —
+  `--rule-pack-file` (ephemeral, validated per run, CI-native) and
+  `--rule-pack <id> --rule-pack-db <store>` (explicit selection from a
+  managed store, applying the pack as stored regardless of its enabled
+  flag) — with a `rule-pack` subcommand group managing the store.
 - OSV dependency snapshots are exact query receipts, not a bundled mirror of
   the entire OSV corpus. The Data Sources page reports that distinction.
 - SARIF and VEX imports stop at a conflict/unmapped preview. They cannot mutate

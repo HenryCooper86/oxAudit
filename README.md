@@ -274,7 +274,24 @@ oxaudit-cli runs --db ~/.oxaudit/findings.sqlite3 --kind dependencies --json
 # Keep the run so the desktop app can open it
 oxaudit-cli scan . --db ~/.oxaudit/findings.sqlite3
 oxaudit-cli export --db ~/.oxaudit/findings.sqlite3 --run <id> --format cyclonedx
+
+# Apply a rule pack committed to the repo, validated and compiled for this
+# run only — the CI-native form, nothing installed
+oxaudit-cli scan . --rule-pack-file .oxaudit/rules.toml
+
+# Or manage packs in an explicit store and select them by id; explicit
+# selection applies the pack as stored, enabled or not
+oxaudit-cli rule-pack install --db packs.sqlite3 .oxaudit/rules.toml
+oxaudit-cli rule-pack list --db packs.sqlite3 --json
+oxaudit-cli scan . --rule-pack rulepack.e2e --rule-pack-db packs.sqlite3
 ```
+
+Rule packs resolve before any scanning starts: an invalid pack file is a
+usage error (exit 2), and a selected pack that cannot be applied fails the
+run loudly (exit 3) — a pipeline never reports clean with rules silently
+missing. Pack findings carry `pack/rule` ids, run under the same budgets,
+span gates, and redaction as built-in rules, and only the text engines
+(`source_regex`, `secret_regex`) apply today.
 
 Progress goes to stderr and the report to stdout, so `oxaudit-cli scan . --format
 sarif > out.sarif` needs no extra flags.

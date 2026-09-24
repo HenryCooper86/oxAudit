@@ -1508,10 +1508,13 @@ fn valid_fingerprint(value: &str) -> bool {
 }
 
 fn valid_rule_id(value: &str) -> bool {
+    // The one non-built-in shape is the installed-pack finding, whose rule
+    // id is pack-qualified as `namespace/rule` — the slash separates the
+    // pack identity from the author's rule id and is not a path separator.
     !value.is_empty()
         && value.len() <= 256
         && value.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '/')
         })
 }
 
