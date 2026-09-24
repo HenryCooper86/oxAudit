@@ -21,10 +21,17 @@ pub struct HistoryScanResponse {
     pub blobs_skipped: usize,
     pub truncated: bool,
     pub limit_note: Option<String>,
+    /// Present only when the caller opted into live validation, mirroring
+    /// the CLI's `--validate-secrets` summary.
+    pub validation: Option<crate::secrets_validation::ValidationSummary>,
 }
 
 #[tauri::command]
-pub async fn scan_history_secrets(path: String) -> Result<HistoryScanResponse, String> {
+pub async fn scan_history_secrets(
+    state: State<'_, AppState>,
+    path: String,
+    validate_secrets: Option<bool>,
+) -> Result<HistoryScanResponse, String> {
     let target = PathBuf::from(path.trim());
     if target.as_os_str().is_empty() {
         return Err("choose a repository folder first".into());
@@ -32,18 +39,30 @@ pub async fn scan_history_secrets(path: String) -> Result<HistoryScanResponse, S
     if !target.is_dir() {
         return Err(format!("{} is not a directory", target.display()));
     }
+    let validating = validate_secrets.unwrap_or(false);
     // The engine's own budgets (blobs, bytes, wall clock) bound this work;
     // spawn_blocking keeps it off the async runtime's threads regardless.
-    tauri::async_runtime::spawn_blocking(move || crate::history::scan_history_secrets(&target))
-        .await
-        .map_err(|_| "history scan task failed".to_string())
-        .map(|result| {
-            result.map(|outcome| HistoryScanResponse {
-                findings: outcome.findings,
-                blobs_scanned: outcome.blobs_scanned,
-                blobs_skipped: outcome.blobs_skipped,
-                truncated: outcome.truncated,
-                limit_note: outcome.limit_note,
-            })
-        })?
+    let mut outcome = tauri::async_runtime::spawn_blocking(move || {
+        crate::history::scan_history_secrets_with_options(&target, validating)
+    })
+    .await
+    .map_err(|_| "history scan task failed".to_string())??;
+    let validation = if validating {
+        let http = state.http.clone();
+        let raw = std::mem::take(&mut outcome.raw_secrets);
+        Some(
+            crate::secrets_validation::validate_raw_secrets(&mut outcome.findings, raw, &http)
+                .await,
+        )
+    } else {
+        None
+    };
+    Ok(HistoryScanResponse {
+        findings: outcome.findings,
+        blobs_scanned: outcome.blobs_scanned,
+        blobs_skipped: outcome.blobs_skipped,
+        truncated: outcome.truncated,
+        limit_note: outcome.limit_note,
+        validation,
+    })
 }

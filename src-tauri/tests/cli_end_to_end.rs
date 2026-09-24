@@ -1334,9 +1334,10 @@ fn history_without_git_fails_rather_than_reporting_clean() {
 #[test]
 fn validation_is_opt_in_and_reports_unchecked_without_a_validator() {
     let repository = history_project();
-    // The fixture's AWS key has no validator (validating AWS requires the
-    // paired secret key and SigV4), so this exercises the full opt-in path
-    // without any credential leaving the machine.
+    // The fixture's AWS key id has no secret access key near it to pair
+    // with, so the full opt-in path runs without any credential leaving the
+    // machine — and the unpaired key is reported as unpaired, not silently
+    // folded into "no validator".
     let output = run(&[
         "history",
         &repository.path().to_string_lossy(),
@@ -1353,7 +1354,8 @@ fn validation_is_opt_in_and_reports_unchecked_without_a_validator() {
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let validation = &document["summary"]["validation"];
     assert_eq!(validation["enabled"], serde_json::json!(true));
-    assert_eq!(validation["skippedNoValidator"], serde_json::json!(1));
+    assert_eq!(validation["skippedUnpaired"], serde_json::json!(1));
+    assert_eq!(validation["skippedNoValidator"], serde_json::json!(0));
     // Without the flag nothing about validation appears at all.
     let output = run(&[
         "history",

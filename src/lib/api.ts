@@ -63,8 +63,8 @@ export const api = {
   recheckSourceRun: (originalRunId: string, projectId: string) =>
     invoke<RecheckSourceResult>("recheck_source_run", { originalRunId, projectId }),
   cancelScan: () => invoke<void>("cancel_scan"),
-  scanHistorySecrets: (path: string) =>
-    invoke<HistoryScanResult>("scan_history_secrets", { path }),
+  scanHistorySecrets: (path: string, validateSecrets = false) =>
+    invoke<HistoryScanResult>("scan_history_secrets", { path, validateSecrets }),
   inspectSourceProject: (path: string) =>
     invoke<ProjectContext>("inspect_source_project", { path }),
   listSourceProjects: (limit = 12) =>

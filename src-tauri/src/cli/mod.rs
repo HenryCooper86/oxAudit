@@ -718,6 +718,7 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
                     "live": summary.live,
                     "rejected": summary.rejected,
                     "skippedNoValidator": summary.skipped_no_validator,
+                    "skippedUnpaired": summary.skipped_unpaired,
                     "skippedLimit": summary.skipped_limit,
                     "skippedNotKept": summary.skipped_not_kept,
                 })),

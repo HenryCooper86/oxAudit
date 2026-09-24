@@ -1003,6 +1003,23 @@ your machine does not get to put your credentials on the wire casually:
   scanner hit and the validation call; findings, reports, and logs carry
   redacted evidence only.
 
+Two provider shapes exist. Bearer-token credentials (GitHub tokens) travel
+as `Authorization: Bearer …` to their one fixed endpoint. AWS keys are a
+pair — an access key id alone is only a username — so an `aws-access-key-id`
+finding is validated only when an `aws-secret-key` finding sits in the same
+file within ten lines and is unambiguously its nearest key; the pair is then
+Signature Version 4-signed (verified against AWS's official SigV4 test-suite
+vectors) onto an STS `GetCallerIdentity` call to `sts.amazonaws.com`, the one
+AWS API every valid credential may call with no permissions attached. A
+verdict lands on both findings of the pair. Temporary `ASIA…` keys are
+skipped — they need a session token the scanner does not pair — and an AWS
+key with no secret nearby reports `unpaired` rather than guessing.
+
+The desktop workbench exposes the same opt-in on the **History Scan** page:
+a *Validate live against providers* switch, off by default, with the same
+fixed endpoints, the same twenty-credential cap, and a verdict banner
+(`live / rejected / no answer / not attempted`) plus per-finding badges.
+
 ## Suppressing a finding
 
 A finding that has been reviewed and dismissed should not be raised again on

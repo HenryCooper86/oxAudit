@@ -86,10 +86,7 @@ pub struct HistoryScanOutcome {
 }
 
 /// Scan every blob reachable from any ref for leaked credentials.
-pub fn scan_history_secrets(root: &Path) -> Result<HistoryScanOutcome, String> {
-    scan_history_secrets_with_options(root, false)
-}
-
+///
 /// The same scan, with control over whether raw credential values are
 /// retained for opt-in live validation.
 pub fn scan_history_secrets_with_options(
@@ -462,7 +459,7 @@ mod tests {
     #[test]
     fn deleted_secrets_remain_visible_in_history() {
         let temp = repository_with_leak();
-        let outcome = scan_history_secrets(temp.path()).expect("history scan");
+        let outcome = scan_history_secrets_with_options(temp.path(), false).expect("history scan");
 
         assert!(
             outcome
@@ -486,7 +483,7 @@ mod tests {
     #[test]
     fn a_directory_without_git_is_an_error_not_an_empty_answer() {
         let temp = tempfile::tempdir().unwrap();
-        assert!(scan_history_secrets(temp.path()).is_err());
+        assert!(scan_history_secrets_with_options(temp.path(), false).is_err());
     }
 
     #[test]
@@ -501,7 +498,7 @@ mod tests {
         fs::write(temp.path().join("README.md"), "nothing to see\n").unwrap();
         git(temp.path(), &["add", "."]);
         git(temp.path(), &["commit", "-m", "initial"]);
-        let outcome = scan_history_secrets(temp.path()).expect("history scan");
+        let outcome = scan_history_secrets_with_options(temp.path(), false).expect("history scan");
         assert!(outcome.findings.is_empty());
         assert!(outcome.blobs_scanned >= 1);
         assert!(!outcome.truncated);
@@ -525,7 +522,7 @@ mod tests {
         fs::write(temp.path().join("b/key.env"), &content).unwrap();
         git(temp.path(), &["add", "."]);
         git(temp.path(), &["commit", "-m", "same content, second path"]);
-        let outcome = scan_history_secrets(temp.path()).expect("history scan");
+        let outcome = scan_history_secrets_with_options(temp.path(), false).expect("history scan");
         let paths: Vec<&str> = outcome
             .findings
             .iter()
@@ -559,7 +556,7 @@ mod tests {
         .unwrap();
         git(temp.path(), &["add", "."]);
         git(temp.path(), &["commit", "-m", "edit below the leak"]);
-        let outcome = scan_history_secrets(temp.path()).expect("history scan");
+        let outcome = scan_history_secrets_with_options(temp.path(), false).expect("history scan");
         assert!(
             outcome.blobs_scanned >= 3,
             "three distinct blobs were scanned"

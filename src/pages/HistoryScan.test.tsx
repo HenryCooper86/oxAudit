@@ -51,16 +51,20 @@ const result = (overrides: Partial<HistoryScanResult> = {}): HistoryScanResult =
   blobsSkipped: 3,
   truncated: false,
   limitNote: null,
+  validation: null,
   ...overrides,
 });
 
-async function runScan(payload: HistoryScanResult) {
+async function runScan(payload: HistoryScanResult, validate = false) {
   scanHistorySecrets.mockResolvedValue(payload);
   render(<HistoryScanPage />);
   await userEvent.type(screen.getByRole("textbox", { name: /repository folder/i }), "/tmp/repo");
+  if (validate) {
+    await userEvent.click(screen.getByRole("switch", { name: /validate live against providers/i }));
+  }
   const button = screen.getByRole("button", { name: /scan history$/i });
   await userEvent.click(button);
-  await waitFor(() => expect(scanHistorySecrets).toHaveBeenCalledWith("/tmp/repo"));
+  await waitFor(() => expect(scanHistorySecrets).toHaveBeenCalledWith("/tmp/repo", validate));
   await waitFor(() => expect(button).not.toBeDisabled());
 }
 
@@ -97,4 +101,48 @@ test("a failed scan surfaces the error with a retry", async () => {
   expect(await screen.findByText("History scan failed")).toBeInTheDocument();
   expect(screen.getByText(/not a git repository/i)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+});
+
+test("validation is opt-in: an untouched toggle scans without touching providers", async () => {
+  await runScan(result());
+  expect(screen.getByRole("switch", { name: /validate live against providers/i })).not.toBeChecked();
+  expect(screen.queryByText(/provider check:/i)).not.toBeInTheDocument();
+});
+
+test("an opted-in run reports the provider verdicts and warns before touching the wire", async () => {
+  await runScan(
+    result({
+      validation: { checked: 2, live: 1, rejected: 1, skippedNoValidator: 0, skippedUnpaired: 1, skippedLimit: 0, skippedNotKept: 0 },
+    }),
+    true,
+  );
+  expect(screen.getByRole("switch", { name: /validate live against providers/i })).toBeChecked();
+  expect(screen.getByText(/provider check: 1 live, 1 rejected, 0 no answer, 1 not attempted/i)).toBeInTheDocument();
+  expect(screen.getByText(/rotate it now/i)).toBeInTheDocument();
+  expect(screen.getByText(/puts each leaked credential on the wire/i)).toBeInTheDocument();
+});
+
+test("a live finding is flagged as live in the list and the detail pane", async () => {
+  await runScan(
+    result({
+      findings: [finding({ verified: true })],
+      validation: { checked: 1, live: 1, rejected: 0, skippedNoValidator: 0, skippedUnpaired: 0, skippedLimit: 0, skippedNotKept: 0 },
+    }),
+    true,
+  );
+  expect(await screen.findAllByText(/^live$/i).then((nodes) => nodes.length)).toBeGreaterThan(0);
+  expect(screen.getByText(/live — provider accepted it/i)).toBeInTheDocument();
+  expect(screen.getByText(/deletion from history does not close it/i)).toBeInTheDocument();
+});
+
+test("a rejected finding says so without implying it is safe", async () => {
+  await runScan(
+    result({
+      findings: [finding({ verified: false })],
+      validation: { checked: 1, live: 0, rejected: 1, skippedNoValidator: 0, skippedUnpaired: 0, skippedLimit: 0, skippedNotKept: 0 },
+    }),
+    true,
+  );
+  expect(await screen.findByText(/provider rejected it/i)).toBeInTheDocument();
+  expect(screen.getByText(/rotate it anyway/i)).toBeInTheDocument();
 });

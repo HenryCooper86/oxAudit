@@ -3721,6 +3721,7 @@ dependencies = [
  "dirs",
  "flate2",
  "futures",
+ "hmac",
  "ignore",
  "include_dir",
  "keyring",

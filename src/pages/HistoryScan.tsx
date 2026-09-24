@@ -7,7 +7,7 @@ import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
-import { Button, Select } from "../components/ui";
+import { Button, Select, Switch } from "../components/ui";
 import { api } from "../lib/api";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { Finding, HistoryScanResult, Severity } from "../lib/types";
@@ -40,6 +40,7 @@ export function HistoryScanPage(): JSX.Element {
   const [severity, setSeverity] = useState<Severity | "all">("all");
   const [search, setSearch] = useState("");
   const [selectedFingerprint, setSelectedFingerprint] = useState<string | null>(null);
+  const [validate, setValidate] = useState(false);
 
   useEffect(() => () => clearPageStatus("history-scan"), [clearPageStatus]);
 
@@ -52,7 +53,7 @@ export function HistoryScanPage(): JSX.Element {
     setSelectedFingerprint(null);
     setPageStatus("history-scan", { label: "Scanning git history…", detail: target, tone: "running" });
     try {
-      const scanned = await api.scanHistorySecrets(target);
+      const scanned = await api.scanHistorySecrets(target, validate);
       setResult(scanned);
       setSelectedFingerprint(scanned.findings[0]?.fingerprint ?? null);
       setPageStatus("history-scan", {
@@ -112,6 +113,29 @@ export function HistoryScanPage(): JSX.Element {
         >
           <FolderPicker value={path} onChange={setPath} disabled={running} inputLabel="Repository folder" placeholder="Choose a repository…" />
         </TargetBar>
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <Switch checked={validate} onChange={setValidate} disabled={running} label="Validate live against providers" />
+          <p className="min-w-0 flex-1 text-[12px] text-text-muted">
+            Off by default: the check puts each leaked credential on the wire to its own provider — GitHub tokens to
+            api.github.com, a paired AWS key to sts.amazonaws.com — to learn whether it still authenticates. Nothing is
+            sent anywhere else, and only the verdict is kept.
+          </p>
+        </div>
+
+        {result?.validation && (() => {
+          const v = result.validation;
+          const noAnswer = v.checked - v.live - v.rejected;
+          const notAttempted =
+            v.skippedNoValidator + v.skippedUnpaired + v.skippedLimit + v.skippedNotKept;
+          return (
+            <InlineState
+              tone={v.live > 0 ? "error" : "unavailable"}
+              title={`Provider check: ${v.live} live, ${v.rejected} rejected, ${noAnswer} no answer, ${notAttempted} not attempted`}
+              description="Live means the provider still accepts the credential — rotate it now. Rejected is not a licence to skip rotation: the credential may work against other surfaces or be re-enabled. Not attempted covers rules without a validator and AWS key ids with no paired secret nearby."
+            />
+          );
+        })()}
 
         {running && (
           <InlineState
@@ -199,6 +223,16 @@ export function HistoryScanPage(): JSX.Element {
                             <div className="flex flex-wrap items-center gap-1.5">
                               <SeverityBadge severity={finding.severity} />
                               <span className="font-mono text-[12px] text-text-secondary">{finding.ruleId}</span>
+                              {finding.verified === true && (
+                                <span className="inline-flex items-center rounded-sm border border-sev-critical-border bg-sev-critical-subtle px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-sev-critical">
+                                  Live
+                                </span>
+                              )}
+                              {finding.verified === false && (
+                                <span className="inline-flex items-center rounded-sm border border-border bg-surface-secondary px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+                                  Rejected
+                                </span>
+                              )}
                             </div>
                             <p className="mt-1 truncate text-[12px] text-text-muted">
                               {finding.filePath}:{finding.line}
@@ -218,7 +252,24 @@ export function HistoryScanPage(): JSX.Element {
                         <SeverityBadge severity={selected.severity} />
                         <span className="text-[14px] font-semibold text-text-primary">{selected.title}</span>
                         <span className="font-mono text-[12px] text-text-muted">[{selected.ruleId}]</span>
+                        {selected.verified === true && (
+                          <span className="rounded-sm border border-sev-critical-border bg-sev-critical-subtle px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-sev-critical">
+                            Live — provider accepted it
+                          </span>
+                        )}
+                        {selected.verified === false && (
+                          <span className="rounded-sm border border-border bg-surface-secondary px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+                            Provider rejected it
+                          </span>
+                        )}
                       </div>
+                      {(selected.verified === true || selected.verified === false) && (
+                        <p className="text-[12px] text-text-muted">
+                          {selected.verified === true
+                            ? "The provider still accepts this credential. Rotate it now — deletion from history does not close it."
+                            : "The provider refused this credential. Rotate it anyway: it may still work against other surfaces, or be re-enabled."}
+                        </p>
+                      )}
                       <div>
                         <h3 className="text-[12px] font-semibold uppercase tracking-wide text-text-muted">Historical location</h3>
                         <p className="mt-1 break-all font-mono text-[12px]">

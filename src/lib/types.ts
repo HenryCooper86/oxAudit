@@ -1112,6 +1112,16 @@ export interface GitContext {
   inspectedAt: string;
 }
 
+export interface HistoryValidationSummary {
+  checked: number;
+  live: number;
+  rejected: number;
+  skippedNoValidator: number;
+  skippedUnpaired: number;
+  skippedLimit: number;
+  skippedNotKept: number;
+}
+
 /**
  * The whole result of a git-history secret scan. Not a stored run: findings
  * describe objects in git history, not the working tree a canonical run's
@@ -1124,4 +1134,6 @@ export interface HistoryScanResult {
   blobsSkipped: number;
   truncated: boolean;
   limitNote: string | null;
+  /** Present only when live validation was opted into for this run. */
+  validation: HistoryValidationSummary | null;
 }
