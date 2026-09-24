@@ -7,6 +7,7 @@
 
 pub mod extract;
 pub mod filetype;
+pub mod oci;
 
 /// Default per-member byte cap. Kept here rather than in the caller so the
 /// budgets the extractors enforce are defined beside the extractors.

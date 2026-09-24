@@ -88,6 +88,19 @@ pub fn scan_file(
     signatures: &SignatureSet,
     notes: &mut Vec<String>,
 ) -> Vec<Detection> {
+    scan_file_as(path, None, signatures, notes)
+}
+
+/// The same scan where this file is known to be a blob of an OCI image
+/// layout: its members carry the layout's ordered alias
+/// (`image@<digest12>!layer-0003!/bin/busybox`) instead of the blob's
+/// 64-character hash filename, so findings name the image they came from.
+pub fn scan_file_as(
+    path: &Path,
+    alias: Option<&str>,
+    signatures: &SignatureSet,
+    notes: &mut Vec<String>,
+) -> Vec<Detection> {
     let Ok(file) = std::fs::File::open(path) else {
         return Vec::new();
     };
@@ -99,10 +112,11 @@ pub fn scan_file(
     };
 
     let display = path.to_string_lossy().into_owned();
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let file_name = alias.map(str::to_owned).unwrap_or_else(|| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    });
     scan_buffer(
         &display,
         &file_name,
@@ -384,6 +398,13 @@ pub fn scan(
     let started = std::time::Instant::now();
     let files = candidates_with_budget(root, MAX_BINARY_FILES, MAX_BINARY_BYTES, &cancel)?;
     on_progress(format!("{} files to examine", files.len()));
+    let (oci_aliases, oci_notes) = oci_aliases_for(&files);
+    if !oci_aliases.is_empty() {
+        on_progress(format!(
+            "{} OCI layout layer blob(s) recognized",
+            oci_aliases.len()
+        ));
+    }
 
     let signatures: &SignatureSet = &SIGNATURES;
     let pool = rayon::ThreadPoolBuilder::new()
@@ -400,7 +421,12 @@ pub fn scan(
                     return Vec::new().into_iter();
                 }
                 let mut file_notes = Vec::new();
-                let detections = scan_file(path, signatures, &mut file_notes);
+                let detections = scan_file_as(
+                    path,
+                    oci_aliases.get(path).map(String::as_str),
+                    signatures,
+                    &mut file_notes,
+                );
                 if !file_notes.is_empty() {
                     if let Ok(mut notes) = extraction_notes.lock() {
                         notes.extend(file_notes);
@@ -418,7 +444,8 @@ pub fn scan(
     let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
     on_progress(format!("{} components detected", components.len()));
-    let notes = extraction_notes.into_inner().unwrap_or_default();
+    let mut notes = extraction_notes.into_inner().unwrap_or_default();
+    notes.extend(oci_notes);
 
     Ok(NativeScan {
         queries,
@@ -438,9 +465,163 @@ pub fn scan(
     })
 }
 
+/// Map the blobs of any OCI image layouts among the candidate files to the
+/// ordered aliases their members should carry. Layouts are found by walking
+/// each file's ancestors for the two-marker test — cached per directory so
+/// a tree of blobs costs one check per directory, not per file.
+fn oci_aliases_for(
+    files: &[std::path::PathBuf],
+) -> (
+    std::collections::HashMap<std::path::PathBuf, String>,
+    Vec<String>,
+) {
+    let mut aliases = std::collections::HashMap::new();
+    let mut notes = Vec::new();
+    let mut layout_cache: std::collections::HashMap<
+        std::path::PathBuf,
+        Option<std::path::PathBuf>,
+    > = std::collections::HashMap::new();
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for file in files {
+        let mut current = file.parent().map(Path::to_path_buf);
+        while let Some(directory) = current {
+            if let Some(found) = layout_cache.get(&directory) {
+                if let Some(root) = found {
+                    if !roots.contains(root) {
+                        roots.push(root.clone());
+                    }
+                }
+                break;
+            }
+            let is_root = oxaudit_archive::oci::is_layout(&directory);
+            layout_cache.insert(directory.clone(), is_root.then(|| directory.clone()));
+            if is_root {
+                if !roots.contains(&directory) {
+                    roots.push(directory);
+                }
+                break;
+            }
+            current = directory.parent().map(Path::to_path_buf);
+        }
+    }
+    for root in roots {
+        match oxaudit_archive::oci::read_layout(&root) {
+            Ok(layout) => {
+                for note in &layout.notes {
+                    notes.push(format!("{}: {note}", root.display()));
+                }
+                for image in &layout.images {
+                    for layer in &image.layers {
+                        // First alias wins: a blob shared by two images is
+                        // one physical layer; it scans once either way.
+                        aliases
+                            .entry(layer.blob_path.clone())
+                            .or_insert_with(|| layer.alias.clone());
+                    }
+                }
+            }
+            Err(error) => notes.push(format!(
+                "{}: not scanned as an OCI layout: {error}",
+                root.display()
+            )),
+        }
+    }
+    (aliases, notes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A whole on-disk OCI layout — marker, index, manifest, one tar layer
+    /// carrying a detectable busybox banner — scanned as a tree: the layer's
+    /// members must surface under the image's ordered alias, not the blob's
+    /// 64-character hash filename.
+    #[test]
+    fn an_oci_layout_directory_scans_as_named_image_layers() {
+        use sha2::{Digest, Sha256};
+        let directory = tempfile::tempdir().expect("tempdir");
+        let root = directory.path().join("router-image");
+        std::fs::create_dir_all(root.join("blobs/sha256")).expect("blobs");
+
+        // A real busybox is an ELF, and text members are deliberately
+        // skipped — a banner in a README is not evidence. The fixture
+        // mirrors the real shape: ELF magic around the banner.
+        let mut tool = Vec::new();
+        tool.extend_from_slice(b"\x7fELF\x02\x01\x01\x00");
+        tool.extend_from_slice(&[0_u8; 16]);
+        tool.extend_from_slice(b"BusyBox v1.36.1 (2024-01-01 00:00:00 UTC) multi-call binary.\n");
+        tool.extend_from_slice(&[0x5a, 0x00, 0xff, 0x00]);
+        let banner = &tool;
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(banner.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "bin/busybox", std::io::Cursor::new(banner))
+                .expect("layer member");
+            builder.finish().expect("layer done");
+        }
+        let sha = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let layer_digest = sha(&tar_bytes);
+        std::fs::write(
+            root.join(format!("blobs/sha256/{layer_digest}")),
+            &tar_bytes,
+        )
+        .expect("layer");
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"sha256:{layer_digest}"}}]}}"#
+        );
+        let manifest_digest = sha(manifest.as_bytes());
+        std::fs::write(
+            root.join(format!("blobs/sha256/{manifest_digest}")),
+            &manifest,
+        )
+        .expect("manifest");
+        std::fs::write(root.join("oci-layout"), r#"{"imageLayoutVersion":"1.0.0"}"#)
+            .expect("marker");
+        std::fs::write(
+            root.join("index.json"),
+            format!(
+                r#"{{"schemaVersion":2,"manifests":[{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:{manifest_digest}"}}]}}"#
+            ),
+        )
+        .expect("index");
+
+        let mut notes = Vec::new();
+        let files = candidates_with_budget(
+            &root,
+            MAX_BINARY_FILES,
+            MAX_BINARY_BYTES,
+            &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .expect("candidates");
+        let (aliases, _notes) = oci_aliases_for(&files);
+        assert_eq!(aliases.len(), 1, "exactly the layer blob is aliased");
+        let blob_path = root.join(format!("blobs/sha256/{layer_digest}"));
+        let alias = aliases.get(&blob_path).cloned().expect("layer aliased");
+        assert!(
+            alias.starts_with("router-image@"),
+            "alias names the image: {alias}"
+        );
+        assert!(alias.ends_with("!layer-0000"));
+
+        let detections = scan_file_as(&blob_path, Some(&alias), &SIGNATURES, &mut notes);
+        let busybox = detections
+            .iter()
+            .find(|detection| detection.product == "busybox")
+            .expect("busybox detected through the layout");
+        assert_eq!(busybox.version.as_deref(), Some("1.36.1"));
+        assert!(
+            busybox.path.contains("router-image@"),
+            "the finding names the image, not the hash: {}",
+            busybox.path
+        );
+        assert!(busybox.path.contains("!layer-0000!/bin/busybox"));
+    }
 
     fn detection(
         product: &str,

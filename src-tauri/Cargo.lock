@@ -3798,7 +3798,10 @@ dependencies = [
  "liblzma",
  "memchr",
  "serde",
+ "serde_json",
+ "sha2",
  "tar",
+ "tempfile",
  "zip",
  "zstd 0.14.0",
 ]

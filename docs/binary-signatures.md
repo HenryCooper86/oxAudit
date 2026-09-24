@@ -441,7 +441,14 @@ blob from turning the search into a cost attack: the window, and a limit of
 64 parse attempts after which the search gives up and says so. Members scan
 under virtual paths
 (`fw.bin!sqfs@0x1f8718!/bin/busybox`), directories/symlinks/whiteouts are
-skipped rather than honored, and nothing is written to disk. Still not
+skipped rather than honored, and nothing is written to disk. An on-disk OCI
+image layout (a directory with `oci-layout` and `index.json` beside
+content-addressed blobs) is recognized as of 2026-09-24: the index and
+manifests resolve — one nesting level of image indexes included, bounded —
+to ordered layers whose members carry
+`image@<digest12>!layer-0003!/bin/busybox` names instead of the blob's hash
+filename, and every blob is verified to hash to its digest before it counts
+as a layer; a renamed or truncated blob is skipped with its reason. Still not
 unpacked: UBI/UBIFS and the long tail of vendor filesystems, plus
 squashfs v3 (pre-2009) — each needs its own vetted reader, and those blobs
 still scan raw, exactly as before. CramFS is now unpacked (2026-09-22): a
