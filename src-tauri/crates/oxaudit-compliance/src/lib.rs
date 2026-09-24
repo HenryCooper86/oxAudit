@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn builtins_are_valid_and_reference_official_sources() {
         let profiles = builtin_profiles().unwrap();
-        assert_eq!(profiles.len(), 8);
+        assert_eq!(profiles.len(), 10);
         assert!(profiles
             .iter()
             .all(|profile| profile.source_url.starts_with("https://")));

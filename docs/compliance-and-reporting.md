@@ -22,6 +22,8 @@ The implementation has five deliberately separate boundaries:
 - California CCPA/CPRA regulations effective in 2026
 - NIST Privacy Framework 1.0
 - ISO/IEC 27001:2022 information security management
+- OWASP Top 10:2021 web application security risks (original paraphrased categories, official publication linked)
+- SOC 2 Trust Services Criteria common criteria (original paraphrased controls; AICPA-licensed guidance required for the authoritative criteria)
 
 ISO and ISO/SAE profiles contain original high-level readiness objectives and official catalogue links only. Teams must obtain the applicable official standards and licensed guidance for authoritative requirements.
 

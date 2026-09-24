@@ -161,5 +161,53 @@
       { "id": "isms-technical", "reference": "Operational security evidence", "title": "Technical security verification", "objective": "Link risk treatment and applicable controls to current source, dependency, binary, and verification evidence.", "assurance": "mixed", "check": { "fileGroups": [["*security*test*", "*penetration*test*", "*vulnerability*management*"]], "runKinds": ["source", "dependencies", "binary", "verification"], "manual": true } },
       { "id": "isms-certification", "reference": "Certification boundary", "title": "Independent audit and certification decisions", "objective": "Keep certification scope, audit competence, nonconformity decisions, and accreditation claims under authorized independent control.", "assurance": "humanAttestation", "check": { "manual": true } }
     ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "owasp-top-10-2021",
+    "name": "OWASP Top 10 Web Application Security Risks",
+    "version": "2021",
+    "domain": "Web application security",
+    "jurisdiction": "International (advisory awareness baseline)",
+    "sourceLabel": "OWASP Top 10:2021 official publication",
+    "sourceUrl": "https://owasp.org/Top10/",
+    "copyrightNotice": "Category titles and descriptions here are original paraphrases. The OWASP Top 10 is published under Creative Commons Attribution-ShareAlike 4.0; consult the official page for the authoritative list.",
+    "disclaimer": "This readiness profile is not the OWASP Top 10 document, an audit, a penetration test, or a determination that an application is secure. Category evidence matches require qualified application-security review.",
+    "controls": [
+      { "id": "owasp-a01", "reference": "A01:2021", "title": "Broken access control", "objective": "Deny-by-default authorization on server side, with access-control tests and no trusted client-side enforcement.", "assurance": "mixed", "check": { "fileGroups": [["*authorization*test*", "*access*control*test*"], ["*authorization*policy*", "*permission*matrix*"]], "runKinds": ["source"], "manual": true } },
+      { "id": "owasp-a02", "reference": "A02:2021", "title": "Cryptographic failures", "objective": "Classify and protect data in transit and at rest with current algorithms, key management, and no legacy protocols.", "assurance": "mixed", "check": { "fileGroups": [["*crypto*review*", "*encryption*policy*", "*key*management*"]], "runKinds": ["source", "binary"], "manual": true } },
+      { "id": "owasp-a03", "reference": "A03:2021", "title": "Injection", "objective": "Keep untrusted input out of interpreters through parameterized interfaces and server-side validation.", "assurance": "mixed", "check": { "fileGroups": [["*input*validation*", "*injection*test*"]], "runKinds": ["source"], "manual": true } },
+      { "id": "owasp-a04", "reference": "A04:2021", "title": "Insecure design", "objective": "Threat-model the system and retain secure design patterns, trust boundaries, and abuse-case evidence.", "assurance": "mixed", "check": { "fileGroups": [["*threat*model*", "*trust*boundary*"], ["*secure*design*", "*abuse*case*"]], "manual": true } },
+      { "id": "owasp-a05", "reference": "A05:2021", "title": "Security misconfiguration", "objective": "Harden environments by default with reviewable, differential configuration and no unused features or default accounts.", "assurance": "mixed", "check": { "fileGroups": [["*hardening*", "*security*configuration*"], ["*configuration*review*", "*baseline*configuration*"]], "runKinds": ["binary"], "manual": true } },
+      { "id": "owasp-a06", "reference": "A06:2021", "title": "Vulnerable and outdated components", "objective": "Inventory components with versions, track advisories, and remove or patch unsupported dependencies.", "assurance": "mixed", "check": { "fileGroups": [["*sbom*", "*cyclonedx*", "*spdx*"], ["*dependency*policy*", "*component*inventory*"]], "runKinds": ["dependencies", "binary"], "manual": false } },
+      { "id": "owasp-a07", "reference": "A07:2021", "title": "Identification and authentication failures", "objective": "Confirm identities with hardened session management, credential storage, rotation, and attack resistance.", "assurance": "mixed", "check": { "fileGroups": [["*authentication*test*", "*session*management*"], ["*credential*policy*", "*password*policy*"]], "runKinds": ["source"], "manual": true } },
+      { "id": "owasp-a08", "reference": "A08:2021", "title": "Software and data integrity failures", "objective": "Verify integrity of updates, dependencies, and pipelines with signatures, secure deserialization, and trusted repositories.", "assurance": "mixed", "check": { "fileGroups": [["*dependency*verification*", "*signature*verification*", "*code*signing*"], ["*supply*chain*policy*"]], "runKinds": ["dependencies"], "manual": true } },
+      { "id": "owasp-a09", "reference": "A09:2021", "title": "Security logging and monitoring failures", "objective": "Log security-relevant events with retention and alerting, protected against injection and tampering.", "assurance": "mixed", "check": { "fileGroups": [["*audit*log*", "*security*log*", "*logging*policy*"], ["*alerting*", "*monitoring*configuration*"]], "manual": true } },
+      { "id": "owasp-a10", "reference": "A10:2021", "title": "Server-side request forgery", "objective": "Validate redirects and fetches against allow-lists, with egress separation for user-influenced requests.", "assurance": "mixed", "check": { "fileGroups": [["*egress*allowlist*", "*url*allowlist*", "*ssrf*"]], "runKinds": ["source"], "manual": true } }
+    ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "soc-2-tsc",
+    "name": "SOC 2 Trust Services Criteria (common criteria)",
+    "version": "2017 (with 2022 revisions)",
+    "domain": "System security, availability, processing integrity, confidentiality, and privacy",
+    "jurisdiction": "United States (attestation)",
+    "sourceLabel": "AICPA Trust Services Criteria overview",
+    "sourceUrl": "https://www.aicpa-cima.com/resources/download/trust-services-criteria",
+    "copyrightNotice": "Criteria descriptions here are original paraphrases. The Trust Services Criteria are copyrighted by the American Institute of CPAs; licensed guidance must be obtained for authoritative criteria.",
+    "disclaimer": "This readiness profile is not a SOC 2 report, an audit, an attestation, or a determination of control effectiveness. Readiness evidence requires review by a qualified independent CPA.",
+    "controls": [
+      { "id": "soc-cc1", "reference": "CC1", "title": "Control environment", "objective": "Demonstrate integrity, board oversight, accountability, competence, and HR structures supporting the system.", "assurance": "mixed", "check": { "fileGroups": [["*code*of*conduct*", "*governance*structure*"], ["*hr*policy*", "*competency*training*"]], "manual": true } },
+      { "id": "soc-cc2", "reference": "CC2", "title": "Communication and information", "objective": "Communicate objectives, responsibilities, and quality information internally, externally, and over time.", "assurance": "mixed", "check": { "fileGroups": [["*communication*plan*", "*escalation*procedure*"], ["*data*quality*", "*information*policy*"]], "manual": true } },
+      { "id": "soc-cc3", "reference": "CC3", "title": "Risk assessment", "objective": "Identify, analyze, and manage threats, misstatements, and fraud risks to objectives, including change-driven risk.", "assurance": "mixed", "check": { "fileGroups": [["*risk*assessment*", "*risk*register*"], ["*fraud*risk*", "*change*risk*"]], "manual": true } },
+      { "id": "soc-cc4", "reference": "CC4", "title": "Monitoring activities", "objective": "Ongoing and separate evaluations of control performance, with communicator-recipient defect remediation.", "assurance": "mixed", "check": { "fileGroups": [["*control*monitoring*", "*continuous*monitoring*"], ["*defect*remediation*", "*finding*tracking*"]], "manual": true } },
+      { "id": "soc-cc5", "reference": "CC5", "title": "Control activities", "objective": "Select and deploy risk-mitigating manual and automated activities with segregation and periodic reevaluation.", "assurance": "mixed", "check": { "fileGroups": [["*control*matrix*", "*control*activities*"], ["*segregation*of*duties*", "*approval*workflow*"]], "manual": true } },
+      { "id": "soc-cc6", "reference": "CC6", "title": "Logical and physical access", "objective": "Restrict logical and physical access to authorized users, assets, and data, with provisioning, transfer, and removal controls.", "assurance": "mixed", "check": { "fileGroups": [["*access*control*", "*identity*management*"], ["*physical*security*", "*access*review*"]], "runKinds": ["source", "dependencies"], "manual": true } },
+      { "id": "soc-cc7", "reference": "CC7", "title": "System operations", "objective": "Detect, analyze, and respond to security events and incidents with recovery and continuity management.", "assurance": "mixed", "check": { "fileGroups": [["*incident*response*", "*event*monitoring*"], ["*business*continuity*", "*disaster*recovery*"]], "runKinds": ["source", "dependencies", "binary"], "manual": true } },
+      { "id": "soc-cc8", "reference": "CC8", "title": "Change management", "objective": "Authorize, test, approve, and track changes to infrastructure, software, and procedures with rollback.", "assurance": "mixed", "check": { "fileGroups": [["*change*management*", "*change*control*"], ["*release*process*", "*rollback*plan*"]], "runKinds": ["source", "dependencies"], "manual": true } },
+      { "id": "soc-cc9", "reference": "CC9", "title": "Risk mitigation (vendors and business)", "objective": "Identify vendor and business-continuity risk, select mitigating controls, and monitor vendor performance.", "assurance": "mixed", "check": { "fileGroups": [["*vendor*risk*", "*supplier*assessment*"], ["*vendor*monitoring*", "*third*party*audit*"]], "runKinds": ["dependencies"], "manual": true } },
+      { "id": "soc-attestation", "reference": "Attestation boundary", "title": "Independent CPA examination", "objective": "Engage a qualified independent CPA to examine controls and issue the report; readiness here is not attestation.", "assurance": "humanAttestation", "check": { "manual": true } }
+    ]
   }
 ]
