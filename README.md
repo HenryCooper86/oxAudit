@@ -993,7 +993,10 @@ your machine does not get to put your credentials on the wire casually:
   nowhere else; there is no configurable URL, so the secret cannot be aimed
   at another host by a typo or a setting. Only the HTTP status is read —
   response bodies and account identities are discarded, and nothing about the
-  credential is logged.
+  credential is logged. One measured exception: Slack reports a failed check
+  as HTTP 200 with `{"ok": false}` in the body, so for Slack exactly that
+  one boolean is read and the rest of the body is discarded like everything
+  else.
 - **Honest verdicts.** `VERIFIED LIVE` means the provider authenticated it:
   rotate now. `rejected by provider` is **not** a licence to skip rotation —
   the credential may work elsewhere or be re-enabled. Unchecked stays
@@ -1003,8 +1006,15 @@ your machine does not get to put your credentials on the wire casually:
   scanner hit and the validation call; findings, reports, and logs carry
   redacted evidence only.
 
-Two provider shapes exist. Bearer-token credentials (GitHub tokens) travel
-as `Authorization: Bearer …` to their one fixed endpoint. AWS keys are a
+Two provider shapes exist. Bearer-token credentials travel as
+`Authorization: Bearer …` to their one fixed endpoint: GitHub classic and
+fine-grained tokens (`api.github.com/user`), GitLab PATs
+(`gitlab.com/api/v4/user`), OpenAI (`api.openai.com/v1/models`), Anthropic
+(`api.anthropic.com/v1/models`, with the `anthropic-version` header its API
+requires), Hugging Face (`huggingface.co/api/whoami-v2`), npm tokens
+(`registry.npmjs.org/-/whoami`), Stripe secret and restricted keys
+(`api.stripe.com/v1/charges`), and Slack tokens
+(`slack.com/api/auth.test`, the body-verdict case above). AWS keys are a
 pair — an access key id alone is only a username — so an `aws-access-key-id`
 finding is validated only when an `aws-secret-key` finding sits in the same
 file within ten lines and is unambiguously its nearest key; the pair is then
@@ -1014,6 +1024,15 @@ AWS API every valid credential may call with no permissions attached. A
 verdict lands on both findings of the pair. Temporary `ASIA…` keys are
 skipped — they need a session token the scanner does not pair — and an AWS
 key with no secret nearby reports `unpaired` rather than guessing.
+
+Rules deliberately left without validators, each for a reason sharper than
+a TODO: Slack **webhooks** (the only check is posting a visible message into
+the channel), Google **API keys** (service-scoped — a key valid for one API
+fails every other, so no single endpoint returns an honest verdict), **PyPI**
+tokens (they only authenticate uploads), and **private keys** (proving one
+live means signing for whichever service it belongs to). Stripe's regex also
+matches `pk_…` publishable keys, which are public by design; those values
+are never sent.
 
 The desktop workbench exposes the same opt-in on the **History Scan** page:
 a *Validate live against providers* switch, off by default, with the same

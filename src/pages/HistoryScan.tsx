@@ -117,9 +117,9 @@ export function HistoryScanPage(): JSX.Element {
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <Switch checked={validate} onChange={setValidate} disabled={running} label="Validate live against providers" />
           <p className="min-w-0 flex-1 text-[12px] text-text-muted">
-            Off by default: the check puts each leaked credential on the wire to its own provider — GitHub tokens to
-            api.github.com, a paired AWS key to sts.amazonaws.com — to learn whether it still authenticates. Nothing is
-            sent anywhere else, and only the verdict is kept.
+            Off by default: the check puts each leaked credential on the wire to its own provider — GitHub, AWS,
+            GitLab, OpenAI, Anthropic, Hugging Face, npm, Stripe, Slack — to learn whether it still authenticates.
+            Nothing is sent anywhere else, and only the verdict is kept.
           </p>
         </div>
 

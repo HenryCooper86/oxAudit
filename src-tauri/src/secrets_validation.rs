@@ -13,7 +13,10 @@
 //!   setting.
 //! - **Status in, status out.** The only thing read from a response is the
 //!   HTTP status. Account identities and response bodies are discarded, and
-//!   nothing about the credential is logged.
+//!   nothing about the credential is logged. One measured exception: Slack
+//!   reports a failed check as HTTP 200 with `{"ok": false}` in the body,
+//!   so for Slack exactly one boolean field is read and the rest of the
+//!   body is discarded like everything else.
 //! - **Honest tri-state.** `Some(true)` means the provider authenticated the
 //!   credential — treat it as live and rotate immediately. `Some(false)`
 //!   means the provider rejected it — **not** a licence to skip rotation:
@@ -68,20 +71,87 @@ pub const MAX_VALIDATIONS: usize = 20;
 struct Provider {
     /// The exact origin the credential is sent to.
     endpoint: &'static str,
-    header: &'static str,
+    /// Fixed extra headers the provider requires alongside the credential
+    /// (none carry credential material).
+    extra_headers: &'static [(&'static str, &'static str)],
+    /// Providers that answer HTTP 200 even for a failed check and report
+    /// the verdict in the body (Slack): read exactly one boolean field and
+    /// nothing else. Measured against the live service — every other
+    /// provider here rejects a bad credential with 401.
+    body_verdict: bool,
 }
 
 /// Which bearer-token provider a rule's credential authenticates against. A
 /// rule absent from this map has no validator and stays unverified. AWS keys
 /// do not fit this shape — they sign instead of presenting a token — and are
 /// handled by the SigV4 path below.
+///
+/// Rules deliberately absent, each for a reason sharper than "not yet":
+/// - `slack-webhook`: the only check is POSTing a message into the channel —
+///   a side effect visible to the workspace. Not worth an automated message
+///   to prove a URL anyone can post to works.
+/// - `google-api-key`: API keys are service-scoped; a key valid for one API
+///   fails every other, so no single fixed endpoint can return an honest
+///   verdict.
+/// - `pypi-token`: upload tokens only authenticate the upload endpoint;
+///   probing it means sending a (deliberately malformed) publish.
+/// - `private-key`: proving a key material live means signing a request for
+///   whichever service it belongs to — per-provider work with no shared
+///   shape, and the key already carries its own risk signal.
 fn provider_for(rule_id: &str) -> Option<Provider> {
     match rule_id {
         "github-token" | "github-fine-grained-token" => Some(Provider {
             endpoint: "https://api.github.com/user",
-            header: "Authorization",
+            extra_headers: &[],
+            body_verdict: false,
+        }),
+        "gitlab-pat" => Some(Provider {
+            endpoint: "https://gitlab.com/api/v4/user",
+            extra_headers: &[],
+            body_verdict: false,
+        }),
+        "openai-api-key" => Some(Provider {
+            endpoint: "https://api.openai.com/v1/models",
+            extra_headers: &[],
+            body_verdict: false,
+        }),
+        "anthropic-api-key" => Some(Provider {
+            endpoint: "https://api.anthropic.com/v1/models",
+            extra_headers: &[("anthropic-version", "2023-06-01")],
+            body_verdict: false,
+        }),
+        "huggingface-token" => Some(Provider {
+            endpoint: "https://huggingface.co/api/whoami-v2",
+            extra_headers: &[],
+            body_verdict: false,
+        }),
+        "npm-token" => Some(Provider {
+            endpoint: "https://registry.npmjs.org/-/whoami",
+            extra_headers: &[],
+            body_verdict: false,
+        }),
+        "stripe-key" => Some(Provider {
+            endpoint: "https://api.stripe.com/v1/charges?limit=1",
+            extra_headers: &[],
+            body_verdict: false,
+        }),
+        "slack-token" => Some(Provider {
+            endpoint: "https://slack.com/api/auth.test",
+            extra_headers: &[],
+            body_verdict: true,
         }),
         _ => None,
+    }
+}
+
+/// Some rules match values that are not credentials even when the rule as a
+/// whole is sound: Stripe's regex also catches `pk_…` publishable keys,
+/// which are public by design and never authenticate the API. Only values
+/// that could authenticate count as validatable.
+fn value_is_validatable(rule_id: &str, value: &str) -> bool {
+    match rule_id {
+        "stripe-key" => value.starts_with("sk_") || value.starts_with("rk_"),
+        _ => true,
     }
 }
 
@@ -200,23 +270,42 @@ fn host_of(endpoint: &str) -> String {
 ///
 /// `None` for every outcome that is not a clear authentication verdict,
 /// including transport failures and provider trouble (429/5xx): an unknown
-/// answer must never be mistaken for a safe one.
+/// answer must never be mistaken for a safe one. 403 counts as authenticated
+/// — only an authenticated request can be told "forbidden" — which for
+/// permission-scoped keys (Stripe restricted keys, scoped tokens) is the
+/// correct reading.
 async fn validate_one(
     value: &str,
     http: &reqwest::Client,
     endpoint: &str,
-    header_name: &str,
+    extra_headers: &[(&str, &str)],
+    body_verdict: bool,
 ) -> Option<bool> {
-    let response = http
+    let mut request = http
         .get(endpoint)
-        .header(header_name, format!("Bearer {value}"))
-        .send()
-        .await
-        .ok()?;
-    match response.status().as_u16() {
-        // 403 is a valid token without permission for this endpoint — only
-        // an authenticated request can be told "forbidden".
-        200 | 403 => Some(true),
+        .header("Authorization", format!("Bearer {value}"));
+    for (name, header_value) in extra_headers {
+        request = request.header(*name, *header_value);
+    }
+    let response = request.send().await.ok()?;
+    let status = response.status().as_u16();
+    if !body_verdict {
+        return match status {
+            200 | 403 => Some(true),
+            401 => Some(false),
+            _ => None,
+        };
+    }
+    // The one provider shape (Slack) that reports failure inside an
+    // HTTP-200 body: read exactly the boolean verdict field and discard
+    // everything else the body might carry.
+    match status {
+        200 | 403 => response
+            .json::<serde_json::Value>()
+            .await
+            .ok()?
+            .get("ok")?
+            .as_bool(),
         401 => Some(false),
         _ => None,
     }
@@ -485,11 +574,26 @@ async fn validate_with_endpoints(
             summary.skipped_no_validator += 1;
             continue;
         };
+        if !value_is_validatable(&secret.rule_id, &secret.value) {
+            // The rule matched a value that is not a credential (Stripe's
+            // publishable keys): same honest outcome as having no validator.
+            findings[index].verified = None;
+            summary.skipped_no_validator += 1;
+            continue;
+        }
         let endpoint = overrides
             .get(&secret.rule_id)
             .cloned()
             .unwrap_or_else(|| provider.endpoint.to_string());
-        match validate_one(&secret.value, http, &endpoint, provider.header).await {
+        match validate_one(
+            &secret.value,
+            http,
+            &endpoint,
+            provider.extra_headers,
+            provider.body_verdict,
+        )
+        .await
+        {
             Some(true) => {
                 findings[index].verified = Some(true);
                 summary.checked += 1;
@@ -583,13 +687,17 @@ mod tests {
 
     /// Serve exactly one HTTP response, recording the entire request head
     /// (request line plus headers) the credential produced.
-    async fn serve_once(status: &str) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    async fn serve_once(
+        status: &str,
+        body: &str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorder = seen.clone();
         let status = status.to_owned();
+        let body = body.to_owned();
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
@@ -605,8 +713,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(String::from_utf8_lossy(&request).into_owned());
-            let response =
-                format!("HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
             stream.write_all(response.as_bytes()).await.unwrap();
             stream.shutdown().await.unwrap();
         });
@@ -751,7 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_aws_pair_survives_a_signed_sts_call_and_verdicts_both_findings() {
-        let (url, seen) = serve_once("200 OK").await;
+        let (url, seen) = serve_once("200 OK", "{}").await;
         let mut findings = vec![
             finding_at("k", AWS_RULE, "creds", 2),
             finding_at("s", AWS_SECRET_RULE, "creds", 3),
@@ -805,7 +915,7 @@ mod tests {
 
     #[tokio::test]
     async fn sts_rejecting_the_pair_reports_both_findings_rejected() {
-        let (url, _seen) = serve_once("403 Forbidden").await;
+        let (url, _seen) = serve_once("403 Forbidden", "{}").await;
         let mut findings = vec![
             finding_at("k", AWS_RULE, "creds", 2),
             finding_at("s", AWS_SECRET_RULE, "creds", 3),
@@ -878,7 +988,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_accepted_credential_is_live_and_travels_as_a_bearer_to_its_provider() {
-        let (url, seen) = serve_once("200 OK").await;
+        let (url, seen) = serve_once("200 OK", "{}").await;
         let mut findings = vec![finding("a", "github-token")];
         let summary = validate_with_endpoints(
             &mut findings,
@@ -902,15 +1012,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_forbidden_response_is_still_an_authenticated_token() {
-        let (url, seen) = serve_once("403 Forbidden").await;
-        let verdict = validate_one("github_pat_scopeless", &client(), &url, "Authorization").await;
+        let (url, seen) = serve_once("403 Forbidden", "{}").await;
+        let verdict = validate_one("github_pat_scopeless", &client(), &url, &[], false).await;
         assert_eq!(verdict, Some(true));
         assert!(seen.lock().unwrap()[0].contains("Bearer"));
     }
 
     #[tokio::test]
     async fn a_rejected_credential_is_reported_not_buried() {
-        let (url, _seen) = serve_once("401 Unauthorized").await;
+        let (url, _seen) = serve_once("401 Unauthorized", "{}").await;
         let mut findings = vec![finding("a", "github-token")];
         let summary = validate_with_endpoints(
             &mut findings,
@@ -929,7 +1039,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_trouble_is_unknown_not_safe() {
-        let (url, _seen) = serve_once("429 Too Many Requests").await;
+        let (url, _seen) = serve_once("429 Too Many Requests", "{}").await;
         let mut findings = vec![finding("a", "github-token")];
         let summary = validate_with_endpoints(
             &mut findings,
@@ -949,13 +1059,16 @@ mod tests {
 
     #[tokio::test]
     async fn rules_without_a_validator_stay_explicitly_unverified() {
-        let mut findings = vec![finding("a", "slack-token")];
+        // `validate_raw_secrets` uses production endpoints, so this must be
+        // a rule with NO validator by design — any other choice would put
+        // a fake credential on the real wire.
+        let mut findings = vec![finding("a", "slack-webhook")];
         let summary = validate_raw_secrets(
             &mut findings,
             vec![raw(
                 "a",
-                "slack-token",
-                "xoxb-unverifiable-test-token-value",
+                "slack-webhook",
+                "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX",
             )],
             &client(),
         )
@@ -1015,11 +1128,177 @@ mod tests {
 
     #[test]
     fn the_provider_map_pins_production_endpoints() {
-        let provider = provider_for("github-token").expect("github tokens are validated");
-        assert_eq!(provider.endpoint, "https://api.github.com/user");
+        // Every wire call a validating run can make, and only these origins.
+        let pinned = [
+            ("github-token", "https://api.github.com/user"),
+            ("github-fine-grained-token", "https://api.github.com/user"),
+            ("gitlab-pat", "https://gitlab.com/api/v4/user"),
+            ("openai-api-key", "https://api.openai.com/v1/models"),
+            ("anthropic-api-key", "https://api.anthropic.com/v1/models"),
+            ("huggingface-token", "https://huggingface.co/api/whoami-v2"),
+            ("npm-token", "https://registry.npmjs.org/-/whoami"),
+            ("stripe-key", "https://api.stripe.com/v1/charges?limit=1"),
+            ("slack-token", "https://slack.com/api/auth.test"),
+        ];
+        for (rule, endpoint) in pinned {
+            let provider = provider_for(rule).unwrap_or_else(|| panic!("{rule} is validated"));
+            assert_eq!(provider.endpoint, endpoint, "{rule}");
+            assert!(!provider.body_verdict || rule == "slack-token");
+        }
+        // Slack is the one provider whose verdict lives in the body.
+        assert!(provider_for("slack-token").unwrap().body_verdict);
         // AWS keys are not bearer credentials: they sign instead, against
         // the STS origin pinned here.
         assert!(provider_for(AWS_RULE).is_none());
         assert_eq!(AWS_STS_ENDPOINT, "https://sts.amazonaws.com/");
+        // Deliberately absent, each with its reason on provider_for.
+        for rule in [
+            "slack-webhook",
+            "google-api-key",
+            "pypi-token",
+            "private-key",
+        ] {
+            assert!(
+                provider_for(rule).is_none(),
+                "{rule} has no validator by design"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_requires_its_version_header_and_others_do_not() {
+        let anthropic = provider_for("anthropic-api-key").expect("anthropic keys are validated");
+        assert_eq!(
+            anthropic.extra_headers,
+            &[("anthropic-version", "2023-06-01")]
+        );
+        for rule in [
+            "github-token",
+            "gitlab-pat",
+            "openai-api-key",
+            "huggingface-token",
+            "npm-token",
+            "stripe-key",
+        ] {
+            assert!(
+                provider_for(rule).unwrap().extra_headers.is_empty(),
+                "{rule} sends only the credential"
+            );
+        }
+    }
+
+    /// One wire round trip per provider: a 200 (or 403) authenticates, a
+    /// 401 rejects, and anything else stays unknown — checked against the
+    /// same local server shape for every rule so a provider that drifts
+    /// from the shared contract fails here, not in an incident.
+    #[tokio::test]
+    async fn every_bearer_provider_maps_the_shared_status_contract() {
+        let rules = [
+            "github-token",
+            "gitlab-pat",
+            "openai-api-key",
+            "anthropic-api-key",
+            "huggingface-token",
+            "npm-token",
+            "stripe-key",
+        ];
+        for rule in rules {
+            for (status, expected) in [("200 OK", Some(true)), ("401 Unauthorized", Some(false))] {
+                let (url, _seen) = serve_once(status, "{}").await;
+                let verdict = validate_one(
+                    "provider-contract-probe-value-000000000000",
+                    &client(),
+                    &url,
+                    provider_for(rule).unwrap().extra_headers,
+                    provider_for(rule).unwrap().body_verdict,
+                )
+                .await;
+                assert_eq!(verdict, expected, "{rule} on {status}");
+            }
+        }
+    }
+
+    /// Slack answers 200 for a failed check and reports it in the body;
+    /// that measured exception is why the body_verdict flag exists.
+    #[tokio::test]
+    async fn slack_reports_its_verdict_in_the_body_of_a_200() {
+        for (body, expected) in [
+            ("{\"ok\":true}", Some(true)),
+            ("{\"ok\":false,\"error\":\"invalid_auth\"}", Some(false)),
+            ("not json", None),
+            ("{}", None),
+        ] {
+            let (url, _seen) = serve_once("200 OK", body).await;
+            let verdict = validate_one("xoxb-contract-probe", &client(), &url, &[], true).await;
+            assert_eq!(verdict, expected, "body {body}");
+        }
+        // A plain 401 still rejects without reading anything.
+        let (url, _seen) = serve_once("401 Unauthorized", "{}").await;
+        let verdict = validate_one("xoxb-contract-probe", &client(), &url, &[], true).await;
+        assert_eq!(verdict, Some(false));
+    }
+
+    #[tokio::test]
+    async fn a_publishable_stripe_key_is_not_a_credential_and_never_leaves() {
+        let mut findings = vec![finding("a", "stripe-key")];
+        let summary = validate_with_endpoints(
+            &mut findings,
+            vec![raw(
+                "a",
+                "stripe-key",
+                "pk_live_publishablekeysarepublicbydesign00",
+            )],
+            &client(),
+            &overrides("stripe-key", "http://127.0.0.1:9/"),
+        )
+        .await;
+        assert_eq!(findings[0].verified, None);
+        assert_eq!(summary.skipped_no_validator, 1);
+        assert_eq!(summary.checked, 0);
+    }
+
+    #[tokio::test]
+    async fn a_secret_stripe_key_validates_like_any_bearer_credential() {
+        let (url, _seen) = serve_once("200 OK", "{}").await;
+        let mut findings = vec![finding("a", "stripe-key")];
+        let summary = validate_with_endpoints(
+            &mut findings,
+            vec![raw(
+                "a",
+                "stripe-key",
+                "sk_live_secretkeysauthenticateapicalls00000",
+            )],
+            &client(),
+            &overrides("stripe-key", &url),
+        )
+        .await;
+        assert_eq!(findings[0].verified, Some(true));
+        assert_eq!((summary.checked, summary.live), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_key_travels_with_the_version_header_the_api_requires() {
+        let (url, seen) = serve_once("200 OK", "{}").await;
+        let mut findings = vec![finding("a", "anthropic-api-key")];
+        let summary = validate_with_endpoints(
+            &mut findings,
+            vec![raw(
+                "a",
+                "anthropic-api-key",
+                "sk-ant-api03-contract-probe-value-000000",
+            )],
+            &client(),
+            &overrides("anthropic-api-key", &url),
+        )
+        .await;
+        assert_eq!(findings[0].verified, Some(true));
+        assert_eq!((summary.checked, summary.live), (1, 1));
+        let request = seen.lock().unwrap()[0].clone();
+        assert_eq!(
+            header_value(&request, "anthropic-version"),
+            "2023-06-01",
+            "the API rejects requests without it"
+        );
+        assert!(header_value(&request, "authorization").starts_with("Bearer "));
     }
 }
