@@ -49,6 +49,8 @@ pub enum DetectionSource {
     Content,
     /// Inferred from the file's name.
     Filename,
+    /// Declared by a JAR's `MANIFEST.MF` attributes (title and version).
+    JarManifest,
     /// Declared by a JAR's embedded Maven `pom.properties`.
     PomProperties,
     /// Declared by the image's own package database (`dpkg`/`apk`).
@@ -383,6 +385,25 @@ fn scan_members(
         if os_packages::is_os_release_path(&member.path) {
             continue;
         }
+        if is_manifest_path(&member.path) {
+            // Inventory only: a manifest declares a name and a version but
+            // never Maven coordinates or an ecosystem, and an advisory
+            // query on a guessed identity would answer the wrong package.
+            if let Some((name, version)) = parse_manifest_identity(&member.bytes) {
+                detections.push(Detection {
+                    vendor: String::new(),
+                    product: name,
+                    version: Some(version.clone()),
+                    raw_version: Some(version),
+                    ecosystem: None,
+                    package_name: None,
+                    path: member.path.clone(),
+                    source: DetectionSource::JarManifest,
+                    truncated: false,
+                });
+            }
+            continue;
+        }
         if is_pom_properties_path(&member.path) {
             if maven_artifacts >= MAX_MAVEN_ARTIFACTS {
                 if !maven_bounded {
@@ -433,6 +454,27 @@ fn scan_members(
             "{unannotated_packages} package(s) from a package database carry no distribution identity (no usable os-release in this target); they are reported as components but not matched against a distribution advisory source"
         ));
     }
+    // A JAR that also carries Maven coordinates does not need its weaker
+    // manifest identity: when the manifest's name is that JAR's artifact
+    // id, the coordinates already cover it with a queryable identity.
+    let maven_artifacts: Vec<String> = detections
+        .iter()
+        .filter(|detection| detection.source == DetectionSource::PomProperties)
+        .map(|detection| {
+            detection
+                .product
+                .rsplit(':')
+                .next()
+                .unwrap_or(&detection.product)
+                .to_ascii_lowercase()
+        })
+        .collect();
+    detections.retain(|detection| {
+        detection.source != DetectionSource::JarManifest
+            || !maven_artifacts
+                .iter()
+                .any(|artifact| *artifact == detection.product.to_ascii_lowercase())
+    });
     detections
 }
 
@@ -453,6 +495,73 @@ fn is_pom_properties_path(path: &str) -> bool {
         return false;
     }
     segments.next() == Some("maven")
+}
+
+/// `META-INF/MANIFEST.MF` at the root of a JAR.
+fn is_manifest_path(path: &str) -> bool {
+    path.ends_with("META-INF/MANIFEST.MF")
+}
+
+/// The identity a JAR's manifest declares: (name, version). The name
+/// prefers the build title (`Implementation-Title`), falling back to the
+/// OSGi symbolic name and the Java module name. A manifest never carries
+/// Maven `group:artifact` coordinates, so callers report this identity as
+/// inventory only — never as an advisory query, which would guess.
+fn parse_manifest_identity(bytes: &[u8]) -> Option<(String, String)> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut title = None;
+    let mut symbolic_name = None;
+    let mut module_name = None;
+    let mut version = None;
+    // Manifest headers fold continuation lines starting with a single
+    // space onto the previous value.
+    let mut folded = String::new();
+    for line in text.lines() {
+        if let Some(continuation) = line.strip_prefix(' ') {
+            folded.push_str(continuation.trim_end());
+            continue;
+        }
+        if let Some((key, value)) = folded.split_once(':') {
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            match key.trim() {
+                "Implementation-Title" | "Bundle-Name" => title = Some(value.to_string()),
+                "Bundle-SymbolicName" => {
+                    // `symbolic-name; directive=…` — take the name before `;`.
+                    symbolic_name = Some(value.split(';').next().unwrap_or(value).to_string());
+                }
+                "Automatic-Module-Name" => module_name = Some(value.to_string()),
+                "Implementation-Version" | "Bundle-Version" => version = Some(value.to_string()),
+                _ => {}
+            }
+        }
+        folded = line.to_string();
+    }
+    // The final folded line never loops back through the parser.
+    if let Some((key, value)) = folded.split_once(':') {
+        let value = value.trim();
+        match key.trim() {
+            "Implementation-Title" | "Bundle-Name" if !value.is_empty() => {
+                title = Some(value.to_string())
+            }
+            "Bundle-SymbolicName" if !value.is_empty() => {
+                symbolic_name = Some(value.split(';').next().unwrap_or(value).to_string())
+            }
+            "Automatic-Module-Name" if !value.is_empty() => module_name = Some(value.to_string()),
+            "Implementation-Version" | "Bundle-Version" if !value.is_empty() => {
+                version = Some(value.to_string())
+            }
+            _ => {}
+        }
+    }
+    let name = title
+        .or(symbolic_name)
+        .or(module_name)
+        .filter(|name| !name.is_empty() && name.len() <= 200)?;
+    let version = version.filter(|version| !version.is_empty() && version.len() <= 64)?;
+    Some((name, version))
 }
 
 /// group, artifact, version — only when all three are present, because an
@@ -1428,5 +1537,121 @@ mod tests {
             .expect("answered offline");
         assert_eq!(found[0].cve_id, "CVE-2099-3333");
         assert_eq!(found[0].fixed_in.as_deref(), Some("1.3.0"));
+    }
+
+    #[test]
+    fn manifest_only_jars_report_their_declared_identity_as_inventory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No pom.properties: a Gradle-built JAR declaring title and version.
+        let jar = {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            writer
+                .start_file(
+                    "META-INF/MANIFEST.MF".to_string(),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .expect("member");
+            std::io::Write::write_all(
+                &mut writer,
+                b"Manifest-Version: 1.0\nImplementation-Title: Company Util Lib\nImplementation-Version: 2.4.1\n",
+            )
+            .expect("manifest");
+            writer.finish().expect("jar").into_inner()
+        };
+        std::fs::write(dir.path().join("util.jar"), &jar).expect("write jar");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+        let component = scanned
+            .result
+            .components
+            .iter()
+            .find(|c| c.product == "Company Util Lib")
+            .expect("manifest identity as inventory");
+        assert_eq!(component.version, "2.4.1");
+        // No ecosystem: the manifest never names one, so the identity is
+        // inventory — present as a component, never answered.
+        assert!(scanned
+            .queries
+            .iter()
+            .all(|query| query.product != "Company Util Lib" || query.ecosystem.is_none()));
+        assert!(component.vulnerabilities.is_empty());
+    }
+
+    #[test]
+    fn bundle_identities_and_continuation_lines_parse() {
+        assert_eq!(
+            parse_manifest_identity(
+                b"Bundle-SymbolicName: org.example.lib;singleton:=true\nBundle-Version: 1.4.0\n"
+            ),
+            Some(("org.example.lib".into(), "1.4.0".into()))
+        );
+        // Continuation joins by consuming the marker space — the manifest
+        // spec's rule, not a lost character.
+        assert_eq!(
+            parse_manifest_identity(
+                b"Implementation-Title: Spring\n Core\nImplementation-Version: 6.1.0\n"
+            ),
+            Some(("SpringCore".into(), "6.1.0".into()))
+        );
+        // A name without a version is not a versioned identity.
+        assert_eq!(
+            parse_manifest_identity(b"Implementation-Title: only-title\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn maven_coordinates_supersede_the_same_jars_manifest_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let jar = {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            writer
+                .start_file(
+                    "META-INF/MANIFEST.MF".to_string(),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .expect("member");
+            std::io::Write::write_all(
+                &mut writer,
+                b"Implementation-Title: library\nImplementation-Version: 1.2.3\n",
+            )
+            .expect("manifest");
+            writer
+                .start_file(
+                    "META-INF/maven/org.example/library/pom.properties".to_string(),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .expect("member");
+            std::io::Write::write_all(
+                &mut writer,
+                b"groupId=org.example\nartifactId=library\nversion=1.2.3\n",
+            )
+            .expect("properties");
+            writer.finish().expect("jar").into_inner()
+        };
+        std::fs::write(dir.path().join("both.jar"), &jar).expect("write jar");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+        // One identity, the queryable one.
+        assert!(scanned
+            .result
+            .components
+            .iter()
+            .any(|c| c.product == "org.example:library"));
+        assert!(scanned
+            .result
+            .components
+            .iter()
+            .all(|c| c.product != "library" || c.product == "org.example:library"));
     }
 }
