@@ -40,4 +40,8 @@ pub struct Component {
     /// means no relationship evidence — never "depends on nothing".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    /// Declared license, when the source carried one (npm lockfile entries).
+    /// Absent means unknown — never a NOASSERTION-style guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
 }

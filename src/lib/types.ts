@@ -698,6 +698,8 @@ export interface Dependency {
   name: string;
   version: string;
   lockfile: string;
+  /** Declared license when the lockfile carries it (npm package-lock v2/v3). */
+  license?: string | null;
 }
 
 export interface Vulnerability {

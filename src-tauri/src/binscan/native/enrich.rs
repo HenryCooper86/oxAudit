@@ -317,6 +317,7 @@ pub fn queries_from(detections: &[Detection]) -> Vec<ComponentQuery> {
 /// The OSV dependency for one query, when it names an ecosystem.
 fn osv_dependency_for(query: &ComponentQuery) -> Option<Dependency> {
     Some(Dependency {
+        license: None,
         occurrence: Default::default(),
         ecosystem: query.ecosystem.clone()?,
         // OSV's distribution ecosystems key on the distribution's own

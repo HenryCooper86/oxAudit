@@ -91,6 +91,7 @@ pub fn binary_graph(run_id: &RunId, result: &BinaryScanResult) -> Result<super::
             .any(|detector| detector == crate::binscan::native::scan::NATIVE);
         components.push(Component {
             depends_on: Vec::new(),
+            license: None,
             id: component_id.clone(),
             name: component.product.clone(),
             version: (!component.version.is_empty()).then(|| component.version.clone()),

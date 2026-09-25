@@ -224,6 +224,11 @@ pub struct Dependency {
     pub name: String,
     pub version: String,
     pub lockfile: String,
+    /// Declared license, when the lockfile itself carries it (npm
+    /// package-lock v2/v3 entries do). Absent means unknown — never
+    /// NOASSERTION-style guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

@@ -48,6 +48,7 @@ pub fn dependency_graph(
         );
         let component = Component {
             depends_on: Vec::new(),
+            license: dependency.license.clone(),
             id: component_id.clone(),
             name: dependency.name.clone(),
             version: (!dependency.version.is_empty()).then(|| dependency.version.clone()),
@@ -254,6 +255,7 @@ mod tests {
 
     fn dependency(name: &str, version: &str, chain: Vec<DependencyStep>) -> Dependency {
         Dependency {
+            license: None,
             occurrence: DependencyOccurrence {
                 status: "available".into(),
                 install_path: Some(format!("node_modules/{name}")),
@@ -284,6 +286,7 @@ mod tests {
                 vec![step("direct"), step("mid"), step("leaf")],
             ),
             Dependency {
+                license: None,
                 occurrence: DependencyOccurrence::default(),
                 ecosystem: "PyPI".into(),
                 name: "flask".into(),

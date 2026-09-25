@@ -748,6 +748,7 @@ mod tests {
     #[test]
     fn query_keys_and_count_match_the_dependencies_sent_to_osv() {
         let dependency = |ecosystem: &str, name: &str, version: &str| Dependency {
+            license: None,
             occurrence: Default::default(),
             ecosystem: ecosystem.into(),
             name: name.into(),

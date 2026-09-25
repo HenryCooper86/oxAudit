@@ -561,6 +561,7 @@ async fn dependency_standards_link_advisory_only_to_affected_component_and_lockf
     unrelated.id = oxaudit_domain::ComponentId::new();
     unrelated.name = "unrelated".into();
     unrelated.purl = Some("pkg/npm/unrelated@1.0.0".into());
+    unrelated.license = Some("Apache-2.0".into());
     unrelated.depends_on = vec![components[0].id.as_str().to_string()];
     components.push(unrelated);
     let affected_id = components[0].id.to_string();
@@ -594,6 +595,21 @@ async fn dependency_standards_link_advisory_only_to_affected_component_and_lockf
     let entries = bom["dependencies"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["dependsOn"], serde_json::json!([affected_id]));
+    // Licenses appear where the lockfile declared them, and only there.
+    let unrelated = bom["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["name"] == "unrelated")
+        .unwrap();
+    assert_eq!(unrelated["licenses"][0]["license"]["name"], "Apache-2.0");
+    let example = bom["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["name"] == "example")
+        .unwrap();
+    assert!(example.get("licenses").is_none());
     let sarif: serde_json::Value =
         serde_json::from_slice(&generate(&data, ReportFormat::Sarif).unwrap().bytes).unwrap();
     let finding = &sarif["runs"][0]["results"][0];

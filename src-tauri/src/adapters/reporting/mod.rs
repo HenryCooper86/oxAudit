@@ -211,15 +211,23 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             "name": format!("oxAudit run {}", data.run.id.as_str()),
             "documentNamespace": format!("https://oxaudit.local/spdx/{}", uuid::Uuid::new_v4()),
             "creationInfo": { "creators": [format!("Tool: oxAudit-{}", env!("CARGO_PKG_VERSION"))], "created": chrono::Utc::now().to_rfc3339() },
-            "packages": data.components.iter().enumerate().map(|(index, component)| serde_json::json!({
-                "SPDXID": format!("SPDXRef-Package-{index}"),
-                "name": component.name,
-                "versionInfo": component.version,
-                "supplier": component.supplier.as_ref().map(|supplier| format!("Organization: {supplier}")).unwrap_or_else(|| "NOASSERTION".into()),
-                "downloadLocation": "NOASSERTION",
-                "filesAnalyzed": false,
-                "externalRefs": component.purl.as_ref().map(|purl| vec![serde_json::json!({ "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": purl })]).unwrap_or_default()
-            })).collect::<Vec<_>>()
+            "packages": data.components.iter().enumerate().map(|(index, component)| {
+                let mut package = serde_json::json!({
+                    "SPDXID": format!("SPDXRef-Package-{index}"),
+                    "name": component.name,
+                    "versionInfo": component.version,
+                    "supplier": component.supplier.as_ref().map(|supplier| format!("Organization: {supplier}")).unwrap_or_else(|| "NOASSERTION".into()),
+                    "downloadLocation": "NOASSERTION",
+                    "filesAnalyzed": false,
+                    "externalRefs": component.purl.as_ref().map(|purl| vec![serde_json::json!({ "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": purl })]).unwrap_or_default()
+                });
+                // Declared license only when the lockfile stated one; absent
+                // stays absent rather than asserting NOASSERTION per field.
+                if let Some(license) = &component.license {
+                    package["licenseDeclared"] = serde_json::json!(license);
+                }
+                package
+            }).collect::<Vec<_>>()
         }),
         ReportFormat::OpenVex => {
             let statements = vex_statements(data);
@@ -371,7 +379,7 @@ fn generate_ticket_csv(data: &ReportData, format: ReportFormat) -> Result<Genera
 }
 
 fn cyclonedx_component(component: &Component) -> serde_json::Value {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "type": "library",
         "bom-ref": component.id.as_str(),
         "name": component.name,
@@ -380,7 +388,13 @@ fn cyclonedx_component(component: &Component) -> serde_json::Value {
         "purl": component.purl,
         "cpe": component.cpes.first(),
         "properties": [{ "name": "oxaudit:identityConfidence", "value": component.identities.iter().map(|identity| identity.confidence).fold(0.0_f32, f32::max).to_string() }]
-    })
+    });
+    // Unknown licenses are omitted, not null — an absent field reads as
+    // unknown; a null array would not.
+    if let Some(license) = &component.license {
+        value["licenses"] = serde_json::json!([{ "license": { "name": license } }]);
+    }
+    value
 }
 
 fn vex_statements(data: &ReportData) -> Vec<serde_json::Value> {

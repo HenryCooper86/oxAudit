@@ -124,6 +124,7 @@ fn parse_lockfile_with_limit(
     Ok(deps
         .into_iter()
         .map(|(n, v)| Dependency {
+            license: None,
             occurrence: crate::models::DependencyOccurrence {
                 status: "unavailable".into(),
                 ..Default::default()
@@ -957,6 +958,7 @@ mod pom_tests {
     #[test]
     fn aggregate_preserves_repeated_lockfile_occurrences_and_budgets_them() {
         let first = crate::models::Dependency {
+            license: None,
             occurrence: Default::default(),
             ecosystem: "npm".into(),
             name: "example".into(),
@@ -1100,6 +1102,7 @@ mod pom_tests {
     #[test]
     fn aggregate_dependency_overflow_is_rejected_before_extension() {
         let dependency = crate::models::Dependency {
+            license: None,
             occurrence: Default::default(),
             ecosystem: "npm".into(),
             name: "package".into(),
@@ -1107,6 +1110,7 @@ mod pom_tests {
             lockfile: "package-lock.json".into(),
         };
         let distinct = crate::models::Dependency {
+            license: None,
             occurrence: Default::default(),
             name: "other-package".into(),
             ..dependency.clone()
@@ -1124,6 +1128,7 @@ mod pom_tests {
     #[test]
     fn duplicate_dependencies_consume_the_occurrence_budget() {
         let dependency = crate::models::Dependency {
+            license: None,
             occurrence: Default::default(),
             ecosystem: "npm".into(),
             name: "package".into(),

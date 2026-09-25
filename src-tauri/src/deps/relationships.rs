@@ -212,11 +212,20 @@ pub fn parse_packages(root: &Value) -> Result<Vec<Dependency>, String> {
             },
         };
         indices.insert(path.clone(), out.len());
+        // npm >=7 writes the resolved license beside the version; when it
+        // is absent the license is simply unknown, never guessed.
+        let license = value
+            .get("license")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|license| !license.is_empty() && license.len() <= 64)
+            .map(str::to_string);
         out.push(Dependency {
             ecosystem: "npm".into(),
             name: name.into(),
             version: version.unwrap_or("").into(),
             lockfile: String::new(),
+            license,
             occurrence: DependencyOccurrence {
                 local_workspace: locals.contains(path),
                 install_path: Some(path.clone()),
@@ -511,5 +520,22 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("depth"))));
+    }
+
+    #[test]
+    fn package_lock_licenses_ride_along_when_declared() {
+        let deps = parse_packages(&serde_json::json!({
+            "lockfileVersion": 3,
+            "packages": {
+                "": { "name": "root", "version": "1.0.0" },
+                "node_modules/marked": { "version": "12.0.0", "license": "MIT" },
+                "node_modules/silent": { "version": "1.0.0" }
+            }
+        }))
+        .unwrap();
+        let marked = deps.iter().find(|d| d.name == "marked").unwrap();
+        assert_eq!(marked.license.as_deref(), Some("MIT"));
+        let silent = deps.iter().find(|d| d.name == "silent").unwrap();
+        assert_eq!(silent.license, None, "absent stays unknown, never guessed");
     }
 }
