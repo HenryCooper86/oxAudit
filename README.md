@@ -298,6 +298,11 @@ oxaudit-cli scan . --rule-pack-file .oxaudit/rules.toml
 oxaudit-cli rule-pack install --db packs.sqlite3 .oxaudit/rules.toml
 oxaudit-cli rule-pack list --db packs.sqlite3 --json
 oxaudit-cli scan . --rule-pack rulepack.e2e --rule-pack-db packs.sqlite3
+
+# Or subscribe to a feed: an index URL listing packs as digest-verified zips
+# of pack.toml + fixtures. Same validation as a hand install; disabled packs
+# stay disabled across updates.
+oxaudit-cli rule-pack update --db packs.sqlite3 --feed https://example.com/oxaudit/feed/index.json
 ```
 
 Rule packs resolve before any scanning starts: an invalid pack file is a

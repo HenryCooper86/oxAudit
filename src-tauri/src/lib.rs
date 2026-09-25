@@ -23,6 +23,7 @@ mod presentation;
 mod private_storage;
 pub mod quality;
 pub mod reachability;
+mod rulepack_feed;
 mod rulepack_store;
 mod schedule_store;
 mod secrets_validation;

@@ -2114,3 +2114,149 @@ fn registry_references_are_pulled_and_scanned_offline() {
         .expect("maven coordinates from the app layer");
     assert_eq!(library["version"], "1.2.3");
 }
+
+#[test]
+fn rule_packs_install_from_a_feed_and_apply_by_selection() {
+    // Build the real fixture pack on disk, then serve it as a feed: an
+    // index plus a digest-verified zip of pack.toml and its fixtures.
+    let staging = tempfile::tempdir().expect("staging");
+    rule_pack_fixture(staging.path());
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for name in ["pack.toml", "positive.txt", "negative.txt"] {
+        writer
+            .start_file(name.to_string(), zip::write::SimpleFileOptions::default())
+            .expect("zip member");
+        let bytes = std::fs::read(staging.path().join(name)).expect("fixture file");
+        std::io::Write::write_all(&mut writer, &bytes).expect("zip body");
+    }
+    let pack_zip = writer.finish().expect("pack zip").into_inner();
+    let pack_sha = {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(&pack_zip))
+    };
+    let index = serde_json::json!({
+        "schemaVersion": 1,
+        "packs": [{
+            "id": "rulepack.e2e",
+            "version": "1.0.0",
+            "file": "rulepack.e2e-1.0.0.zip",
+            "sha256": pack_sha,
+        }]
+    })
+    .to_string();
+
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("address");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            loop {
+                match stream.read(&mut byte) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        head.extend_from_slice(&byte);
+                        if head.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let path = String::from_utf8_lossy(&head)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .split(' ')
+                .nth(1)
+                .unwrap_or("/")
+                .to_string();
+            let (content_type, body) = if path.ends_with(".zip") {
+                ("application/zip", pack_zip.clone())
+            } else {
+                ("application/json", index.as_bytes().to_vec())
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let store = workspace.path().join("packs.sqlite3");
+    let feed = format!("http://127.0.0.1:{}/index.json", address.port());
+
+    let output = run(&[
+        "rule-pack",
+        "update",
+        "--db",
+        &store.to_string_lossy(),
+        "--feed",
+        &feed,
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("rulepack.e2e installed from the feed"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    // The fed pack behaves exactly like a hand-installed one.
+    let output = run(&[
+        "scan",
+        &rule_pack_project().path().to_string_lossy(),
+        "--rule-pack",
+        "rulepack.e2e",
+        "--rule-pack-db",
+        &store.to_string_lossy(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["ruleId"] == "rulepack.e2e/source.e2e-marker"));
+
+    // A second update at the same version skips; an unknown --only id errors.
+    let output = run(&[
+        "rule-pack",
+        "update",
+        "--db",
+        &store.to_string_lossy(),
+        "--feed",
+        &feed,
+    ]);
+    assert_eq!(code(&output), 0);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("skipped"));
+    let output = run(&[
+        "rule-pack",
+        "update",
+        "--db",
+        &store.to_string_lossy(),
+        "--feed",
+        &feed,
+        "--only",
+        "rulepack.absent",
+    ]);
+    assert_eq!(code(&output), 3);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("rulepack.absent"));
+}

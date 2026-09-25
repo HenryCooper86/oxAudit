@@ -78,6 +78,32 @@ impl RulePackStore {
         })
     }
 
+    /// An in-memory store, for tests and previews.
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self, String> {
+        let connection = rusqlite::Connection::open_in_memory()
+            .map_err(|error| format!("cannot open an in-memory rule-pack store: {error}"))?;
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS rule_packs (
+                     id TEXT PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     version TEXT NOT NULL,
+                     toml_sha256 TEXT NOT NULL,
+                     content_sha256 TEXT NOT NULL,
+                     rule_count INTEGER NOT NULL,
+                     engines TEXT NOT NULL,
+                     enabled INTEGER NOT NULL,
+                     installed_at TEXT NOT NULL,
+                     toml TEXT NOT NULL
+                 )",
+            )
+            .map_err(|error| format!("cannot initialize the rule-pack store: {error}"))?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
     /// Validate and install (or replace) a pack from its TOML text. The
     /// fixture root is the directory the pack file was loaded from, matching
     /// the standalone validation command.

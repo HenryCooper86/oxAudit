@@ -189,6 +189,25 @@ enum RulePackCommand {
         /// Pack id.
         id: String,
     },
+    /// Install or update packs from a feed: an index URL listing packs,
+    /// each a digest-verified zip of pack.toml and its fixtures.
+    Update {
+        /// The rule-pack store database.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+
+        /// Feed index URL.
+        #[arg(long, value_name = "URL")]
+        feed: String,
+
+        /// Restrict the update to this pack id. Repeatable.
+        #[arg(long = "only", value_name = "ID")]
+        only: Vec<String>,
+
+        /// Emit the outcome as JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -615,7 +634,7 @@ pub fn run() -> i32 {
         Command::Export(args) => run_export(args),
         Command::Runs(args) => run_runs(args),
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
-        Command::RulePack { command } => run_rule_pack(command),
+        Command::RulePack { command } => run_rule_pack(command, cli.quiet),
         Command::AdvisoryDb { command } => run_advisory_db(command, cli.quiet),
         Command::Languages => run_languages(),
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
@@ -660,7 +679,7 @@ type CliResult = Result<i32, CliError>;
 
 // --------------------------------------------------------------------- scan
 
-fn run_rule_pack(command: &RulePackCommand) -> CliResult {
+fn run_rule_pack(command: &RulePackCommand, quiet: bool) -> CliResult {
     use crate::rulepack_store::RulePackStore;
     let now = chrono::Utc::now().to_rfc3339();
     match command {
@@ -722,6 +741,47 @@ fn run_rule_pack(command: &RulePackCommand) -> CliResult {
             let store = RulePackStore::open(db).map_err(failure)?;
             store.remove(id).map_err(failure)?;
             println!("{id} removed; stored runs keep the findings they recorded");
+            Ok(0)
+        }
+        RulePackCommand::Update {
+            db,
+            feed,
+            only,
+            json,
+        } => {
+            let store = RulePackStore::open(db).map_err(failure)?;
+            let http = build_http_client()?;
+            let mut fetcher = crate::rulepack_feed::HttpFeedFetcher { http };
+            let note = |line: String| {
+                if !quiet {
+                    eprintln!("{line}");
+                }
+            };
+            let report = block_on(crate::rulepack_feed::update_from_feed(
+                &store,
+                feed,
+                &mut fetcher,
+                only,
+                note,
+            ))
+            .map_err(failure)?;
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "installed": report.installed,
+                        "skipped": report.skipped,
+                    }))
+                    .map_err(|error| failure(error.to_string()))?
+                );
+            } else {
+                for id in &report.installed {
+                    println!("{id} installed from the feed");
+                }
+                for id in &report.skipped {
+                    println!("{id} already current; skipped");
+                }
+            }
             Ok(0)
         }
     }
