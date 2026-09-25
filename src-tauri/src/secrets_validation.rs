@@ -69,16 +69,37 @@ impl std::fmt::Debug for RawSecret {
 pub const MAX_VALIDATIONS: usize = 20;
 
 struct Provider {
-    /// The exact origin the credential is sent to.
+    /// The exact origin the credential is sent to. Telegram embeds the
+    /// token in the URL path instead of a header, so this is the origin the
+    /// path is built under.
     endpoint: &'static str,
     /// Fixed extra headers the provider requires alongside the credential
     /// (none carry credential material).
     extra_headers: &'static [(&'static str, &'static str)],
     /// Providers that answer HTTP 200 even for a failed check and report
     /// the verdict in the body (Slack): read exactly one boolean field and
-    /// nothing else. Measured against the live service — every other
-    /// provider here rejects a bad credential with 401.
+    /// nothing else. Measured against the live service.
     body_verdict: bool,
+    /// How the credential is presented. Most providers take a Bearer token;
+    /// some take a named header (measured: Figma `X-Figma-Token`, Postman
+    /// and New Relic `X-Api-Key`, Datadog `DD-API-KEY`); Telegram expects
+    /// the token inside the URL path (`/bot<token>/getMe`).
+    auth: AuthStyle,
+    /// Datadog answers 403 for an INVALID key (measured) — the same status
+    /// other providers in this map use for valid-but-limited tokens. For
+    /// that provider alone, 403 means rejected; everywhere else the shipped
+    /// mapping stands and 403 reads as authenticated.
+    forbidden_is_rejected: bool,
+}
+
+/// How a provider expects the credential to be presented.
+enum AuthStyle {
+    /// `Authorization: Bearer <token>`.
+    Bearer,
+    /// The named header carries the raw credential value.
+    Header(&'static str),
+    /// Telegram: the token sits in the URL path, `/bot<token>/getMe`.
+    TelegramPath,
 }
 
 /// Which bearer-token provider a rule's credential authenticates against. A
@@ -99,46 +120,74 @@ struct Provider {
 ///   whichever service it belongs to — per-provider work with no shared
 ///   shape, and the key already carries its own risk signal.
 fn provider_for(rule_id: &str) -> Option<Provider> {
+    let bearer = |endpoint: &'static str| Provider {
+        endpoint,
+        extra_headers: &[],
+        body_verdict: false,
+        auth: AuthStyle::Bearer,
+        forbidden_is_rejected: false,
+    };
     match rule_id {
-        "github-token" | "github-fine-grained-token" => Some(Provider {
-            endpoint: "https://api.github.com/user",
-            extra_headers: &[],
-            body_verdict: false,
-        }),
-        "gitlab-pat" => Some(Provider {
-            endpoint: "https://gitlab.com/api/v4/user",
-            extra_headers: &[],
-            body_verdict: false,
-        }),
-        "openai-api-key" => Some(Provider {
-            endpoint: "https://api.openai.com/v1/models",
-            extra_headers: &[],
-            body_verdict: false,
-        }),
+        "github-token" | "github-fine-grained-token" => Some(bearer("https://api.github.com/user")),
+        "gitlab-pat" => Some(bearer("https://gitlab.com/api/v4/user")),
+        "openai-api-key" => Some(bearer("https://api.openai.com/v1/models")),
         "anthropic-api-key" => Some(Provider {
             endpoint: "https://api.anthropic.com/v1/models",
             extra_headers: &[("anthropic-version", "2023-06-01")],
             body_verdict: false,
+            auth: AuthStyle::Bearer,
+            forbidden_is_rejected: false,
         }),
-        "huggingface-token" => Some(Provider {
-            endpoint: "https://huggingface.co/api/whoami-v2",
-            extra_headers: &[],
-            body_verdict: false,
-        }),
-        "npm-token" => Some(Provider {
-            endpoint: "https://registry.npmjs.org/-/whoami",
-            extra_headers: &[],
-            body_verdict: false,
-        }),
-        "stripe-key" => Some(Provider {
-            endpoint: "https://api.stripe.com/v1/charges?limit=1",
-            extra_headers: &[],
-            body_verdict: false,
-        }),
+        "huggingface-token" => Some(bearer("https://huggingface.co/api/whoami-v2")),
+        "npm-token" => Some(bearer("https://registry.npmjs.org/-/whoami")),
+        "stripe-key" => Some(bearer("https://api.stripe.com/v1/charges?limit=1")),
         "slack-token" => Some(Provider {
             endpoint: "https://slack.com/api/auth.test",
             extra_headers: &[],
             body_verdict: true,
+            auth: AuthStyle::Bearer,
+            forbidden_is_rejected: false,
+        }),
+        // Measured 2026-09-26 with an invalid credential: each of these
+        // answers 401 (Datadog 403) for a rejected credential and 2xx for a
+        // valid one. Telegram embeds the token in the URL path and answers
+        // 401 in the status line.
+        "sentry-token" => Some(bearer("https://sentry.io/api/0/")),
+        "square-access-token" => Some(bearer("https://connect.squareup.com/v2/merchants")),
+        "figma-token" => Some(Provider {
+            endpoint: "https://api.figma.com/v1/me",
+            extra_headers: &[],
+            body_verdict: false,
+            auth: AuthStyle::Header("X-Figma-Token"),
+            forbidden_is_rejected: false,
+        }),
+        "postman-api-key" => Some(Provider {
+            endpoint: "https://api.getpostman.com/me",
+            extra_headers: &[],
+            body_verdict: false,
+            auth: AuthStyle::Header("X-Api-Key"),
+            forbidden_is_rejected: false,
+        }),
+        "newrelic-api-key" => Some(Provider {
+            endpoint: "https://api.newrelic.com/v2/applications.json",
+            extra_headers: &[],
+            body_verdict: false,
+            auth: AuthStyle::Header("X-Api-Key"),
+            forbidden_is_rejected: false,
+        }),
+        "datadog-api-key" => Some(Provider {
+            endpoint: "https://api.datadoghq.com/api/v1/validate",
+            extra_headers: &[],
+            body_verdict: false,
+            auth: AuthStyle::Header("DD-API-KEY"),
+            forbidden_is_rejected: true,
+        }),
+        "telegram-bot-token" => Some(Provider {
+            endpoint: "https://api.telegram.org",
+            extra_headers: &[],
+            body_verdict: false,
+            auth: AuthStyle::TelegramPath,
+            forbidden_is_rejected: false,
         }),
         _ => None,
     }
@@ -280,15 +329,34 @@ async fn validate_one(
     endpoint: &str,
     extra_headers: &[(&str, &str)],
     body_verdict: bool,
+    auth: &AuthStyle,
+    forbidden_is_rejected: bool,
 ) -> Option<bool> {
-    let mut request = http
-        .get(endpoint)
-        .header("Authorization", format!("Bearer {value}"));
+    let mut request = match auth {
+        AuthStyle::Bearer => http
+            .get(endpoint)
+            .header("Authorization", format!("Bearer {value}")),
+        AuthStyle::Header(name) => http.get(endpoint).header(*name, value),
+        // The token rides in the path under the fixed origin; `endpoint`
+        // is that origin (or a test server standing in for it).
+        AuthStyle::TelegramPath => http.get(format!("{endpoint}/bot{value}/getMe")),
+    };
     for (name, header_value) in extra_headers {
         request = request.header(*name, *header_value);
     }
     let response = request.send().await.ok()?;
     let status = response.status().as_u16();
+    if forbidden_is_rejected {
+        // The one measured provider (Datadog) whose 403 rejects rather
+        // than authenticates: a dead key must never read as live.
+        if !body_verdict {
+            return match status {
+                200..=299 => Some(true),
+                401 | 403 => Some(false),
+                _ => None,
+            };
+        }
+    }
     if !body_verdict {
         return match status {
             200 | 403 => Some(true),
@@ -591,6 +659,8 @@ async fn validate_with_endpoints(
             &endpoint,
             provider.extra_headers,
             provider.body_verdict,
+            &provider.auth,
+            provider.forbidden_is_rejected,
         )
         .await
         {
@@ -1013,7 +1083,16 @@ mod tests {
     #[tokio::test]
     async fn a_forbidden_response_is_still_an_authenticated_token() {
         let (url, seen) = serve_once("403 Forbidden", "{}").await;
-        let verdict = validate_one("github_pat_scopeless", &client(), &url, &[], false).await;
+        let verdict = validate_one(
+            "github_pat_scopeless",
+            &client(),
+            &url,
+            &[],
+            false,
+            &AuthStyle::Bearer,
+            false,
+        )
+        .await;
         assert_eq!(verdict, Some(true));
         assert!(seen.lock().unwrap()[0].contains("Bearer"));
     }
@@ -1201,21 +1280,109 @@ mod tests {
             "huggingface-token",
             "npm-token",
             "stripe-key",
+            "sentry-token",
+            "square-access-token",
         ];
         for rule in rules {
-            for (status, expected) in [("200 OK", Some(true)), ("401 Unauthorized", Some(false))] {
+            for (status, expected) in [
+                ("200 OK", Some(true)),
+                ("401 Unauthorized", Some(false)),
+                ("403 Forbidden", Some(true)),
+            ] {
                 let (url, _seen) = serve_once(status, "{}").await;
+                let provider = provider_for(rule).unwrap();
                 let verdict = validate_one(
                     "provider-contract-probe-value-000000000000",
                     &client(),
                     &url,
-                    provider_for(rule).unwrap().extra_headers,
-                    provider_for(rule).unwrap().body_verdict,
+                    provider.extra_headers,
+                    provider.body_verdict,
+                    &provider.auth,
+                    provider.forbidden_is_rejected,
                 )
                 .await;
                 assert_eq!(verdict, expected, "{rule} on {status}");
             }
         }
+    }
+
+    /// The measured header-style providers: the raw credential travels in
+    /// the provider's own header, not a Bearer, and a 200 means live.
+    #[tokio::test]
+    async fn header_style_providers_present_the_credential_in_their_measured_header() {
+        for (rule, header) in [
+            ("figma-token", "x-figma-token"),
+            ("postman-api-key", "x-api-key"),
+            ("newrelic-api-key", "x-api-key"),
+            ("datadog-api-key", "dd-api-key"),
+        ] {
+            let (url, seen) = serve_once("200 OK", "{}").await;
+            let value = "probe-credential-0000000000000000";
+            let provider = provider_for(rule).unwrap();
+            let verdict = validate_one(
+                value,
+                &client(),
+                &url,
+                provider.extra_headers,
+                provider.body_verdict,
+                &provider.auth,
+                provider.forbidden_is_rejected,
+            )
+            .await;
+            assert_eq!(verdict, Some(true), "{rule}");
+            let sent = seen.lock().unwrap()[0].clone();
+            assert_eq!(header_value(&sent, header), value, "{rule} header shape");
+            assert!(
+                !sent.to_ascii_lowercase().contains("bearer"),
+                "{rule} must not send a bearer"
+            );
+        }
+    }
+
+    /// Datadog answers 403 for an INVALID key (measured) — the shared
+    /// contract's 403-is-authenticated mapping must be overridden there, or
+    /// a dead key would read as VERIFIED LIVE.
+    #[tokio::test]
+    async fn datadogs_forbidden_is_rejected_never_live() {
+        let (url, _seen) = serve_once("403 Forbidden", "{}").await;
+        let mut findings = vec![finding("a", "datadog-api-key")];
+        let summary = validate_with_endpoints(
+            &mut findings,
+            vec![raw(
+                "a",
+                "datadog-api-key",
+                "9f3a7c1e5b8d2046a7c3ef57b1d904a1",
+            )],
+            &client(),
+            &overrides("datadog-api-key", &url),
+        )
+        .await;
+        assert_eq!(findings[0].verified, Some(false));
+        assert_eq!((summary.checked, summary.rejected), (1, 1));
+    }
+
+    /// Telegram embeds the token in the URL path under the fixed origin —
+    /// never in a header — and its 401 rejects.
+    #[tokio::test]
+    async fn telegram_tokens_travel_in_the_url_path_under_the_fixed_origin() {
+        let (url, seen) = serve_once("401 Unauthorized", "{}").await;
+        let token = "482913755:AAHfk3sW4x9Q2mZpV7tY8uB1cD5eF6gH7i";
+        let mut findings = vec![finding("a", "telegram-bot-token")];
+        let summary = validate_with_endpoints(
+            &mut findings,
+            vec![raw("a", "telegram-bot-token", token)],
+            &client(),
+            &overrides("telegram-bot-token", &url),
+        )
+        .await;
+        assert_eq!(findings[0].verified, Some(false));
+        assert_eq!((summary.checked, summary.rejected), (1, 1));
+        let sent = seen.lock().unwrap()[0].clone();
+        let request_line = sent.lines().next().unwrap();
+        assert!(
+            request_line.contains(&format!("/bot{token}/getMe")),
+            "request line: {request_line}"
+        );
     }
 
     /// Slack answers 200 for a failed check and reports it in the body;
@@ -1229,12 +1396,30 @@ mod tests {
             ("{}", None),
         ] {
             let (url, _seen) = serve_once("200 OK", body).await;
-            let verdict = validate_one("xoxb-contract-probe", &client(), &url, &[], true).await;
+            let verdict = validate_one(
+                "xoxb-contract-probe",
+                &client(),
+                &url,
+                &[],
+                true,
+                &AuthStyle::Bearer,
+                false,
+            )
+            .await;
             assert_eq!(verdict, expected, "body {body}");
         }
         // A plain 401 still rejects without reading anything.
         let (url, _seen) = serve_once("401 Unauthorized", "{}").await;
-        let verdict = validate_one("xoxb-contract-probe", &client(), &url, &[], true).await;
+        let verdict = validate_one(
+            "xoxb-contract-probe",
+            &client(),
+            &url,
+            &[],
+            true,
+            &AuthStyle::Bearer,
+            false,
+        )
+        .await;
         assert_eq!(verdict, Some(false));
     }
 

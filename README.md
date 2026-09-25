@@ -1056,8 +1056,17 @@ fine-grained tokens (`api.github.com/user`), GitLab PATs
 (`api.anthropic.com/v1/models`, with the `anthropic-version` header its API
 requires), Hugging Face (`huggingface.co/api/whoami-v2`), npm tokens
 (`registry.npmjs.org/-/whoami`), Stripe secret and restricted keys
-(`api.stripe.com/v1/charges`), and Slack tokens
-(`slack.com/api/auth.test`, the body-verdict case above). AWS keys are a
+(`api.stripe.com/v1/charges`), Slack tokens
+(`slack.com/api/auth.test`, the body-verdict case above), Sentry user tokens
+(`sentry.io/api/0/`), and Square access tokens
+(`connect.squareup.com/v2/merchants`). Three more measured shapes: Figma
+personal tokens travel in `X-Figma-Token` to `api.figma.com/v1/me`, Postman
+and New Relic keys in `X-Api-Key`, Datadog keys in `DD-API-KEY` to Datadog's
+own `/api/v1/validate` — where a rejected key answers **403**, the one
+provider whose forbidden status means rejected rather than
+valid-but-limited, so it is mapped by itself. Telegram is its own shape: the
+token rides in the URL path (`api.telegram.org/bot<token>/getMe`), never in
+a header. AWS keys are a
 pair — an access key id alone is only a username — so an `aws-access-key-id`
 finding is validated only when an `aws-secret-key` finding sits in the same
 file within ten lines and is unambiguously its nearest key; the pair is then
@@ -1072,8 +1081,15 @@ Rules deliberately left without validators, each for a reason sharper than
 a TODO: Slack **webhooks** (the only check is posting a visible message into
 the channel), Google **API keys** (service-scoped — a key valid for one API
 fails every other, so no single endpoint returns an honest verdict), **PyPI**
-tokens (they only authenticate uploads), and **private keys** (proving one
-live means signing for whichever service it belongs to). Stripe's regex also
+tokens (they only authenticate uploads), **private keys** (proving one
+live means signing for whichever service it belongs to), **Grafana**
+service-account tokens (instance-scoped — the token does not name the
+Grafana that minted it, so there is no fixed endpoint to ask), **Plaid**
+secrets (every check endpoint is a POST with side effects), **Azure storage**
+account keys (proving one live needs the account-name pairing plus Shared-
+Key request signing — a future pair-validation like the AWS one), and
+**Linear** keys (the endpoint could not be reached for measurement, and
+unmeasured is unshipped). Stripe's regex also
 matches `pk_…` publishable keys, which are public by design; those values
 are never sent.
 
