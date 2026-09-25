@@ -49,6 +49,8 @@ pub enum DetectionSource {
     Content,
     /// Inferred from the file's name.
     Filename,
+    /// Declared by a JAR's embedded Maven `pom.properties`.
+    PomProperties,
     /// Declared by the image's own package database (`dpkg`/`apk`).
     OsPackageDatabase,
     /// Declared by the builder in the ELF package note.
@@ -339,6 +341,8 @@ fn scan_members(
 
     let mut detections = Vec::new();
     let mut unannotated_packages = 0usize;
+    let mut maven_artifacts = 0usize;
+    let mut maven_bounded = false;
     for member in members {
         let package_list = if os_packages::is_dpkg_status_path(&member.path) {
             Some(os_packages::parse_dpkg_status(&member.bytes))
@@ -379,6 +383,35 @@ fn scan_members(
         if os_packages::is_os_release_path(&member.path) {
             continue;
         }
+        if is_pom_properties_path(&member.path) {
+            if maven_artifacts >= MAX_MAVEN_ARTIFACTS {
+                if !maven_bounded {
+                    maven_bounded = true;
+                    notes.push(format!(
+                        "Maven coordinates are bounded at {MAX_MAVEN_ARTIFACTS} artifacts per archive; later pom.properties members are not reported"
+                    ));
+                }
+                continue;
+            }
+            if let Some((group, artifact, version)) = parse_pom_properties(&member.bytes) {
+                // OSV's Maven ecosystem keys on group:artifact; the bare
+                // artifactId would answer for whichever project owns it.
+                let coordinates = format!("{group}:{artifact}");
+                detections.push(Detection {
+                    vendor: String::new(),
+                    product: coordinates.clone(),
+                    version: Some(version.clone()),
+                    raw_version: Some(version),
+                    ecosystem: Some("Maven".to_string()),
+                    package_name: Some(coordinates),
+                    path: member.path.clone(),
+                    source: DetectionSource::PomProperties,
+                    truncated: false,
+                });
+                maven_artifacts += 1;
+            }
+            continue;
+        }
         let member_name = member
             .path
             .rsplit('/')
@@ -401,6 +434,50 @@ fn scan_members(
         ));
     }
     detections
+}
+
+/// Cap on Maven artifacts read from one member list, so a crafted archive
+/// cannot flood the detection list — or the one-request-per-package OSV
+/// enrichment loop — with pom.properties members.
+const MAX_MAVEN_ARTIFACTS: usize = 2_000;
+
+/// `META-INF/maven/<group>/<artifact>/pom.properties` — the coordinates a
+/// Maven- or Gradle-built JAR embeds beside its classes. The layout is the
+/// contract: shallower pom.properties files are not Maven coordinates.
+fn is_pom_properties_path(path: &str) -> bool {
+    let mut segments = path.rsplit('/');
+    if segments.next() != Some("pom.properties") {
+        return false;
+    }
+    if segments.next().is_none() || segments.next().is_none() {
+        return false;
+    }
+    segments.next() == Some("maven")
+}
+
+/// group, artifact, version — only when all three are present, because an
+/// advisory query needs every coordinate.
+fn parse_pom_properties(bytes: &[u8]) -> Option<(String, String, String)> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut group = None;
+    let mut artifact = None;
+    let mut version = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match key.trim() {
+            "groupId" => group = Some(value.to_string()),
+            "artifactId" => artifact = Some(value.to_string()),
+            "version" => version = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    Some((group?, artifact?, version?))
 }
 
 pub fn fold(detections: Vec<Detection>) -> Vec<BinaryComponent> {
@@ -1189,5 +1266,110 @@ mod tests {
             .notes
             .iter()
             .any(|note| note.contains("no distribution identity")));
+    }
+
+    #[test]
+    fn nested_jars_report_their_maven_coordinates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A Spring-Boot-shaped fat JAR: the library with its pom.properties
+        // is itself a zip member of the outer jar.
+        let inner = {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let properties = b"groupId=org.example\nartifactId=library\nversion=1.2.3\n";
+            writer
+                .start_file(
+                    "META-INF/maven/org.example/library/pom.properties".to_string(),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .expect("zip member");
+            std::io::Write::write_all(&mut writer, properties).expect("properties");
+            writer.finish().expect("inner zip").into_inner()
+        };
+        let outer = {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            writer
+                .start_file(
+                    "BOOT-INF/lib/library.jar".to_string(),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .expect("outer member");
+            std::io::Write::write_all(&mut writer, &inner).expect("nested jar");
+            writer.finish().expect("outer zip").into_inner()
+        };
+        std::fs::write(dir.path().join("app.jar"), &outer).expect("write jar");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+
+        let component = scanned
+            .result
+            .components
+            .iter()
+            .find(|c| c.product == "org.example:library")
+            .expect("maven coordinates as a component");
+        assert_eq!(component.version, "1.2.3");
+        let query = scanned
+            .queries
+            .iter()
+            .find(|q| q.product == "org.example:library")
+            .expect("askable as Maven");
+        assert_eq!(query.ecosystem.as_deref(), Some("Maven"));
+        assert_eq!(query.osv_name.as_deref(), Some("org.example:library"));
+    }
+
+    #[test]
+    fn incomplete_pom_properties_are_ignored_rather_than_guessed() {
+        assert!(is_pom_properties_path(
+            "app.jar!/META-INF/maven/org.example/library/pom.properties"
+        ));
+        assert!(!is_pom_properties_path("META-INF/maven/pom.properties"));
+        assert!(!is_pom_properties_path("pom.properties"));
+        // Missing any coordinate is not a partial query.
+        assert_eq!(parse_pom_properties(b"artifactId=only\n"), None);
+        assert_eq!(
+            parse_pom_properties(b"groupId=g\nartifactId=a\nversion=1\n"),
+            Some(("g".into(), "a".into(), "1".into()))
+        );
+    }
+
+    #[test]
+    fn maven_artifacts_are_answered_from_the_local_database() {
+        let mut db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
+        let record = serde_json::json!({
+            "id": "CVE-2099-3333",
+            "severity": [{ "type": "CVSS_V3",
+                "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+            "affected": [{
+                "package": { "ecosystem": "Maven", "name": "org.example:library" },
+                "ranges": [{ "type": "ECOSYSTEM",
+                    "events": [{"introduced": "0"}, {"fixed": "1.3.0"}] }]
+            }]
+        });
+        let packages = vec![("Maven".to_string(), "org.example:library".to_string())];
+        db.insert_record("CVE-2099-3333", None, &record, &packages)
+            .unwrap();
+        db.finish_update(&["Maven".to_string()], 900, 900).unwrap();
+
+        let queries = vec![super::super::enrich::ComponentQuery {
+            key: super::super::enrich::component_key("org.example:library", "1.2.3"),
+            vendor: String::new(),
+            product: "org.example:library".to_string(),
+            version: "1.2.3".to_string(),
+            raw_version: "1.2.3".to_string(),
+            ecosystem: Some("Maven".to_string()),
+            osv_name: Some("org.example:library".to_string()),
+        }];
+        let enrichment = super::super::enrich::enrich_local(&db, &queries);
+        assert!(enrichment.notes.is_empty(), "{:?}", enrichment.notes);
+        let found = enrichment
+            .found
+            .get(&queries[0].key)
+            .expect("answered offline");
+        assert_eq!(found[0].cve_id, "CVE-2099-3333");
+        assert_eq!(found[0].fixed_in.as_deref(), Some("1.3.0"));
     }
 }

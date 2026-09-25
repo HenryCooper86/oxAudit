@@ -60,7 +60,9 @@ from a local database with `--advisory-db` — a fully offline image scan.
 Ecosystems the database does not carry (a bare `Debian` from an ELF package
 note, an undownloaded release) are named in the run notes rather than
 silently answering nothing; CPE-keyed signature detections have no offline
-source, and an offline run says so instead of implying a clean result.
+source, and an offline run says so instead of implying a clean result. JAR
+coordinates read from embedded `pom.properties` answer from the database the
+same way — Maven ships in the default ecosystem set.
 
 ## Coverage discipline
 
