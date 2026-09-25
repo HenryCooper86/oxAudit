@@ -1,0 +1,74 @@
+# The oxAudit GitHub Action: download a pinned release of oxaudit-cli,
+# verify it against the release's SHA256SUMS.txt, and run it.
+#
+# Until the repository is public this action is inert (release assets on a
+# private repository are not downloadable by consumers); it ships now so the
+# first published tag is immediately usable as:
+#   uses: HenryCooper86/oxAudit/action@<tag>
+name: oxAudit Security Scan
+description: Scan source, dependencies, and binaries for vulnerabilities and leaked credentials — fully local.
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  target:
+    description: What to scan — a source directory (`.`), a dependency tree, an image tar, or a registry reference.
+    required: false
+    default: .
+  version:
+    description: Release tag to use (default: latest).
+    required: false
+    default: latest
+  args:
+    description: Extra oxaudit-cli arguments (e.g. `--fail-on high --format sarif -o oxaudit.sarif`).
+    required: false
+    default: ""
+  repo:
+    description: Repository hosting the releases (default: this action's repository).
+    required: false
+    default: HenryCooper86/oxAudit
+
+runs:
+  using: composite
+  steps:
+    - name: Download and verify oxaudit-cli
+      shell: bash
+      env:
+        OXAUDIT_VERSION: ${{ inputs.version }}
+        OXAUDIT_REPO: ${{ inputs.repo }}
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)    asset="oxaudit-cli-linux-x86_64" ;;
+          macOS-X64)    asset="oxaudit-cli-macos-universal" ;;
+          macOS-ARM64)  asset="oxaudit-cli-macos-universal" ;;
+          Windows-X64)  asset="oxaudit-cli-windows-x86_64.exe" ;;
+          *)
+            echo "oxAudit publishes no binary for ${RUNNER_OS}-${RUNNER_ARCH}." >&2
+            echo "Build the CLI from source: cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli" >&2
+            exit 2 ;;
+        esac
+        if [ "$OXAUDIT_VERSION" = "latest" ]; then
+          tag_url="https://github.com/${OXAUDIT_REPO}/releases/latest/download"
+        else
+          tag_url="https://github.com/${OXAUDIT_REPO}/releases/download/${OXAUDIT_VERSION}"
+        fi
+        install_dir="${RUNNER_TEMP:-/tmp}/oxaudit"
+        mkdir -p "$install_dir"
+        echo "$tag_url/$asset"
+        curl -fsSL --retry 5 --retry-all-errors -o "$install_dir/$asset" "$tag_url/$asset"
+        curl -fsSL --retry 5 --retry-all-errors -o "$install_dir/SHA256SUMS.txt" "$tag_url/SHA256SUMS.txt"
+        cd "$install_dir"
+        grep " $asset\$" SHA256SUMS.txt | shasum -a 256 -c -
+        if [ "${RUNNER_OS}" = "Windows" ]; then
+          cli="$(pwd -W)/$asset"
+        else
+          chmod +x "$asset"
+          cli="$(pwd)/$asset"
+        fi
+        echo "cli=$cli" >> "$GITHUB_ENV"
+
+    - name: Run the scan
+      shell: bash
+      run: '"${cli}" scan ${{ inputs.target }} ${{ inputs.args }}'
