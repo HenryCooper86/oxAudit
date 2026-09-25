@@ -156,13 +156,6 @@ CREATE TABLE verification_records (
   verified_at_ms INTEGER NOT NULL,
   payload_json TEXT NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS trust_grants (
-  content_sha256 TEXT PRIMARY KEY,
-  granted_at_ms INTEGER NOT NULL,
-  granted_by TEXT NOT NULL,
-  note TEXT NOT NULL
-);
 "#;
 
 const MIGRATION_V3: &str = r#"
@@ -225,6 +218,15 @@ CREATE TABLE compliance_reports (
 );
 CREATE INDEX compliance_reports_assessment_idx
   ON compliance_reports(assessment_id, created_at_ms DESC, id DESC);
+"#;
+
+const MIGRATION_V6: &str = r#"
+CREATE TABLE IF NOT EXISTS trust_grants (
+  content_sha256 TEXT PRIMARY KEY,
+  granted_at_ms INTEGER NOT NULL,
+  granted_by TEXT NOT NULL,
+  note TEXT NOT NULL
+);
 "#;
 
 const RETENTION_MAINTENANCE_WARNING: &str =
@@ -3937,6 +3939,16 @@ fn migrate(connection: &mut Connection, migration_v1: &str) -> Result<(), Comman
         .map_err(persistence_error)?;
     if !version_five_applied {
         apply_migration(connection, 5, MIGRATION_V5)?;
+    }
+    let version_six_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 6)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(persistence_error)?;
+    if !version_six_applied {
+        apply_migration(connection, 6, MIGRATION_V6)?;
     }
     Ok(())
 }
