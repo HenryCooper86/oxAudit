@@ -561,6 +561,7 @@ async fn dependency_standards_link_advisory_only_to_affected_component_and_lockf
     unrelated.id = oxaudit_domain::ComponentId::new();
     unrelated.name = "unrelated".into();
     unrelated.purl = Some("pkg/npm/unrelated@1.0.0".into());
+    unrelated.depends_on = vec![components[0].id.as_str().to_string()];
     components.push(unrelated);
     let affected_id = components[0].id.to_string();
     let data = ReportData {
@@ -586,6 +587,13 @@ async fn dependency_standards_link_advisory_only_to_affected_component_and_lockf
         serde_json::from_slice(&generate(&data, ReportFormat::CycloneDxVex).unwrap().bytes)
             .unwrap();
     assert_eq!(cd["vulnerabilities"][0]["affects"][0]["ref"], affected_id);
+    let bom: serde_json::Value =
+        serde_json::from_slice(&generate(&data, ReportFormat::CycloneDx).unwrap().bytes).unwrap();
+    // The dependency graph section carries only evidenced edges, as
+    // bom-refs — never an empty array that would claim "depends on nothing".
+    let entries = bom["dependencies"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["dependsOn"], serde_json::json!([affected_id]));
     let sarif: serde_json::Value =
         serde_json::from_slice(&generate(&data, ReportFormat::Sarif).unwrap().bytes).unwrap();
     let finding = &sarif["runs"][0]["results"][0];

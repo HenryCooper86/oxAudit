@@ -193,7 +193,16 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             "serialNumber": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
             "version": 1,
             "metadata": { "tools": { "components": [{ "type": "application", "name": "oxAudit", "version": env!("CARGO_PKG_VERSION") }] } },
-            "components": data.components.iter().map(cyclonedx_component).collect::<Vec<_>>()
+            "components": data.components.iter().map(cyclonedx_component).collect::<Vec<_>>(),
+            "dependencies": data
+                .components
+                .iter()
+                .filter(|component| !component.depends_on.is_empty())
+                .map(|component| serde_json::json!({
+                    "ref": component.id.as_str(),
+                    "dependsOn": component.depends_on,
+                }))
+                .collect::<Vec<_>>()
         }),
         ReportFormat::Spdx => serde_json::json!({
             "spdxVersion": "SPDX-2.3",

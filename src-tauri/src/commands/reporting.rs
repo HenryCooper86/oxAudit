@@ -230,6 +230,7 @@ pub fn import_inventory_report(
             ))
             .map_err(|error| error.to_string())?;
             Ok(oxaudit_domain::Component {
+                depends_on: Vec::new(),
                 id,
                 name: imported.name.clone(),
                 version: imported.version.clone(),

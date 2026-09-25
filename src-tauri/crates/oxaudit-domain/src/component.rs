@@ -35,4 +35,9 @@ pub struct Component {
     pub cpes: Vec<String>,
     pub aliases: Vec<String>,
     pub identities: Vec<ComponentIdentity>,
+    /// Package references this component directly depends on, from
+    /// relationship evidence (npm lockfile declaration chains). Absent
+    /// means no relationship evidence — never "depends on nothing".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
 }
