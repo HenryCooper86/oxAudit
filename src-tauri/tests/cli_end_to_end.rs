@@ -1846,3 +1846,271 @@ fn image_scans_answer_distro_packages_offline_from_the_advisory_database() {
     ]);
     assert_eq!(code(&output), 1);
 }
+
+/// A minimal OCI/Docker v2 registry: bearer challenge, token endpoint,
+/// manifest index → platform manifest, digest-verified blobs. Enough of the
+/// protocol to exercise the real client end to end without the network.
+struct FakeRegistry {
+    address: std::net::SocketAddr,
+}
+
+impl FakeRegistry {
+    fn start(index: Vec<u8>, manifest: Vec<u8>, layers: Vec<Vec<u8>>) -> Self {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let index_digest = sha256_hex(&index);
+        let layer_digests: Vec<String> = layers.iter().map(|bytes| sha256_hex(bytes)).collect();
+        let manifest_digest = sha256_hex(&manifest);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                // Read until the end of the request head.
+                loop {
+                    match stream.read(&mut byte) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            head.extend_from_slice(&byte);
+                            if head.ends_with(b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let head = String::from_utf8_lossy(&head);
+                let request_line = head.lines().next().unwrap_or_default().to_string();
+                let path = request_line.split(' ').nth(1).unwrap_or("/").to_string();
+                let has_bearer = head.to_ascii_lowercase().contains("authorization: bearer");
+
+                let index = index.clone();
+                let manifest = manifest.clone();
+                let layers = layers.clone();
+                let layer_digests = layer_digests.clone();
+                let (status, headers, body): (u16, Vec<String>, Vec<u8>) = if path == "/v2/" {
+                    (
+                        401,
+                        vec![
+                            r#"Www-Authenticate: Bearer realm="http://TOKEN/token",service="local""#.replace("TOKEN", &format!("127.0.0.1:{}", address.port())),
+                            "Content-Type: application/json".into(),
+                        ],
+                        br#"{"errors":[{"code":"UNAUTHORIZED"}]}"#.to_vec(),
+                    )
+                } else if path.starts_with("/token") {
+                    (
+                        200,
+                        vec!["Content-Type: application/json".into()],
+                        br#"{"token":"fake-token"}"#.to_vec(),
+                    )
+                } else if !has_bearer {
+                    (
+                        401,
+                        vec!["Content-Type: application/json".into()],
+                        br#"{"errors":[{"code":"UNAUTHORIZED"}]}"#.to_vec(),
+                    )
+                } else if path == "/v2/my/app/manifests/1.0" {
+                    (
+                        200,
+                        vec![
+                            "Content-Type: application/vnd.docker.distribution.manifest.list.v2+json".into(),
+                            format!("Docker-Content-Digest: sha256:{index_digest}"),
+                        ],
+                        index,
+                    )
+                } else if path == format!("/v2/my/app/manifests/sha256:{manifest_digest}") {
+                    (
+                        200,
+                        vec![
+                            "Content-Type: application/vnd.docker.distribution.manifest.v2+json"
+                                .into(),
+                            format!("Docker-Content-Digest: sha256:{manifest_digest}"),
+                        ],
+                        manifest,
+                    )
+                } else if let Some(position) = layer_digests
+                    .iter()
+                    .position(|digest| path == format!("/v2/my/app/blobs/sha256:{digest}"))
+                {
+                    (
+                        200,
+                        vec!["Content-Type: application/octet-stream".into()],
+                        layers[position].clone(),
+                    )
+                } else {
+                    (
+                        404,
+                        vec!["Content-Type: application/json".into()],
+                        br#"{"errors":[{"code":"MANIFEST_UNKNOWN"}]}"#.to_vec(),
+                    )
+                };
+                let header_text = headers.join("\r\n");
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\n{header_text}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        Self { address }
+    }
+
+    fn reference(&self) -> String {
+        format!("127.0.0.1:{}/my/app:1.0", self.address.port())
+    }
+}
+
+// The fake registry's serving loop re-binds the fixtures per connection;
+// keeping clones alive for every branch requires them outside the closure.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
+fn gzip_layer(members: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    for (path, body) in members {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, *body)
+            .expect("layer member");
+    }
+    let tar = builder.into_inner().expect("layer tar");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &tar).expect("gzip");
+    encoder.finish().expect("gzip layer")
+}
+
+#[test]
+fn registry_references_are_pulled_and_scanned_offline() {
+    // Layer 1: the base — distribution identity and its dpkg database.
+    let base = gzip_layer(&[
+        (
+            "etc/os-release",
+            b"ID=debian\nVERSION_ID=\"12\"\nVERSION_CODENAME=bookworm\n",
+        ),
+        (
+            "var/lib/dpkg/status",
+            b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
+        ),
+    ]);
+    // Layer 2: the app — a fat-JAR's library with embedded coordinates.
+    let inner_jar = {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "META-INF/maven/org.example/library/pom.properties".to_string(),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("jar member");
+        std::io::Write::write_all(
+            &mut writer,
+            b"groupId=org.example\nartifactId=library\nversion=1.2.3\n",
+        )
+        .expect("properties");
+        writer.finish().expect("jar").into_inner()
+    };
+    let app = gzip_layer(&[("app/lib/library.jar", &inner_jar)]);
+
+    let host_arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+        "config": { "mediaType": "application/vnd.docker.container.image.v1+json",
+                    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    "size": 2 },
+        "layers": [
+            { "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+              "digest": format!("sha256:{}", sha256_hex(&base)), "size": base.len() },
+            { "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+              "digest": format!("sha256:{}", sha256_hex(&app)), "size": app.len() },
+        ]
+    })
+    .to_string()
+    .into_bytes();
+    let index = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "manifests": [{
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "digest": format!("sha256:{}", sha256_hex(&manifest)),
+            "size": manifest.len(),
+            "platform": { "os": "linux", "architecture": host_arch },
+        }]
+    })
+    .to_string()
+    .into_bytes();
+
+    let registry = FakeRegistry::start(index, manifest, vec![base, app]);
+
+    // The advisory database with a Debian:12 record for the base layer.
+    let server = DumpServer::start(debian_dump_zip());
+    let workspace = tempfile::tempdir().expect("workspace");
+    let db = workspace.path().join("advisories.sqlite3");
+    let output = run(&[
+        "advisory-db",
+        "update",
+        "--db",
+        &db.to_string_lossy(),
+        "--source",
+        &server.base(),
+        "--ecosystem",
+        "Debian:12",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = run(&[
+        "image",
+        &registry.reference(),
+        "--advisory-db",
+        &db.to_string_lossy(),
+        "--offline",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["kind"], "image");
+    let components = document["components"].as_array().unwrap();
+
+    let libc6 = components
+        .iter()
+        .find(|component| component["product"] == "libc6")
+        .expect("dpkg package from the pulled base layer");
+    let vulnerabilities = libc6["vulnerabilities"].as_array().unwrap();
+    assert_eq!(vulnerabilities.len(), 1);
+    assert_eq!(vulnerabilities[0]["cveId"], "CVE-2099-2222");
+    // Findings name the registry reference and the layer they came from.
+    let path = libc6["paths"][0].as_str().unwrap();
+    assert!(
+        path.starts_with("127.0.0.1:")
+            && path.contains("/my/app:1.0@")
+            && path.contains("layer-0000.tar!/var/lib/dpkg/status"),
+        "path {path:?}"
+    );
+
+    let library = components
+        .iter()
+        .find(|component| component["product"] == "org.example:library")
+        .expect("maven coordinates from the app layer");
+    assert_eq!(library["version"], "1.2.3");
+}

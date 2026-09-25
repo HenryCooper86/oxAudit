@@ -64,6 +64,19 @@ source, and an offline run says so instead of implying a clean result. JAR
 coordinates read from embedded `pom.properties` answer from the database the
 same way — Maven ships in the default ecosystem set.
 
+## Registry references
+
+`oxaudit-cli image` accepts a registry reference
+(`registry.example.com/ns/repo:tag`) and pulls the manifest and layers
+itself: the registry's bearer-token challenge answered anonymously or with
+`docker login`'s config.json (Basic credentials and identity tokens;
+credential helpers are stated as unhandled rather than silently skipped),
+manifest lists resolved to this machine's `linux/<arch>` manifest, every
+blob verified against its `sha256` digest before scanning. Manifests are
+capped at 16 MiB, layers at 1 GiB each and 8 GiB per image. `--offline`
+still governs advisory providers only — the image you explicitly asked to
+fetch still downloads.
+
 ## Coverage discipline
 
 Coverage is per ecosystem: a query for an ecosystem whose dump was not

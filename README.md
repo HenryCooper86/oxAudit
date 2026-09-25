@@ -277,6 +277,11 @@ oxaudit-cli deps . --advisory-db ~/.oxaudit/advisories.sqlite3 --offline --forma
 oxaudit-cli advisory-db update --db ~/.oxaudit/advisories.sqlite3 --ecosystem Debian:12
 oxaudit-cli image saved-image.tar --advisory-db ~/.oxaudit/advisories.sqlite3 --offline --fail-on high
 
+# Or pull it straight from the registry — no docker save step. Layers are
+# digest-verified; auth is the registry's token flow plus docker login's
+# config.json. Findings name the reference and layer they came from.
+oxaudit-cli image registry-1.docker.io/library/nginx:1.25 --advisory-db ~/.oxaudit/advisories.sqlite3
+
 # List actual canonical dependency runs; use each returned id with export
 oxaudit-cli runs --db ~/.oxaudit/findings.sqlite3 --kind dependencies --json
 

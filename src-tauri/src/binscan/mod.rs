@@ -14,6 +14,7 @@
 pub mod detect;
 pub mod grype;
 pub mod native;
+pub mod registry;
 pub mod report;
 pub mod run;
 pub mod runtime;

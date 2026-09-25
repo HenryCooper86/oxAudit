@@ -617,6 +617,63 @@ pub fn scan(
     })
 }
 
+/// Scan the already-downloaded layers of a registry image.
+///
+/// Layers arrive in memory in manifest order and share one distro context,
+/// for the same reason the context crosses layer tars inside a saved image:
+/// the base layer usually states the distribution the app layers build on.
+pub fn scan_image_layers(
+    display: &str,
+    layers: &[super::super::registry::Layer],
+    cancel: &Arc<AtomicBool>,
+    on_progress: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<NativeScan, String> {
+    use std::sync::atomic::Ordering;
+
+    let started = std::time::Instant::now();
+    let signatures: &SignatureSet = &SIGNATURES;
+    let mut notes = Vec::new();
+    let mut detections = Vec::new();
+    let mut distro = None;
+    for (index, layer) in layers.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("scan cancelled".into());
+        }
+        on_progress(format!("scanning layer {}/{}", index + 1, layers.len()));
+        let chain = format!("{display}!{}", layer.name);
+        detections.extend(scan_buffer(
+            &chain,
+            &chain,
+            &layer.bytes,
+            false,
+            signatures,
+            &mut notes,
+            &mut distro,
+        ));
+    }
+
+    let queries = super::enrich::queries_from(&detections);
+    let components = fold(detections);
+    on_progress(format!("{} components detected", components.len()));
+
+    Ok(NativeScan {
+        queries,
+        notes,
+        result: BinaryScanResult {
+            target: display.to_string(),
+            summary: BinaryScanSummary {
+                components: components.len(),
+                ..BinaryScanSummary::default()
+            },
+            components,
+            database_last_updated: None,
+            duration_ms: started.elapsed().as_millis() as u64,
+            scanners: vec![NATIVE.to_string()],
+            semantic_analysis: None,
+        },
+    })
+}
+
 /// Map the blobs of any OCI image layouts among the candidate files to the
 /// ordered aliases their members should carry. Layouts are found by walking
 /// each file's ancestors for the two-marker test — cached per directory so

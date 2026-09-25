@@ -377,7 +377,9 @@ struct DepsArgs {
 #[derive(Args, Debug)]
 struct ImageArgs {
     /// Saved docker/OCI image tar, OCI layout directory, firmware archive,
-    /// or any binary file or tree.
+    /// any binary file or tree — or a registry reference
+    /// (`registry.example.com/ns/repo:tag`) to pull the manifest and layers
+    /// directly.
     path: PathBuf,
 
     /// Output format. Image reports support text and json; standards
@@ -398,7 +400,9 @@ struct ImageArgs {
     #[arg(long, value_name = "FILE")]
     advisory_db: Option<PathBuf>,
 
-    /// Never contact providers: advisories come only from --advisory-db.
+    /// Never contact advisory providers: advisories come only from
+    /// --advisory-db. A registry reference still downloads the image — that
+    /// is the command you asked for; this flag governs advisory lookups.
     #[arg(long)]
     offline: bool,
 }
@@ -1349,9 +1353,6 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
 fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
     use std::sync::Arc;
 
-    if !args.path.exists() {
-        return Err(usage(format!("{} does not exist", args.path.display())));
-    }
     if !matches!(args.format, OutputFormat::Text | OutputFormat::Json) {
         return Err(usage(
             "image reports support --format text or --format json; standards exports come from export over a stored run",
@@ -1365,10 +1366,6 @@ fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
         None => None,
     };
 
-    let target = args
-        .path
-        .canonicalize()
-        .map_err(|error| usage(error.to_string()))?;
     let cancel = Arc::new(AtomicBool::new(false));
     let progress: Arc<dyn Fn(String) + Send + Sync> = if quiet {
         Arc::new(|_| {})
@@ -1376,8 +1373,34 @@ fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
         Arc::new(|line| eprintln!("{line}"))
     };
 
-    let scanned = crate::binscan::native::scan::scan(&target, cancel.clone(), progress.clone())
+    let scanned = if let Some(reference) =
+        crate::binscan::registry::parse_ref(&args.path.to_string_lossy())
+    {
+        let http = build_http_client()?;
+        let image = block_on(crate::binscan::registry::fetch_image_layers(
+            &http,
+            &reference,
+            |line| progress(line),
+        ))
         .map_err(failure)?;
+        crate::binscan::native::scan::scan_image_layers(
+            &image.display,
+            &image.layers,
+            &cancel,
+            progress.clone(),
+        )
+        .map_err(failure)?
+    } else {
+        if !args.path.exists() {
+            return Err(usage(format!("{} does not exist", args.path.display())));
+        }
+        let target = args
+            .path
+            .canonicalize()
+            .map_err(|error| usage(error.to_string()))?;
+        crate::binscan::native::scan::scan(&target, cancel.clone(), progress.clone())
+            .map_err(failure)?
+    };
     let mut result = scanned.result;
     let mut notes = scanned.notes;
 
