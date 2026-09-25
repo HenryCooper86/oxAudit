@@ -195,7 +195,7 @@ pub struct Suggestion {
 /// Everything `vex suggest` reports: suggestions plus the honest periphery —
 /// claims consulted but unmapped, and documents not consulted because they
 /// are untrusted.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SuggestionReport {
     pub suggestions: Vec<Suggestion>,
     /// (document sha, claim record id, reason)

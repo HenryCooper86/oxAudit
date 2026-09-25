@@ -45,6 +45,63 @@ export type CanonicalRunState =
   | "failed"
   | "verifying";
 
+export interface AdvisoryDbStatus {
+  path: string;
+  schemaVersion: number;
+  ecosystems: string[];
+  advisories: number;
+  packages: number;
+  builtAtMs: number | null;
+  updatedAtMs: number | null;
+  sizeBytes: number;
+}
+
+export interface AdvisoryDbUpdateReport {
+  ecosystems: { ecosystem: string; records: number }[];
+  totalAdvisories: number;
+  totalPackages: number;
+  builtAtMs: number;
+}
+
+export interface ImageScanRequest {
+  target: string;
+  advisoryDbPath?: string | null;
+  offline: boolean;
+}
+
+export interface ImageScanOutcome {
+  result: BinaryScanResult;
+  notes: string[];
+}
+
+export interface VexClaimSet {
+  runId: string;
+  contentSha256: string;
+  format: string;
+  claims: number;
+  trusted: boolean;
+  grantedBy: string | null;
+  grantedAtMs: number | null;
+}
+
+export interface VexSuggestion {
+  advisoryId: string;
+  ecosystem: string;
+  packageName: string;
+  installedVersion: string;
+  status: string;
+  justification: string;
+  documentSha256: string;
+  grantedBy: string;
+}
+
+export interface VexSuggestions {
+  suggestions: VexSuggestion[];
+  unmapped: [string, string, string][];
+  untrusted: [string, number][];
+  runTarget: string;
+}
+
 export interface CanonicalRun {
   id: string;
   kind: CanonicalRunKind;

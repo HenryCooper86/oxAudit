@@ -41,7 +41,7 @@ pub trait DumpFetcher: Send + Sync {
     fn fetch<'a>(
         &'a mut self,
         ecosystem: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + 'a>>;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 }
 
 /// Downloads `<base>/<ecosystem>/all.zip` over the shared HTTP client.
@@ -77,7 +77,8 @@ impl DumpFetcher for HttpDumpFetcher {
     fn fetch<'a>(
         &'a mut self,
         ecosystem: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
         let url = self.url_for(ecosystem);
         Box::pin(async move {
             let response = self
@@ -299,7 +300,7 @@ mod tests {
         fn fetch<'a>(
             &'a mut self,
             ecosystem: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + 'a>>
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
         {
             Box::pin(async move {
                 self.dumps

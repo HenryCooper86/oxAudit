@@ -1,12 +1,15 @@
+pub mod advisories;
 pub mod assistant;
 pub mod cve;
 pub mod dependencies;
 pub mod history;
+pub mod image;
 pub mod quality;
 pub mod reporting;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
+pub mod vex;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

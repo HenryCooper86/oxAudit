@@ -27,6 +27,18 @@ const DepsScanPage = lazy(() =>
 const BinaryScanPage = lazy(() =>
   import("./pages/BinaryScan").then((module) => ({ default: module.BinaryScanPage })),
 );
+const ImageScanPage = lazy(() =>
+  import("./pages/ImageScanPage").then((module) => ({ default: module.ImageScanPage })),
+);
+
+const AdvisoryDatabasePage = lazy(() =>
+  import("./pages/AdvisoryDatabase").then((module) => ({ default: module.AdvisoryDatabasePage })),
+);
+
+const VexTrustPage = lazy(() =>
+  import("./pages/VexTrust").then((module) => ({ default: module.VexTrustPage })),
+);
+
 const InventoryPage = lazy(() =>
   import("./pages/Inventory").then((module) => ({ default: module.InventoryPage })),
 );
@@ -79,6 +91,12 @@ function Page({ page }: { page: PageName }) {
       return <DepsScanPage />;
     case "binary-scan":
       return <BinaryScanPage />;
+    case "image-scan":
+      return <ImageScanPage />;
+    case "advisory-database":
+      return <AdvisoryDatabasePage />;
+    case "vex-trust":
+      return <VexTrustPage />;
     case "inventory":
       return <InventoryPage />;
     case "rule-library":

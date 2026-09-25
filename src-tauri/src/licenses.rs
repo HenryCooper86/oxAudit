@@ -66,11 +66,7 @@ fn registry_url(ecosystem: &str, name: &str, version: &str, base: &str) -> Optio
         // segments themselves are registry-safe identifiers.
         "Maven" => {
             let (group, artifact) = name.split_once(':')?;
-            let group_path = group
-                .split('.')
-                .map(encoded)
-                .collect::<Vec<_>>()
-                .join("/");
+            let group_path = group.split('.').map(encoded).collect::<Vec<_>>().join("/");
             Some(format!(
                 "{base}/{group_path}/{artifact}/{encoded_version}/{artifact}-{encoded_version}.pom",
                 artifact = encoded(artifact),

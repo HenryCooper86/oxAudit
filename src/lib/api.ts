@@ -17,7 +17,13 @@ import type {
   RuleLibraryPackStatus,
   InstalledRulePack,
   ScanScheduleRecord,
+  AdvisoryDbStatus,
+  AdvisoryDbUpdateReport,
+  ImageScanOutcome,
+  ImageScanRequest,
   ScanScheduleStatus,
+  VexClaimSet,
+  VexSuggestions,
   RulePackValidationPreview,
   QualityStatus,
   DataSourceStatus,
@@ -102,6 +108,23 @@ export const api = {
   removeRulePack: (id: string) =>
     invoke<void>("remove_rule_pack", { id }),
   listScanSchedules: () => invoke<ScanScheduleStatus[]>("list_scan_schedules"),
+  advisoryDbStatus: (path: string) =>
+    invoke<AdvisoryDbStatus>("advisory_db_status", { path }),
+  advisoryDbUpdate: (path: string, ecosystems: string[], source?: string) =>
+    invoke<AdvisoryDbUpdateReport>("advisory_db_update", {
+      path,
+      ecosystems,
+      source: source ?? null,
+    }),
+  scanImage: (request: ImageScanRequest) =>
+    invoke<ImageScanOutcome>("scan_image", { request }),
+  cancelImageScan: () => invoke<void>("cancel_image_scan"),
+  vexClaimSets: () => invoke<VexClaimSet[]>("vex_claim_sets"),
+  vexGrantTrust: (contentSha256: string, grantedBy: string, note?: string) =>
+    invoke<void>("vex_grant_trust", { contentSha256, grantedBy, note: note ?? null }),
+  vexRevokeTrust: (contentSha256: string) =>
+    invoke<void>("vex_revoke_trust", { contentSha256 }),
+  vexSuggest: (runId: string) => invoke<VexSuggestions>("vex_suggest", { runId }),
   setScanSchedule: (
     projectId: string,
     canonicalPath: string,
