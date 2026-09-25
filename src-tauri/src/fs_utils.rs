@@ -152,6 +152,10 @@ pub fn is_lockfile_name(name: &str) -> bool {
             | "gradle.lockfile"
             | "packages.lock.json"
             | "poetry.lock"
+            | "go.mod"
+            | "bun.lock"
+            | "mix.lock"
+            | "pubspec.lock"
     )
 }
 

@@ -29,6 +29,10 @@ pub fn lockfile_kind(name: &str) -> &'static str {
         "gradle.lockfile" => "gradle",
         "packages.lock.json" => "nuget",
         "poetry.lock" => "poetry",
+        "go.mod" => "gomod",
+        "bun.lock" => "bun",
+        "mix.lock" => "mix",
+        "pubspec.lock" => "pubspec",
         _ => "unknown",
     }
 }
@@ -41,6 +45,10 @@ pub fn ecosystem_for_kind(kind: &str) -> &'static str {
         "go" => "Go",
         "pipenv" | "pip" | "poetry" => "PyPI",
         "bundler" => "RubyGems",
+        "gomod" => "Go",
+        "bun" => "npm",
+        "mix" => "Hex",
+        "pubspec" => "Pub",
         "composer" => "Packagist",
         "maven" | "gradle" => "Maven",
         "nuget" => "NuGet",
@@ -106,6 +114,10 @@ fn parse_lockfile_with_limit(
         "gradle.lockfile" => parse_gradle_lockfile(&content)?,
         "packages.lock.json" => parse_packages_lock_json(&content)?,
         "poetry.lock" => parse_poetry_lock(&content)?,
+        "go.mod" => parse_go_mod(&content)?,
+        "bun.lock" => parse_bun_lock(&content)?,
+        "mix.lock" => parse_mix_lock(&content)?,
+        "pubspec.lock" => parse_pubspec_lock(&content)?,
         _ => return Err("unsupported lockfile".into()),
     };
 
@@ -351,6 +363,161 @@ fn parse_go_sum(content: &str) -> Result<Vec<(String, String)>, String> {
     }
     if out.is_empty() {
         return Err("no packages found in go.sum".into());
+    }
+    Ok(out)
+}
+
+/// `go.mod`: single-line `require` directives plus `require ( … )` blocks.
+/// `replace`, `exclude`, and `retract` name versions too, but they are build
+/// instructions, not the resolved inventory — the tool that resolves them is
+/// `go`, and its output lands in `go.sum`, which is parsed on its own.
+fn parse_go_mod(content: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut in_require_block = false;
+    for line in content.lines() {
+        let line = line.trim();
+        let (line, _) = line.split_once("//").unwrap_or((line, ""));
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("require (") {
+            let _ = rest;
+            in_require_block = true;
+            continue;
+        }
+        if in_require_block && line == ")" {
+            in_require_block = false;
+            continue;
+        }
+        let require_line = if in_require_block {
+            Some(line)
+        } else {
+            line.strip_prefix("require ").map(str::trim)
+        };
+        let Some(require_line) = require_line else {
+            continue;
+        };
+        let mut parts = require_line.split_whitespace();
+        let (Some(name), Some(version)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if !version.starts_with('v') {
+            continue;
+        }
+        out.push((
+            name.to_string(),
+            version.trim_start_matches('v').to_string(),
+        ));
+    }
+    if out.is_empty() {
+        return Err("no required modules found in go.mod".into());
+    }
+    Ok(out)
+}
+
+/// `bun.lock` (the text form Bun ≥1.1 writes): keys are `name@version`, with
+/// scoped packages spelled `@scope/name@version`, so the version is after the
+/// LAST `@`. Workspace, `file:`, and `link:` entries name no registry version
+/// and are skipped.
+fn parse_bun_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(content).map_err(|error| format!("invalid bun.lock: {error}"))?;
+    let packages = root
+        .get("packages")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "bun.lock has no packages object".to_string())?;
+    let mut out = Vec::new();
+    for key in packages.keys() {
+        let Some(at) = key.rfind('@') else { continue };
+        let (name, version) = (&key[..at], &key[at + 1..]);
+        if name.is_empty() || version.is_empty() {
+            continue;
+        }
+        if version.contains(':') || version == "workspace" {
+            continue;
+        }
+        out.push((name.to_string(), version.to_string()));
+    }
+    if out.is_empty() {
+        return Err("no packages found in bun.lock".into());
+    }
+    Ok(out)
+}
+
+/// `mix.lock`: an Erlang map of `"name" => {:hex, :name, "version", …}`.
+/// `:path` entries are local code, not registry packages.
+fn parse_mix_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        // One package per line; the shape is fixed enough to read without an
+        // Erlang term parser, and anything that does not fit is skipped.
+        let rest = match line.trim_start().strip_prefix('"') {
+            Some(rest) => rest,
+            None => continue,
+        };
+        // The key ends with `": ` before the tuple; keep only real entries.
+        let Some((name, rest)) = rest.split_once("\": ") else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix("{:hex,") else {
+            continue;
+        };
+        // :atom, "version" — the version is the first quoted token after
+        // the atom; the hash and deps follow in later fields.
+        let Some((atom, tail)) = rest.split_once(',') else {
+            continue;
+        };
+        if !atom.trim().starts_with(':') {
+            continue;
+        }
+        let tail = tail.trim();
+        let Some(after_open) = tail.strip_prefix('"') else {
+            continue;
+        };
+        let version = after_open.split('"').next().unwrap_or_default();
+        if !name.is_empty() && !version.is_empty() {
+            out.push((name.to_string(), version.to_string()));
+        }
+    }
+    if out.is_empty() {
+        return Err("no hex packages found in mix.lock".into());
+    }
+    Ok(out)
+}
+
+/// `pubspec.lock`: YAML, one entry per package under `packages:`. Hosted and
+/// git packages carry a registry version; `path` is local code and `sdk` is
+/// the Dart/Flutter SDK itself — neither is a Pub advisory target.
+fn parse_pubspec_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+    let root: serde_yaml::Value =
+        serde_yaml::from_str(content).map_err(|error| format!("invalid pubspec.lock: {error}"))?;
+    let packages = root
+        .get("packages")
+        .and_then(serde_yaml::Value::as_mapping)
+        .ok_or_else(|| "pubspec.lock has no packages map".to_string())?;
+    let mut out = Vec::new();
+    for (key, entry) in packages {
+        let (Some(name), Some(entry)) = (key.as_str(), entry.as_mapping()) else {
+            continue;
+        };
+        let source = entry
+            .get(serde_yaml::Value::String("source".into()))
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or_default();
+        if matches!(source, "path" | "sdk") {
+            continue;
+        }
+        let version = entry
+            .get(serde_yaml::Value::String("version".into()))
+            .and_then(serde_yaml::Value::as_str)
+            .unwrap_or_default();
+        if !version.is_empty() {
+            out.push((name.to_string(), version.to_string()));
+        }
+    }
+    if out.is_empty() {
+        return Err("no packages found in pubspec.lock".into());
     }
     Ok(out)
 }
@@ -1316,5 +1483,79 @@ mod pom_tests {
                 "{name} must be discovered"
             );
         }
+    }
+
+    fn parse(name: &str, content: &str) -> Vec<(String, String)> {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        let deps = parse_lockfile(&path, super::lockfile_kind(name)).unwrap();
+        deps.into_iter().map(|d| (d.name, d.version)).collect()
+    }
+
+    #[test]
+    fn go_mod_yields_requires_from_lines_and_blocks() {
+        let deps = parse(
+            "go.mod",
+            "module example.com/m\n\ngo 1.21\n\nrequire github.com/spf13/cobra v1.8.0\n\nrequire (\n\tgopkg.in/yaml.v3 v3.0.1 // indirect\n\tgithub.com/pkg/errors v0.9.1\n)\n\nreplace github.com/x/y => ../y\nexclude github.com/bad/dep v1.0.0\n",
+        );
+        assert_eq!(
+            deps,
+            vec![
+                ("github.com/spf13/cobra".to_string(), "1.8.0".to_string()),
+                ("gopkg.in/yaml.v3".to_string(), "3.0.1".to_string()),
+                ("github.com/pkg/errors".to_string(), "0.9.1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn go_mod_without_requires_is_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("go.mod");
+        std::fs::write(&path, "module example.com/m\n").unwrap();
+        let error = parse_lockfile(&path, super::lockfile_kind("go.mod")).unwrap_err();
+        assert!(error.contains("no required modules"), "{error}");
+    }
+
+    #[test]
+    fn bun_lock_keys_split_on_the_last_at() {
+        let deps = parse(
+            "bun.lock",
+            r#"{"lockfileVersion":1,"packages":{"left-pad@1.3.0":{},"@scope/pkg@2.0.0":{},"local@workspace":{},"file-pkg@file:../pkg":{}}}"#,
+        );
+        assert_eq!(
+            deps,
+            vec![
+                ("@scope/pkg".to_string(), "2.0.0".to_string()),
+                ("left-pad".to_string(), "1.3.0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn mix_lock_reads_hex_packages_and_skips_paths() {
+        let deps = parse(
+            "mix.lock",
+            "%{\n  \"phoenix\": {:hex, :phoenix, \"1.7.10\", \"abcdef0123\", [:mix], [{:castore, \"~> 1.0\", [hex: :castore]}], \"hexpm\", \"hash\"},\n  \"my_lib\": {:path, \"libs/my_lib\"},\n}\n",
+        );
+        assert_eq!(deps, vec![("phoenix".to_string(), "1.7.10".to_string())]);
+    }
+
+    #[test]
+    fn pubspec_lock_keeps_hosted_packages_only() {
+        let deps = parse(
+            "pubspec.lock",
+            "packages:\n  http:\n    dependency: transitive\n    description:\n      name: http\n      url: \"https://pub.dev\"\n    source: hosted\n    version: \"1.1.2\"\n  local_widget:\n    dependency: \"direct main\"\n    source: path\n  flutter:\n    dependency: \"direct main\"\n    source: sdk\n",
+        );
+        assert_eq!(deps, vec![("http".to_string(), "1.1.2".to_string())]);
+    }
+
+    #[test]
+    fn new_lockfiles_map_to_their_osv_ecosystems() {
+        assert_eq!(super::ecosystem_for_kind("gomod"), "Go");
+        assert_eq!(super::ecosystem_for_kind("bun"), "npm");
+        assert_eq!(super::ecosystem_for_kind("mix"), "Hex");
+        assert_eq!(super::ecosystem_for_kind("pubspec"), "Pub");
     }
 }
