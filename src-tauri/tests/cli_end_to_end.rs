@@ -1719,3 +1719,130 @@ fn advisory_database_supports_offline_dependency_matching() {
     );
     assert_eq!(vulnerabilities[0]["packageName"], "example");
 }
+
+fn debian_image_tar(dir: &std::path::Path) -> std::path::PathBuf {
+    // A saved-image shape: os-release naming the distribution, plus its dpkg
+    // database — the OS-package layer the native scanner now reads.
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut add = |path: &str, body: &[u8]| {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, body)
+            .expect("image member");
+    };
+    add(
+        "etc/os-release",
+        b"ID=debian\nVERSION_ID=\"12\"\nVERSION_CODENAME=bookworm\n",
+    );
+    add(
+        "var/lib/dpkg/status",
+        b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
+    );
+    let path = dir.join("debian12.tar");
+    std::fs::write(&path, builder.into_inner().expect("image tar")).expect("write image");
+    path
+}
+
+fn debian_dump_zip() -> Vec<u8> {
+    let advisory = serde_json::json!({
+        "id": "CVE-2099-2222",
+        "aliases": ["GHSA-image-fixture"],
+        "summary": "image e2e fixture advisory",
+        "severity": [{ "type": "CVSS_V3",
+            "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+        "affected": [{
+            "package": { "ecosystem": "Debian:12", "name": "libc6" },
+            "ranges": [{ "type": "ECOSYSTEM",
+                "events": [{"introduced": "0"}, {"fixed": "2.40.0-1"}] }]
+        }]
+    })
+    .to_string();
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "CVE-2099-2222.json".to_string(),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("zip member");
+    std::io::Write::write_all(&mut writer, advisory.as_bytes()).expect("zip body");
+    writer.finish().expect("zip").into_inner()
+}
+
+#[test]
+fn image_scans_answer_distro_packages_offline_from_the_advisory_database() {
+    let server = DumpServer::start(debian_dump_zip());
+    let workspace = tempfile::tempdir().expect("workspace");
+    let db = workspace.path().join("advisories.sqlite3");
+    let output = run(&[
+        "advisory-db",
+        "update",
+        "--db",
+        &db.to_string_lossy(),
+        "--source",
+        &server.base(),
+        "--ecosystem",
+        "Debian:12",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let image = debian_image_tar(workspace.path());
+    let output = run(&[
+        "image",
+        &image.to_string_lossy(),
+        "--advisory-db",
+        &db.to_string_lossy(),
+        "--offline",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["kind"], "image");
+
+    let libc6 = document["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["product"] == "libc6")
+        .expect("libc6 component from the dpkg database");
+    let vulnerabilities = libc6["vulnerabilities"].as_array().unwrap();
+    assert_eq!(vulnerabilities.len(), 1);
+    assert_eq!(vulnerabilities[0]["cveId"], "CVE-2099-2222");
+    assert_eq!(vulnerabilities[0]["severity"], "critical");
+    assert_eq!(vulnerabilities[0]["fixedIn"], "2.40.0-1");
+    // No CPE-keyed components exist here, and a database was supplied, so an
+    // offline run has nothing to apologize for.
+    assert!(
+        !document["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("NVD")),
+        "unexpected notes: {:?}",
+        document["notes"]
+    );
+
+    // --fail-on critical gates on the database answer.
+    let output = run(&[
+        "image",
+        &image.to_string_lossy(),
+        "--advisory-db",
+        &db.to_string_lossy(),
+        "--offline",
+        "--fail-on",
+        "critical",
+    ]);
+    assert_eq!(code(&output), 1);
+}

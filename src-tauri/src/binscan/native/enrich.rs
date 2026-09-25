@@ -314,25 +314,91 @@ pub fn queries_from(detections: &[Detection]) -> Vec<ComponentQuery> {
     queries
 }
 
+/// The OSV dependency for one query, when it names an ecosystem.
+fn osv_dependency_for(query: &ComponentQuery) -> Option<Dependency> {
+    Some(Dependency {
+        occurrence: Default::default(),
+        ecosystem: query.ecosystem.clone()?,
+        // OSV's distribution ecosystems key on the distribution's own
+        // package name; the canonical product would match nothing.
+        name: query
+            .osv_name
+            .clone()
+            .unwrap_or_else(|| query.product.clone()),
+        version: query.raw_version.clone(),
+        lockfile: String::new(),
+    })
+}
+
 /// The OSV dependency list, for the components that can be asked that way.
 pub fn osv_dependencies(queries: &[ComponentQuery]) -> Vec<Dependency> {
-    queries
-        .iter()
-        .filter_map(|query| {
-            Some(Dependency {
-                occurrence: Default::default(),
-                ecosystem: query.ecosystem.clone()?,
-                // OSV's distribution ecosystems key on the distribution's own
-                // package name; the canonical product would match nothing.
-                name: query
-                    .osv_name
-                    .clone()
-                    .unwrap_or_else(|| query.product.clone()),
-                version: query.raw_version.clone(),
-                lockfile: String::new(),
-            })
-        })
-        .collect()
+    queries.iter().filter_map(osv_dependency_for).collect()
+}
+
+/// Answer the OSV half of the queries from a local advisory database, with no
+/// network at all.
+///
+/// Coverage is stated, never implied: ecosystems the database does not carry
+/// (a bare `Debian` from an ELF package note, an undownloaded release) are
+/// named in a note rather than silently answering nothing. CPE-keyed
+/// components have no offline source — NVD is online-only — so callers
+/// running offline say that separately.
+pub fn enrich_local(
+    db: &crate::advisories::store::AdvisoryDb,
+    queries: &[ComponentQuery],
+) -> Enrichment {
+    let mut found: HashMap<ComponentKey, Vec<BinaryVulnerability>> = HashMap::new();
+    let mut notes = Vec::new();
+
+    let available: std::collections::BTreeSet<String> =
+        db.ecosystems().unwrap_or_default().into_iter().collect();
+    let mut covered: Vec<(&ComponentQuery, Dependency)> = Vec::new();
+    let mut uncovered_names: Vec<String> = Vec::new();
+    let mut uncovered_count = 0usize;
+    for query in queries.iter().filter(|query| query.ecosystem.is_some()) {
+        let Some(dependency) = osv_dependency_for(query) else {
+            continue;
+        };
+        if available.contains(&dependency.ecosystem) {
+            covered.push((query, dependency));
+        } else {
+            uncovered_count += 1;
+            if !uncovered_names.contains(&dependency.ecosystem) {
+                uncovered_names.push(dependency.ecosystem.clone());
+            }
+        }
+    }
+
+    if !covered.is_empty() {
+        let dependencies: Vec<Dependency> = covered.iter().map(|(_, d)| d.clone()).collect();
+        match crate::advisories::matching::query_local(db, &dependencies) {
+            Ok(outcome) => {
+                for (query, dependency) in &covered {
+                    if let Some(vulnerabilities) = outcome
+                        .results
+                        .get(&crate::deps::osv::dependency_query_key(dependency))
+                    {
+                        found
+                            .entry(query.key.clone())
+                            .or_default()
+                            .extend(vulnerabilities.iter().map(from_osv));
+                    }
+                }
+                notes.extend(outcome.notes.warnings());
+            }
+            Err(error) => notes.push(format!("local advisory matching did not complete: {error}")),
+        }
+    }
+
+    if uncovered_count > 0 {
+        uncovered_names.sort();
+        notes.push(format!(
+            "{uncovered_count} component query(ies) name ecosystem(s) the advisory database does not carry ({}); download them with `advisory-db update --ecosystem …` or scan online",
+            uncovered_names.join(", ")
+        ));
+    }
+
+    Enrichment { found, notes }
 }
 
 /// Attach vulnerabilities to a result and recompute its counts.
@@ -986,5 +1052,92 @@ mod tests {
         );
         apply(&mut result, found);
         assert_eq!(result.components[0].vulnerabilities.len(), 1);
+    }
+
+    fn advisory_db_fixture(ecosystem: &str, package: &str) -> crate::advisories::store::AdvisoryDb {
+        let mut db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
+        let record = serde_json::json!({
+            "id": "CVE-2099-1111",
+            "aliases": ["GHSA-fixture"],
+            "severity": [{ "type": "CVSS_V3",
+                "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+            "affected": [{
+                "package": { "ecosystem": ecosystem, "name": package },
+                "ranges": [{ "type": "ECOSYSTEM",
+                    "events": [{"introduced": "0"}, {"fixed": "2.40.0-1"}] }]
+            }]
+        });
+        let packages = vec![(ecosystem.to_string(), package.to_string())];
+        db.insert_record("CVE-2099-1111", None, &record, &packages)
+            .unwrap();
+        db.finish_update(&[ecosystem.to_string()], 500, 500)
+            .unwrap();
+        db
+    }
+
+    fn query(ecosystem: Option<&str>, product: &str, raw_version: &str) -> ComponentQuery {
+        ComponentQuery {
+            key: component_key(product, raw_version),
+            vendor: String::new(),
+            product: product.to_string(),
+            version: raw_version.to_string(),
+            raw_version: raw_version.to_string(),
+            ecosystem: ecosystem.map(String::from),
+            osv_name: Some(product.to_string()),
+        }
+    }
+
+    #[test]
+    fn local_enrichment_answers_covered_ecosystems_from_the_database() {
+        let db = advisory_db_fixture("Debian:12", "libc6");
+        let queries = vec![query(Some("Debian:12"), "libc6", "2.36-9+deb12u3")];
+
+        let enrichment = enrich_local(&db, &queries);
+        assert!(enrichment.notes.is_empty(), "{:?}", enrichment.notes);
+        let found = enrichment
+            .found
+            .get(&queries[0].key)
+            .expect("libc6 answered");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].cve_id, "CVE-2099-1111");
+        assert_eq!(found[0].source, SOURCE_OSV);
+        assert_eq!(found[0].fixed_in.as_deref(), Some("2.40.0-1"));
+        assert_eq!(found[0].severity, "critical");
+        assert!((found[0].score.unwrap() - 9.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn local_enrichment_states_ecosystems_the_database_does_not_carry() {
+        let db = advisory_db_fixture("Debian:12", "libc6");
+        // A bare `Debian` is what an ELF package note produces; the dump
+        // bucket only has release-qualified ecosystems, so this cannot be
+        // answered and must say so.
+        let queries = vec![
+            query(Some("Debian"), "libzstd", "1.5.4+dfsg-1"),
+            query(Some("Debian"), "curl", "7.88.1-10"),
+        ];
+
+        let enrichment = enrich_local(&db, &queries);
+        assert!(enrichment.found.is_empty());
+        assert_eq!(enrichment.notes.len(), 1);
+        assert!(
+            enrichment.notes[0].contains("2 component"),
+            "{:?}",
+            enrichment.notes
+        );
+        assert!(
+            enrichment.notes[0].contains("Debian"),
+            "{:?}",
+            enrichment.notes
+        );
+    }
+
+    #[test]
+    fn local_enrichment_skips_packages_the_ranges_say_are_fixed() {
+        let db = advisory_db_fixture("Debian:12", "libc6");
+        let queries = vec![query(Some("Debian:12"), "libc6", "2.40.0-1")];
+        let enrichment = enrich_local(&db, &queries);
+        assert!(enrichment.found.is_empty());
+        assert!(enrichment.notes.is_empty(), "{:?}", enrichment.notes);
     }
 }

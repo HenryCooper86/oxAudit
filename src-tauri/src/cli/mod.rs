@@ -73,6 +73,9 @@ enum Command {
     History(HistoryArgs),
     /// Resolve lockfiles and check every pinned package against OSV.
     Deps(DepsArgs),
+    /// Scan a container image, firmware archive, or binary tree with the
+    /// native scanner — including the OS package database inside it.
+    Image(ImageArgs),
     /// Re-export a stored run in a standards format.
     Export(ExportArgs),
     /// List stored runs.
@@ -372,6 +375,35 @@ struct DepsArgs {
 }
 
 #[derive(Args, Debug)]
+struct ImageArgs {
+    /// Saved docker/OCI image tar, OCI layout directory, firmware archive,
+    /// or any binary file or tree.
+    path: PathBuf,
+
+    /// Output format. Image reports support text and json; standards
+    /// exports come from `export` over a stored run.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+
+    /// Write the report here instead of stdout.
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+
+    /// Exit 1 when a vulnerability at this severity or higher is reported.
+    #[arg(long, value_enum, default_value_t = FailOn::None)]
+    fail_on: FailOn,
+
+    /// Answer distribution-package advisories from this local advisory
+    /// database (built with `advisory-db update`), with no network.
+    #[arg(long, value_name = "FILE")]
+    advisory_db: Option<PathBuf>,
+
+    /// Never contact providers: advisories come only from --advisory-db.
+    #[arg(long)]
+    offline: bool,
+}
+
+#[derive(Args, Debug)]
 struct ExportArgs {
     /// Database holding the run.
     #[arg(long)]
@@ -575,6 +607,7 @@ pub fn run() -> i32 {
         Command::Scan(args) => run_scan(args, cli.quiet),
         Command::History(args) => run_history(args, cli.quiet),
         Command::Deps(args) => run_deps(args, cli.quiet),
+        Command::Image(args) => run_image(args, cli.quiet),
         Command::Export(args) => run_export(args),
         Command::Runs(args) => run_runs(args),
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
@@ -1309,6 +1342,196 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
         quiet,
     );
     Ok(if existing == EXIT_OK { new } else { existing })
+}
+
+// ------------------------------------------------------------------- image
+
+fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
+    use std::sync::Arc;
+
+    if !args.path.exists() {
+        return Err(usage(format!("{} does not exist", args.path.display())));
+    }
+    if !matches!(args.format, OutputFormat::Text | OutputFormat::Json) {
+        return Err(usage(
+            "image reports support --format text or --format json; standards exports come from export over a stored run",
+        ));
+    }
+    let advisory_db = match &args.advisory_db {
+        Some(path) => Some(
+            crate::advisories::store::AdvisoryDb::open(path)
+                .map_err(|error| failure(format!("cannot open {}: {error}", path.display())))?,
+        ),
+        None => None,
+    };
+
+    let target = args
+        .path
+        .canonicalize()
+        .map_err(|error| usage(error.to_string()))?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let progress: Arc<dyn Fn(String) + Send + Sync> = if quiet {
+        Arc::new(|_| {})
+    } else {
+        Arc::new(|line| eprintln!("{line}"))
+    };
+
+    let scanned = crate::binscan::native::scan::scan(&target, cancel.clone(), progress.clone())
+        .map_err(failure)?;
+    let mut result = scanned.result;
+    let mut notes = scanned.notes;
+
+    // The local database answers the distribution half without the network;
+    // when scanning online it runs first so a reproducible offline answer
+    // wins any duplicate and the network only adds what it can.
+    if let Some(db) = &advisory_db {
+        let local = crate::binscan::native::enrich::enrich_local(db, &scanned.queries);
+        crate::binscan::native::enrich::apply(&mut result, local.found);
+        notes.extend(local.notes);
+    }
+
+    if !args.offline {
+        if !scanned.queries.is_empty() {
+            let http = build_http_client()?;
+            let cve = crate::cve::CveState::new(http);
+            let temporary_cache =
+                tempfile::tempdir().map_err(|error| failure(error.to_string()))?;
+            let enriched = block_on(crate::binscan::native::enrich::enrich(
+                &cve,
+                temporary_cache.path(),
+                None,
+                &scanned.queries,
+                cancel,
+                progress,
+            ));
+            crate::binscan::native::enrich::apply(&mut result, enriched.found);
+            notes.extend(enriched.notes);
+        }
+    } else {
+        let cpe_askable = scanned
+            .queries
+            .iter()
+            .filter(|query| {
+                crate::binscan::native::enrich::cpe_match_string(
+                    &query.vendor,
+                    &query.product,
+                    &query.version,
+                )
+                .is_some()
+            })
+            .count();
+        if cpe_askable > 0 {
+            notes.push(format!(
+                "{cpe_askable} CPE-keyed component(s) can only be answered by NVD, which needs the network; they are listed without vulnerabilities in this offline scan"
+            ));
+        }
+        if advisory_db.is_none() && !scanned.queries.is_empty() {
+            notes.push(
+                "offline image scan without --advisory-db: components are listed without vulnerabilities".into(),
+            );
+        }
+    }
+
+    let rendered = match args.format {
+        OutputFormat::Json => {
+            let document = serde_json::json!({
+                "kind": "image",
+                "target": args.path.display().to_string(),
+                "summary": result.summary,
+                "components": result.components,
+                "notes": notes,
+            });
+            serde_json::to_vec_pretty(&document).map_err(|error| failure(error.to_string()))?
+        }
+        OutputFormat::Text => render_image_text(&result, &notes),
+        _ => unreachable!("validated above"),
+    };
+    write_output(args.output.as_deref(), &rendered)?;
+    let exit = gate(
+        result
+            .components
+            .iter()
+            .flat_map(|component| component.vulnerabilities.iter())
+            .map(|vulnerability| severity_rank(&vulnerability.severity)),
+        args.fail_on,
+        quiet,
+    );
+    Ok(exit)
+}
+
+fn render_image_text(
+    result: &crate::binscan::report::BinaryScanResult,
+    notes: &[String],
+) -> Vec<u8> {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let summary = &result.summary;
+    let _ = writeln!(
+        out,
+        "Image scan of {}: {} component(s), {} vulnerabilit{} ({})",
+        result.target,
+        summary.components,
+        summary.vulnerabilities,
+        if summary.vulnerabilities == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        format_vulnerability_counts(summary),
+    );
+    for component in &result.components {
+        let _ = writeln!(
+            out,
+            "\n{} {} — {} vulnerabilit{}",
+            component.product,
+            component.version,
+            component.vulnerabilities.len(),
+            if component.vulnerabilities.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+        );
+        let _ = writeln!(
+            out,
+            "  at {}",
+            component.paths.first().map(String::as_str).unwrap_or("")
+        );
+        for vulnerability in &component.vulnerabilities {
+            let _ = writeln!(
+                out,
+                "  [{}] {} ({}, source {}) fixed in {}",
+                vulnerability.severity,
+                vulnerability.cve_id,
+                vulnerability
+                    .score
+                    .map(|score| format!("CVSS {score:.1}"))
+                    .unwrap_or_else(|| "no score".into()),
+                vulnerability.source,
+                vulnerability.fixed_in.as_deref().unwrap_or("—"),
+            );
+        }
+    }
+    for note in notes {
+        let _ = writeln!(out, "note: {note}");
+    }
+    out.into_bytes()
+}
+
+fn format_vulnerability_counts(summary: &crate::binscan::report::BinaryScanSummary) -> String {
+    let parts = [
+        ("critical", summary.critical),
+        ("high", summary.high),
+        ("medium", summary.medium),
+        ("low", summary.low),
+    ];
+    parts
+        .iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(name, count)| format!("{count} {name}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // ------------------------------------------------------------------- export

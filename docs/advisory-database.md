@@ -52,6 +52,16 @@ same staleness warning as cached receipts. Every answer is persisted as an
 immutable provider snapshot (`local-advisory-db`), so advisory evidence keeps
 the same auditability online and offline.
 
+## Image scans
+
+`oxaudit-cli image <saved-image.tar>` reads the image's own package
+databases (dpkg, apk) against its `os-release` and answers those packages
+from a local database with `--advisory-db` — a fully offline image scan.
+Ecosystems the database does not carry (a bare `Debian` from an ELF package
+note, an undownloaded release) are named in the run notes rather than
+silently answering nothing; CPE-keyed signature detections have no offline
+source, and an offline run says so instead of implying a clean result.
+
 ## Coverage discipline
 
 Coverage is per ecosystem: a query for an ecosystem whose dump was not

@@ -273,6 +273,10 @@ oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --offline --format cyclonedx
 oxaudit-cli advisory-db update --db ~/.oxaudit/advisories.sqlite3
 oxaudit-cli deps . --advisory-db ~/.oxaudit/advisories.sqlite3 --offline --format json
 
+# What is inside this container image? Distro packages included, fully offline
+oxaudit-cli advisory-db update --db ~/.oxaudit/advisories.sqlite3 --ecosystem Debian:12
+oxaudit-cli image saved-image.tar --advisory-db ~/.oxaudit/advisories.sqlite3 --offline --fail-on high
+
 # List actual canonical dependency runs; use each returned id with export
 oxaudit-cli runs --db ~/.oxaudit/findings.sqlite3 --kind dependencies --json
 
