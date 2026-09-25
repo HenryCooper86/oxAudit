@@ -92,7 +92,7 @@ fn source_patterns(criterion: &mut Criterion) {
     group.finish();
 }
 
-/// The 33 secret rules, which run over every file regardless of language.
+/// The 44 secret rules, which run over every file regardless of language.
 fn secret_rules(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("secret_rules");
     for repetitions in [1usize, 20, 200] {

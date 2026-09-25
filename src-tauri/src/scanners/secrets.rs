@@ -377,6 +377,127 @@ pub static SECRET_RULES: Lazy<Vec<SecretRule>> = Lazy::new(|| {
             "A Google OAuth client ID was found. Client IDs are not secret, but verify the matching client secret is not nearby.",
             "Keep the client secret out of source. Restrict the OAuth client's redirect URIs and origins."
         ),
+        rule!(
+            "telegram-bot-token",
+            "Telegram Bot Token",
+            r"\b([0-9]{8,10}:AA[A-Za-z0-9_-]{33})\b",
+            &[],
+            0.0,
+            1,
+            "high",
+            "A Telegram bot token was found. It grants full control of the bot, including sending messages as it.",
+            "Revoke the token with @BotFather (/revoke) and move it to environment variables or a secrets manager."
+        ),
+        rule!(
+            "sentry-token",
+            "Sentry Auth Token",
+            r"\b(sntrys_[A-Za-z0-9_-]{40,})\b",
+            &[],
+            0.0,
+            0,
+            "high",
+            "A Sentry user auth token (sntrys_) was found. It can read and modify the org's projects and events.",
+            "Revoke the token at sentry.io → Settings → Auth Tokens and rotate it into a secrets manager."
+        ),
+        rule!(
+            "newrelic-api-key",
+            "New Relic User API Key",
+            r"\b(NRAK-[A-Z0-9]{27})\b",
+            &[],
+            0.0,
+            0,
+            "high",
+            "A New Relic user API key (NRAK-) was found. It can query and change the account's applications and alerts.",
+            "Rotate the key at onenr.co → API keys and store the replacement in a secrets manager."
+        ),
+        rule!(
+            "postman-api-key",
+            "Postman API Key",
+            r"\b(PMAK-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}-[A-Za-z0-9]{60,})\b",
+            &[],
+            0.0,
+            0,
+            "high",
+            "A Postman API key (PMAK-) was found. It can read and update the workspace's collections and environments.",
+            "Regenerate the key in Postman → Account → API keys and store it outside the repository."
+        ),
+        rule!(
+            "linear-api-key",
+            "Linear API Key",
+            r"\b(lin_api_[A-Za-z0-9]{40})\b",
+            &[],
+            0.0,
+            0,
+            "high",
+            "A Linear API key (lin_api_) was found. It can read and modify the workspace's issues and projects.",
+            "Revoke the key at linear.app → Settings → API and rotate it into a secrets manager."
+        ),
+        rule!(
+            "figma-token",
+            "Figma Personal Access Token",
+            r"\b(figd_[A-Za-z0-9]{40})\b",
+            &[],
+            0.0,
+            0,
+            "high",
+            "A Figma personal access token (figd_) was found. It can read and edit the user's Figma files.",
+            "Revoke the token at figma.com → Settings → Security → Personal access tokens."
+        ),
+        rule!(
+            "grafana-service-account-token",
+            "Grafana Service Account Token",
+            r"\b(glsa_[A-Za-z0-9]{20,})\b",
+            &[],
+            3.0,
+            0,
+            "high",
+            "A Grafana service account token (glsa_) was found. It can query and administer the Grafana instance it was minted for.",
+            "Revoke the token in Grafana → Administration → Service accounts and rotate it."
+        ),
+        rule!(
+            "square-access-token",
+            "Square Access Token",
+            r"\b((?:sq0atp-[0-9A-Za-z_-]{22,43}|EAAA[A-Za-z0-9_-]{50,}))\b",
+            &[],
+            3.0,
+            1,
+            "high",
+            "A Square access token was found. It can access and charge the merchant's payment data.",
+            "Revoke the token in the Square Developer Dashboard and rotate it into a secrets manager."
+        ),
+        rule!(
+            "plaid-api-key",
+            "Plaid Secret / API Key",
+            r"\b((?:production|development|sandbox)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+            &[],
+            0.0,
+            1,
+            "high",
+            "A Plaid environment secret key was found. It authenticates API access to the Plaid environment it names.",
+            "Rotate the secret in the Plaid Dashboard and store the replacement outside the repository."
+        ),
+        rule!(
+            "datadog-api-key",
+            "Datadog API Key",
+            r#"(?i)(?:datadog|dd)[-_ ]?(?:api)?[-_ ]?key[^A-Za-z0-9]{0,10}[\'"\s:=]+([0-9a-f]{32})"#,
+            &["datadog"],
+            3.5,
+            1,
+            "high",
+            "A 32-hex-character Datadog API key was found near Datadog keywords. It submits metrics and reads the account's data.",
+            "Rotate the key at app.datadoghq.com → Organization Settings → API Keys."
+        ),
+        rule!(
+            "azure-storage-account-key",
+            "Azure Storage Account Key",
+            r#"(?i)account[-_ ]?key[^A-Za-z0-9]{0,8}[\'"=\s]{0,4}([A-Za-z0-9+/=]{88})"#,
+            &["account"],
+            3.0,
+            1,
+            "high",
+            "An 88-character Azure storage account key was found beside its AccountKey assignment. It grants full access to the storage account.",
+            "Rotate the key in the Azure portal (Storage account → Access keys) and use managed identities instead."
+        ),
     ]
 });
 

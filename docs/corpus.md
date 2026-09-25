@@ -14,6 +14,6 @@ real-world detection accuracy.
 The Phase 1 additions are paired everyday source scenarios: request-derived and
 constant command invocation, concatenated and parameterized SQL, and
 request-derived and fixed outbound URLs. On 2026-09-07, the committed runner
-measured 198 fixtures (89 expected-positive and 109 expected-negative), with 89
+measured 220 fixtures (100 expected-positive and 120 expected-negative), with 100
 true positives, zero false positives, and zero false negatives. That result
 describes this authored corpus only.

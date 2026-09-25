@@ -189,7 +189,7 @@ with a reason, an expiry, and a pull request.
 |---|---|
 | **Source code scanning** | 79 dangerous-code patterns across JavaScript/TS, Python, Java, Go, C/C++, C#, Kotlin, Swift, PHP, Ruby, Rust, plus generic rules (eval, exec, SQL injection, unsafe deserialization, `shell=True`, `strcpy`, XXE, weak randomness, weak crypto, hardcoded passwords, …), each mapped to a CWE with remediation guidance, and flagged when that weakness class is actively exploited in the wild (CISA KEV) |
 | **Infrastructure-as-code scanning** | 14 misconfiguration rules across Dockerfiles, Terraform, Kubernetes manifests, and GitHub Actions workflows — unpinned base images and actions, `curl \| sh` installs, credentials copied into image layers, public S3 buckets and RDS instances, wildcard IAM policies, security groups open to `0.0.0.0/0`, privileged containers, `hostPath` mounts, and `github.event.*` script injection — each mapped to a CWE with remediation, ranked as infrastructure findings even under `test/` directories |
-| **Secret scanning** | 30+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
+| **Secret scanning** | 40+ regex rules (AWS, GitHub, GitLab, Slack, Stripe, Google, OpenAI, Anthropic, npm/PyPI tokens, private keys, JWTs, bearer tokens, Telegram, Sentry, New Relic, Postman, Linear, Figma, Grafana, Square, Plaid, Datadog, Azure storage keys, generic high-entropy API keys/passwords…) with **Shannon entropy** filtering and placeholder suppression |
 | **Dependency scanning** | Parses `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `go.sum`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `requirements.txt`, `gradle.lockfile`, `packages.lock.json`, `poetry.lock` and checks every pinned package against the **OSV** vulnerability database (batch queries, matching-package advisory range evidence, CVSS score computation from vector strings), then ranks findings using optional signals: CISA KEV, public exploit availability (Exploit-DB), EPSS, and whether the project's own source directly references the package (imports/requires across JavaScript/TS, Python, Rust, Go, Ruby, and PHP) — same exploitation signal as the binary scanner; alternatively answers from a [locally built advisory database](docs/advisory-database.md) with ecosystem-correct version matching and no network at all |
 | **CVE research** | Search the **NVD** API (keyword search, recent-modified filter, pagination, rate-limit aware, optional NVD API key), per-package OSV advisories, full CVE detail pages with affected products, references, CWEs, raw OSV records, and a CISA KEV / EPSS exploitation badge |
 | **AI assistant** | Chat with any **OpenAI-compatible** endpoint (OpenAI, Ollama, LM Studio, vLLM, Groq, OpenRouter…). **Streaming responses** with live reasoning display, typed error handling with automatic retry, **per-conversation token & cost tracking**, cancellable turns, and an **agentic tool loop**: the AI can read files, grep/glob the scanned project, run scans, search NVD, query OSV, and fetch web pages — every tool call rendered live with a status card, gated by an allow/ask/deny permission pipeline with HITL approval, a loop guard, and dual iteration/call budgets. One-click "Ask AI" on every finding and "Generate research briefing" on every CVE |
@@ -438,9 +438,9 @@ rule. See the [corpus documentation](docs/corpus.md) for provenance and limits.
 |---|---|---|
 | Corpus precision | 46.2% | **100% on the committed authored scenarios** |
 | Corpus recall | 85.7% | **100% on the committed authored scenarios** |
-| Corpus size | 26 fixtures | **198 fixtures** |
+| Corpus size | 26 fixtures | **220 fixtures** |
 
-The corpus is 198 fixtures: 89 positives and 109 negatives. It includes observed
+The corpus is 220 fixtures: 100 positives and 120 negatives. It includes observed
 false-positive shapes from oxAudit's own source or dependency trees — type
 declarations, prose in Markdown, comments, environment lookups, function
 parameters, JSON schemas, UI labels, hardened XML parsers, non-security uses of
@@ -783,7 +783,7 @@ absolutes:
 | Stage | Throughput |
 |---|---|
 | Source pattern rules | 400–840 MiB/s |
-| Secret rules (33 rules over every file) | 210–290 MiB/s |
+| Secret rules (44 rules over every file) | 210–290 MiB/s |
 | Syntax analysis (tree-sitter parse + span collection) | 15–21 MiB/s |
 
 Throughput is flat across three orders of magnitude of input size, which is the
