@@ -304,6 +304,8 @@ mod tests {
             installed_version: version.into(),
             fixed_versions: Vec::new(),
             affected_range: None,
+            affected_functions: Vec::new(),
+            referenced_functions: Vec::new(),
             references: Vec::new(),
             published: None,
             modified: None,

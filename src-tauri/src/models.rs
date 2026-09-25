@@ -268,6 +268,16 @@ pub struct Vulnerability {
     pub installed_version: String,
     pub fixed_versions: Vec<String>,
     pub affected_range: Option<String>,
+    /// Functions the advisory names as affected (RustSec records carry
+    /// these; most ecosystems do not — empty means none were named, and
+    /// nothing is inferred). See docs/reachability-scoping.md.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected_functions: Vec<String>,
+    /// The subset of `affected_functions` this project's own Rust sources
+    /// reference by literal path. Literal matching, not a call graph — both
+    /// error directions are stated in the scoping doc.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_functions: Vec<String>,
     pub references: Vec<String>,
     pub published: Option<String>,
     pub modified: Option<String>,

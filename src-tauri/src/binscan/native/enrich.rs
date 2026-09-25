@@ -757,6 +757,8 @@ mod tests {
             installed_version: "7.88.1-10+deb12u5".into(),
             fixed_versions: fixed.iter().map(|f| f.to_string()).collect(),
             affected_range: None,
+            affected_functions: Vec::new(),
+            referenced_functions: Vec::new(),
             references: Vec::new(),
             published: None,
             modified: None,

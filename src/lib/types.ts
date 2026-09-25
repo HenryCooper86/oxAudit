@@ -790,6 +790,9 @@ export interface Vulnerability {
   installedVersion: string;
   fixedVersions: string[];
   affectedRange: string | null;
+  /** Functions the advisory names as affected (RustSec only); referencedFunctions is the subset this project references. */
+  affectedFunctions?: string[];
+  referencedFunctions?: string[];
   references: string[];
   published: string | null;
   modified: string | null;

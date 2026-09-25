@@ -497,10 +497,16 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         }
         }
         // Direct usage is local evidence: attach it whether or not the
-        // network sources answered.
+        // network sources answered. Advisories that name affected functions
+        // (RustSec) additionally learn which of them this project
+        // references — literal path match, docs/reachability-scoping.md.
         for vulnerability in &mut vulnerabilities {
             vulnerability.direct_usage =
                 usage_index.lookup(&vulnerability.ecosystem, &vulnerability.package_name);
+            if !vulnerability.affected_functions.is_empty() {
+                vulnerability.referenced_functions = usage_index
+                    .referenced_functions(&vulnerability.affected_functions);
+            }
         }
     // Exploitation signal: rank these CVEs by CISA KEV and EPSS, the same way
     // the binary scanner does. A dependency vuln's CVE is in its id or aliases.
@@ -545,6 +551,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
                     .unwrap_or(false)
                     .cmp(&a.direct_usage.referenced.unwrap_or(false)),
             )
+            .then(b.referenced_functions.len().cmp(&a.referenced_functions.len()))
             .then(
                 b.cvss_score
                     .unwrap_or(0.0)

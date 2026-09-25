@@ -2,6 +2,8 @@ use super::*;
 
 fn full_vulnerability() -> crate::models::Vulnerability {
     crate::models::Vulnerability {
+        affected_functions: Vec::new(),
+        referenced_functions: Vec::new(),
         occurrence: Default::default(),
         affected_evidence: None,
         id: "GHSA-full-detail".into(),

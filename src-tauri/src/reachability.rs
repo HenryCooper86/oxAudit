@@ -54,6 +54,10 @@ pub fn mappable(ecosystem: &str) -> bool {
 pub struct UsageIndex {
     references: HashMap<String, PackageUsage>,
     complete: bool,
+    /// The project's Rust sources, kept for literal affected-function path
+    /// matching (docs/reachability-scoping.md). Bounded with the same
+    /// file-count/size budgets as the import index.
+    rust_sources: Vec<String>,
 }
 
 #[derive(Default)]
@@ -111,6 +115,11 @@ impl UsageIndex {
         }
         let mut index = Self::build(&entries);
         index.complete = complete;
+        index.rust_sources = entries
+            .iter()
+            .filter(|(path, _)| path.ends_with(".rs"))
+            .map(|(_, content)| content.clone())
+            .collect();
         index
     }
 
@@ -121,6 +130,11 @@ impl UsageIndex {
     pub fn build(entries: &[(String, String)]) -> Self {
         let mut index = UsageIndex {
             complete: true,
+            rust_sources: entries
+                .iter()
+                .filter(|(path, _)| path.ends_with(".rs"))
+                .map(|(_, content)| content.clone())
+                .collect(),
             ..UsageIndex::default()
         };
         for (path, content) in entries {
@@ -136,6 +150,25 @@ impl UsageIndex {
             }
         }
         index
+    }
+
+    /// Which of an advisory's affected functions this project's own Rust
+    /// sources reference by literal path (`crate::function` text covers call
+    /// sites and `use` lines). Literal matching, not a call graph; both
+    /// error directions are stated in docs/reachability-scoping.md.
+    pub fn referenced_functions(&self, functions: &[String]) -> Vec<String> {
+        functions
+            .iter()
+            .filter(|function| {
+                let function = function.trim();
+                !function.is_empty()
+                    && self
+                        .rust_sources
+                        .iter()
+                        .any(|source| source.contains(function))
+            })
+            .cloned()
+            .collect()
     }
 
     /// The direct-usage answer for one package.
@@ -561,6 +594,7 @@ mod tests {
     #[test]
     fn an_incomplete_source_index_never_claims_a_package_is_absent() {
         let idx = UsageIndex {
+            rust_sources: Vec::new(),
             references: HashMap::new(),
             complete: false,
         };
@@ -571,6 +605,7 @@ mod tests {
     #[test]
     fn an_unknown_reachability_answer_serializes_as_explicit_null() {
         let idx = UsageIndex {
+            rust_sources: Vec::new(),
             references: HashMap::new(),
             complete: false,
         };
@@ -592,5 +627,32 @@ mod tests {
         assert_eq!(usage.referenced, Some(true));
         assert_eq!(usage.referenced_files, 2);
         assert!(usage.example_file.is_some());
+    }
+
+    #[test]
+    fn affected_functions_are_matched_by_literal_path_in_rust_sources() {
+        let index = super::UsageIndex::build(&[
+            (
+                "src/cleanup.rs".to_string(),
+                "fn purge(p: &Path) { remove_dir_all::remove_dir_all(p) }".to_string(),
+            ),
+            (
+                "src/other.rs".to_string(),
+                "use serde::Deserialize; // unrelated".to_string(),
+            ),
+        ]);
+        let referenced = index.referenced_functions(&[
+            "remove_dir_all::remove_dir_all".to_string(),
+            "remove_dir_all::remove_dir_contents".to_string(),
+        ]);
+        assert_eq!(referenced, ["remove_dir_all::remove_dir_all"]);
+        // Non-.rs files never participate.
+        let index = super::UsageIndex::build(&[(
+            "script.js".to_string(),
+            "remove_dir_all::remove_dir_all".to_string(),
+        )]);
+        assert!(index
+            .referenced_functions(&["remove_dir_all::remove_dir_all".to_string()])
+            .is_empty());
     }
 }

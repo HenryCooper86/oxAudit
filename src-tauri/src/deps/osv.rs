@@ -449,7 +449,30 @@ pub(crate) fn parse_vulns(
         };
         let mut fixed = Vec::new();
         let mut range_parts = Vec::new();
+        let mut affected_functions = Vec::new();
         for aff in &records {
+            // RustSec names affected functions in ecosystem_specific — the
+            // one OSV database that does (docs/reachability-scoping.md).
+            // Two spellings exist across record ages.
+            if let Some(specific) = aff.get("ecosystem_specific") {
+                for source in [
+                    specific.get("affected_functions"),
+                    specific.pointer("/affects/functions"),
+                ] {
+                    if let Some(names) = source.and_then(Value::as_array) {
+                        for name in names {
+                            if let Some(name) = name.as_str() {
+                                let name = name.trim();
+                                if !name.is_empty()
+                                    && !affected_functions.iter().any(|existing| existing == name)
+                                {
+                                    affected_functions.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             for range in aff
                 .get("ranges")
                 .and_then(Value::as_array)
@@ -497,6 +520,8 @@ pub(crate) fn parse_vulns(
             package_name: package_name.to_string(),
             installed_version: installed_version.to_string(),
             fixed_versions: fixed,
+            affected_functions,
+            referenced_functions: Vec::new(),
             affected_range: if range_parts.is_empty() {
                 None
             } else {
@@ -917,5 +942,44 @@ mod tests {
         for v in &vulns {
             assert!(v.summary.len() + v.details.len() > 0);
         }
+    }
+
+    #[test]
+    fn rustsec_affected_functions_extract_from_matching_records_only() {
+        let result = super::parse_vulns(
+            vec![serde_json::json!({
+                "id": "RUSTSEC-2023-0018",
+                "affected": [
+                    { "package": { "ecosystem": "crates.io", "name": "other" } },
+                    { "package": { "ecosystem": "crates.io", "name": "remove_dir_all" },
+                      "ecosystem_specific": { "affects": { "functions": [
+                          "remove_dir_all::remove_dir_all",
+                          "remove_dir_all::remove_dir_contents"
+                      ] } } }
+                ]
+            })],
+            "crates.io",
+            "remove_dir_all",
+            "5.0.0",
+        );
+        assert_eq!(
+            result[0].affected_functions,
+            vec![
+                "remove_dir_all::remove_dir_all".to_string(),
+                "remove_dir_all::remove_dir_contents".to_string()
+            ]
+        );
+        // The other-package record carried no ecosystem_specific: nothing
+        // inferred for it.
+        let result = super::parse_vulns(
+            vec![serde_json::json!({
+                "id": "GHSA-none",
+                "affected": [{ "package": { "ecosystem": "crates.io", "name": "remove_dir_all" } }]
+            })],
+            "crates.io",
+            "remove_dir_all",
+            "5.0.0",
+        );
+        assert!(result[0].affected_functions.is_empty());
     }
 }
