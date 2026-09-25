@@ -87,6 +87,10 @@ enum Command {
         #[command(subcommand)]
         command: RulePackCommand,
     },
+    /// Import a report's external claims (SARIF, CycloneDX VEX, OpenVEX)
+    /// into a findings database. Inventory-only SBOM import stays in the
+    /// desktop Export Center.
+    Import(ImportArgs),
     /// Trust imported VEX documents and turn their claims into triage
     /// suggestions (never automatic review changes — ADR 0003).
     Vex {
@@ -214,6 +218,20 @@ enum RulePackCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Args, Debug)]
+struct ImportArgs {
+    /// Report file: SARIF 2.1.0, OpenVEX, or CycloneDX VEX.
+    path: PathBuf,
+
+    /// Findings database holding the imported claims run.
+    #[arg(long, value_name = "FILE")]
+    db: PathBuf,
+
+    /// Emit JSON (run id, format, content hash, claim counts) instead of text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -687,6 +705,7 @@ pub fn run() -> i32 {
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
         Command::RulePack { command } => run_rule_pack(command, cli.quiet),
         Command::AdvisoryDb { command } => run_advisory_db(command, cli.quiet),
+        Command::Import(args) => run_import(args),
         Command::Vex { command } => run_vex(command),
         Command::Languages => run_languages(),
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
@@ -837,6 +856,63 @@ fn run_rule_pack(command: &RulePackCommand, quiet: bool) -> CliResult {
             Ok(0)
         }
     }
+}
+
+fn run_import(args: &ImportArgs) -> CliResult {
+    const MAX_EXTERNAL_CLAIMS: usize = 50_000;
+    let (path, bytes, analysis) =
+        crate::commands::read_import_report(&args.path.to_string_lossy()).map_err(usage)?;
+    if analysis.external_claims.is_empty() {
+        return Err(usage(
+            "this report has no external claims that can be mapped safely; inventory-only SBOM import lives in the desktop Export Center",
+        ));
+    }
+    if analysis.external_claims.len() > MAX_EXTERNAL_CLAIMS {
+        return Err(usage("the report exceeds the 50,000-claim import limit"));
+    }
+    let repository = open_repository(&args.db)?;
+    struct NoEvents;
+    impl oxaudit_application::RunEventSink for NoEvents {
+        fn publish(&self, _event: &oxaudit_application::EventEnvelope) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let run = crate::commands::reporting::persist_external_claims(
+        &repository,
+        &path,
+        &bytes,
+        &analysis,
+        &NoEvents,
+    )
+    .map_err(failure)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "runId": run.id.as_str(),
+                "format": analysis.format,
+                "contentSha256": analysis.content_sha256,
+                "claims": analysis.external_claims.len(),
+                "unmappedRecords": analysis.unmapped_records.len(),
+            }))
+            .map_err(|error| failure(error.to_string()))?
+        );
+    } else {
+        println!(
+            "imported {} claim(s) from a {} report as run {}",
+            analysis.external_claims.len(),
+            analysis.format,
+            run.id.as_str()
+        );
+        println!(
+            "claims are external-unverified; `vex trust --sha {}` records an explicit trust grant",
+            analysis.content_sha256
+        );
+        for warning in &analysis.warnings {
+            eprintln!("warning: {warning}");
+        }
+    }
+    Ok(EXIT_OK)
 }
 
 fn run_vex(command: &VexCommand) -> CliResult {

@@ -35,7 +35,7 @@ pub struct ClaimSet {
 fn subject_matches(subject: &str, vulnerability: &Vulnerability) -> bool {
     let candidates = [
         format!(
-            "pkg/{}/{}@{}",
+            "pkg:{}/{}@{}",
             vulnerability.ecosystem.to_ascii_lowercase(),
             vulnerability.package_name,
             vulnerability.installed_version
@@ -321,7 +321,7 @@ mod tests {
         )];
         // By alias, via purl subject.
         let matched = claim_matches(
-            &claim("CVE-2024-1", &["pkg/npm/left-pad@1.3.0"], "not_affected"),
+            &claim("CVE-2024-1", &["pkg:npm/left-pad@1.3.0"], "not_affected"),
             &vulnerabilities,
         );
         assert_eq!(matched.len(), 1);
@@ -338,19 +338,19 @@ mod tests {
         let vulnerabilities = vec![vulnerability("GHSA-one", &[], "left-pad", "1.3.0")];
         // Different version: a different component.
         assert!(claim_matches(
-            &claim("GHSA-one", &["pkg/npm/left-pad@1.4.0"], "not_affected"),
+            &claim("GHSA-one", &["pkg:npm/left-pad@1.4.0"], "not_affected"),
             &vulnerabilities
         )
         .is_empty());
         // Name only: applies to nothing by decision.
         assert!(claim_matches(
-            &claim("GHSA-one", &["pkg/npm/left-pad"], "not_affected"),
+            &claim("GHSA-one", &["pkg:npm/left-pad"], "not_affected"),
             &vulnerabilities
         )
         .is_empty());
         // Right identity, wrong advisory.
         assert!(claim_matches(
-            &claim("GHSA-other", &["pkg/npm/left-pad@1.3.0"], "not_affected"),
+            &claim("GHSA-other", &["pkg:npm/left-pad@1.3.0"], "not_affected"),
             &vulnerabilities
         )
         .is_empty());
@@ -380,8 +380,8 @@ mod tests {
         let trusted = set(
             "a".repeat(64).as_str(),
             vec![
-                claim("CVE-2024-9", &["pkg/npm/left-pad@1.3.0"], "not_affected"),
-                claim("CVE-2024-9", &["pkg/npm/left-pad@1.3.0"], "affected"),
+                claim("CVE-2024-9", &["pkg:npm/left-pad@1.3.0"], "not_affected"),
+                claim("CVE-2024-9", &["pkg:npm/left-pad@1.3.0"], "affected"),
                 claim("CVE-2024-8", &["pkg/npm/gone@1.0.0"], "not_affected"),
             ],
         );
@@ -389,7 +389,7 @@ mod tests {
             "b".repeat(64).as_str(),
             vec![claim(
                 "CVE-2024-9",
-                &["pkg/npm/left-pad@1.3.0"],
+                &["pkg:npm/left-pad@1.3.0"],
                 "not_affected",
             )],
         );
@@ -441,7 +441,7 @@ mod tests {
             "@id": "https://example.com/vex/doc1",
             "statements": [{
                 "vulnerability": { "name": "CVE-2099-5555" },
-                "products": [{ "@id": "pkg/npm/left-pad@1.3.0" }],
+                "products": [{ "@id": "pkg:npm/left-pad@1.3.0" }],
                 "status": "not_affected",
                 "justification": "vulnerable_code_not_in_execute_path"
             }]

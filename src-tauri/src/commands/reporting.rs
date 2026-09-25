@@ -49,8 +49,6 @@ pub fn import_external_report(
     path: String,
     expected_sha256: String,
 ) -> Result<oxaudit_domain::Run, String> {
-    use sha2::Digest;
-
     const MAX_EXTERNAL_CLAIMS: usize = 50_000;
     let (path, bytes, analysis) = read_import_report(&path)?;
     if analysis.content_sha256 != expected_sha256.to_ascii_lowercase() {
@@ -64,6 +62,22 @@ pub fn import_external_report(
     }
 
     let service = findings.service().map_err(|error| error.to_string())?;
+    let events = crate::presentation::TauriRunEvents::new(app);
+    persist_external_claims(service.repository(), &path, &bytes, &analysis, &events)
+}
+
+/// The import path shared by the desktop command and the CLI: run
+/// lifecycle, artifact, warnings, and the immutable external-claims
+/// projection. Nothing here trusts the imported content — see the trust
+/// boundary warning, which the projection itself carries forward.
+pub(crate) fn persist_external_claims(
+    repository: &crate::findings::repository::FindingsRepository,
+    path: &std::path::Path,
+    bytes: &[u8],
+    analysis: &crate::adapters::reporting::import::ImportAnalysis,
+    events: &dyn oxaudit_application::RunEventSink,
+) -> Result<oxaudit_domain::Run, String> {
+    use sha2::Digest;
     let mut run = oxaudit_domain::Run::queued(
         oxaudit_domain::RunKind::ExternalEvidence,
         path.to_string_lossy(),
@@ -97,10 +111,8 @@ pub fn import_external_report(
         content_sha256: Some(analysis.content_sha256.clone()),
     };
     let canonical_repository =
-        crate::adapters::persistence::CanonicalSqliteRepository::new(service.repository());
-    let canonical_events = crate::presentation::TauriRunEvents::new(app);
-    let coordinator =
-        oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
+        crate::adapters::persistence::CanonicalSqliteRepository::new(repository);
+    let coordinator = oxaudit_application::RunCoordinator::new(&canonical_repository, events);
     let mut managed = Some(coordinator.begin(run).map_err(|error| error.to_string())?);
     let imported = (|| -> Result<oxaudit_domain::Run, String> {
         let lifecycle = managed.as_mut().expect("managed external import exists");
@@ -129,8 +141,7 @@ pub fn import_external_report(
         lifecycle
             .transition(oxaudit_domain::RunState::Persisting, epoch_millis())
             .map_err(|error| error.to_string())?;
-        service
-            .repository()
+        repository
             .canonical_save_projection(
                 &lifecycle.run().id,
                 "external-claims",

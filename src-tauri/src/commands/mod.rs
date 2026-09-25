@@ -238,7 +238,7 @@ fn report_data(
     })
 }
 
-fn read_import_report(
+pub(crate) fn read_import_report(
     path: &str,
 ) -> Result<
     (

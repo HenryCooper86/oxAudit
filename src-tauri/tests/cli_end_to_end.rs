@@ -2260,3 +2260,132 @@ fn rule_packs_install_from_a_feed_and_apply_by_selection() {
     assert_eq!(code(&output), 3);
     assert!(String::from_utf8_lossy(&output.stderr).contains("rulepack.absent"));
 }
+
+#[test]
+fn vex_claims_import_trust_and_suggest_from_the_command_line() {
+    // A dependency run to map claims against: the npm/example fixture from
+    // the local advisory-dump server.
+    let server = DumpServer::start(fixture_dump_zip());
+    let workspace = tempfile::tempdir().expect("workspace");
+    let db = workspace.path().join("runs.sqlite3");
+    let project = tempfile::tempdir().expect("project");
+    std::fs::create_dir_all(project.path()).expect("project dir");
+    std::fs::write(
+        project.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"node_modules/example":{"version":"1.0.0"}}}"#,
+    )
+    .expect("lockfile");
+    // Build the advisory database the dependency scan will answer from.
+    let adv = workspace.path().join("advisories.sqlite3");
+    let output = run(&[
+        "advisory-db",
+        "update",
+        "--db",
+        &adv.to_string_lossy(),
+        "--source",
+        &server.base(),
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--db",
+        &db.to_string_lossy(),
+        "--advisory-db",
+        &adv.to_string_lossy(),
+        "--offline",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let scan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let run_id = scan["summary"]["runId"].as_str().unwrap().to_string();
+
+    // Import an OpenVEX document marking the fixture advisory not affected
+    // for exactly this package identity.
+    let vex = serde_json::json!({
+        "@context": "https://openvex.dev/context",
+        "@id": "https://example.com/vex/e2e",
+        "statements": [{
+            "vulnerability": { "name": "CVE-2099-1234" },
+            "products": [{ "@id": "pkg:npm/example@1.0.0" }],
+            "status": "not_affected",
+            "justification": "vulnerable_code_not_present"
+        }]
+    });
+    let vex_path = workspace.path().join("doc.openvex.json");
+    std::fs::write(&vex_path, serde_json::to_string(&vex).unwrap()).expect("write vex");
+
+    let output = run(&[
+        "import",
+        "--db",
+        &db.to_string_lossy(),
+        &vex_path.to_string_lossy(),
+        "--json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let imported: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(imported["claims"], 1);
+    let sha = imported["contentSha256"].as_str().unwrap().to_string();
+
+    // Untrusted: the document is summarized, not consulted.
+    let output = run(&[
+        "vex",
+        "suggest",
+        "--db",
+        &db.to_string_lossy(),
+        "--run",
+        &run_id,
+    ]);
+    assert_eq!(code(&output), 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("no suggestions"), "{text}");
+    assert!(text.contains("untrusted document"), "{text}");
+
+    // Trust it; the exact-identity claim becomes a suggestion.
+    let output = run(&[
+        "vex",
+        "trust",
+        "--db",
+        &db.to_string_lossy(),
+        "--sha",
+        &sha,
+        "--by",
+        "henry",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&[
+        "vex",
+        "suggest",
+        "--db",
+        &db.to_string_lossy(),
+        "--run",
+        &run_id,
+    ]);
+    assert_eq!(code(&output), 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("GHSA-e2e-fixture"), "{text}");
+    assert!(text.contains("example@1.0.0"), "{text}");
+    assert!(text.contains("a suggestion, not a decision"), "{text}");
+}

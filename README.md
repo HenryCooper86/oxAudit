@@ -291,7 +291,9 @@ oxaudit-cli export --db ~/.oxaudit/findings.sqlite3 --run <id> --format cycloned
 
 # Trust an imported VEX document and let its not_affected claims surface as
 # triage suggestions against a stored dependency run. A suggestion is a
-# suggestion: reviews still need a person (ADR 0003).
+# suggestion: reviews still need a person (ADR 0003). The whole loop runs
+# from the command line:
+oxaudit-cli import --db ~/.oxaudit/findings.sqlite3 vendor.openvex.json
 oxaudit-cli vex claims --db ~/.oxaudit/findings.sqlite3
 oxaudit-cli vex trust --db ~/.oxaudit/findings.sqlite3 --sha <sha256> --by henry --note "team-reviewed"
 oxaudit-cli vex suggest --db ~/.oxaudit/findings.sqlite3 --run <run-id>
