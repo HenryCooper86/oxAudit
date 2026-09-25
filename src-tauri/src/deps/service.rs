@@ -24,6 +24,15 @@ pub trait DependencyProviders: Send + Sync {
         cves: &'a [String],
         cache_path: &'a Path,
     ) -> PortFuture<'a, EnrichmentStatus>;
+    /// Fill declared licenses from package registries, online-only. The
+    /// default does nothing — a provider without network access cannot
+    /// invent licenses, and none are guessed.
+    fn licenses<'a>(
+        &'a self,
+        _dependencies: &'a mut [Dependency],
+    ) -> PortFuture<'a, crate::licenses::LicenseFetchSummary> {
+        Box::pin(async { crate::licenses::LicenseFetchSummary::default() })
+    }
 }
 
 pub struct NetworkProviders<'a> {
@@ -36,6 +45,12 @@ impl DependencyProviders for NetworkProviders<'_> {
         dependencies: &'a [Dependency],
     ) -> PortFuture<'a, Result<AdvisoryResults, String>> {
         Box::pin(self.osv.query_batch_full(dependencies))
+    }
+    fn licenses<'a>(
+        &'a self,
+        dependencies: &'a mut [Dependency],
+    ) -> PortFuture<'a, crate::licenses::LicenseFetchSummary> {
+        Box::pin(crate::licenses::fetch_missing(dependencies, self.http))
     }
     fn enrich<'a>(
         &'a self,
@@ -323,9 +338,19 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             return Err("dependency scan cancelled".into());
         }
         crate::deps::ensure_complete_lockfile_coverage(&parse_errors)?;
-        let deps = all_deps;
+        let mut deps = all_deps;
         let query_deps = crate::deps::lockfiles::dedupe_dependencies(deps.clone());
         let packages_queried = crate::deps::osv::queryable_dependencies(&query_deps).count();
+        // License enrichment: online-only, best-effort, bounded. A
+        // lockfile-declared license (npm) is already present and is never
+        // overwritten. Notes join the enrichment warnings — they are
+        // optional-source honesty, not advisory coverage.
+        let mut license_notes = Vec::new();
+        if !request.offline {
+            let license_summary = request.providers.licenses(&mut deps).await;
+            license_notes = license_summary.notes;
+        }
+
         // Direct-usage reachability: one index over the project's own source,
         // asked about every vulnerable package later. Purely local, so it runs
         // regardless of the offline flag.
@@ -489,7 +514,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-        let enrichment = if cve_ids.is_empty() {
+        let mut enrichment = if cve_ids.is_empty() {
             EnrichmentStatus { status: "notApplicable".into(), ..Default::default() }
         } else if request.offline {
             EnrichmentStatus { status: "unavailable".into(), warnings: vec!["Optional exploitation sources were not refreshed in offline mode; absent signals are unknown.".into()], ..Default::default() }
@@ -500,6 +525,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         if request.cancel.load(Ordering::SeqCst) {
             return Err("dependency scan cancelled".into());
         }
+        enrichment.warnings.extend(license_notes);
 
     // Exploited-first, then public exploit, then EPSS, then direct usage, then
     // CVSS — the actionable order.

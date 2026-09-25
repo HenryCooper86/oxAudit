@@ -16,6 +16,7 @@ pub mod findings;
 mod fs_utils;
 pub mod git_context;
 mod history;
+mod licenses;
 mod migration;
 mod models;
 pub mod observability;
