@@ -23,6 +23,7 @@ pub mod bytes;
 pub mod enrich;
 pub mod extract;
 pub mod filetype;
+pub mod os_packages;
 pub mod package_note;
 pub mod scan;
 pub mod signature;

@@ -11,6 +11,12 @@
 //! Where both fire, the note wins on version and the signature still counts as
 //! corroboration. That ordering is deliberate: a declared version beats one
 //! scraped out of a string table.
+//!
+//! Extracted filesystem images carry a third surface: their own **package
+//! databases** (`/var/lib/dpkg/status`, `/lib/apk/db/installed`), read against
+//! the `os-release` in the same image. Those produce one detection per
+//! installed package, keyed to a release-qualified distribution ecosystem —
+//! see [`super::os_packages`].
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -23,6 +29,7 @@ use walkdir::WalkDir;
 
 use super::extract;
 use super::filetype::{self, Classification, PROBE_BYTES};
+use super::os_packages::{self, DistroIdentity};
 use super::package_note::{self, upstream_version};
 use super::signature::{Evidence, SignatureSet, SIGNATURES};
 use super::strings;
@@ -42,6 +49,8 @@ pub enum DetectionSource {
     Content,
     /// Inferred from the file's name.
     Filename,
+    /// Declared by the image's own package database (`dpkg`/`apk`).
+    OsPackageDatabase,
     /// Declared by the builder in the ELF package note.
     PackageNote,
 }
@@ -117,6 +126,7 @@ pub fn scan_file_as(
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default()
     });
+    let mut distro = None;
     scan_buffer(
         &display,
         &file_name,
@@ -124,6 +134,7 @@ pub fn scan_file_as(
         extracted.truncated,
         signatures,
         notes,
+        &mut distro,
     )
 }
 
@@ -136,6 +147,7 @@ fn scan_buffer(
     truncated: bool,
     signatures: &SignatureSet,
     notes: &mut Vec<String>,
+    distro: &mut Option<DistroIdentity>,
 ) -> Vec<Detection> {
     let classification = filetype::classify(&bytes[..bytes.len().min(PROBE_BYTES)]);
     if !classification.is_scannable() {
@@ -154,24 +166,7 @@ fn scan_buffer(
             if let Some(note) = embedded.stats.note(display) {
                 notes.push(note);
             }
-            let mut detections = Vec::new();
-            for member in &embedded.members {
-                let member_name = member
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&member.path)
-                    .to_string();
-                detections.extend(scan_buffer(
-                    &member.path,
-                    &member_name,
-                    &member.bytes,
-                    false,
-                    signatures,
-                    notes,
-                ));
-            }
-            return detections;
+            return scan_members(&embedded.members, signatures, notes, distro);
         }
     }
 
@@ -182,24 +177,7 @@ fn scan_buffer(
             if let Some(note) = extracted.stats.note(display) {
                 notes.push(note);
             }
-            let mut detections = Vec::new();
-            for member in &extracted.members {
-                let member_name = member
-                    .path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&member.path)
-                    .to_string();
-                detections.extend(scan_buffer(
-                    &member.path,
-                    &member_name,
-                    &member.bytes,
-                    false,
-                    signatures,
-                    notes,
-                ));
-            }
-            return detections;
+            return scan_members(&extracted.members, signatures, notes, distro);
         }
         // An archive that yielded nothing — empty, unreadable, or stopped by
         // a budget before the first member — falls back to scanning its own
@@ -328,6 +306,103 @@ fn candidates_with_budget(
 /// A product detected both with and without a version stays split: "openssl,
 /// version unknown" is a different statement from "openssl 3.0.2", and merging
 /// them would let the unknown disappear behind the known one.
+/// One extracted member list: package databases and os-release become
+/// detections and identity, everything else recurses through
+/// [`scan_buffer`].
+///
+/// os-release is read in a pre-pass so a package database is annotated even
+/// when the archive orders it after the database — `etc/` before `var/lib/`
+/// is convention, not a contract. The distro context is shared across the
+/// whole target, so an identity discovered in one layer of a saved image
+/// annotates package databases found in later layers too; an image that only
+/// ever states its identity after its databases leaves them unannotated, and
+/// that is said out loud rather than guessed around.
+fn scan_members(
+    members: &[extract::ExtractedMember],
+    signatures: &SignatureSet,
+    notes: &mut Vec<String>,
+    distro: &mut Option<DistroIdentity>,
+) -> Vec<Detection> {
+    for member in members {
+        if os_packages::is_os_release_path(&member.path) {
+            match os_packages::parse_os_release(&member.bytes) {
+                os_packages::OsReleaseMatch::Distro(identity) => {
+                    if distro.is_none() {
+                        *distro = Some(identity);
+                    }
+                }
+                os_packages::OsReleaseMatch::Unsupported(reason) => notes.push(reason),
+                os_packages::OsReleaseMatch::NotOsRelease => {}
+            }
+        }
+    }
+
+    let mut detections = Vec::new();
+    let mut unannotated_packages = 0usize;
+    for member in members {
+        let package_list = if os_packages::is_dpkg_status_path(&member.path) {
+            Some(os_packages::parse_dpkg_status(&member.bytes))
+        } else if os_packages::is_apk_installed_path(&member.path) {
+            Some(os_packages::parse_apk_installed(&member.bytes))
+        } else {
+            None
+        };
+        if let Some(packages) = package_list {
+            if packages.len() >= os_packages::MAX_PACKAGES_PER_DATABASE {
+                notes.push(format!(
+                    "package database {} is bounded at {} packages; later entries are not reported",
+                    member.path,
+                    os_packages::MAX_PACKAGES_PER_DATABASE
+                ));
+            }
+            if distro.is_none() && !packages.is_empty() {
+                unannotated_packages += packages.len();
+            }
+            let ecosystem = distro
+                .as_ref()
+                .map(|identity| identity.osv_ecosystem.clone());
+            for (name, version) in packages {
+                detections.push(Detection {
+                    vendor: String::new(),
+                    product: name.clone(),
+                    version: Some(version.clone()),
+                    raw_version: Some(version),
+                    ecosystem: ecosystem.clone(),
+                    package_name: Some(name),
+                    path: member.path.clone(),
+                    source: DetectionSource::OsPackageDatabase,
+                    truncated: false,
+                });
+            }
+            continue;
+        }
+        if os_packages::is_os_release_path(&member.path) {
+            continue;
+        }
+        let member_name = member
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&member.path)
+            .to_string();
+        detections.extend(scan_buffer(
+            &member.path,
+            &member_name,
+            &member.bytes,
+            false,
+            signatures,
+            notes,
+            distro,
+        ));
+    }
+    if unannotated_packages > 0 {
+        notes.push(format!(
+            "{unannotated_packages} package(s) from a package database carry no distribution identity (no usable os-release in this target); they are reported as components but not matched against a distribution advisory source"
+        ));
+    }
+    detections
+}
+
 pub fn fold(detections: Vec<Detection>) -> Vec<BinaryComponent> {
     let mut grouped: BTreeMap<(String, String), (BinaryComponent, DetectionSource)> =
         BTreeMap::new();
@@ -964,5 +1039,155 @@ mod tests {
             .expect_err("byte inventory overflow");
         assert!(byte_error.contains("7 bytes"), "{byte_error}");
         assert!(byte_error.contains("ignore"), "{byte_error}");
+    }
+
+    fn tar_with(path: &str, body: &[u8]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, body)
+            .expect("tar member");
+        builder.into_inner().expect("tar bytes")
+    }
+
+    #[test]
+    fn package_databases_inside_an_image_are_matched_to_their_distribution() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A saved Docker/OCI image is a tar of layer tars; the package
+        // database and os-release ride along like any other member.
+        let layer = {
+            let mut builder = tar::Builder::new(Vec::new());
+            let mut add = |path: &str, body: &[u8]| {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(body.len() as u64);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, path, body)
+                    .expect("layer member");
+            };
+            add(
+                "etc/os-release",
+                b"PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nID=debian\nVERSION_ID=\"12\"\nVERSION_CODENAME=bookworm\n",
+            );
+            add(
+                "var/lib/dpkg/status",
+                b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n\nPackage: leftbehind\nVersion: 1.0-1\nStatus: deinstall ok config-files\n",
+            );
+            add("bin/busybox", b"\0\0BusyBox v1.38.0\0");
+            builder.into_inner().expect("layer tar")
+        };
+        let image = tar_with("layer.tar", &layer);
+        std::fs::write(dir.path().join("image.tar"), &image).expect("write image");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+
+        let products: Vec<&str> = scanned
+            .result
+            .components
+            .iter()
+            .map(|c| c.product.as_str())
+            .collect();
+        assert!(products.contains(&"libc6"), "{products:?}");
+        assert!(
+            !products.contains(&"leftbehind"),
+            "a deinstalled leftover is not inventory: {products:?}"
+        );
+        assert!(products.contains(&"busybox"), "{products:?}");
+
+        let query = scanned
+            .queries
+            .iter()
+            .find(|q| q.product == "libc6")
+            .expect("libc6 is askable");
+        assert_eq!(query.ecosystem.as_deref(), Some("Debian:12"));
+        assert_eq!(query.osv_name.as_deref(), Some("libc6"));
+        // OSV's distribution ecosystems compare the packaged version.
+        assert_eq!(query.raw_version, "2.36-9+deb12u3");
+    }
+
+    #[test]
+    fn alpine_images_read_the_apk_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let members: Vec<(&str, Vec<u8>)> = vec![
+            (
+                "etc/os-release",
+                b"NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.20\n".to_vec(),
+            ),
+            (
+                "lib/apk/db/installed",
+                b"P:musl\nV:1.2.5-r0\n\nP:busybox\nV:1.36.1-r7\n".to_vec(),
+            ),
+        ];
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, body) in &members {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, body.as_slice())
+                .expect("member");
+        }
+        std::fs::write(
+            dir.path().join("alpine.tar"),
+            builder.into_inner().expect("tar"),
+        )
+        .expect("write");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+
+        let musl = scanned
+            .queries
+            .iter()
+            .find(|q| q.product == "musl")
+            .expect("musl is askable");
+        assert_eq!(musl.ecosystem.as_deref(), Some("Alpine:v3.20"));
+        assert_eq!(musl.raw_version, "1.2.5-r0");
+    }
+
+    #[test]
+    fn package_databases_without_a_distribution_identity_say_so() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let image = tar_with(
+            "var/lib/dpkg/status",
+            b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
+        );
+        std::fs::write(dir.path().join("mystery.tar"), &image).expect("write");
+
+        let scanned = scan(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+
+        // The inventory is real and reported…
+        assert!(scanned
+            .result
+            .components
+            .iter()
+            .any(|c| c.product == "libc6"));
+        // …but it cannot be asked about, and the run says why.
+        let query = scanned
+            .queries
+            .iter()
+            .find(|q| q.product == "libc6")
+            .expect("still askable as a component query");
+        assert_eq!(query.ecosystem, None);
+        assert!(scanned
+            .notes
+            .iter()
+            .any(|note| note.contains("no distribution identity")));
     }
 }
