@@ -84,6 +84,12 @@ enum Command {
         #[command(subcommand)]
         command: RulePackCommand,
     },
+    /// Build, inspect, or clear the local advisory database used for
+    /// network-independent dependency matching.
+    AdvisoryDb {
+        #[command(subcommand)]
+        command: AdvisoryDbCommand,
+    },
     /// List the language grammars compiled into this binary.
     Languages,
     /// Score against the OWASP Benchmark: ground truth oxAudit did not write.
@@ -179,6 +185,42 @@ enum RulePackCommand {
 
         /// Pack id.
         id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AdvisoryDbCommand {
+    /// Download OSV's ecosystem dumps and build (or refresh) the database.
+    Update {
+        /// Advisory database to build. Parent directories are created
+        /// owner-only.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+
+        /// Ecosystem to download in addition to the defaults (npm, PyPI,
+        /// Maven, crates.io, Go, RubyGems, Packagist, NuGet). Repeatable —
+        /// for example `--ecosystem Debian:12 --ecosystem 'Alpine:v3.20'`.
+        #[arg(long = "ecosystem", value_name = "NAME")]
+        ecosystems: Vec<String>,
+
+        /// Dump base URL. Defaults to OSV's published bucket; point it at a
+        /// mirror when the bucket is unreachable.
+        #[arg(long, value_name = "URL")]
+        source: Option<String>,
+
+        /// Emit the build report as JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show what the database covers and how fresh it is.
+    Status {
+        /// Advisory database to inspect.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -295,6 +337,10 @@ struct DepsArgs {
     /// Persist this run and complete advisory receipts in a shared database.
     #[arg(long)]
     db: Option<PathBuf>,
+    /// Answer advisories from this local advisory database (built with
+    /// `advisory-db update`) instead of the OSV API. Works offline.
+    #[arg(long, value_name = "FILE")]
+    advisory_db: Option<PathBuf>,
     /// Reuse a validated receipt from --db; never contact providers.
     #[arg(long)]
     offline: bool,
@@ -533,6 +579,7 @@ pub fn run() -> i32 {
         Command::Runs(args) => run_runs(args),
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
         Command::RulePack { command } => run_rule_pack(command),
+        Command::AdvisoryDb { command } => run_advisory_db(command, cli.quiet),
         Command::Languages => run_languages(),
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
     };
@@ -639,6 +686,129 @@ fn run_rule_pack(command: &RulePackCommand) -> CliResult {
             store.remove(id).map_err(failure)?;
             println!("{id} removed; stored runs keep the findings they recorded");
             Ok(0)
+        }
+    }
+}
+
+fn run_advisory_db(command: &AdvisoryDbCommand, quiet: bool) -> CliResult {
+    match command {
+        AdvisoryDbCommand::Update {
+            db,
+            ecosystems,
+            source,
+            json,
+        } => {
+            let parent = db.parent().filter(|p| !p.as_os_str().is_empty());
+            if let Some(parent) = parent {
+                crate::private_storage::ensure_private_dir(parent)
+                    .map_err(|error| failure(error.to_string()))?;
+            }
+            let mut store = crate::advisories::store::AdvisoryDb::open(db)
+                .map_err(|error| failure(format!("cannot open {}: {error}", db.display())))?;
+            let http = build_http_client()?;
+            let mut fetcher = match source {
+                Some(base) => crate::advisories::ingest::HttpDumpFetcher::with_base(http, base),
+                None => crate::advisories::ingest::HttpDumpFetcher::new(http),
+            };
+            let mut selected: Vec<String> = crate::advisories::ingest::DEFAULT_ECOSYSTEMS
+                .iter()
+                .map(|e| e.to_string())
+                .collect();
+            for ecosystem in ecosystems {
+                if !selected.iter().any(|existing| existing == ecosystem) {
+                    selected.push(ecosystem.clone());
+                }
+            }
+            let note = |line: String| {
+                if !quiet {
+                    eprintln!("{line}");
+                }
+            };
+            let report = block_on(crate::advisories::ingest::update(
+                &mut store,
+                &selected,
+                &mut fetcher,
+                note,
+            ))
+            .map_err(failure)?;
+            if *json {
+                let rendered = serde_json::to_vec_pretty(&serde_json::json!({
+                    "db": db.display().to_string(),
+                    "ecosystems": report.ecosystems.iter()
+                        .map(|e| serde_json::json!({
+                            "ecosystem": e.ecosystem,
+                            "records": e.records,
+                            "zipBytes": e.zip_bytes,
+                        }))
+                        .collect::<Vec<_>>(),
+                    "totalAdvisories": report.total_advisories,
+                    "totalPackages": report.total_packages,
+                    "builtAtMs": report.built_at_ms,
+                }))
+                .map_err(|error| failure(error.to_string()))?;
+                println!("{}", String::from_utf8_lossy(&rendered));
+            } else {
+                for ecosystem in &report.ecosystems {
+                    println!(
+                        "{}: {} advisories ({} MiB dump)",
+                        ecosystem.ecosystem,
+                        ecosystem.records,
+                        ecosystem.zip_bytes / (1024 * 1024)
+                    );
+                }
+                println!(
+                    "database holds {} advisories over {} packages; coverage: {}",
+                    report.total_advisories,
+                    report.total_packages,
+                    store.ecosystems().map_err(failure)?.join(", ")
+                );
+            }
+            Ok(EXIT_OK)
+        }
+        AdvisoryDbCommand::Status { db, json } => {
+            let store = crate::advisories::store::AdvisoryDb::open(db)
+                .map_err(|error| failure(format!("cannot open {}: {error}", db.display())))?;
+            let (advisories, packages) = store.counts().map_err(failure)?;
+            let size = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0);
+            if *json {
+                let rendered = serde_json::json!({
+                    "db": db.display().to_string(),
+                    "schemaVersion": crate::advisories::store::SCHEMA_VERSION,
+                    "ecosystems": store.ecosystems().map_err(failure)?,
+                    "advisories": advisories,
+                    "packages": packages,
+                    "builtAtMs": store.built_at_ms(),
+                    "updatedAtMs": store.updated_at_ms(),
+                    "sizeBytes": size,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rendered)
+                        .map_err(|error| failure(error.to_string()))?
+                );
+            } else {
+                println!(
+                    "{} ecosystems: {}",
+                    store.ecosystems().map_err(failure)?.len(),
+                    store.ecosystems().map_err(failure)?.join(", ")
+                );
+                println!(
+                    "{advisories} advisories over {packages} packages, {} MiB",
+                    size / (1024 * 1024)
+                );
+                println!(
+                    "built {}, updated {}",
+                    store
+                        .built_at_ms()
+                        .map(|ms| ms.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                    store
+                        .updated_at_ms()
+                        .map(|ms| ms.to_string())
+                        .unwrap_or_else(|| "unknown".into())
+                );
+            }
+            Ok(EXIT_OK)
         }
     }
 }
@@ -1058,11 +1228,19 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or(temporary_cache.path());
     let cancel = AtomicBool::new(false);
+    let advisory_db = match &args.advisory_db {
+        Some(path) => Some(
+            crate::advisories::store::AdvisoryDb::open(path)
+                .map_err(|error| failure(format!("cannot open {}: {error}", path.display())))?,
+        ),
+        None => None,
+    };
     let result = block_on(crate::deps::service::scan(
         crate::deps::service::ScanRequest {
             root: &root,
             ignored_dirs: &args.ignore_dirs,
             offline: args.offline,
+            advisory_db: advisory_db.as_ref(),
             repository: service.repository(),
             providers: &providers,
             cancel: &cancel,
@@ -1095,6 +1273,9 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
             );
             for warning in &result.summary.enrichment.warnings {
                 bytes.extend_from_slice(format!("warning: {warning}\n").as_bytes());
+            }
+            for note in &result.summary.advisory_notes {
+                bytes.extend_from_slice(format!("warning: {note}\n").as_bytes());
             }
             bytes
         }
@@ -1783,6 +1964,7 @@ mod tests {
         let lockfile = directory.path().join("package-lock.json");
         std::fs::write(&lockfile, "{ this is not JSON").expect("invalid fixture");
         let args = DepsArgs {
+            advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
             db: None,
@@ -1825,6 +2007,7 @@ mod tests {
         std::fs::write(directory.path().join("package-lock.json"), "{ malformed")
             .expect("invalid fixture");
         let args = DepsArgs {
+            advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
             db: None,
@@ -1855,6 +2038,7 @@ mod tests {
         )
         .expect("valid empty lockfile");
         let args = DepsArgs {
+            advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
             db: None,
@@ -1882,6 +2066,7 @@ mod tests {
         )
         .expect("malformed lockfile");
         let args = DepsArgs {
+            advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
             db: None,
@@ -1915,6 +2100,7 @@ mod tests {
         std::fs::write(directory.path().join("Cargo.lock"), "not valid TOML [")
             .expect("malformed fixture");
         let args = DepsArgs {
+            advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
             db: None,

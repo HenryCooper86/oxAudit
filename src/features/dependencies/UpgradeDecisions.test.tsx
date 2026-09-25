@@ -25,6 +25,13 @@ test('group detail preserves location and copies a checklist, displaying partial
   expect(copy.mock.calls[0][0]).toContain('/repo/package-lock.json');
   expect(within(screen.getByLabelText('Selected upgrade group')).getByText('/repo/package-lock.json')).toBeInTheDocument();
 });
+test('a local advisory database answer states its freshness and matching limits',()=>{
+  render(<UpgradeDecisions result={{...result,summary:{...result.summary,advisorySource:'local-db',advisoryFetchedAtMs:2000000,advisoryNotes:['2 advisory match(es) could not be decided locally; they are kept as findings']}}} onSelect={()=>{}} onRecheck={()=>{}} disabled/>);
+  expect(screen.getByText(/Advisory source: local-db/)).toBeInTheDocument();
+  expect(screen.getByText(/refresh it with/)).toBeInTheDocument();
+  expect(screen.getByText(/could not be decided locally/)).toBeInTheDocument();
+});
+
 test('distinct installation groups navigate and direct command copy never executes an upgrade',async()=>{
   const copy=vi.fn().mockResolvedValue(undefined);Object.defineProperty(navigator,'clipboard',{value:{writeText:copy},configurable:true});
   const direct:Vulnerability={...advisory,affectedEvidence:{ecosystem:'npm',packageName:'leaf',records:[{package:{ecosystem:'npm',name:'leaf'},ranges:[{type:'SEMVER',events:[{introduced:'0'},{fixed:'1.0.1'}]}]}]},occurrence:{status:'available',warnings:[],installPath:'node_modules/leaf',paths:[{workspace:'',entryPoint:'leaf',chain:[{name:'leaf',packageName:'leaf',installPath:'node_modules/leaf',dependencyType:'dev',declared:'^1.0.0'}]}]}};

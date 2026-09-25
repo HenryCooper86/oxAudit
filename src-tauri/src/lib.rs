@@ -1,4 +1,5 @@
 mod adapters;
+pub mod advisories;
 mod agent;
 mod ai;
 pub mod binscan;

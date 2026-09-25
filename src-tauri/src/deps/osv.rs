@@ -372,8 +372,10 @@ fn urlencode(s: &str) -> String {
     percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
-/// Convert raw OSV vuln objects into our Vulnerability model.
-fn parse_vulns(
+/// Convert raw OSV vuln objects into our Vulnerability model. Shared by the
+/// network client and the local advisory database so both produce identical
+/// findings and evidence.
+pub(crate) fn parse_vulns(
     raw: Vec<Value>,
     ecosystem: &str,
     package_name: &str,

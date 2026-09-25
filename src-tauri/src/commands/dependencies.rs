@@ -39,6 +39,7 @@ pub async fn scan_dependencies(
         root: &root,
         ignored_dirs: &settings.scan.ignored_dirs,
         offline,
+        advisory_db: None,
         repository: service.repository(),
         providers: &providers,
         cancel: &state.cancel_dependency_scan,

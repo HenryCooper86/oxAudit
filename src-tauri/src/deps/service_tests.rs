@@ -193,6 +193,7 @@ async fn execute(
         repository: repo,
         providers: provider,
         offline,
+        advisory_db: None,
         cancel,
         events,
         cache_path: root,
@@ -789,4 +790,127 @@ async fn unnamed_workspace_v2_v3_queries_and_persists_actual_package_name() {
         assert_eq!(components[0].purl.as_deref(), Some("pkg/npm/a@1.0.0"));
         assert!(observations.iter().flat_map(|o| &o.evidence).any(|e| matches!(&e.evidence,oxaudit_domain::Evidence::PackageDeclaration(d) if d.package_name=="a" && d.install_path.as_deref()==Some("packages/a"))));
     }
+}
+
+fn advisory_db_with(records: Vec<(String, String)>) -> crate::advisories::store::AdvisoryDb {
+    // (id, package) advisory records affecting the package at <2.0.0
+    let mut db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
+    for (id, package) in records {
+        let record = serde_json::json!({
+            "id": id,
+            "summary": "fixture advisory",
+            "severity": [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+            "affected": [{
+                "package": { "ecosystem": "npm", "name": package },
+                "ranges": [{ "type": "SEMVER",
+                    "events": [{"introduced": "0"}, {"fixed": "2.0.0"}] }]
+            }]
+        });
+        let packages = vec![("npm".to_string(), package)];
+        db.insert_record(&id, None, &record, &packages).unwrap();
+    }
+    db.finish_update(&["npm".to_string()], 12345, 12345)
+        .unwrap();
+    db
+}
+
+#[tokio::test]
+async fn local_advisory_db_answers_offline_with_the_same_finding_shape() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let db = advisory_db_with(vec![("GHSA-fixture".to_string(), "example".to_string())]);
+    let provider = provider();
+    let result = scan(ScanRequest {
+        root,
+        repository: &repo,
+        providers: &provider,
+        offline: true,
+        advisory_db: Some(&db),
+        cancel: &AtomicBool::new(false),
+        events: &events(),
+        cache_path: root,
+        ignored_dirs: &[],
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.summary.advisory_source, "local-db");
+    assert_eq!(result.summary.advisory_fetched_at_ms, Some(12345));
+    assert_eq!(result.vulnerabilities.len(), 1);
+    let vulnerability = &result.vulnerabilities[0];
+    assert_eq!(vulnerability.id, "GHSA-fixture");
+    assert_eq!(vulnerability.package_name, "example");
+    assert_eq!(vulnerability.fixed_versions, vec!["2.0.0"]);
+    // The shared parser filled severity and evidence exactly as the
+    // network path would.
+    assert!(vulnerability.cvss_score.is_some());
+    assert!(vulnerability.affected_evidence.is_some());
+}
+
+#[tokio::test]
+async fn local_advisory_db_requires_full_ecosystem_coverage() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    // A database built for PyPI cannot answer an npm query.
+    let db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
+    db.finish_update(&["PyPI".to_string()], 1, 1).unwrap();
+    let error = scan(ScanRequest {
+        root,
+        repository: &repo,
+        providers: &provider(),
+        offline: true,
+        advisory_db: Some(&db),
+        cancel: &AtomicBool::new(false),
+        events: &events(),
+        cache_path: root,
+        ignored_dirs: &[],
+    })
+    .await
+    .unwrap_err();
+    assert!(error.contains("incomplete advisory coverage"), "{error}");
+    assert!(error.contains("npm"), "{error}");
+}
+
+#[tokio::test]
+async fn local_advisory_db_surfaces_undetermined_notes() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let mut db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
+    let record = serde_json::json!({
+        "id": "GHSA-undecidable",
+        "affected": [{
+            "package": { "ecosystem": "npm", "name": "example" },
+            "ranges": [{ "type": "SEMVER",
+                "events": [{"introduced": "not-a-version"}] }]
+        }]
+    });
+    let packages = vec![("npm".to_string(), "example".to_string())];
+    db.insert_record("GHSA-undecidable", None, &record, &packages)
+        .unwrap();
+    db.finish_update(&["npm".to_string()], 1, 1).unwrap();
+
+    let result = scan(ScanRequest {
+        root,
+        repository: &repo,
+        providers: &provider(),
+        offline: true,
+        advisory_db: Some(&db),
+        cancel: &AtomicBool::new(false),
+        events: &events(),
+        cache_path: root,
+        ignored_dirs: &[],
+    })
+    .await
+    .unwrap();
+
+    // Undetermined keeps the advisory and says so in the summary.
+    assert_eq!(result.vulnerabilities.len(), 1);
+    assert_eq!(result.summary.advisory_notes.len(), 1);
+    assert!(result.summary.advisory_notes[0].contains("undetermined"));
 }

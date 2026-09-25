@@ -85,6 +85,10 @@ pub struct ScanRequest<'a> {
     pub root: &'a Path,
     pub ignored_dirs: &'a [String],
     pub offline: bool,
+    /// Answer advisories from this local database instead of the network,
+    /// whether or not `offline` is set. Coverage discipline is the same: an
+    /// ecosystem whose dump the database does not carry fails the scan.
+    pub advisory_db: Option<&'a crate::advisories::store::AdvisoryDb>,
     pub repository: &'a FindingsRepository,
     pub providers: &'a dyn DependencyProviders,
     pub cancel: &'a AtomicBool,
@@ -356,12 +360,51 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
 
         let query_keys = crate::deps::osv::query_keys(&query_deps);
         let mut advisory_fetched_at_ms = None;
+        let mut advisory_notes = Vec::new();
+        let mut advisory_source = "online";
         let (vuln_map, osv_snapshot_id) = if query_keys.is_empty() {
             // There is no provider claim to cache or satisfy: a complete empty
             // inventory must work offline without borrowing an unrelated
             // snapshot from another project.
+            advisory_source = "notApplicable";
             (std::collections::HashMap::new(), None)
+        } else if let Some(db) = request.advisory_db {
+            let _ = request.events.emit("deps://progress", serde_json::json!({ "phase": "matching-local", "done": 0, "total": 1 }));
+            // The database's build time is the honest as-of stamp: the answer
+            // is exactly as fresh as the dump it was built from.
+            advisory_fetched_at_ms = db.built_at_ms();
+            advisory_source = "local-db";
+            let outcome = crate::advisories::matching::query_local(db, &query_deps)
+                .map_err(|error| format!("incomplete advisory coverage: {error}"))?;
+            advisory_notes = outcome.notes.warnings();
+            // Advisory evidence binds to an immutable snapshot of what the
+            // source answered; a database answer gets the same treatment as a
+            // network answer, under its own provider identity.
+            let mut payload = complete_osv_receipt_payload(query_keys.clone(), &outcome.results)?;
+            payload["advisorySource"] = serde_json::json!("local-db");
+            payload["sourceUrl"] = serde_json::json!(db.source_url()?);
+            payload["builtAtMs"] = serde_json::json!(advisory_fetched_at_ms);
+            let validated = load_complete_osv_receipt(&payload, &query_keys)?;
+            let payload_bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+            let content_sha256 = {
+                use sha2::Digest;
+                format!("{:x}", sha2::Sha256::digest(&payload_bytes))
+            };
+            let fetched_at = advisory_fetched_at_ms.unwrap_or_else(epoch_millis);
+            let snapshot_id = format!("provider_{}", uuid::Uuid::new_v4());
+            request
+                .repository
+                .provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {
+                    id: snapshot_id.clone(),
+                    provider_id: "local-advisory-db".into(),
+                    fetched_at_ms: fetched_at,
+                    content_sha256,
+                    payload,
+                })
+                .map_err(|error| error.to_string())?;
+            (validated, Some(snapshot_id))
         } else if request.offline {
+            advisory_source = "cache";
             let _ = request.events.emit("deps://progress", serde_json::json!({ "phase": "loading-cache", "done": 0, "total": 1 }));
             match request.repository
                 .provider_latest_snapshot("osv-query")
@@ -513,12 +556,13 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             path: path.clone(),
             run_id: Some(run_id.to_string()),
             advisory_fetched_at_ms,
-            advisory_source: if packages_queried == 0 { "notApplicable" } else if request.offline { "cache" } else { "online" }.into(),
+            advisory_source: advisory_source.into(),
             enrichment,
             lockfiles_found: lockfile_infos.iter().map(|l| l.path.clone()).collect(),
             packages_found,
             packages_queried,
             advisory_coverage: crate::models::AdvisoryCoverage::Complete,
+            advisory_notes,
             vulnerabilities_found: vulnerabilities.len(),
             duration_ms: started.elapsed().as_millis() as u64,
         },

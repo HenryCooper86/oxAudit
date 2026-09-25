@@ -754,6 +754,8 @@ export interface DepScanSummary {
   packagesQueried: number;
   /** Older saved runs did not record whether every package had advisory coverage. */
   advisoryCoverage?: "complete" | "unknown";
+  /** Present when a local advisory database answered: honest limits hit while matching (undetermined comparisons, skipped GIT ranges). */
+  advisoryNotes?: string[];
   vulnerabilitiesFound: number;
   durationMs: number;
 }

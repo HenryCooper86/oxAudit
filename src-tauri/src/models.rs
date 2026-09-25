@@ -320,6 +320,10 @@ pub struct DepScanSummary {
     pub packages_queried: usize,
     #[serde(default)]
     pub advisory_coverage: AdvisoryCoverage,
+    /// Honest limits hit while answering advisories from a local database
+    /// (undetermined comparisons, skipped GIT ranges); empty for online runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisory_notes: Vec<String>,
     pub vulnerabilities_found: usize,
     pub duration_ms: u64,
 }

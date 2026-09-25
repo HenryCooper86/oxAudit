@@ -1584,3 +1584,138 @@ fn rule_packs_round_trip_through_the_store_and_apply_by_selection() {
     assert_eq!(code(&output), 3);
     assert!(String::from_utf8_lossy(&output.stderr).contains("rulepack.absent"));
 }
+
+/// Serve OSV-shaped ecosystem dumps over a local HTTP server so the advisory
+/// database build runs end to end without touching the network.
+struct DumpServer {
+    address: std::net::SocketAddr,
+}
+
+impl DumpServer {
+    fn start(zip: Vec<u8>) -> Self {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = [0u8; 4096];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let head = String::from_utf8_lossy(&request[..read]);
+                // Only the request line matters; every ecosystem path serves
+                // the same fixture archive.
+                if !head.starts_with("GET ") {
+                    continue;
+                }
+                let body = zip.clone();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        Self { address }
+    }
+
+    fn base(&self) -> String {
+        format!("http://{}", self.address)
+    }
+}
+
+fn fixture_dump_zip() -> Vec<u8> {
+    let advisory = serde_json::json!({
+        "id": "GHSA-e2e-fixture",
+        "summary": "e2e fixture advisory",
+        "aliases": ["CVE-2099-1234"],
+        "severity": [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+        "affected": [{
+            "package": { "ecosystem": "npm", "name": "example" },
+            "ranges": [{ "type": "SEMVER",
+                "events": [{"introduced": "0"}, {"fixed": "2.0.0"}] }]
+        }]
+    })
+    .to_string();
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "GHSA-e2e-fixture.json".to_string(),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("zip member");
+    std::io::Write::write_all(&mut writer, advisory.as_bytes()).expect("zip body");
+    writer.finish().expect("zip").into_inner()
+}
+
+#[test]
+fn advisory_database_supports_offline_dependency_matching() {
+    let server = DumpServer::start(fixture_dump_zip());
+    let workspace = tempfile::tempdir().expect("workspace");
+    let db = workspace.path().join("advisories.sqlite3");
+
+    let output = run(&[
+        "advisory-db",
+        "update",
+        "--db",
+        &db.to_string_lossy(),
+        "--source",
+        &server.base(),
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("npm:"), "{stderr}");
+
+    // Status reports coverage over the built database.
+    let output = run(&[
+        "advisory-db",
+        "status",
+        "--db",
+        &db.to_string_lossy(),
+        "--json",
+    ]);
+    assert_eq!(code(&output), 0);
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(status["ecosystems"].as_array().unwrap().len() >= 8);
+    assert_eq!(status["advisories"], 1);
+
+    // A lockfile project scans offline against the database: the fixture
+    // advisory affects example@1.0.0.
+    let project = tempfile::tempdir().expect("project");
+    std::fs::create_dir_all(project.path()).expect("project dir");
+    std::fs::write(
+        project.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"node_modules/example":{"version":"1.0.0"}}}"#,
+    )
+    .expect("lockfile");
+    let output = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--advisory-db",
+        &db.to_string_lossy(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["summary"]["advisorySource"], "local-db");
+    let vulnerabilities = document["vulnerabilities"].as_array().unwrap();
+    assert_eq!(vulnerabilities.len(), 1);
+    assert_eq!(vulnerabilities[0]["id"], "GHSA-e2e-fixture");
+    assert_eq!(
+        vulnerabilities[0]["fixedVersions"],
+        serde_json::json!(["2.0.0"])
+    );
+    assert_eq!(vulnerabilities[0]["packageName"], "example");
+}
