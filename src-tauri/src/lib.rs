@@ -27,6 +27,7 @@ mod rulepack_feed;
 mod rulepack_store;
 mod schedule_store;
 mod secrets_validation;
+mod vex_trust;
 // Public so benches/scanning.rs can measure the rule engines directly. The
 // benchmark exists to catch a rule change that quietly makes matching
 // quadratic, which means it has to reach the same functions a scan does.

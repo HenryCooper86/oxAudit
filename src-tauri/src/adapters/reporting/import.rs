@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -16,7 +16,7 @@ pub struct ImportedComponent {
     pub confidence: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalClaimLocation {
     pub uri: String,
@@ -29,7 +29,7 @@ pub struct ExternalClaimLocation {
 /// These records are deliberately not local Findings or Reviews. Their trust
 /// level remains explicit when persisted so a third-party status can never
 /// silently close or confirm locally produced evidence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalClaim {
     pub record_id: String,

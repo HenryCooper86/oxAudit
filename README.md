@@ -289,6 +289,13 @@ oxaudit-cli runs --db ~/.oxaudit/findings.sqlite3 --kind dependencies --json
 oxaudit-cli scan . --db ~/.oxaudit/findings.sqlite3
 oxaudit-cli export --db ~/.oxaudit/findings.sqlite3 --run <id> --format cyclonedx
 
+# Trust an imported VEX document and let its not_affected claims surface as
+# triage suggestions against a stored dependency run. A suggestion is a
+# suggestion: reviews still need a person (ADR 0003).
+oxaudit-cli vex claims --db ~/.oxaudit/findings.sqlite3
+oxaudit-cli vex trust --db ~/.oxaudit/findings.sqlite3 --sha <sha256> --by henry --note "team-reviewed"
+oxaudit-cli vex suggest --db ~/.oxaudit/findings.sqlite3 --run <run-id>
+
 # Apply a rule pack committed to the repo, validated and compiled for this
 # run only — the CI-native form, nothing installed
 oxaudit-cli scan . --rule-pack-file .oxaudit/rules.toml

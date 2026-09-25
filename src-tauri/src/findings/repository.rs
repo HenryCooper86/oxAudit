@@ -156,6 +156,13 @@ CREATE TABLE verification_records (
   verified_at_ms INTEGER NOT NULL,
   payload_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS trust_grants (
+  content_sha256 TEXT PRIMARY KEY,
+  granted_at_ms INTEGER NOT NULL,
+  granted_by TEXT NOT NULL,
+  note TEXT NOT NULL
+);
 "#;
 
 const MIGRATION_V3: &str = r#"
@@ -927,6 +934,64 @@ impl FindingsRepository {
         payload
             .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
             .transpose()
+    }
+
+    /// Record (or refresh) a trust grant for an imported claim document.
+    pub(crate) fn save_trust_grant(
+        &self,
+        grant: &crate::vex_trust::TrustGrant,
+    ) -> Result<(), CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        connection
+            .execute(
+                "INSERT INTO trust_grants (content_sha256, granted_at_ms, granted_by, note)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(content_sha256) DO UPDATE SET
+                     granted_at_ms = excluded.granted_at_ms,
+                     granted_by = excluded.granted_by,
+                     note = excluded.note",
+                params![
+                    grant.content_sha256,
+                    grant.granted_at_ms as i64,
+                    grant.granted_by,
+                    grant.note
+                ],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn delete_trust_grant(&self, content_sha256: &str) -> Result<(), CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        connection
+            .execute(
+                "DELETE FROM trust_grants WHERE content_sha256 = ?1",
+                params![content_sha256],
+            )
+            .map_err(persistence_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn trust_grants(&self) -> Result<Vec<crate::vex_trust::TrustGrant>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT content_sha256, granted_at_ms, granted_by, note
+                 FROM trust_grants ORDER BY granted_at_ms DESC",
+            )
+            .map_err(persistence_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(crate::vex_trust::TrustGrant {
+                    content_sha256: row.get(0)?,
+                    granted_at_ms: row.get::<_, i64>(1)? as u64,
+                    granted_by: row.get(2)?,
+                    note: row.get(3)?,
+                })
+            })
+            .map_err(persistence_error)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(persistence_error)
     }
 
     pub(crate) fn canonical_list_runs(

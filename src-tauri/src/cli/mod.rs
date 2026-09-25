@@ -87,6 +87,12 @@ enum Command {
         #[command(subcommand)]
         command: RulePackCommand,
     },
+    /// Trust imported VEX documents and turn their claims into triage
+    /// suggestions (never automatic review changes — ADR 0003).
+    Vex {
+        #[command(subcommand)]
+        command: VexCommand,
+    },
     /// Build, inspect, or clear the local advisory database used for
     /// network-independent dependency matching.
     AdvisoryDb {
@@ -205,6 +211,51 @@ enum RulePackCommand {
         only: Vec<String>,
 
         /// Emit the outcome as JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum VexCommand {
+    /// List imported claim documents and their trust state.
+    Claims {
+        /// Findings database holding the imported runs.
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Grant trust to one imported document by its content hash.
+    Trust {
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+        /// Document content hash, as shown by `vex claims`.
+        #[arg(long, value_name = "SHA256")]
+        sha: String,
+        /// Who granted trust (recorded for audit).
+        #[arg(long, value_name = "NAME")]
+        by: String,
+        /// Why this document is trusted (recorded for audit).
+        #[arg(long, value_name = "TEXT")]
+        note: Option<String>,
+    },
+    /// Revoke a document's trust grant; its suggestions stop appearing.
+    Revoke {
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+        #[arg(long, value_name = "SHA256")]
+        sha: String,
+    },
+    /// Map trusted claims against a stored dependency run's advisories.
+    Suggest {
+        #[arg(long, value_name = "FILE")]
+        db: PathBuf,
+        /// Dependency run whose advisories the claims are mapped against.
+        #[arg(long, value_name = "ID")]
+        run: String,
+        /// Emit JSON instead of text.
         #[arg(long)]
         json: bool,
     },
@@ -636,6 +687,7 @@ pub fn run() -> i32 {
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
         Command::RulePack { command } => run_rule_pack(command, cli.quiet),
         Command::AdvisoryDb { command } => run_advisory_db(command, cli.quiet),
+        Command::Vex { command } => run_vex(command),
         Command::Languages => run_languages(),
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
     };
@@ -783,6 +835,127 @@ fn run_rule_pack(command: &RulePackCommand, quiet: bool) -> CliResult {
                 }
             }
             Ok(0)
+        }
+    }
+}
+
+fn run_vex(command: &VexCommand) -> CliResult {
+    let repository = |db: &Path| open_repository(db);
+    match command {
+        VexCommand::Claims { db, json } => {
+            let sets = crate::vex_trust::claim_sets(&repository(db)?).map_err(failure)?;
+            let grants = crate::vex_trust::trust_grants(&repository(db)?).map_err(failure)?;
+            if *json {
+                let document = serde_json::json!({
+                    "claimSets": sets.iter().map(|set| serde_json::json!({
+                        "runId": set.run_id,
+                        "contentSha256": set.content_sha256,
+                        "format": set.format,
+                        "claims": set.claims.len(),
+                        "trusted": grants
+                            .iter()
+                            .any(|grant| grant.content_sha256 == set.content_sha256),
+                    })).collect::<Vec<_>>(),
+                    "grants": grants,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&document)
+                        .map_err(|error| failure(error.to_string()))?
+                );
+            } else if sets.is_empty() {
+                println!("no imported claim documents; import one from the desktop Export Center");
+            } else {
+                for set in &sets {
+                    let trusted = grants
+                        .iter()
+                        .any(|grant| grant.content_sha256 == set.content_sha256);
+                    println!(
+                        "{} {} — {} claim(s), {}",
+                        &set.content_sha256[..12.min(set.content_sha256.len())],
+                        set.format,
+                        set.claims.len(),
+                        if trusted { "TRUSTED" } else { "untrusted" },
+                    );
+                }
+            }
+            Ok(EXIT_OK)
+        }
+        VexCommand::Trust { db, sha, by, note } => {
+            let grant = crate::vex_trust::grant_trust(
+                &repository(db)?,
+                sha,
+                by,
+                note.as_deref().unwrap_or(""),
+            )
+            .map_err(failure)?;
+            println!(
+                "trusted document {} (granted by {}, recorded for audit)",
+                &grant.content_sha256[..12],
+                grant.granted_by
+            );
+            println!("its not_affected claims now surface as suggestions via `vex suggest`; reviews still need a person");
+            Ok(EXIT_OK)
+        }
+        VexCommand::Revoke { db, sha } => {
+            crate::vex_trust::revoke_trust(&repository(db)?, sha).map_err(failure)?;
+            println!("trust revoked; suggestions from that document no longer appear");
+            Ok(EXIT_OK)
+        }
+        VexCommand::Suggest { db, run, json } => {
+            let repo = repository(db)?;
+            let run_id = oxaudit_domain::RunId::parse(run.clone())
+                .map_err(|_| usage(format!("'{run}' is not a run identity")))?;
+            let projection = repo
+                .canonical_load_projection(&run_id)
+                .map_err(|error| failure(error.to_string()))?
+                .ok_or_else(|| usage(format!("run {run} has no stored projection")))?;
+            let scan: crate::models::DependencyScanResult = serde_json::from_value(projection)
+                .map_err(|error| usage(format!("run {run} is not a dependency scan: {error}")))?;
+            let sets = crate::vex_trust::claim_sets(&repo).map_err(failure)?;
+            let grants = crate::vex_trust::trust_grants(&repo).map_err(failure)?;
+            let report = crate::vex_trust::suggest(&sets, &grants, &scan.vulnerabilities);
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "run": run,
+                        "suggestions": report.suggestions,
+                        "unmapped": report.unmapped,
+                        "untrustedDocuments": report.untrusted,
+                    }))
+                    .map_err(|error| failure(error.to_string()))?
+                );
+            } else {
+                if report.suggestions.is_empty() {
+                    println!("no suggestions from trusted documents against run {run}");
+                }
+                for suggestion in &report.suggestions {
+                    println!(
+                        "[{}] {} {}@{} — {} (document {}, trusted by {})",
+                        suggestion.status,
+                        suggestion.advisory_id,
+                        suggestion.package_name,
+                        suggestion.installed_version,
+                        suggestion.justification,
+                        &suggestion.document_sha256[..12],
+                        suggestion.granted_by,
+                    );
+                    println!(
+                        "  a suggestion, not a decision: record the review yourself if you agree"
+                    );
+                }
+                for (sha, record, reason) in &report.unmapped {
+                    println!("unmapped: {record} — {reason} (document {})", &sha[..12]);
+                }
+                for (sha, claims) in &report.untrusted {
+                    println!(
+                        "untrusted document {} with {claims} claim(s) was not consulted",
+                        &sha[..12]
+                    );
+                }
+            }
+            Ok(EXIT_OK)
         }
     }
 }
