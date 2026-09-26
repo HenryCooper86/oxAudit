@@ -9,7 +9,7 @@ use std::path::Path;
 
 use tempfile::NamedTempFile;
 
-pub(crate) fn ensure_private_dir(path: &Path) -> Result<(), String> {
+pub fn ensure_private_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path)
         .map_err(|error| format!("cannot create private directory: {error}"))?;
 

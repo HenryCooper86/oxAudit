@@ -82,7 +82,52 @@ pub async fn run_scheduled_scan(
     let cve = app
         .try_state::<CveState>()
         .ok_or_else(CommandError::persistence_unavailable)?;
+    let rule_packs = app.try_state::<crate::rulepack_store::RulePacksState>();
+    struct ScheduledEvents(AppHandle);
+    impl ScanEventSink for ScheduledEvents {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            let _ = self.0.emit(event, payload);
+            Ok(())
+        }
+    }
+    let events = ScheduledEvents(app.clone());
+    let emit_schedule_completed = |result: &Result<ScanRunDetail, CommandError>| {
+        let _ = app.emit(
+            "schedule://completed",
+            serde_json::json!({
+                "projectId": project_id,
+                "canonicalPath": canonical_path,
+                "ok": result.is_ok(),
+                "runId": result.as_ref().map(|detail| detail.run_id.clone()),
+                "findings": result.as_ref().map(|detail| detail.summary.total_findings),
+                "error": result.as_ref().err().map(|error| error.to_string()),
+            }),
+        );
+    };
+    run_scheduled_scan_engine(
+        &state,
+        &findings,
+        &cve,
+        rule_packs.as_deref(),
+        &events,
+        &emit_schedule_completed,
+        canonical_path,
+    )
+    .await
+}
 
+/// The scheduled re-scan minus its Tauri wiring. The headless server runs
+/// the same function from its own ticker, passing its own event sink and a
+/// completion callback that publishes `schedule://completed` to the hub.
+pub(crate) async fn run_scheduled_scan_engine(
+    state: &AppState,
+    findings: &FindingsState,
+    cve: &CveState,
+    rule_packs: Option<&crate::rulepack_store::RulePacksState>,
+    events: &dyn ScanEventSink,
+    publish_completed: &(dyn Fn(&Result<ScanRunDetail, CommandError>) + Send + Sync),
+    canonical_path: &str,
+) -> Result<ScanRunDetail, CommandError> {
     let saved = state.settings.lock().unwrap().scan.clone();
     let options = ScanOptions {
         path: canonical_path.to_owned(),
@@ -98,7 +143,7 @@ pub async fn run_scheduled_scan(
         extra_rule_pack_files: Vec::new(),
     };
 
-    let packs = match app.try_state::<crate::rulepack_store::RulePacksState>() {
+    let packs = match rule_packs {
         Some(rule_packs) => match rule_packs.store() {
             Ok(store) => {
                 let resolved = store.resolve_enabled();
@@ -116,34 +161,11 @@ pub async fn run_scheduled_scan(
     };
 
     let cancel = std::sync::Arc::new(AtomicBool::new(false));
-    struct ScheduledEvents(AppHandle);
-    impl ScanEventSink for ScheduledEvents {
-        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
-            let _ = self.0.emit(event, payload);
-            Ok(())
-        }
-    }
 
     let result = findings
         .service()?
-        .scan_with_packs(
-            options,
-            &cve,
-            &cancel,
-            &ScheduledEvents(app.clone()),
-            &packs,
-        )
+        .scan_with_packs(options, cve, &cancel, events, &packs)
         .await;
-    let _ = app.emit(
-        "schedule://completed",
-        serde_json::json!({
-            "projectId": project_id,
-            "canonicalPath": canonical_path,
-            "ok": result.is_ok(),
-            "runId": result.as_ref().map(|detail| detail.run_id.clone()),
-            "findings": result.as_ref().map(|detail| detail.summary.total_findings),
-            "error": result.as_ref().err().map(|error| error.to_string()),
-        }),
-    );
+    publish_completed(&result);
     result
 }

@@ -32,6 +32,16 @@ pub async fn scan_history_secrets(
     path: String,
     validate_secrets: Option<bool>,
 ) -> Result<HistoryScanResponse, String> {
+    scan_history_secrets_engine(&state.http, path, validate_secrets).await
+}
+
+/// The history scan minus its Tauri wiring; the server passes its own HTTP
+/// client for live credential validation.
+pub(crate) async fn scan_history_secrets_engine(
+    http: &reqwest::Client,
+    path: String,
+    validate_secrets: Option<bool>,
+) -> Result<HistoryScanResponse, String> {
     let target = PathBuf::from(path.trim());
     if target.as_os_str().is_empty() {
         return Err("choose a repository folder first".into());
@@ -48,11 +58,9 @@ pub async fn scan_history_secrets(
     .await
     .map_err(|_| "history scan task failed".to_string())??;
     let validation = if validating {
-        let http = state.http.clone();
         let raw = std::mem::take(&mut outcome.raw_secrets);
         Some(
-            crate::secrets_validation::validate_raw_secrets(&mut outcome.findings, raw, &http)
-                .await,
+            crate::secrets_validation::validate_raw_secrets(&mut outcome.findings, raw, http).await,
         )
     } else {
         None

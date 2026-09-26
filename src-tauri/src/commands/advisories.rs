@@ -69,11 +69,37 @@ pub async fn advisory_db_update(
     ecosystems: Vec<String>,
     source: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    struct TauriEvents(AppHandle);
+    impl crate::findings::service::ScanEventSink for TauriEvents {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            let _ = self.0.emit(event, payload);
+            Ok(())
+        }
+    }
     let mut store = open_db(&path)?;
-    let http = state.http.clone();
+    advisory_db_update_engine(
+        &state.http,
+        &mut store,
+        ecosystems,
+        source,
+        &TauriEvents(app),
+    )
+    .await
+}
+
+/// The advisory database refresh minus its Tauri wiring; the headless server
+/// emits the same `advisorydb://progress` and `advisorydb://done` events over
+/// its own hub.
+pub(crate) async fn advisory_db_update_engine(
+    http: &reqwest::Client,
+    store: &mut crate::advisories::store::AdvisoryDb,
+    ecosystems: Vec<String>,
+    source: Option<String>,
+    events: &dyn crate::findings::service::ScanEventSink,
+) -> Result<serde_json::Value, String> {
     let mut fetcher = match &source {
-        Some(base) => crate::advisories::ingest::HttpDumpFetcher::with_base(http, base),
-        None => crate::advisories::ingest::HttpDumpFetcher::new(http),
+        Some(base) => crate::advisories::ingest::HttpDumpFetcher::with_base(http.clone(), base),
+        None => crate::advisories::ingest::HttpDumpFetcher::new(http.clone()),
     };
     let mut selected: Vec<String> = crate::advisories::ingest::DEFAULT_ECOSYSTEMS
         .iter()
@@ -84,14 +110,12 @@ pub async fn advisory_db_update(
             selected.push(ecosystem.clone());
         }
     }
-    let progress_app = app.clone();
-    let note = move |line: String| {
-        let _ = progress_app.emit("advisorydb://progress", serde_json::Value::from(line));
-    };
-    let report = crate::advisories::ingest::update(&mut store, &selected, &mut fetcher, note)
-        .await
-        .map_err(|error| format!("cannot update the advisory database: {error}"))?;
-    let _ = app.emit(
+    let report = crate::advisories::ingest::update(store, &selected, &mut fetcher, |line| {
+        let _ = events.emit("advisorydb://progress", serde_json::Value::from(line));
+    })
+    .await
+    .map_err(|error| format!("cannot update the advisory database: {error}"))?;
+    let _ = events.emit(
         "advisorydb://done",
         serde_json::json!({ "advisories": report.total_advisories }),
     );

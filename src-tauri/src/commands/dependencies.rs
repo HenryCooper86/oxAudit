@@ -22,6 +22,33 @@ pub async fn scan_dependencies(
             Ok(())
         }
     }
+    let cache_path = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    scan_dependencies_engine(
+        &state,
+        &findings,
+        &cache_path,
+        &Events(app),
+        path,
+        offline,
+        advisory_db_path,
+    )
+    .await
+}
+
+/// The dependency check minus its Tauri wiring — the headless server runs
+/// this same function over its own event sink and cache directory.
+pub(crate) async fn scan_dependencies_engine(
+    state: &AppState,
+    findings: &FindingsState,
+    cache_path: &Path,
+    events: &dyn crate::findings::service::ScanEventSink,
+    path: String,
+    offline: bool,
+    advisory_db_path: Option<String>,
+) -> Result<DependencyScanResult, String> {
     let root = Path::new(&path)
         .canonicalize()
         .map_err(|error| error.to_string())?;
@@ -37,10 +64,6 @@ pub async fn scan_dependencies(
     state.cancel_dependency_scan.store(false, Ordering::SeqCst);
     let service = findings.service().map_err(|error| error.to_string())?;
     let settings = state.settings.lock().unwrap().clone();
-    let cache_path = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir());
     let providers = crate::deps::service::NetworkProviders {
         osv: &state.osv,
         http: &state.http,
@@ -53,8 +76,8 @@ pub async fn scan_dependencies(
         repository: service.repository(),
         providers: &providers,
         cancel: &state.cancel_dependency_scan,
-        events: &Events(app),
-        cache_path: &cache_path,
+        events,
+        cache_path,
     })
     .await
 }
@@ -67,6 +90,13 @@ pub fn cancel_dependency_scan(state: State<'_, AppState>) {
 #[tauri::command]
 pub fn find_lockfiles(
     state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<LockfileInfo>, String> {
+    find_lockfiles_inner(&state, path)
+}
+
+pub(crate) fn find_lockfiles_inner(
+    state: &AppState,
     path: String,
 ) -> Result<Vec<LockfileInfo>, String> {
     let root = Path::new(&path);
@@ -105,6 +135,12 @@ pub fn find_lockfiles(
 #[tauri::command]
 pub async fn binary_tool_status(
     state: State<'_, AppState>,
+) -> Result<BinaryScannersStatus, String> {
+    binary_tool_status_engine(&state).await
+}
+
+pub(crate) async fn binary_tool_status_engine(
+    state: &AppState,
 ) -> Result<BinaryScannersStatus, String> {
     let settings = state.settings.lock().unwrap().clone();
     let trimmed = |value: Option<String>| {
@@ -168,19 +204,71 @@ pub async fn scan_binaries(
     app: AppHandle,
     state: State<'_, AppState>,
     findings: State<'_, FindingsState>,
+    cve: State<'_, CveState>,
+    request: crate::binscan::run::BinaryScanRequest,
+    use_grype: Option<bool>,
+) -> Result<crate::binscan::report::BinaryScanResult, String> {
+    struct TauriEvents(AppHandle);
+    impl crate::findings::service::ScanEventSink for TauriEvents {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            let _ = self.0.emit(event, payload);
+            Ok(())
+        }
+    }
+    let progress_app = app.clone();
+    let progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
+        let _ = progress_app.emit("binscan://progress", Value::from(line));
+    });
+    let scratch_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("no cache directory available: {e}"))?
+        .join("binscan");
+    let cache_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| scratch_dir.clone());
+    let run_events = crate::presentation::TauriRunEvents::new(app.clone());
+    scan_binaries_engine(
+        &state,
+        &findings,
+        Some(&cve),
+        &scratch_dir,
+        &cache_dir,
+        &run_events,
+        &TauriEvents(app),
+        progress,
+        request,
+        use_grype,
+    )
+    .await
+}
+
+/// The binary/firmware scan minus its Tauri wiring: the headless server
+/// drives this same function with its own run-event and progress sinks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn scan_binaries_engine(
+    state: &AppState,
+    findings: &FindingsState,
+    cve: Option<&CveState>,
+    scratch_dir: &Path,
+    cache_dir: &Path,
+    run_events: &dyn oxaudit_application::RunEventSink,
+    events: &dyn crate::findings::service::ScanEventSink,
+    progress: Arc<dyn Fn(String) + Send + Sync>,
     request: crate::binscan::run::BinaryScanRequest,
     use_grype: Option<bool>,
 ) -> Result<crate::binscan::report::BinaryScanResult, String> {
     let target = Path::new(&request.path)
         .canonicalize()
         .map_err(|error| format!("cannot resolve the binary scan target: {error}"))?;
-    let context = scan_context(&state, &app, use_grype.unwrap_or(false))?;
+    let context = scan_context_dirs(state, scratch_dir, cache_dir, use_grype.unwrap_or(false))?;
     let service = findings.service().map_err(|error| error.to_string())?;
     let canonical_repository =
         crate::adapters::persistence::CanonicalSqliteRepository::new(service.repository());
-    let canonical_events = crate::presentation::TauriRunEvents::new(app.clone());
+    let canonical_events = run_events;
     let coordinator =
-        oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
+        oxaudit_application::RunCoordinator::new(&canonical_repository, canonical_events);
     let mut managed = Some(
         coordinator
             .begin(oxaudit_domain::Run::queued(
@@ -203,18 +291,13 @@ pub async fn scan_binaries(
         .transition(oxaudit_domain::RunState::Detecting, epoch_millis())
         .map_err(|error| error.to_string())?;
 
-    let progress_app = app.clone();
-    let on_progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
-        let _ = progress_app.emit("binscan://progress", Value::from(line));
-    });
-
     let outcome = crate::binscan::scan::run_scan(
         &context,
         &request,
         cancel.clone(),
         BINARY_SCAN_TIMEOUT,
-        on_progress,
-        app.try_state::<CveState>().as_deref(),
+        progress.clone(),
+        cve,
     )
     .await;
     let mut outcome = match outcome {
@@ -438,7 +521,7 @@ pub async fn scan_binaries(
                 "scanner_failed",
                 format!("{}: {}", failure.scanner, failure.message),
             );
-        let _ = app.emit(
+        let _ = events.emit(
             "binscan://scanner-failed",
             json!({ "scanner": failure.scanner, "message": failure.message }),
         );
@@ -452,7 +535,7 @@ pub async fn scan_binaries(
             .as_mut()
             .expect("managed binary run exists")
             .warning("enrichment_note", note.clone());
-        let _ = app.emit("binscan://note", Value::from(note.clone()));
+        let _ = events.emit("binscan://note", Value::from(note.clone()));
     }
     managed
         .as_mut()
@@ -487,7 +570,29 @@ pub async fn refresh_binary_database(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut context = scan_context(&state, &app, false)?;
+    let progress_app = app.clone();
+    let progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
+        let _ = progress_app.emit("binscan://progress", Value::from(line));
+    });
+    let scratch_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("no cache directory available: {e}"))?
+        .join("binscan");
+    let cache_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| scratch_dir.clone());
+    refresh_binary_database_engine(&state, &scratch_dir, &cache_dir, progress).await
+}
+
+pub(crate) async fn refresh_binary_database_engine(
+    state: &AppState,
+    scratch_dir: &Path,
+    cache_dir: &Path,
+    progress: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<(), String> {
+    let mut context = scan_context_dirs(state, scratch_dir, cache_dir, false)?;
     context.use_grype = false;
     // This refreshes cve-bin-tool's database. The native scanner has no
     // database, so running it here would only scan an empty probe directory.
@@ -500,11 +605,6 @@ pub async fn refresh_binary_database(
     let probe = context.scratch_dir.join("refresh-probe");
     std::fs::create_dir_all(&probe)
         .map_err(|e| format!("cannot prepare a refresh directory: {e}"))?;
-
-    let progress_app = app.clone();
-    let on_progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
-        let _ = progress_app.emit("binscan://progress", Value::from(line));
-    });
 
     let request = crate::binscan::run::BinaryScanRequest {
         path: probe.to_string_lossy().into_owned(),
@@ -519,7 +619,7 @@ pub async fn refresh_binary_database(
         &request,
         cancel,
         BINARY_SCAN_TIMEOUT,
-        on_progress,
+        progress,
         None,
     )
     .await

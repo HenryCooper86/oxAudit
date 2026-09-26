@@ -11,6 +11,13 @@ pub fn preview_report_import(
     findings: State<'_, FindingsState>,
     path: String,
 ) -> Result<ImportPreview, String> {
+    preview_report_import_inner(&findings, path)
+}
+
+pub(crate) fn preview_report_import_inner(
+    findings: &FindingsState,
+    path: String,
+) -> Result<ImportPreview, String> {
     let (path, _, analysis) = read_import_report(&path)?;
     let service = findings.service().map_err(|error| error.to_string())?;
     let conflicts = imported_component_conflicts(service, &analysis)?;
@@ -49,6 +56,16 @@ pub fn import_external_report(
     path: String,
     expected_sha256: String,
 ) -> Result<oxaudit_domain::Run, String> {
+    let events = crate::presentation::TauriRunEvents::new(app);
+    import_external_report_inner(&findings, &events, path, expected_sha256)
+}
+
+pub(crate) fn import_external_report_inner(
+    findings: &FindingsState,
+    events: &dyn oxaudit_application::RunEventSink,
+    path: String,
+    expected_sha256: String,
+) -> Result<oxaudit_domain::Run, String> {
     const MAX_EXTERNAL_CLAIMS: usize = 50_000;
     let (path, bytes, analysis) = read_import_report(&path)?;
     if analysis.content_sha256 != expected_sha256.to_ascii_lowercase() {
@@ -62,8 +79,7 @@ pub fn import_external_report(
     }
 
     let service = findings.service().map_err(|error| error.to_string())?;
-    let events = crate::presentation::TauriRunEvents::new(app);
-    persist_external_claims(service.repository(), &path, &bytes, &analysis, &events)
+    persist_external_claims(service.repository(), &path, &bytes, &analysis, events)
 }
 
 /// The import path shared by the desktop command and the CLI: run
@@ -177,6 +193,16 @@ pub fn import_inventory_report(
     path: String,
     expected_sha256: String,
 ) -> Result<oxaudit_domain::Run, String> {
+    let events = crate::presentation::TauriRunEvents::new(app);
+    import_inventory_report_inner(&findings, &events, path, expected_sha256)
+}
+
+pub(crate) fn import_inventory_report_inner(
+    findings: &FindingsState,
+    events: &dyn oxaudit_application::RunEventSink,
+    path: String,
+    expected_sha256: String,
+) -> Result<oxaudit_domain::Run, String> {
     use sha2::Digest;
 
     const MAX_COMPONENT_RECORDS: usize = 50_000;
@@ -268,9 +294,7 @@ pub fn import_inventory_report(
         .collect::<Result<Vec<_>, String>>()?;
     let canonical_repository =
         crate::adapters::persistence::CanonicalSqliteRepository::new(service.repository());
-    let canonical_events = crate::presentation::TauriRunEvents::new(app);
-    let coordinator =
-        oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
+    let coordinator = oxaudit_application::RunCoordinator::new(&canonical_repository, events);
     let mut managed = Some(coordinator.begin(run).map_err(|error| error.to_string())?);
     let imported = (|| -> Result<oxaudit_domain::Run, String> {
         let lifecycle = managed.as_mut().expect("managed import run exists");
@@ -340,6 +364,13 @@ pub fn import_inventory_report(
 #[tauri::command]
 pub fn load_inventory(
     findings: State<'_, FindingsState>,
+    run_id: String,
+) -> Result<InventoryView, String> {
+    load_inventory_inner(&findings, run_id)
+}
+
+pub(crate) fn load_inventory_inner(
+    findings: &FindingsState,
     run_id: String,
 ) -> Result<InventoryView, String> {
     let run_id =
@@ -427,6 +458,14 @@ pub fn preview_run_export(
     run_id: String,
     format: String,
 ) -> Result<ExportPreview, String> {
+    preview_run_export_inner(&findings, run_id, format)
+}
+
+pub(crate) fn preview_run_export_inner(
+    findings: &FindingsState,
+    run_id: String,
+    format: String,
+) -> Result<ExportPreview, String> {
     const PREVIEW_LIMIT: usize = 1024 * 1024;
     let run_id =
         oxaudit_domain::RunId::parse(run_id).map_err(|_| "invalid run identity".to_string())?;
@@ -456,6 +495,15 @@ pub fn preview_run_export(
 #[tauri::command]
 pub fn write_run_export(
     findings: State<'_, FindingsState>,
+    run_id: String,
+    format: String,
+    output_path: String,
+) -> Result<(), String> {
+    write_run_export_inner(&findings, run_id, format, output_path)
+}
+
+pub(crate) fn write_run_export_inner(
+    findings: &FindingsState,
     run_id: String,
     format: String,
     output_path: String,
@@ -493,6 +541,13 @@ pub fn list_verification_claims(
     findings: State<'_, FindingsState>,
     run_id: Option<String>,
 ) -> Result<Vec<oxaudit_domain::Finding>, String> {
+    list_verification_claims_inner(&findings, run_id)
+}
+
+pub(crate) fn list_verification_claims_inner(
+    findings: &FindingsState,
+    run_id: Option<String>,
+) -> Result<Vec<oxaudit_domain::Finding>, String> {
     let parsed = run_id
         .map(oxaudit_domain::RunId::parse)
         .transpose()
@@ -510,6 +565,13 @@ pub fn list_verifications(
     findings: State<'_, FindingsState>,
     finding_id: Option<String>,
 ) -> Result<Vec<oxaudit_domain::Verification>, String> {
+    list_verifications_inner(&findings, finding_id)
+}
+
+pub(crate) fn list_verifications_inner(
+    findings: &FindingsState,
+    finding_id: Option<String>,
+) -> Result<Vec<oxaudit_domain::Verification>, String> {
     let parsed = finding_id
         .map(oxaudit_domain::FindingId::parse)
         .transpose()
@@ -525,6 +587,16 @@ pub fn list_verifications(
 #[tauri::command]
 pub fn verify_finding(
     findings: State<'_, FindingsState>,
+    finding_id: String,
+    verifier_id: String,
+    result: String,
+    limitation: String,
+) -> Result<oxaudit_domain::Verification, String> {
+    verify_finding_inner(&findings, finding_id, verifier_id, result, limitation)
+}
+
+pub(crate) fn verify_finding_inner(
+    findings: &FindingsState,
     finding_id: String,
     verifier_id: String,
     result: String,
@@ -612,6 +684,13 @@ pub fn verify_finding(
 #[tauri::command]
 pub fn load_canonical_projection(
     findings: State<'_, FindingsState>,
+    run_id: String,
+) -> Result<Value, String> {
+    load_canonical_projection_inner(&findings, run_id)
+}
+
+pub(crate) fn load_canonical_projection_inner(
+    findings: &FindingsState,
     run_id: String,
 ) -> Result<Value, String> {
     let run_id =

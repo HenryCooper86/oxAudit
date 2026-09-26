@@ -25,13 +25,44 @@ pub async fn scan_image(
     state: State<'_, AppState>,
     request: ImageScanRequest,
 ) -> Result<ImageScanOutcome, String> {
-    state.cancel_binary_scan.store(false, Ordering::SeqCst);
-    let cancel = state.cancel_binary_scan.clone();
-
     let progress_app = app.clone();
     let progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
         let _ = progress_app.emit("image://progress", serde_json::Value::from(line));
     });
+    let cache_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    struct TauriEvents(AppHandle);
+    impl crate::findings::service::ScanEventSink for TauriEvents {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            let _ = self.0.emit(event, payload);
+            Ok(())
+        }
+    }
+    scan_image_engine(
+        &state,
+        app.try_state::<crate::cve::CveState>().as_deref(),
+        &cache_dir,
+        progress,
+        &TauriEvents(app.clone()),
+        request,
+    )
+    .await
+}
+
+/// The image scan minus its Tauri wiring — the headless server passes its
+/// own progress and event sinks and data directory.
+pub(crate) async fn scan_image_engine(
+    state: &AppState,
+    cve: Option<&crate::cve::CveState>,
+    cache_dir: &Path,
+    progress: Arc<dyn Fn(String) + Send + Sync>,
+    events: &dyn crate::findings::service::ScanEventSink,
+    request: ImageScanRequest,
+) -> Result<ImageScanOutcome, String> {
+    state.cancel_binary_scan.store(false, Ordering::SeqCst);
+    let cancel = state.cancel_binary_scan.clone();
 
     let advisory_db = match &request.advisory_db_path {
         Some(path) => Some(
@@ -99,16 +130,12 @@ pub async fn scan_image(
 
     if !request.offline {
         if !scanned.queries.is_empty() {
-            if let Some(cve) = app.try_state::<crate::cve::CveState>() {
-                let cache_dir = app
-                    .path()
-                    .app_data_dir()
-                    .unwrap_or_else(|_| std::env::temp_dir());
+            if let Some(cve) = cve {
                 let nvd_api_key = crate::credentials::resolve_nvd_key(state.credentials.as_ref())
                     .map_err(|error| error.to_string())?;
                 let enriched = crate::binscan::native::enrich::enrich(
-                    &cve,
-                    &cache_dir,
+                    cve,
+                    cache_dir,
                     nvd_api_key.as_deref().map(|key| key.as_str()),
                     &scanned.queries,
                     cancel.clone(),
@@ -141,7 +168,7 @@ pub async fn scan_image(
         }
     }
 
-    let _ = app.emit(
+    let _ = events.emit(
         "image://done",
         serde_json::json!({ "components": result.summary.components }),
     );

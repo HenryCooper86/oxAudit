@@ -40,7 +40,7 @@ use crate::models::{
     TestAiRequest,
 };
 
-fn epoch_millis() -> u64 {
+pub(crate) fn epoch_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -747,6 +747,35 @@ pub async fn scan_project(
     rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
     options: ScanOptions,
 ) -> Result<ScanRunDetail, CommandError> {
+    struct TauriEvents(AppHandle);
+    impl ScanEventSink for TauriEvents {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            let _ = self.0.emit(event, payload);
+            Ok(())
+        }
+    }
+
+    scan_project_engine(
+        &state,
+        &findings,
+        &cve,
+        &rule_packs,
+        options,
+        &TauriEvents(app),
+    )
+    .await
+}
+
+/// The whole source-scan command minus its Tauri wiring, so the headless
+/// server drives the identical path over its own event sink.
+pub(crate) async fn scan_project_engine(
+    state: &AppState,
+    findings: &FindingsState,
+    cve: &CveState,
+    rule_packs: &crate::rulepack_store::RulePacksState,
+    options: ScanOptions,
+    events: &dyn ScanEventSink,
+) -> Result<ScanRunDetail, CommandError> {
     let saved_scan_settings = state.settings.lock().unwrap().scan.clone();
     let effective = effective_scan_options(&options, &saved_scan_settings);
     let mut durable_options = options;
@@ -756,14 +785,6 @@ pub async fn scan_project(
     durable_options.scan_secrets = effective.scan_secrets;
     durable_options.scan_vulnerabilities = effective.scan_vulnerabilities;
     durable_options.extra_ignored_dirs = effective.ignored_dirs;
-
-    struct TauriEvents(AppHandle);
-    impl ScanEventSink for TauriEvents {
-        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
-            let _ = self.0.emit(event, payload);
-            Ok(())
-        }
-    }
 
     // Installed packs apply to every scan: the enabled state is the user's
     // selection, and a scan that quietly skipped enabled rules would be a
@@ -801,13 +822,7 @@ pub async fn scan_project(
 
     findings
         .service()?
-        .scan_with_packs(
-            durable_options,
-            &cve,
-            &state.cancel_scan,
-            &TauriEvents(app),
-            &packs,
-        )
+        .scan_with_packs(durable_options, cve, &state.cancel_scan, events, &packs)
         .await
 }
 
@@ -849,11 +864,15 @@ pub async fn recheck_source_run(
 
 #[tauri::command]
 pub fn cancel_scan(state: State<'_, AppState>) -> Result<(), String> {
+    cancel_scan_inner(&state)
+}
+
+pub(crate) fn cancel_scan_inner(state: &AppState) -> Result<(), String> {
     state.cancel_scan.store(true, Ordering::Relaxed);
     Ok(())
 }
 
-trait FindingsServiceAccess {
+pub(crate) trait FindingsServiceAccess {
     fn findings_service(&self) -> Result<&FindingsService, CommandError>;
 }
 
@@ -869,14 +888,14 @@ impl FindingsServiceAccess for FindingsState {
     }
 }
 
-fn inspect_source_project_inner(
+pub(crate) fn inspect_source_project_inner(
     findings: &impl FindingsServiceAccess,
     path: impl AsRef<Path>,
 ) -> Result<ProjectContext, CommandError> {
     findings.findings_service()?.inspect_project(path)
 }
 
-fn list_source_projects_inner(
+pub(crate) fn list_source_projects_inner(
     findings: &impl FindingsServiceAccess,
     limit: u32,
 ) -> Result<Vec<RecentProject>, CommandError> {
@@ -885,7 +904,7 @@ fn list_source_projects_inner(
         .list_recent_projects(limit.clamp(1, 100) as usize)
 }
 
-fn list_source_runs_inner(
+pub(crate) fn list_source_runs_inner(
     findings: &impl FindingsServiceAccess,
     project_id: &str,
     limit: u32,
@@ -895,21 +914,21 @@ fn list_source_runs_inner(
         .list_runs(project_id, limit.clamp(1, 100) as usize)
 }
 
-fn load_source_run_inner(
+pub(crate) fn load_source_run_inner(
     findings: &impl FindingsServiceAccess,
     run_id: &str,
 ) -> Result<ScanRunDetail, CommandError> {
     findings.findings_service()?.load_run(run_id)
 }
 
-fn retry_source_run_save_inner(
+pub(crate) fn retry_source_run_save_inner(
     findings: &impl FindingsServiceAccess,
     retry_token: &str,
 ) -> Result<ScanRunDetail, CommandError> {
     findings.findings_service()?.retry_save(retry_token)
 }
 
-fn save_finding_review_inner(
+pub(crate) fn save_finding_review_inner(
     findings: &impl FindingsServiceAccess,
     request: ReviewRequest,
 ) -> Result<ReviewRecord, CommandError> {
@@ -918,7 +937,7 @@ fn save_finding_review_inner(
         .save_review(&request, chrono::Utc::now())
 }
 
-fn delete_finding_review_inner(
+pub(crate) fn delete_finding_review_inner(
     findings: &impl FindingsServiceAccess,
     request: ReviewRequest,
 ) -> Result<ReviewRecord, CommandError> {
@@ -957,6 +976,20 @@ pub fn list_source_runs(
 #[tauri::command]
 pub fn compare_source_runs(
     state: State<'_, FindingsState>,
+    current_run_id: String,
+    baseline_run_id: String,
+    require_valid_policy: Option<bool>,
+) -> Result<Vec<crate::models::Finding>, CommandError> {
+    compare_source_runs_inner(
+        &state,
+        current_run_id,
+        baseline_run_id,
+        require_valid_policy,
+    )
+}
+
+pub(crate) fn compare_source_runs_inner(
+    state: &FindingsState,
     current_run_id: String,
     baseline_run_id: String,
     require_valid_policy: Option<bool>,
@@ -1017,6 +1050,13 @@ const MAX_BULK_REVIEW: usize = 1_000;
 #[tauri::command]
 pub fn save_finding_reviews(
     state: State<'_, FindingsState>,
+    requests: Vec<ReviewRequest>,
+) -> Result<crate::findings::service::BulkReviewOutcome, CommandError> {
+    save_finding_reviews_inner(&state, requests)
+}
+
+pub(crate) fn save_finding_reviews_inner(
+    state: &FindingsState,
     requests: Vec<ReviewRequest>,
 ) -> Result<crate::findings::service::BulkReviewOutcome, CommandError> {
     if requests.is_empty() {
@@ -1495,6 +1535,14 @@ pub fn list_canonical_runs(
     kind: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<oxaudit_domain::Run>, String> {
+    list_canonical_runs_inner(&findings, kind, limit)
+}
+
+pub(crate) fn list_canonical_runs_inner(
+    findings: &FindingsState,
+    kind: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<oxaudit_domain::Run>, String> {
     let kind = match kind.as_deref() {
         Some("source") => Some("source"),
         Some("secrets") => Some("secrets"),
@@ -1527,23 +1575,13 @@ pub fn list_canonical_runs(
 /// CVE database before it scans anything, which can take several minutes.
 const BINARY_SCAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
 
-fn scan_context(
+pub(crate) fn scan_context_dirs(
     state: &AppState,
-    app: &AppHandle,
+    scratch_dir: &Path,
+    cache_dir: &Path,
     use_grype: bool,
 ) -> Result<crate::binscan::scan::ScanContext, String> {
     let settings = state.settings.lock().unwrap().clone();
-    let scratch_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| format!("no cache directory available: {e}"))?
-        .join("binscan");
-    // Best-effort: a missing data dir only means the exploit index is fetched
-    // fresh instead of read from cache.
-    let cache_dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| scratch_dir.clone());
 
     let trimmed = |value: Option<String>| {
         value
@@ -1561,8 +1599,8 @@ fn scan_context(
         cve_bin_tool_path: trimmed(settings.binary_scanner_path.clone()),
         grype_path: trimmed(settings.grype_path.clone()),
         nvd_api_key,
-        scratch_dir: scratch_dir.clone(),
-        cache_dir,
+        scratch_dir: scratch_dir.to_path_buf(),
+        cache_dir: cache_dir.to_path_buf(),
         use_cve_bin_tool: true,
         use_grype,
         use_native: true,
@@ -1706,7 +1744,7 @@ mod stream_protocol_tests {
     }
 }
 
-fn active_project_path(path: Option<String>) -> Result<Option<PathBuf>, String> {
+pub(crate) fn active_project_path(path: Option<String>) -> Result<Option<PathBuf>, String> {
     let Some(path) = path else {
         return Ok(None);
     };

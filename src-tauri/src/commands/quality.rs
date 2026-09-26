@@ -16,6 +16,13 @@ pub fn install_rule_pack(
     rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
     path: String,
 ) -> Result<crate::rulepack_store::InstalledRulePack, String> {
+    install_rule_pack_inner(&rule_packs, path)
+}
+
+pub(crate) fn install_rule_pack_inner(
+    rule_packs: &crate::rulepack_store::RulePacksState,
+    path: String,
+) -> Result<crate::rulepack_store::InstalledRulePack, String> {
     const MAX_PACK_BYTES: u64 = 2 * 1024 * 1024;
     let path = Path::new(&path)
         .canonicalize()
@@ -43,12 +50,26 @@ pub fn install_rule_pack(
 pub fn list_installed_rule_packs(
     rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
 ) -> Result<Vec<crate::rulepack_store::InstalledRulePack>, String> {
+    list_installed_rule_packs_inner(&rule_packs)
+}
+
+pub(crate) fn list_installed_rule_packs_inner(
+    rule_packs: &crate::rulepack_store::RulePacksState,
+) -> Result<Vec<crate::rulepack_store::InstalledRulePack>, String> {
     Ok(rule_packs.store()?.list())
 }
 
 #[tauri::command]
 pub fn set_rule_pack_enabled(
     rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    set_rule_pack_enabled_inner(&rule_packs, id, enabled)
+}
+
+pub(crate) fn set_rule_pack_enabled_inner(
+    rule_packs: &crate::rulepack_store::RulePacksState,
     id: String,
     enabled: bool,
 ) -> Result<(), String> {
@@ -60,12 +81,25 @@ pub fn remove_rule_pack(
     rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
     id: String,
 ) -> Result<(), String> {
+    remove_rule_pack_inner(&rule_packs, id)
+}
+
+pub(crate) fn remove_rule_pack_inner(
+    rule_packs: &crate::rulepack_store::RulePacksState,
+    id: String,
+) -> Result<(), String> {
     rule_packs.store()?.remove(&id)
 }
 
 #[tauri::command]
 pub fn list_data_sources(
     findings: State<'_, FindingsState>,
+) -> Result<Vec<DataSourceStatus>, String> {
+    list_data_sources_inner(&findings)
+}
+
+pub(crate) fn list_data_sources_inner(
+    findings: &FindingsState,
 ) -> Result<Vec<DataSourceStatus>, String> {
     data_source_statuses(findings.service().map_err(|error| error.to_string())?)
 }
@@ -76,6 +110,16 @@ pub async fn refresh_data_source(
     provider_id: String,
     state: State<'_, AppState>,
     findings: State<'_, FindingsState>,
+) -> Result<DataSourceStatus, String> {
+    let cache_dir = app.path().app_data_dir().ok();
+    refresh_data_source_inner(provider_id, &state, &findings, cache_dir.as_deref()).await
+}
+
+pub(crate) async fn refresh_data_source_inner(
+    provider_id: String,
+    state: &AppState,
+    findings: &FindingsState,
+    data_dir: Option<&Path>,
 ) -> Result<DataSourceStatus, String> {
     const MAX_PROVIDER_BYTES: u64 = 32 * 1024 * 1024;
     let definition = DATA_SOURCES
@@ -115,9 +159,9 @@ pub async fn refresh_data_source(
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let set = crate::exploit::PoCSet::parse_csv(&text)
             .map_err(|error| format!("{} index is not a valid CSV: {error}", definition.name))?;
-        if let Ok(data_dir) = app.path().app_data_dir() {
-            let _ = std::fs::create_dir_all(&data_dir);
-            let cache_path = crate::exploit::poc_cache_path(&data_dir);
+        if let Some(data_dir) = data_dir {
+            let _ = std::fs::create_dir_all(data_dir);
+            let cache_path = crate::exploit::poc_cache_path(data_dir);
             let temporary = cache_path.with_extension("csv.tmp");
             if std::fs::write(&temporary, &bytes).is_ok() {
                 let _ = std::fs::rename(&temporary, &cache_path);
@@ -369,6 +413,10 @@ pub fn validate_rule_pack(path: String) -> Result<RulePackValidationPreview, Str
 /// representative ecosystem-wide recall claim.
 #[tauri::command]
 pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatus, String> {
+    quality_status_inner(&findings)
+}
+
+pub(crate) fn quality_status_inner(findings: &FindingsState) -> Result<QualityStatus, String> {
     let suite = crate::quality::embedded_suite().map_err(|error| error.to_string())?;
     let report = crate::quality::run_embedded(&suite).map_err(|error| error.to_string())?;
 

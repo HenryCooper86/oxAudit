@@ -15,10 +15,29 @@ pub async fn search_cves(
     per_page: usize,
     recent_days: Option<u64>,
 ) -> Result<crate::models::CveSearchResult, String> {
+    search_cves_inner(
+        &state,
+        &app_state,
+        query,
+        start_index,
+        per_page,
+        recent_days,
+    )
+    .await
+}
+
+pub(crate) async fn search_cves_inner(
+    state: &CveState,
+    app_state: &AppState,
+    query: String,
+    start_index: usize,
+    per_page: usize,
+    recent_days: Option<u64>,
+) -> Result<crate::models::CveSearchResult, String> {
     let key = crate::credentials::resolve_nvd_key(app_state.credentials.as_ref())
         .map_err(|error| error.to_string())?;
     crate::cve::search_cves(
-        &state,
+        state,
         key.as_ref().map(|key| key.as_str()),
         &query,
         start_index,
@@ -34,9 +53,17 @@ pub async fn cve_detail(
     app_state: State<'_, AppState>,
     id: String,
 ) -> Result<crate::models::CveDetail, String> {
+    cve_detail_inner(&state, &app_state, id).await
+}
+
+pub(crate) async fn cve_detail_inner(
+    state: &CveState,
+    app_state: &AppState,
+    id: String,
+) -> Result<crate::models::CveDetail, String> {
     let key = crate::credentials::resolve_nvd_key(app_state.credentials.as_ref())
         .map_err(|error| error.to_string())?;
-    crate::cve::cve_detail(&state, key.as_ref().map(|key| key.as_str()), &id).await
+    crate::cve::cve_detail(state, key.as_ref().map(|key| key.as_str()), &id).await
 }
 
 #[tauri::command]
@@ -45,5 +72,13 @@ pub async fn osv_package_vulns(
     ecosystem: String,
     name: String,
 ) -> Result<Vec<Value>, String> {
-    crate::cve::osv_package_vulns(&state, &ecosystem, &name).await
+    osv_package_vulns_inner(&state, ecosystem, name).await
+}
+
+pub(crate) async fn osv_package_vulns_inner(
+    state: &CveState,
+    ecosystem: String,
+    name: String,
+) -> Result<Vec<Value>, String> {
+    crate::cve::osv_package_vulns(state, &ecosystem, &name).await
 }

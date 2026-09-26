@@ -159,6 +159,13 @@ pub fn run_compliance_assessment(
     findings: State<'_, FindingsState>,
     request: RunComplianceRequest,
 ) -> Result<Vec<ComplianceAssessment>, String> {
+    run_compliance_assessment_inner(&findings, request)
+}
+
+pub(crate) fn run_compliance_assessment_inner(
+    findings: &FindingsState,
+    request: RunComplianceRequest,
+) -> Result<Vec<ComplianceAssessment>, String> {
     validate_run_request(&request)?;
     let service = findings.service().map_err(|error| error.to_string())?;
     let root = canonical_directory(&request.target_path)?;
@@ -196,6 +203,13 @@ pub fn list_compliance_assessments(
     findings: State<'_, FindingsState>,
     limit: Option<usize>,
 ) -> Result<Vec<ComplianceAssessment>, String> {
+    list_compliance_assessments_inner(&findings, limit)
+}
+
+pub(crate) fn list_compliance_assessments_inner(
+    findings: &FindingsState,
+    limit: Option<usize>,
+) -> Result<Vec<ComplianceAssessment>, String> {
     findings
         .service()
         .map_err(|error| error.to_string())?
@@ -207,6 +221,13 @@ pub fn list_compliance_assessments(
 #[tauri::command]
 pub fn load_compliance_assessment(
     findings: State<'_, FindingsState>,
+    assessment_id: String,
+) -> Result<ComplianceAssessmentView, String> {
+    load_compliance_assessment_inner(&findings, assessment_id)
+}
+
+pub(crate) fn load_compliance_assessment_inner(
+    findings: &FindingsState,
     assessment_id: String,
 ) -> Result<ComplianceAssessmentView, String> {
     let repository = findings
@@ -226,6 +247,13 @@ pub fn load_compliance_assessment(
 #[tauri::command]
 pub fn save_compliance_review(
     findings: State<'_, FindingsState>,
+    request: SaveComplianceReviewRequest,
+) -> Result<ComplianceReview, String> {
+    save_compliance_review_inner(&findings, request)
+}
+
+pub(crate) fn save_compliance_review_inner(
+    findings: &FindingsState,
     request: SaveComplianceReviewRequest,
 ) -> Result<ComplianceReview, String> {
     let repository = findings
@@ -267,6 +295,13 @@ pub fn preview_compliance_report(
     findings: State<'_, FindingsState>,
     request: ComplianceReportRequest,
 ) -> Result<ComplianceReportPreview, String> {
+    preview_compliance_report_inner(&findings, request)
+}
+
+pub(crate) fn preview_compliance_report_inner(
+    findings: &FindingsState,
+    request: ComplianceReportRequest,
+) -> Result<ComplianceReportPreview, String> {
     let generated = generate_report(
         findings,
         &request.assessment_id,
@@ -305,8 +340,15 @@ pub fn write_compliance_report(
     findings: State<'_, FindingsState>,
     request: WriteComplianceReportRequest,
 ) -> Result<ComplianceReportReceipt, String> {
+    write_compliance_report_inner(&findings, request)
+}
+
+pub(crate) fn write_compliance_report_inner(
+    findings: &FindingsState,
+    request: WriteComplianceReportRequest,
+) -> Result<ComplianceReportReceipt, String> {
     let generated = generate_report(
-        findings.clone(),
+        findings,
         &request.assessment_id,
         request.format,
         &request.metadata,
@@ -351,7 +393,7 @@ struct GeneratedComplianceReport {
 }
 
 fn generate_report(
-    findings: State<'_, FindingsState>,
+    findings: &FindingsState,
     assessment_id: &str,
     format: ComplianceReportFormat,
     metadata: &ComplianceReportMetadata,

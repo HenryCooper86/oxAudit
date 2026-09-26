@@ -153,7 +153,7 @@ fn rollback_credentials(
     Ok(())
 }
 
-fn save_secure_to_path(
+pub(crate) fn save_secure_to_path(
     path: &Path,
     credentials: &dyn CredentialStore,
     request: SaveSettingsRequest,

@@ -83,6 +83,11 @@ impl SessionStore {
             .app_config_dir()
             .map_err(|e| format!("cannot resolve config dir: {e}"))?
             .join("sessions");
+        Self::open_in_dir(dir)
+    }
+
+    /// The headless server keeps sessions beside its own config directory.
+    pub fn open_in_dir(dir: std::path::PathBuf) -> Result<Self, String> {
         crate::private_storage::ensure_private_dir(&dir)?;
         Ok(Self { dir })
     }
