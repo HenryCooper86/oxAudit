@@ -14,10 +14,7 @@ PREFIX="${OXAUDIT_INSTALL_DIR:-$HOME/.oxaudit/bin}"
 
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)        asset="oxaudit-cli-linux-x86_64" ;;
-  Linux-aarch64)
-    echo "oxAudit publishes no aarch64 Linux binary yet; build from source:" >&2
-    echo "  cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli" >&2
-    exit 2 ;;
+  Linux-aarch64)       asset="oxaudit-cli-linux-aarch64" ;;
   Darwin-x86_64)       asset="oxaudit-cli-macos-universal" ;;
   Darwin-arm64)        asset="oxaudit-cli-macos-universal" ;;
   *)

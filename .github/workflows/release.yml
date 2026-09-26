@@ -426,6 +426,10 @@ jobs:
             platform: macos-universal
           - os: windows-2025
             platform: windows-x86_64
+          # Native arm64 runner: a Rust release build under QEMU emulation
+          # takes hours, so cross-arch is done by runner, not by emulator.
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -446,7 +450,11 @@ jobs:
             /tmp/oxaudit-cli --version
           else
             cargo build --manifest-path src-tauri/Cargo.toml --release --locked --bin oxaudit-cli
-            src-tauri/target/release/oxaudit-cli.exe --version
+            if [ "${RUNNER_OS}" = "Windows" ]; then
+              src-tauri/target/release/oxaudit-cli.exe --version
+            else
+              src-tauri/target/release/oxaudit-cli --version
+            fi
           fi
 
       - name: Stage and checksum the artifact
@@ -456,8 +464,10 @@ jobs:
           mkdir -p staging
           if [ "${RUNNER_OS}" = "macOS" ]; then
             cp /tmp/oxaudit-cli "staging/oxaudit-cli-${{ matrix.platform }}"
-          else
+          elif [ "${RUNNER_OS}" = "Windows" ]; then
             cp src-tauri/target/release/oxaudit-cli.exe "staging/oxaudit-cli-${{ matrix.platform }}.exe"
+          else
+            cp src-tauri/target/release/oxaudit-cli "staging/oxaudit-cli-${{ matrix.platform }}"
           fi
           cd staging
           case "${RUNNER_OS}" in
