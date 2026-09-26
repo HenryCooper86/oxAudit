@@ -118,10 +118,20 @@ Tag-triggered macOS desktop bundles fail closed unless Developer ID signing and
 notarization inputs are complete; Windows desktop bundles fail closed unless the
 Authenticode certificate and password are present. Linux bundles and standalone
 CLI files do not claim native platform signatures, but every release's
-`SHA256SUMS.txt` and each `oxaudit-cli-*` binary additionally carry keyless
-Sigstore signatures minted by the release workflow — verifiable by anyone with
-`cosign verify-blob --bundle <file>.bundle <file>` — alongside SLSA
-build-provenance attestations. Manual dry runs may be unsigned
+`SHA256SUMS.txt` and each `oxaudit-cli-*` binary additionally carry two
+independent signature schemes from the release workflow: keyless Sigstore
+signatures — verifiable by anyone with `cosign verify-blob --bundle
+<file>.bundle <file>` — and detached minisign signatures verifiable fully
+offline against the public key committed at [`minisign.pub`](minisign.pub):
+
+```bash
+minisign -Vm <artifact> -P "$(tail -1 minisign.pub)"
+```
+
+SLSA build-provenance attestations cover every artifact. The minisign private
+key is unencrypted so CI can sign non-interactively; its confidentiality is
+the repository secret store's, and the keypair should be rotated if that
+store is ever compromised. Manual dry runs may be unsigned
 and can never reach the publishing job.
 
 Every published file receives a SHA-256 checksum and a GitHub build-provenance

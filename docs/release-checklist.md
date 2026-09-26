@@ -5,27 +5,33 @@ done. This file records exactly what remains, who owns it, and the procedure
 to run once answered — so the first release is a short afternoon, not a
 project.
 
-## The three owner decisions (asked repeatedly, still open)
+## Owner decisions — two answered 2026-09-26
 
-1. **Repository visibility.** GitHub release assets on a private repository
-   cannot be downloaded by consumers, so *every* distribution path below
-   (Action, installer, brew) requires either making this repository public or
-   creating a separate public distribution repository that mirrors the
-   release assets. This is a one-way door and only the owner can open it.
-2. **Signing scheme for CLI/Linux artifacts.** Implemented and shipped:
-   **Sigstore keyless signing** in the release workflow (no keys to custody;
-   signatures verifiable with `cosign verify-blob` by anyone, complementing
-   the existing SLSA provenance attestations and native macOS/Windows
-   signing). If the owner prefers minisign as an additional offline-verifiable
-   scheme, the workflow needs one more step and a published public key — the
-   keypair generation is the owner's.
-3. **macOS/Windows signing credentials.** The release workflow already fails
-   closed without them: all six `APPLE_*` secrets (Developer ID + notary) and
-   `WINDOWS_CERTIFICATE*` (Authenticode) must exist as repository secrets
-   before a publishable (non-draft-blocked) desktop bundle can be produced.
-   If they do not exist, the first release can ship CLI + Linux artifacts
-   only, with desktop bundles deferred — the workflow's signing gate makes
-   that a deliberate configuration change, not an accident.
+1. **Repository visibility — STILL OPEN, the only remaining blocker.**
+   GitHub release assets on a private repository cannot be downloaded by
+   consumers, so every distribution path (Action, installer, brew) requires
+   either making this repository public or creating a separate public
+   distribution repository that mirrors the release assets. A one-way door;
+   only the owner can open it.
+2. **Signing scheme — ANSWERED: minisign on top of keyless cosign. DONE.**
+   Both ship in the release workflow: keyless Sigstore signatures (verifiable
+   with `cosign verify-blob`, no key custody) and detached minisign
+   signatures verifiable fully offline against `minisign.pub` committed at
+   the repository root. The keypair was generated on the owner's machine and
+   lives at `~/.oxaudit/release-keys/` (private key never committed); the
+   private key is stored as the `MINISIGN_PRIVATE_KEY` repository secret. It
+   is unencrypted so CI can sign non-interactively — its confidentiality is
+   the secret store's; rotate the keypair if the secret is ever exposed
+   (regenerate, push the new `minisign.pub`, re-sign the next release).
+3. **macOS/Windows signing credentials — ANSWERED: no developer accounts
+   exist yet. DONE: CLI + Linux-first releases.** The desktop bundle job is
+   skipped unless the repository variable `DESKTOP_BUNDLES=true` is set;
+   when it is, the fail-closed native-signing gate inside that job enforces
+   the six `APPLE_*` and `WINDOWS_CERTIFICATE*` secrets before any bundle
+   can publish. First releases therefore contain every `oxaudit-cli` binary,
+   the Linux desktop artifacts, and both SBOMs — and say so in their notes.
+   When the accounts exist: set the secrets, set `DESKTOP_BUNDLES=true`,
+   and the next tag ships notarized/Authenticode-signed desktop bundles.
 
 ## What already exists
 
@@ -40,18 +46,25 @@ project.
 - `scripts/install.sh`: platform-detecting curl|sh installer with checksum
   verification before anything executes.
 
-## The procedure, once the decisions are answered
+## The procedure, once visibility is answered
 
 1. Make the repository public **or** create the public distribution repo and
    point `OXAUDIT_REPO` (installer) and the Action's `repo` input at it.
-2. Confirm the Apple/Windows secrets exist (or consciously relax the desktop
-   gate for a CLI-first release).
-3. Decide the version (`0.1.0` — the manifests already agree).
-4. Push the tag: `git tag v0.1.0 && git push origin v0.1.0`.
-5. Review the draft release the workflow creates: artifact list, signing
-   posture, notes. Publish it.
-6. Exercise the distribution paths from a clean machine: `action/action.yml`
-   against a sample repo, `scripts/install.sh`, `cosign verify-blob` and
-   `gh attestation verify` on a downloaded binary.
-7. (Optional, public repo) submit the brew tap and mark the Action as
+2. Decide the version (`0.1.0` — the manifests already agree).
+3. Push the tag: `git tag v0.1.0 && git push origin v0.1.0`.
+4. Review the draft release the workflow creates: artifact list (CLI +
+   Linux + SBOMs), signing posture (cosign bundles, minisig files), notes.
+   Publish it.
+5. Exercise the distribution paths from a clean machine: `action/action.yml`
+   against a sample repo, `scripts/install.sh`, `minisign -Vm` and
+   `cosign verify-blob` and `gh attestation verify` on a downloaded binary.
+6. (Optional, public repo) submit the brew tap and mark the Action as
    marketplace-ready.
+
+### Already done (2026-09-26)
+
+- `MINISIGN_PRIVATE_KEY` secret set; `minisign.pub` committed.
+- Desktop-bundle job gated behind `DESKTOP_BUNDLES` (off), signing gate
+  armed inside it.
+- Release notes template documents both signature schemes and states that
+  desktop bundles are deliberately absent.

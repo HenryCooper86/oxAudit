@@ -89,7 +89,7 @@ jobs:
       - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --all-features
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 
-  bundle:
+  bundle-linux:
     name: Bundle (${{ matrix.platform }})
     needs: verify
     runs-on: ${{ matrix.os }}
@@ -100,6 +100,168 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux-x86_64
+            tauri_args: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential curl file libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev wget
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Add the macOS targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - run: npm ci
+
+      - name: Require native signing for publishable bundles
+        if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: node tools/require-release-signing.mjs "${{ runner.os }}"
+
+      - name: Build the bundle
+        shell: bash
+        env:
+          # macOS Developer ID signing and notarization.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows Authenticode.
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: npm run tauri build -- ${{ matrix.tauri_args }}
+
+      - name: Build the command line
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # One binary that runs on both architectures, same as the app bundle.
+            cargo build --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli --target x86_64-apple-darwin
+            cargo build --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli --target aarch64-apple-darwin
+            lipo -create -output /tmp/oxaudit-cli \
+              src-tauri/target/x86_64-apple-darwin/release/oxaudit-cli \
+              src-tauri/target/aarch64-apple-darwin/release/oxaudit-cli
+          else
+            cargo build --manifest-path src-tauri/Cargo.toml --release --bin oxaudit-cli
+          fi
+
+      - name: Smoke-test the command line
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS)   cli=/tmp/oxaudit-cli ;;
+            Windows) cli=src-tauri/target/release/oxaudit-cli.exe ;;
+            *)       cli=src-tauri/target/release/oxaudit-cli ;;
+          esac
+          "$cli" --version
+          # oxAudit scanning oxAudit: the binary must find the planted findings
+          # in the committed ground-truth fixtures, or it is not working.
+          "$cli" scan benchmarks/ground-truth/source-smoke --format sarif -q -o /tmp/smoke.sarif
+          node -e '
+            const sarif = require("/tmp/smoke.sarif");
+            const results = sarif.runs[0].results.length;
+            const rules = sarif.runs[0].tool.driver.rules.length;
+            if (results < 5) throw new Error(`expected planted findings, got ${results}`);
+            if (rules < 1) throw new Error("SARIF carries no rule metadata");
+            console.log(`SARIF: ${results} results across ${rules} rules`);
+          '
+          "$cli" scan benchmarks/ground-truth/source-smoke --fail-on high -q >/dev/null && {
+            echo "::error::--fail-on high should have exited 1 on the fixtures"; exit 1;
+          } || [ $? -eq 1 ]
+
+      # A Tauri bundle whose CFBundleExecutable points at the wrong binary still
+      # builds, installs, and launches — it just opens no window. Nothing else
+      # in the pipeline notices.
+      - name: Verify the bundle launches the desktop app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app=$(find src-tauri/target -name 'oxAudit.app' -maxdepth 5 -print -quit)
+          test -n "$app" || { echo "::error::no oxAudit.app was produced"; exit 1; }
+          executable=$(plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist")
+          if [ "$executable" != "oxaudit" ]; then
+            echo "::error::bundle executable is '$executable', expected 'oxaudit' — the .app would launch the CLI and show no window"
+            exit 1
+          fi
+          test -x "$app/Contents/MacOS/oxaudit" || { echo "::error::the GUI binary is missing from the bundle"; exit 1; }
+          echo "Bundle launches $executable"
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p staging
+          find src-tauri/target -type f \
+            \( -name '*.dmg' -o -name '*.msi' -o -name '*.AppImage' \
+               -o -name '*.deb' -o -name '*.rpm' -o -name '*.sig' \) \
+            -not -path '*/deps/*' -exec cp {} staging/ \; || true
+          case "${{ runner.os }}" in
+            macOS)   cp /tmp/oxaudit-cli "staging/oxaudit-cli-${{ matrix.platform }}" ;;
+            Windows) cp src-tauri/target/release/oxaudit-cli.exe "staging/oxaudit-cli-${{ matrix.platform }}.exe" ;;
+            *)       cp src-tauri/target/release/oxaudit-cli "staging/oxaudit-cli-${{ matrix.platform }}" ;;
+          esac
+          ls -la staging
+
+      - name: Checksum every artifact
+        shell: bash
+        run: |
+          cd staging
+          if command -v sha256sum >/dev/null; then
+            sha256sum * > "SHA256SUMS-${{ matrix.platform }}.txt"
+          else
+            shasum -a 256 * > "SHA256SUMS-${{ matrix.platform }}.txt"
+          fi
+          cat "SHA256SUMS-${{ matrix.platform }}.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oxaudit-${{ matrix.platform }}
+          path: staging/*
+          if-no-files-found: error
+
+  # A supply-chain tool that cannot describe its own supply chain is asking for
+  # trust it has not earned. Every release ships an SBOM of oxAudit itself.
+
+  # Desktop bundles (macOS notarized, Windows Authenticode) join the
+  # release only when the repository variable DESKTOP_BUNDLES=true.
+  # Owner decision 2026-09-26: no Apple/Windows developer accounts
+  # exist, so releases are CLI + Linux-first; this job stays skipped
+  # and the fail-closed native-signing gate inside it stays armed
+  # for when the accounts do exist. A skipped job satisfies `needs`.
+  bundle-desktop:
+    name: Bundle desktop (${{ matrix.platform }})
+    needs: verify
+    if: vars.DESKTOP_BUNDLES == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - os: macos-15
             platform: macos-universal
             tauri_args: --target universal-apple-darwin
@@ -249,6 +411,7 @@ jobs:
 
   # A supply-chain tool that cannot describe its own supply chain is asking for
   # trust it has not earned. Every release ships an SBOM of oxAudit itself.
+
   sbom:
     name: Self SBOM
     needs: verify
@@ -291,7 +454,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: [bundle, sbom]
+    needs: [bundle-linux, bundle-desktop, sbom]
     if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -350,6 +513,20 @@ jobs:
           gh attestation verify <file> --repo OWNER/REPO
           ```
 
+          The CLI binaries and `SHA256SUMS.txt` are signed twice: keyless
+          (Sigstore — `cosign verify-blob --bundle <file>.bundle <file>`)
+          and with minisign against the public key committed at
+          `minisign.pub`:
+
+          ```bash
+          minisign -Vm oxaudit-cli-linux-x86_64 -P "$(curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/minisign.pub | tail -1)"
+          ```
+
+          Desktop bundles are not part of this release: macOS notarization
+          and Windows Authenticode credentials do not exist yet, and
+          unsigned desktop bundles are not shipped. Linux desktop artifacts
+          and every `oxaudit-cli` binary are here.
+
           `oxaudit-rust.cdx.json` and `oxaudit-npm.cdx.json` are CycloneDX SBOMs
           of oxAudit itself.
 
@@ -386,3 +563,36 @@ jobs:
             cosign sign-blob --yes --bundle "$file.bundle" "$file"
           done
           gh release upload "${GITHUB_REF_NAME}" ./*.bundle
+
+      # Owner decision 2026-09-26: minisign on top of keyless cosign, for
+      # verification that depends on nothing but the committed public key
+      # (minisign.pub) and works fully offline. The private key never
+      # leaves GitHub Secrets; it is unencrypted so CI can sign
+      # non-interactively — its confidentiality is the secret store's.
+      - name: Sign the CLI binaries and checksums with minisign
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          cd release
+          printf '%s\n' "$MINISIGN_PRIVATE_KEY" > /tmp/minisign.key
+          chmod 600 /tmp/minisign.key
+          rm -f /tmp/minisign.key
+          # Re-extract without the trailing newline mangling minisign's
+          # two-line format: write exact bytes from the secret.
+          python3 - <<'PY'
+          import os
+          key = os.environ["MINISIGN_PRIVATE_KEY"]
+          with open("/tmp/minisign.key", "w") as handle:
+              handle.write(key if key.endswith("\n") else key + "\n")
+          PY
+          chmod 600 /tmp/minisign.key
+          for file in SHA256SUMS.txt oxaudit-cli-*; do
+            [ -f "$file" ] || continue
+            # The key is unencrypted; minisign reads its (empty) password
+            # from stdin when there is no tty.
+            printf '\n' | minisign -Sm "$file" -s /tmp/minisign.key
+          done
+          rm -f /tmp/minisign.key
+          gh release upload "${GITHUB_REF_NAME}" ./*.minisig
