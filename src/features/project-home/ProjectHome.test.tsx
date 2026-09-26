@@ -200,6 +200,7 @@ test("saved source counts stay labelled as previous evidence after an incomplete
       totalFindings: 0,
       newFindings: 0,
       resolvedFindings: 0,
+    severityCounts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
     },
   ]);
   render(<Dashboard />);
