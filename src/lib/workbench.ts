@@ -22,7 +22,7 @@ export type Page =
 
 export interface PageMeta {
   title: string;
-  group: "Overview" | "Scanning" | "Research" | "System";
+  group: "Overview" | "Scanning" | "Research" | "Trust & quality" | "System";
 }
 
 export type StatusTone = "neutral" | "running" | "success" | "error";
@@ -48,16 +48,16 @@ export const PAGE_META: Record<Page, PageMeta> = {
   "deps-scan": { title: "Dependencies", group: "Scanning" },
   "binary-scan": { title: "Binary Scan", group: "Scanning" },
   "image-scan": { title: "Image Scan", group: "Scanning" },
-  "advisory-database": { title: "Advisory Database", group: "System" },
-  "vex-trust": { title: "VEX Trust", group: "System" },
-  inventory: { title: "Inventory", group: "System" },
-  "rule-library": { title: "Rule Library", group: "System" },
-  "quality-lab": { title: "Quality Lab", group: "System" },
-  "data-sources": { title: "Data Sources", group: "System" },
-  "export-center": { title: "Export Center", group: "System" },
-  verification: { title: "Verification", group: "System" },
-  "compliance-center": { title: "Compliance Center", group: "System" },
-  "report-studio": { title: "Report Studio", group: "System" },
+  "advisory-database": { title: "Advisory Database", group: "Trust & quality" },
+  "vex-trust": { title: "VEX Trust", group: "Trust & quality" },
+  inventory: { title: "Inventory", group: "Trust & quality" },
+  "rule-library": { title: "Rule Library", group: "Trust & quality" },
+  "quality-lab": { title: "Quality Lab", group: "Trust & quality" },
+  "data-sources": { title: "Data Sources", group: "Trust & quality" },
+  "export-center": { title: "Export Center", group: "Trust & quality" },
+  verification: { title: "Verification", group: "Trust & quality" },
+  "compliance-center": { title: "Compliance Center", group: "Trust & quality" },
+  "report-studio": { title: "Report Studio", group: "Trust & quality" },
   "cve-research": { title: "CVE Research", group: "Research" },
   assistant: { title: "AI Assistant", group: "Research" },
   settings: { title: "Settings", group: "System" },

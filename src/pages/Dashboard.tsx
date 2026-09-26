@@ -6,7 +6,7 @@ import { useAppStore } from "../lib/stores";
 
 const tools = [
   ["Scanning", "Source Scan", "Inspect code for dangerous patterns, secrets, and risky APIs.", "Start source scan", "source-scan"],
-  ["Scanning", "Dependency Scan", "Check pinned packages against the OSV advisory database.", "Check dependencies", "deps-scan"],
+  ["Scanning", "Dependencies", "Check pinned packages against the OSV advisory database.", "Check dependencies", "deps-scan"],
   ["Scanning", "Binary Scan", "Find vulnerable components bundled inside binaries and firmware.", "Scan a binary", "binary-scan"],
   ["Research", "CVE Research", "Search NVD and OSV without requiring an active project.", "Research vulnerabilities", "cve-research"],
   ["Research", "AI Assistant", "Ask security questions with optional project or finding context.", "Open assistant", "assistant"],
@@ -42,7 +42,7 @@ export function Dashboard() {
     aiReadiness.status === "loading" || aiReadiness.status === "checking";
 
   return (
-    <ToolPage title="Project home" description="Resume your project, review saved evidence, and check source and dependencies.">
+    <ToolPage title="Dashboard" description="Resume your project, review saved evidence, and check source and dependencies.">
       <p aria-live="polite" aria-atomic="true" className="sr-only">
         {aiAnnouncement}
       </p>

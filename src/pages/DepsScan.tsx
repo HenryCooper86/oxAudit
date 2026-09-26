@@ -371,7 +371,7 @@ export function DepsScanPage() {
 
   return (
     <ToolPage
-      title="Dependency Scan"
+      title="Dependencies"
       description="Detect supported lockfiles and check their pinned packages against the OSV vulnerability database."
     >
       <TargetBar
