@@ -202,6 +202,33 @@ export interface QualityStatus {
   regression: boolean;
 }
 
+/** Confusion counts for one OWASP Benchmark slice. */
+export interface BenchmarkCounts {
+  truePositives: number;
+  falsePositives: number;
+  trueNegatives: number;
+  falseNegatives: number;
+}
+
+export interface BenchmarkCategoryScore extends BenchmarkCounts {
+  category: string;
+  cwe: number;
+  /** False when oxAudit has no Java rule for this weakness class at all. */
+  covered: boolean;
+}
+
+/** Result of scoring a local OWASP Benchmark checkout (Quality Lab). */
+export interface ExternalBenchmarkReport {
+  suite: string;
+  cases: number;
+  /** Totals over the categories oxAudit has Java rules for. */
+  coveredTotals: BenchmarkCounts;
+  /** Totals over the categories it does not — absent rules, not wrong ones. */
+  uncoveredTotals: BenchmarkCounts;
+  categories: BenchmarkCategoryScore[];
+  runtimeMs: number;
+}
+
 export interface DataSourceStatus {
   id: string;
   name: string;

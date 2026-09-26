@@ -32,6 +32,7 @@ import type {
   InventoryView,
   ImportPreview,
   CanonicalFinding,
+  ExternalBenchmarkReport,
   VerificationRecord,
   VerificationResult,
   DependencyScanResult,
@@ -263,6 +264,10 @@ export const api = {
   collectDiagnostics: () => invoke<Diagnostics>("collect_diagnostics"),
   saveFindingReviews: (requests: ReviewRequest[]) =>
     invoke<BulkReviewOutcome>("save_finding_reviews", { requests }),
+  /** Score a local OWASP Benchmark checkout (the CLI's external-benchmark). */
+  externalBenchmark: (path: string) =>
+    invoke<ExternalBenchmarkReport>("external_benchmark", { path }),
+  listCompiledGrammars: () => invoke<string[]>("list_compiled_grammars"),
   /** The advisory database file the app manages by default. */
   defaultAdvisoryDbPath: () => invoke<string>("default_advisory_db_path"),
 

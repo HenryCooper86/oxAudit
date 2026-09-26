@@ -443,3 +443,33 @@ pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatu
         .map_err(|error| error.to_string())?;
     Ok(status)
 }
+
+/// Score a local OWASP Benchmark checkout — the GUI face of
+/// `oxaudit-cli external-benchmark`. `path` is the Benchmark repository
+/// whose `expectedresults-*.csv` ground truth is read; the scan itself is
+/// heavy and runs on the blocking pool.
+#[tauri::command]
+pub async fn external_benchmark(path: String) -> Result<crate::external::ExternalReport, String> {
+    let root = Path::new(&path)
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the benchmark checkout: {error}"))?;
+    tokio::task::spawn_blocking(move || {
+        let cases = crate::external::load_expectations(&root)
+            .map_err(|error| format!("cannot read the benchmark expectations: {error}"))?;
+        crate::external::score(&root, &cases)
+            .map_err(|error| format!("benchmark scoring failed: {error}"))
+    })
+    .await
+    .map_err(|error| format!("benchmark task failed: {error}"))?
+}
+
+/// The language grammars compiled into this build. A language without a
+/// grammar is scanned on text alone, so this explains why some findings
+/// cannot be comment-suppressed.
+#[tauri::command]
+pub fn list_compiled_grammars() -> Vec<String> {
+    crate::scanners::syntax::compiled_grammars()
+        .iter()
+        .map(|grammar| (*grammar).to_string())
+        .collect()
+}

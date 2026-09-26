@@ -223,6 +223,8 @@ pub fn run() {
             commands::schedule::remove_scan_schedule,
             commands::schedule::run_scan_now,
             commands::quality::quality_status,
+            commands::quality::external_benchmark,
+            commands::quality::list_compiled_grammars,
             commands::quality::list_data_sources,
             commands::quality::refresh_data_source,
             commands::reporting::load_inventory,
