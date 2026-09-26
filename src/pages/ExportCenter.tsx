@@ -1,5 +1,5 @@
 import { CheckCircle2, Download, FileJson, ShieldAlert, TriangleAlert, Upload } from "lucide-react";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "../lib/dialog";
 import { useEffect, useMemo, useState, type JSX } from "react";
 import { Button, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";

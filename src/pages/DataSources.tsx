@@ -1,6 +1,6 @@
 import { CheckCircle2, Database, RefreshCw, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useState, type JSX } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/opener";
 import { Button } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";

@@ -1,5 +1,5 @@
 import { Download, FileCode2, FileSpreadsheet, FileText, RefreshCw, ShieldAlert } from "lucide-react";
-import { save } from "@tauri-apps/plugin-dialog";
+import { save } from "../lib/dialog";
 import { useEffect, useMemo, useState, type JSX } from "react";
 import { Button, Input, Select, Switch, Textarea } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";

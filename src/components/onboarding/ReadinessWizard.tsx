@@ -9,7 +9,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+import { open as pickFolder } from "../../lib/dialog";
 import { normalizeCommandError } from "../../lib/commandError";
 import { startProjectCheck, useScanWorkStore } from "../../features/project-home/coordinator";
 import { api } from "../../lib/api";

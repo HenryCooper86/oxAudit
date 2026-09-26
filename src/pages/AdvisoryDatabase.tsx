@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../lib/events";
 import { Database, Download, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import type { AdvisoryDbStatus, AdvisoryDbUpdateReport } from "../lib/types";

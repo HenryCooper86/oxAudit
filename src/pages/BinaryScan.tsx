@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../lib/events";
 import { Ban, Binary, Play, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { FolderPicker } from "../components/FolderPicker";

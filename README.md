@@ -28,12 +28,19 @@ curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/scripts/
 # Or the multi-architecture container image (linux/amd64, linux/arm64):
 docker run --rm -v "$PWD:/workspace" ghcr.io/henrycooper86/oxaudit \
   scan /workspace --format sarif --fail-on high
+
+# Or the whole GUI in a browser, from the same image:
+docker run --rm -p 8080:8080 -v oxaudit-data:/data \
+  --entrypoint oxaudit-server ghcr.io/henrycooper86/oxaudit
 ```
 
 The container is the no-install path: any machine with a container runtime
 gets the same CLI, and the release notes pin the image digest with the
-`cosign verify` command that proves it. The installer prints the PATH line to
-add and never executes anything unverified.
+`cosign verify` command that proves it. The headless server serves the
+desktop workbench to any browser — scanning, reviews, compliance, reports —
+through the same engines; [the server guide](docs/headless-server.md) covers
+the token gate and remote-access posture. The installer prints the PATH line
+to add and never executes anything unverified.
 
 Build the **local pilot from source** using the exact platform prerequisites and
 commands in [Getting started](docs/getting-started.md). Start with Node 22.22.2,
@@ -213,6 +220,7 @@ with a reason, an expiry, and a pull request.
 | **Compliance readiness and reports** | GUI-first evidence checks for ISO 26262, ISO/SAE 21434, UNECE R155/R156, GDPR, CCPA/CPRA, NIST Privacy Framework, ISO/IEC 27001, OWASP Top 10:2021, and SOC 2 Trust Services Criteria; append-only qualified reviews; and professional JSON, CSV, Markdown, self-contained HTML, and paginated PDF reports. Readiness is never presented as certification or legal conformity |
 | **Dashboard** | At-a-glance stats, quick actions, recent scan history |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
+| **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, shipped in the same container image ([ADR 0004](docs/architecture/adr/0004-headless-server.md)) |
 
 ## Screens
 

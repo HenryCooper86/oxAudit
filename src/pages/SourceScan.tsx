@@ -2,7 +2,7 @@ import { assessRecheck } from "../features/source-scan/recheck";
 import { ReviewChangesPanel } from "../features/source-scan/ReviewChangesPanel";
 import { useReviewChanges } from "../features/source-scan/useReviewChanges";
 import { acquireScan, cancelActiveScan, reconcileSourceRunSave, releaseScan, useScanWorkStore } from "../features/project-home/coordinator";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "../lib/events";
 import { Clipboard, RotateCcw, Search } from "lucide-react";
 import {
   useCallback,

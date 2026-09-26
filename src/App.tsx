@@ -1,4 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { ServerTokenGate } from "./components/ServerTokenGate";
+import { serverMode, serverToken } from "./lib/transport";
 import { Toasts } from "./components/Toasts";
 import { CommandPalette } from "./components/workbench/CommandPalette";
 import { ReadinessWizard } from "./components/onboarding/ReadinessWizard";
@@ -174,6 +176,11 @@ export default function App() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  if (serverMode && serverToken() === "") {
+    // Nothing behind the gate can load without API access anyway.
+    return <ServerTokenGate />;
+  }
 
   return (
     <AppShell>

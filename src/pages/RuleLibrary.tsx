@@ -1,5 +1,5 @@
 import { CheckCircle2, FileCheck2, PackagePlus, Search, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../lib/dialog";
 import { useEffect, useMemo, useState, type JSX } from "react";
 import { Button, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";

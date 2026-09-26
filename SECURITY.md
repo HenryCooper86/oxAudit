@@ -134,6 +134,12 @@ the repository secret store's, and the keypair should be rotated if that
 store is ever compromised. Manual dry runs may be unsigned
 and can never reach the publishing job.
 
+The headless server (`oxaudit-server`, [ADR 0004](docs/architecture/adr/0004-headless-server.md))
+refuses every API call without its access token and binds to loopback
+unless configured otherwise — a service that reads arbitrary local paths is
+never an unauthenticated network service. Reporting a bypass of that token
+gate is very much in scope.
+
 The multi-architecture container image (`ghcr.io/henrycooper86/oxaudit`) is
 built natively per architecture in the same release run, published as one
 index, and signed keylessly — the signature lives in the registry beside the

@@ -1,5 +1,5 @@
 import { CalendarClock, Play, RefreshCw } from "lucide-react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "../lib/events";
 import { useEffect, useMemo, useState, type JSX } from "react";
 import { Button, Select, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";

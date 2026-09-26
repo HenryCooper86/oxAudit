@@ -1,7 +1,7 @@
 import { acquireScan, cancelActiveScan, releaseScan, useScanWorkStore } from "../features/project-home/coordinator";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { listen, type UnlistenFn } from "../lib/events";
+import { openUrl } from "../lib/opener";
 import { Ban, Boxes, ExternalLink, Play, Search } from "lucide-react";
 import { FolderPicker } from "../components/FolderPicker";
 import { ProgressBar } from "../components/ProgressBar";

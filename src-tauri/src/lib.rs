@@ -21,7 +21,7 @@ mod migration;
 mod models;
 pub mod observability;
 mod presentation;
-mod private_storage;
+pub mod private_storage;
 pub mod quality;
 pub mod reachability;
 mod rulepack_feed;
@@ -33,6 +33,8 @@ mod vex_trust;
 // benchmark exists to catch a rule change that quietly makes matching
 // quadratic, which means it has to reach the same functions a scan does.
 pub mod scanners;
+#[cfg(feature = "server")]
+pub mod server;
 mod sessions;
 mod settings;
 pub mod triage;

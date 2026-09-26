@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "../lib/opener";
 import { ChevronLeft, ChevronRight, PackageSearch, Search } from "lucide-react";
 import { CveDossier } from "../components/CveDossier";
 import { SeverityBadge } from "../components/SeverityBadge";

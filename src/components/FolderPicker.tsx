@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileUp, FolderOpen } from "lucide-react";
 import { Button } from "./ui";
+import { serverMode } from "../lib/transport";
 
 export function FolderPicker({
   value,
@@ -51,17 +52,19 @@ export function FolderPicker({
         disabled={disabled}
         className="selectable min-w-0 flex-1 rounded-sm border border-border bg-surface-secondary px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
       />
-      <Button
-        type="button"
-        onClick={pick}
-        disabled={disabled}
-        variant="outline"
-        size="md"
-      >
-        <FolderOpen size={14} aria-hidden="true" />
-        {buttonLabel}
-      </Button>
-      {allowFiles && (
+      {!serverMode && (
+        <Button
+          type="button"
+          onClick={pick}
+          disabled={disabled}
+          variant="outline"
+          size="md"
+        >
+          <FolderOpen size={14} aria-hidden="true" />
+          {buttonLabel}
+        </Button>
+      )}
+      {!serverMode && allowFiles && (
         <Button
           type="button"
           onClick={pickFile}

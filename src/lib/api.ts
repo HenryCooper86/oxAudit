@@ -1,4 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { httpInvoke, serverMode } from "./transport";
+
+/** Desktop IPC at home, HTTP against the headless server. */
+function invoke<T>(cmd: string, args?: unknown): Promise<T> {
+  return serverMode
+    ? httpInvoke<T>(cmd, args)
+    : tauriInvoke<T>(cmd, (args ?? {}) as Parameters<typeof tauriInvoke>[1]);
+}
 import type {
   BulkReviewOutcome,
   Diagnostics,

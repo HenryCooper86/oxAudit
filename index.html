@@ -10,6 +10,9 @@
 
   <body>
     <div id="root"></div>
+    <!-- The headless server serves /env.js to flag browser mode; the desktop
+         app has no such file and the missing script is ignored. -->
+    <script src="/env.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

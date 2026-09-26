@@ -740,6 +740,10 @@ jobs:
 
               docker run --rm -v "\$PWD:/workspace" ${image_ref%%@*} scan /workspace --format sarif --fail-on high
 
+              The image also carries the headless server with the browser GUI:
+
+                  docker run --rm -p 8080:8080 -v oxaudit-data:/data --entrypoint oxaudit-server ${image_ref%%@*}
+
           Pinned by digest, and signed keylessly the same way as the
           binaries:
 
