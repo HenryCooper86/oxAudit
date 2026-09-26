@@ -6,7 +6,7 @@ vi.mock("./useProjectDrop", () => ({ useProjectDrop: () => ({ dropping: false })
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 test("unavailable recent targets retain their path without stale review totals", () => {
-  render(<SourceTargetPanel path="" project={null} options={createSourceScanOptions(null)} running={false} cancelling={false} dropping={false} progress={null} onPathChange={vi.fn()} onOptionChange={vi.fn()} onRun={vi.fn()} onCancel={vi.fn()} recentProjects={[{
+  render(<SourceTargetPanel path="" project={null} options={createSourceScanOptions(null)} running={false} cancelling={false} dropping={false} progress={null} rulePackFiles="" onRulePackFilesChange={vi.fn()} onPathChange={vi.fn()} onOptionChange={vi.fn()} onRun={vi.fn()} onCancel={vi.fn()} recentProjects={[{
     projectId: "missing", canonicalPath: "/missing", displayName: "missing",
     lastOpenedAt: "2026-09-07T00:00:00Z", lastCompletedRunId: "old",
     lastCompletedAt: "2026-09-06T00:00:00Z", openFindings: 0, critical: 0, high: 0,

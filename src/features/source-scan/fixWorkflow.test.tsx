@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDr
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 const finding = { id: "finding", title: "eval() usage", language: "javascript", cwe: "CWE-95", cweExploited: false, cweExploitedCount: 0, entropy: null, verified: null, scopeReason: null, resolvedByRunId: null, fingerprint: "fp", fingerprintVersion: 1, category: "vulnerability", ruleId: "js-eval", ruleName: "eval() usage", severity: "high", filePath: "space 😀.js", line: 3, column: 8, matchText: "eval(input)", context: "", description: "Code execution", recommendation: "Avoid eval", scope: "production", analysis: "syntax", analysisGates: [], review: null, reviewHistory: [], observationRunId: "s", diffStatus: "new" } as Finding;
 const original = { ...sourceResult(), findings: [finding] };
-const options = { path: original.summary.path, includeGit: true, followSymlinks: false, maxFileSizeKb: 73, scanSecrets: false, scanVulnerabilities: true, extraIgnoredDirs: ["original"], ignoreInvalidPolicy: false };
+const options = { path: original.summary.path, includeGit: true, followSymlinks: false, maxFileSizeKb: 73, scanSecrets: false, scanVulnerabilities: true, extraIgnoredDirs: ["original"], ignoreInvalidPolicy: false, extraRulePackFiles: [] };
 const receipt: RecheckSourceResult = { run: { ...sourceResult(), runId: "next" }, options };
 beforeEach(() => {
   useAppStore.setState({ activeProject: original.summary.path, selectedProject: null, projectHandoff: null, settings: projectSettings, settingsLoadError: false });

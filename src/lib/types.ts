@@ -569,6 +569,8 @@ export interface ScanOptions {
   scanVulnerabilities: boolean;
   extraIgnoredDirs: string[];
   ignoreInvalidPolicy: boolean;
+  /** Pack files applied to this run only, without installing them. */
+  extraRulePackFiles: string[];
 }
 
 export interface ScanSummary {

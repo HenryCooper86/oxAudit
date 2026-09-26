@@ -95,6 +95,7 @@ pub async fn run_scheduled_scan(
         // A broken policy must surface through the scheduled scan, not be
         // quietly bypassed by an unattended run.
         ignore_invalid_policy: false,
+        extra_rule_pack_files: Vec::new(),
     };
 
     let packs = match app.try_state::<crate::rulepack_store::RulePacksState>() {

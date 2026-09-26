@@ -54,6 +54,7 @@ test("a failed settings attempt releases truthful fallback controls instead of b
     maxFileSizeKb: 333,
     extraIgnoredDirs: [],
     ignoreInvalidPolicy: false,
+    extraRulePackFiles: [],
   });
 });
 
@@ -74,6 +75,7 @@ test("the submitted Source request is exactly the effective displayed controls",
     maxFileSizeKb: 333,
     extraIgnoredDirs: [],
     ignoreInvalidPolicy: false,
+    extraRulePackFiles: [],
   });
 });
 

@@ -24,6 +24,8 @@ export function SourceTargetPanel(props: {
   cancelling: boolean;
   dropping: boolean;
   progress: ScanProgress | null;
+  rulePackFiles: string;
+  onRulePackFilesChange(next: string): void;
   onPathChange(path: string): void;
   onOptionChange<K extends SourceScanOptionKey>(key: K, value: SourceScanOptionValues[K]): void;
   onRun(ignoreInvalidPolicy: boolean): void;
@@ -38,6 +40,8 @@ export function SourceTargetPanel(props: {
     cancelling,
     dropping: externalDropping,
     progress,
+    rulePackFiles,
+    onRulePackFilesChange,
     onPathChange,
     onOptionChange,
     onRun,
@@ -110,6 +114,20 @@ export function SourceTargetPanel(props: {
                 KB
               </label>
             </div>
+            <label className="mt-3 block text-[12px] text-text-secondary">
+              Rule pack files (comma-separated paths, applied to this scan only)
+              <input
+                aria-label="Rule pack files for this scan"
+                className="mt-1.5 w-full rounded-sm border border-border bg-surface-primary px-2 py-1 font-mono text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="/path/to/pack.toml"
+                value={rulePackFiles}
+                onChange={(event) => onRulePackFilesChange(event.target.value)}
+                disabled={running}
+              />
+              <span className="mt-1 block text-[11px] text-text-muted">
+                One-off packs are validated before the scan starts; a pack that fails validation stops the scan. To apply packs to every scan, install them in the Rule Library.
+              </span>
+            </label>
           </details>
 
           {project && (

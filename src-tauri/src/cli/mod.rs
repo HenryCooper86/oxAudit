@@ -1202,6 +1202,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
         scan_vulnerabilities: !args.no_patterns,
         extra_ignored_dirs: args.ignore_dirs.clone(),
         ignore_invalid_policy: args.ignore_invalid_policy,
+        extra_rule_pack_files: Vec::new(),
     };
 
     if !quiet {

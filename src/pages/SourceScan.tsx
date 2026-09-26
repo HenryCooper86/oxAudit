@@ -124,6 +124,9 @@ export function SourceScanPage(): JSX.Element {
   const [scanOptions, setScanOptions] = useState(() =>
     createSourceScanOptions(settings?.scan ?? null),
   );
+  // One-off rule pack files, kept as raw text because they are a per-run
+  // input, not a persisted scan setting.
+  const [rulePackFilesInput, setRulePackFilesInput] = useState("");
   const [project, setProject] = useState<ProjectContext | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [runs, setRuns] = useState<ScanRunSummary[]>([]);
@@ -392,7 +395,12 @@ export function SourceScanPage(): JSX.Element {
         return;
       }
       const result = await api.scanProject(
-        buildSourceScanRequest(target, scanOptions, ignoreInvalidPolicy),
+        buildSourceScanRequest(
+          target,
+          scanOptions,
+          ignoreInvalidPolicy,
+          rulePackFilesInput.split(",").map((entry) => entry.trim()).filter(Boolean),
+        ),
       );
       if (runGeneration !== runLoadGenerationRef.current) return;
       setRun(result);
@@ -835,6 +843,8 @@ export function SourceScanPage(): JSX.Element {
         progress={progress}
         onPathChange={changePath}
         onOptionChange={updateScanOption}
+        rulePackFiles={rulePackFilesInput}
+        onRulePackFilesChange={setRulePackFilesInput}
         onRun={(ignoreInvalidPolicy) => void runScan(ignoreInvalidPolicy)}
         onCancel={() => void cancel()}
       />

@@ -636,6 +636,7 @@ mod scan_option_contract_tests {
             scan_vulnerabilities: true,
             extra_ignored_dirs: vec!["request-ignore".into()],
             ignore_invalid_policy: false,
+            extra_rule_pack_files: Vec::new(),
         };
 
         let effective = effective_scan_options(&submitted, &saved);
@@ -768,21 +769,35 @@ pub async fn scan_project(
     // selection, and a scan that quietly skipped enabled rules would be a
     // lie. A pack whose snapshot no longer validates is skipped with its
     // reason logged — the scan proceeds with the packs that hold.
-    let packs = match rule_packs.store() {
+    let mut compiled_packs = match rule_packs.store() {
         Ok(store) => {
             let resolved = store.resolve_enabled();
             for (id, reason) in &resolved.skipped {
                 tracing::warn!(pack = %id, reason = %reason, "enabled rule pack skipped");
             }
-            crate::scanners::rulepacks::AppliedRulePacks::from_compiled(resolved.packs)
+            resolved.packs
         }
         // An unavailable store degrades to built-in rules only; the scan
         // itself must not fail over pack management.
         Err(error) => {
             tracing::warn!(reason = %error, "rule packs not applied");
-            crate::scanners::rulepacks::AppliedRulePacks::empty()
+            Vec::new()
         }
     };
+    // One-off pack files apply to this run only. Like the CLI's
+    // --rule-pack-file, a pack that cannot be compiled is a caller-fixable
+    // problem: it fails the scan rather than reporting clean without the
+    // rules the caller explicitly asked for.
+    for pack_file in &durable_options.extra_rule_pack_files {
+        let (compiled, _) = crate::rulepack_store::compile_pack_file(Path::new(pack_file))
+            .map_err(|error| {
+                CommandError::data_operation_failed(format!(
+                    "The rule pack file could not be applied to this scan: {error}"
+                ))
+            })?;
+        compiled_packs.push(std::sync::Arc::new(compiled));
+    }
+    let packs = crate::scanners::rulepacks::AppliedRulePacks::from_compiled(compiled_packs);
 
     findings
         .service()?

@@ -130,6 +130,7 @@ test("project check uses canonical root, saved options and ordered stages", asyn
       ...settings,
       extraIgnoredDirs: ["custom"],
       ignoreInvalidPolicy: false,
+      extraRulePackFiles: [],
     },
   });
   vi.mocked(api.scanProject).mockImplementation(async (options) => {

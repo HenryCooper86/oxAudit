@@ -106,11 +106,13 @@ export function buildSourceScanRequest(
   path: string,
   state: SourceScanOptionsState,
   ignoreInvalidPolicy = false,
+  extraRulePackFiles: string[] = [],
 ): ScanOptions {
   return {
     path,
     ...state.values,
     extraIgnoredDirs: [],
     ignoreInvalidPolicy,
+    extraRulePackFiles,
   };
 }

@@ -155,6 +155,14 @@ impl CommandError {
         )
     }
 
+    /// A caller-supplied input the command could not act on. The reason is
+    /// caller-specific, so it travels in the message — a caller-fixable
+    /// failure, never retryable.
+    pub fn data_operation_failed(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::new(ErrorCode::DataOperationFailed, &message, false)
+    }
+
     fn new(code: ErrorCode, message: &str, retryable: bool) -> Self {
         Self {
             code,

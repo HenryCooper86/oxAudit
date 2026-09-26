@@ -16,6 +16,10 @@ pub struct ScanOptions {
     pub extra_ignored_dirs: Vec<String>,
     #[serde(default)]
     pub ignore_invalid_policy: bool,
+    /// Pack files applied to this run only, without installing them into
+    /// the managed store — the GUI face of the CLI's `--rule-pack-file`.
+    #[serde(default)]
+    pub extra_rule_pack_files: Vec<String>,
 }
 
 impl Default for ScanOptions {
@@ -29,6 +33,7 @@ impl Default for ScanOptions {
             scan_vulnerabilities: true,
             extra_ignored_dirs: Vec::new(),
             ignore_invalid_policy: false,
+            extra_rule_pack_files: Vec::new(),
         }
     }
 }
