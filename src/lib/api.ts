@@ -264,6 +264,9 @@ export const api = {
   collectDiagnostics: () => invoke<Diagnostics>("collect_diagnostics"),
   saveFindingReviews: (requests: ReviewRequest[]) =>
     invoke<BulkReviewOutcome>("save_finding_reviews", { requests }),
+  /** Record a candidate-state review, superseding the finding's decision. */
+  deleteFindingReview: (request: ReviewRequest) =>
+    invoke<ReviewRecord>("delete_finding_review", { request }),
   /** Score a local OWASP Benchmark checkout (the CLI's external-benchmark). */
   externalBenchmark: (path: string) =>
     invoke<ExternalBenchmarkReport>("external_benchmark", { path }),

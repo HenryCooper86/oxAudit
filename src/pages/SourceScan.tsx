@@ -662,6 +662,34 @@ export function SourceScanPage(): JSX.Element {
     }
   };
 
+  // Resetting a decision records a candidate review and reopens the queue.
+  // Unlike the review form there is no panel to show an error inline, so it
+  // surfaces as a toast.
+  const resetReview = async (request: ReviewRequest) => {
+    if (!run || savingReview) return;
+    setSavingReview(true);
+    setReviewError(null);
+    try {
+      await api.deleteFindingReview(request);
+      const refreshed = await api.loadSourceRun(run.runId);
+      setRun(refreshed);
+      setSelectedFingerprint(request.fingerprint);
+      setReviewAnnouncement("Review reset and finding views refreshed.");
+      push("success", "The decision was reset to candidate; it stays in the review history.");
+      try {
+        await refreshMetadata(refreshed.projectId);
+      } catch {
+        push("info", "The decision was reset, but project totals could not be refreshed.");
+      }
+    } catch (error) {
+      const normalized = normalizeCommandError(error);
+      setReviewError(normalized);
+      push("error", `The decision could not be reset: ${normalized.message}`);
+    } finally {
+      setSavingReview(false);
+    }
+  };
+
   const reviewChanges = useReviewChanges(project?.canonicalPath ?? "", run);
   const findings = reviewChanges.findings;
   const counts = useMemo(() => countViews(findings), [findings]);
@@ -998,6 +1026,7 @@ export function SourceScanPage(): JSX.Element {
                     savingReview={savingReview}
                     reviewError={reviewError}
                     onSaveReview={saveReview}
+                    onResetReview={resetReview}
                     onCopy={(finding) => void copyFinding(finding)}
                     onOpenFile={openFile}
                   />

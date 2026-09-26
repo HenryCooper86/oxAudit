@@ -1,5 +1,5 @@
 import { remediationFor } from "../features/source-scan/remediation";
-import { Bot, Clipboard, ExternalLink, History, ShieldCheck } from "lucide-react";
+import { Bot, Clipboard, ExternalLink, History, RotateCcw, ShieldCheck } from "lucide-react";
 import { useEffect, useState, type JSX } from "react";
 import { diffLabel, reviewLabel, scopeLabel } from "../features/source-scan/FindingList";
 import { FindingReviewForm } from "../features/source-scan/FindingReviewForm";
@@ -15,6 +15,7 @@ export function FindingDetail({
   savingReview,
   reviewError,
   onSaveReview,
+  onResetReview,
   onCopy,
   onOpenFile,
   onRecheck,
@@ -27,6 +28,7 @@ export function FindingDetail({
   savingReview: boolean;
   reviewError: CommandError | null;
   onSaveReview: (request: ReviewRequest) => Promise<void>;
+  onResetReview?: (request: ReviewRequest) => Promise<void>;
   onCopy: (finding: Finding) => void;
   onOpenFile: (finding: Finding) => void;
 }): JSX.Element {
@@ -60,6 +62,27 @@ export function FindingDetail({
       label: `Finding: ${finding.ruleName}`,
       content,
       projectPath: activeProject,
+    });
+  };
+
+  // A candidate review carries no fields by definition — the backend rejects
+  // anything else — so resetting means recording an empty candidate decision.
+  const resetReview = () => {
+    if (!onResetReview) return;
+    void onResetReview({
+      projectId,
+      fingerprintVersion: finding.fingerprintVersion,
+      fingerprint: finding.fingerprint,
+      category: finding.category,
+      state: "candidate",
+      reason: "",
+      evidence: null,
+      entryPoint: null,
+      dataFlow: null,
+      gates: [],
+      decidingGate: null,
+      expiresAt: null,
+      origin: "local",
     });
   };
 
@@ -178,9 +201,24 @@ export function FindingDetail({
 
         {finding.review && (
           <section aria-labelledby="finding-review-summary" className="mt-5 rounded-sm border border-border bg-surface-primary p-3">
-            <div className="flex items-center gap-2">
-              <History size={14} aria-hidden="true" className="text-text-muted" />
-              <h3 id="finding-review-summary" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Current review</h3>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <History size={14} aria-hidden="true" className="text-text-muted" />
+                <h3 id="finding-review-summary" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Current review</h3>
+              </div>
+              {onResetReview && finding.review.state !== "candidate" && (
+                <Button
+                  type="button"
+                  onClick={resetReview}
+                  disabled={savingReview}
+                  variant="outline"
+                  size="sm"
+                  title="Return this finding to the review queue. The decision stays in the review history."
+                >
+                  <RotateCcw size={13} aria-hidden="true" />
+                  Reset to candidate
+                </Button>
+              )}
             </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <DetailMetric label="Decision" value={reviewLabel(finding)} />
