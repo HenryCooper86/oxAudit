@@ -455,7 +455,10 @@ jobs:
   publish:
     name: Publish
     needs: [bundle-linux, bundle-desktop, sbom]
-    if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
+    # !failure()/!cancelled() instead of the default success(): a SKIPPED
+    # need (bundle-desktop while desktop bundles are off) must not skip the
+    # release — only an actual failure or cancellation may.
+    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
