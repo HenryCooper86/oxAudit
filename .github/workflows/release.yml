@@ -409,6 +409,69 @@ jobs:
           path: staging/*
           if-no-files-found: error
 
+  # CLI-only builds for the platforms whose desktop bundles are currently
+  # off (owner decision 2026-09-26: no Apple/Windows developer accounts).
+  # The CLI needs no native signing and no desktop dependencies, so it ships
+  # for every platform even while bundle-desktop is skipped.
+  bundle-cli:
+    name: CLI (${{ matrix.platform }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-universal
+          - os: windows-2025
+            platform: windows-x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Build the command line
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            rustup target add x86_64-apple-darwin aarch64-apple-darwin
+            cargo build --manifest-path src-tauri/Cargo.toml --release --locked --bin oxaudit-cli --target x86_64-apple-darwin
+            cargo build --manifest-path src-tauri/Cargo.toml --release --locked --bin oxaudit-cli --target aarch64-apple-darwin
+            lipo -create -output /tmp/oxaudit-cli \
+              src-tauri/target/x86_64-apple-darwin/release/oxaudit-cli \
+              src-tauri/target/aarch64-apple-darwin/release/oxaudit-cli
+            /tmp/oxaudit-cli --version
+          else
+            cargo build --manifest-path src-tauri/Cargo.toml --release --locked --bin oxaudit-cli
+            src-tauri/target/release/oxaudit-cli.exe --version
+          fi
+
+      - name: Stage and checksum the artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            cp /tmp/oxaudit-cli "staging/oxaudit-cli-${{ matrix.platform }}"
+          else
+            cp src-tauri/target/release/oxaudit-cli.exe "staging/oxaudit-cli-${{ matrix.platform }}.exe"
+          fi
+          cd staging
+          case "${RUNNER_OS}" in
+            macOS) shasum -a 256 * > "SHA256SUMS-${{ matrix.platform }}.txt" ;;
+            *)     sha256sum * > "SHA256SUMS-${{ matrix.platform }}.txt" ;;
+          esac
+          cat "SHA256SUMS-${{ matrix.platform }}.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oxaudit-cli-${{ matrix.platform }}
+          path: staging/*
+          if-no-files-found: error
+
   # A supply-chain tool that cannot describe its own supply chain is asking for
   # trust it has not earned. Every release ships an SBOM of oxAudit itself.
 
@@ -454,7 +517,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: [bundle-linux, bundle-desktop, sbom]
+    needs: [bundle-linux, bundle-cli, bundle-desktop, sbom]
     # !failure()/!cancelled() instead of the default success(): a SKIPPED
     # need (bundle-desktop while desktop bundles are off) must not skip the
     # release — only an actual failure or cancellation may.
