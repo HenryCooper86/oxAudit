@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="#151719"/>
+  <!-- thick horns hugging a wide skull -->
+  <path d="M 186 186 Q 84 180 58 88" fill="none" stroke="#C8B560" stroke-width="58" stroke-linecap="round"/>
+  <path d="M 326 186 Q 428 180 454 88" fill="none" stroke="#C8B560" stroke-width="58" stroke-linecap="round"/>
+  <!-- wide head -->
+  <rect x="146" y="150" width="220" height="230" rx="80" fill="#C8B560"/>
+  <!-- eyes: rounded slots -->
+  <rect x="194" y="238" width="34" height="52" rx="17" fill="#151719"/>
+  <rect x="284" y="238" width="34" height="52" rx="17" fill="#151719"/>
+  <!-- nostrils -->
+  <circle cx="228" cy="340" r="11" fill="#151719"/>
+  <circle cx="284" cy="340" r="11" fill="#151719"/>
+</svg>

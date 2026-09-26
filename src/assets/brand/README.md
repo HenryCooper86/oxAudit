@@ -1,6 +1,6 @@
 # oxAudit brand assets
 
-The geometric ox pairs broad, bracket-like horns with a compact central face.
+The mark is a magnifier whose lens holds an x — the o and x of oxAudit, and the act of auditing closely.
 The horns recall code delimiters; the quiet, symmetrical silhouette suits a
 local engineering audit workbench and remains recognizable at small sizes.
 

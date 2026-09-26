@@ -35,16 +35,17 @@ function pathSignatures(svg: string): PathSignature[] {
   });
 }
 
-test("every shipped brand entry point matches the geometric ox mark", () => {
+test("every shipped brand entry point matches the magnifier-x mark", () => {
   const runtimeSvg = renderToStaticMarkup(createElement(BrandMark));
   const runtimeGeometry = pathSignatures(runtimeSvg);
 
   assert.deepEqual(
     runtimeGeometry.map(({ layer, transform }) => [layer, transform]),
     [
-      ["horn-left", ""],
-      ["horn-right", "translate(512 0) scale(-1 1)"],
-      ["ox-face", ""],
+      ["lens", ""],
+      ["handle", ""],
+      ["cross-first", ""],
+      ["cross-second", ""],
     ],
   );
 

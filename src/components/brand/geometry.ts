@@ -1,10 +1,35 @@
 /** Shared geometry for the React mark and generated standalone SVG masters. */
-const HORN = "M 126 88 H 164 Q 168 88 168 92 V 110 Q 168 114 165 117 L 130 152 Q 118 164 118 176 V 192 Q 118 208 139 212 L 178 220 Q 182 221 179 225 L 158 258 Q 156 261 152 260 L 109 248 Q 72 238 72 200 V 178 Q 72 156 88 140 L 112 116 Q 122 106 122 98 V 92 Q 122 88 126 88 Z";
 
-export const BRAND_PATHS = [
-  { layer: "horn-left", d: HORN, transform: "" },
-  { layer: "horn-right", d: HORN, transform: "translate(512 0) scale(-1 1)" },
-  { layer: "ox-face", d: "M 204 222 H 308 Q 312 222 315 226 L 334 262 Q 337 266 333 270 L 306 292 L 286 358 Q 284 362 286 366 L 292 374 Q 295 378 292 383 L 283 399 Q 280 404 274 404 H 238 Q 232 404 229 399 L 220 383 Q 217 378 220 374 L 226 366 Q 228 362 226 358 L 206 292 L 179 270 Q 175 266 178 262 L 197 226 Q 200 222 204 222 Z", transform: "" },
+export interface BrandLayer {
+  layer: string;
+  d: string;
+  transform?: string;
+}
+
+/**
+ * The mark: a magnifier whose lens holds an x. The lens is the O of oxAudit
+ * and the act of auditing; the x is the x of the name. Every shape is a
+ * closed filled path (the lens is an annulus with counter-wound inner
+ * circle), so one fill per layer renders identically in React, rsvg, and
+ * the native icon rasterizers.
+ */
+export const BRAND_PATHS: readonly BrandLayer[] = [
+  {
+    layer: "lens",
+    d: "M 232 226 m -146 0 a 146 146 0 1 0 292 0 a 146 146 0 1 0 -292 0 Z M 232 226 m -90 0 a 90 90 0 1 1 180 0 a 90 90 0 1 1 -180 0 Z",
+  },
+  {
+    layer: "handle",
+    d: "M 297.49 332.51 L 381.49 416.51 A 29 29 0 0 0 422.51 375.49 L 338.51 291.49 A 29 29 0 0 0 297.49 332.51 Z",
+  },
+  {
+    layer: "cross-first",
+    d: "M 172.56 193.44 L 264.56 285.44 A 19 19 0 0 0 291.44 258.56 L 199.44 166.56 A 19 19 0 0 0 172.56 193.44 Z",
+  },
+  {
+    layer: "cross-second",
+    d: "M 264.56 166.56 L 172.56 258.56 A 19 19 0 0 0 199.44 285.44 L 291.44 193.44 A 19 19 0 0 0 264.56 166.56 Z",
+  },
 ] as const;
 
 export const BRAND_GOLD = "#C8B560";
