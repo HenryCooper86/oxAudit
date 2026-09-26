@@ -1,0 +1,22 @@
+# The image build needs the Rust workspace plus the benchmarks corpus the
+# library embeds at compile time (quality.rs include_dir!s ../benchmarks/
+# corpus). Everything heavy or desktop-bound stays out of the build
+# context. src-tauri/benches must also ride along: the manifest declares
+# the bench target explicitly, so cargo needs the file even to parse the
+# workspace.
+.git
+.github
+node_modules
+dist
+output
+docs
+design
+tests
+examples
+action
+docker
+src-tauri/target
+src-tauri/gen
+src-tauri/fuzz
+src-tauri/tests
+src-tauri/examples

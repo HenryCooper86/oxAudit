@@ -39,6 +39,10 @@ project.
   SHA256SUMS.txt, SLSA build-provenance attestations, **keyless cosign
   signatures** for `SHA256SUMS.txt` and every `oxaudit-cli-*` binary, draft
   release gated on a human reviewing the artifact list.
+- Multi-architecture container image (`ghcr.io/henrycooper86/oxaudit`,
+  linux/amd64 + linux/arm64): built natively per architecture, merged into
+  one index, cosign-signed; the pinned digest ships as `oxaudit-container.txt`
+  and in the release notes.
 - `action/action.yml`: composite GitHub Action — downloads a pinned release,
   verifies it against `SHA256SUMS.txt`, runs the scan. Ready for
   `uses: HenryCooper86/oxAudit/action@<tag>` the moment the repo (or the
@@ -58,7 +62,13 @@ project.
 5. Exercise the distribution paths from a clean machine: `action/action.yml`
    against a sample repo, `scripts/install.sh`, `minisign -Vm` and
    `cosign verify-blob` and `gh attestation verify` on a downloaded binary.
-6. (Optional, public repo) submit the brew tap and mark the Action as
+6. One-time, after the first release that runs the container jobs: flip the
+   ghcr.io package to public (GitHub → Packages → oxaudit → Package
+   settings → Danger Zone → Change visibility). Packages pushed via
+   `GITHUB_TOKEN` start private even on public repos, and a private package
+   breaks anonymous `docker pull`. Then verify `docker pull
+   ghcr.io/henrycooper86/oxaudit:latest` without credentials.
+7. (Optional, public repo) submit the brew tap and mark the Action as
    marketplace-ready.
 
 ### Already done (2026-09-26)

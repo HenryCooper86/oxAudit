@@ -20,11 +20,24 @@ and a finding on a workstation are the same finding.
 
 ## Install
 
+```bash
+# Release binary, checksum-verified before install (macOS, Linux x86_64
+# and aarch64, Windows):
+curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/scripts/install.sh | sh
+
+# Or the multi-architecture container image (linux/amd64, linux/arm64):
+docker run --rm -v "$PWD:/workspace" ghcr.io/henrycooper86/oxaudit \
+  scan /workspace --format sarif --fail-on high
+```
+
+The container is the no-install path: any machine with a container runtime
+gets the same CLI, and the release notes pin the image digest with the
+`cosign verify` command that proves it. The installer prints the PATH line to
+add and never executes anything unverified.
+
 Build the **local pilot from source** using the exact platform prerequisites and
-commands in [Getting started](docs/getting-started.md). Repository read access is
-required; no published release or public CLI download is available yet. Start
-with Node 22.22.2, the pinned Rust 1.97.1 toolchain, and the platform's Tauri
-prerequisites.
+commands in [Getting started](docs/getting-started.md). Start with Node 22.22.2,
+the pinned Rust 1.97.1 toolchain, and the platform's Tauri prerequisites.
 
 ```bash
 npm ci
@@ -43,7 +56,7 @@ artifacts and limits.
 Publishable release tags still require macOS signing/notarization and Windows
 Authenticode signing. Missing credentials stop publication; unsigned manual dry
 runs cannot publish. Release artifacts receive SHA-256 checksums, provenance
-attestations, and SBOMs when the release workflow actually runs. No release is
+attestations, and SBOMs. No release is
 claimed by these local pilot instructions.
 
 ## Project home

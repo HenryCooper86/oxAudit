@@ -134,6 +134,18 @@ the repository secret store's, and the keypair should be rotated if that
 store is ever compromised. Manual dry runs may be unsigned
 and can never reach the publishing job.
 
+The multi-architecture container image (`ghcr.io/henrycooper86/oxaudit`) is
+built natively per architecture in the same release run, published as one
+index, and signed keylessly — the signature lives in the registry beside the
+image, anchored to the index digest that the release notes and
+`oxaudit-container.txt` pin:
+
+```bash
+cosign verify ghcr.io/henrycooper86/oxaudit@sha256:<digest-from-release-notes> \
+  --certificate-identity-regexp '^https://github.com/HenryCooper86/oxAudit/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 Every published file receives a SHA-256 checksum and a GitHub build-provenance
 attestation. Each release also publishes pinned-generator CycloneDX SBOMs for
 oxAudit's Rust and JavaScript dependency trees. If you are evaluating oxAudit for

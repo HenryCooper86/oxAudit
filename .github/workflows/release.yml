@@ -482,6 +482,113 @@ jobs:
           path: staging/*
           if-no-files-found: error
 
+  # The container image is the no-install path: any machine with a container
+  # runtime gets the CLI, on amd64 or arm64. Each architecture is built
+  # NATIVELY on its own runner — a Rust release build under QEMU takes
+  # hours — pushed by digest, then merged into one multi-architecture index
+  # and signed keylessly, the same cosign identity that signs the release
+  # binaries. No third-party actions: login is the docker CLI, build and
+  # merge are buildx, signing is the cosign CLI.
+  container-build:
+    name: Container (linux/${{ matrix.goarch }})
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            goarch: amd64
+          - os: ubuntu-24.04-arm
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Log in to the container registry
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Set up the buildx builder
+        run: |
+          docker buildx create --use --name oxaudit-release
+          docker buildx inspect --bootstrap
+
+      - name: Build and push the linux/${{ matrix.goarch }} image by digest
+        run: |
+          # No --tag: the push is digest-only, and the merge job assembles the
+          # tagged multi-architecture index from the two digests.
+          docker buildx build \
+            --platform linux/${{ matrix.goarch }} \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg VERSION="${GITHUB_REF_NAME}" \
+            --output "type=image,push=true,digest-file=/tmp/digest.txt" \
+            --cache-from "type=gha,scope=container-${{ matrix.goarch }}" \
+            --cache-to "type=gha,mode=min,scope=container-${{ matrix.goarch }}" \
+            --provenance=false \
+            .
+          echo "Pushed linux/${{ matrix.goarch }} as $(cat /tmp/digest.txt)"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-digest-linux-${{ matrix.goarch }}
+          path: /tmp/digest.txt
+          if-no-files-found: error
+
+  container-publish:
+    name: Container publish
+    needs: container-build
+    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      # Keyless cosign signing via Sigstore OIDC.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: container-digest-*
+          path: digests
+
+      - name: Log in to the container registry
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Merge the architectures into one index and push
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          refs=()
+          for digest_file in digests/*/digest.txt; do
+            refs+=("${IMAGE}@$(cat "${digest_file}")")
+          done
+          test "${#refs[@]}" -eq 2 || {
+            echo "::error::expected two architecture digests, found ${#refs[@]}"; exit 1;
+          }
+          docker buildx imagetools create \
+            -t "${IMAGE}:${GITHUB_REF_NAME}" \
+            -t "${IMAGE}:latest" \
+            "${refs[@]}"
+          # The index digest is the sha256 of the index bytes the registry
+          # serves — the pin everyone should reference.
+          INDEX="sha256:$(docker buildx imagetools inspect --raw "${IMAGE}:${GITHUB_REF_NAME}" | sha256sum | cut -d' ' -f1)"
+          echo "${IMAGE}@${INDEX}" | tee oxaudit-container.txt
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the image index keylessly
+        run: cosign sign --yes "$(cat oxaudit-container.txt)"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-reference
+          path: oxaudit-container.txt
+          if-no-files-found: error
+
   # A supply-chain tool that cannot describe its own supply chain is asking for
   # trust it has not earned. Every release ships an SBOM of oxAudit itself.
 
@@ -527,10 +634,11 @@ jobs:
 
   publish:
     name: Publish
-    needs: [bundle-linux, bundle-cli, bundle-desktop, sbom]
+    needs: [bundle-linux, bundle-cli, bundle-desktop, sbom, container-publish]
     # !failure()/!cancelled() instead of the default success(): a SKIPPED
-    # need (bundle-desktop while desktop bundles are off) must not skip the
-    # release — only an actual failure or cancellation may.
+    # need (bundle-desktop and the container jobs while desktop bundles are
+    # off / on dry runs) must not skip the release — only an actual failure
+    # or cancellation may.
     if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -549,8 +657,10 @@ jobs:
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
           # Per-platform sums were staged for the build logs; the release ships
-          # one list covering everything.
-          rm -f release/SHA256SUMS-*.txt
+          # one list covering everything. The per-architecture container
+          # digests are internal — the pinned index reference ships as
+          # oxaudit-container.txt instead.
+          rm -f release/SHA256SUMS-*.txt release/digest.txt
           cd release
           sha256sum * > SHA256SUMS.txt
           ls -la
@@ -617,6 +727,25 @@ jobs:
           Exit codes: 0 clean, 1 findings at or above `--fail-on`, 2 usage
           error, 3 scan failure.
           NOTES
+          # The container section is appended only when the container jobs
+          # ran (real tag releases): a dry run has no image to document.
+          if [ -f release/oxaudit-container.txt ]; then
+            image_ref="$(cat release/oxaudit-container.txt)"
+            cat >> notes.md <<CONTAINER
+
+          ## Container image
+
+          The CLI ships as a multi-architecture container image
+          (linux/amd64, linux/arm64):
+
+              docker run --rm -v "\$PWD:/workspace" ${image_ref%%@*} scan /workspace --format sarif --fail-on high
+
+          Pinned by digest, and signed keylessly the same way as the
+          binaries:
+
+              cosign verify ${image_ref} --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          CONTAINER
+          fi
           sed -i "s|OWNER/REPO|${GITHUB_REPOSITORY}|" notes.md
           # Draft, so a human checks the artifact list and native desktop-signing
           # posture before anyone can download the release.
