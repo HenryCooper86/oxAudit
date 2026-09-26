@@ -30,7 +30,7 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
       </div>
       <p>Advisory source: {result.summary.advisorySource ?? 'unknown'} · checked {timestamp(result.summary.advisoryFetchedAtMs)} · coverage {result.summary.advisoryCoverage ?? 'unknown'}.</p>
       {result.summary.advisorySource==='cache' ? <p className="text-warning">Cached advisory evidence has not been refreshed for this check; newer advisories or fixes may exist.</p> : null}
-      {result.summary.advisorySource==='local-db' ? <p className="text-warning">Advisory evidence comes from the local database built {timestamp(result.summary.advisoryFetchedAtMs)}; refresh it with <code>oxaudit-cli advisory-db update</code> for newer advisories.</p> : null}
+      {result.summary.advisorySource==='local-db' ? <p className="text-warning">Advisory evidence comes from the local database built {timestamp(result.summary.advisoryFetchedAtMs)}; refresh it from the Advisory Database page for newer advisories.</p> : null}
       {result.summary.advisoryNotes?.map((note,index)=><p className="text-warning" key={`advisory-note-${index}:${note}`}>{note}</p>)}
       <p>Optional exploitation enrichment: {enrichment?.status ?? 'unknown'} · checked {timestamp(enrichment?.checkedAtMs)} · public-exploit cache {timestamp(enrichment?.pocCacheUpdatedAtMs)}.</p>
       {enrichment?.status!=='available' ? <p>Absent KEV, EPSS, and public-exploit signals are unknown when enrichment is unavailable, partial, or historical.</p> : null}

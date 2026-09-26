@@ -52,6 +52,13 @@ same staleness warning as cached receipts. Every answer is persisted as an
 immutable provider snapshot (`local-advisory-db`), so advisory evidence keeps
 the same auditability online and offline.
 
+The desktop app does the same without the CLI: the Dependencies page's
+**Local advisory database** switch answers that scan from a database file
+(prefilled with the app's default `advisories.sqlite3`), and the Advisory
+Database page builds and refreshes that file. The same coverage discipline
+applies — an ecosystem the file does not carry fails the scan as incomplete
+coverage, never as a clean result.
+
 ## Image scans
 
 `oxaudit-cli image <saved-image.tar>` reads the image's own package

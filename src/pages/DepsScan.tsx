@@ -70,6 +70,8 @@ export function DepsScanPage() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [offline, setOffline] = useState(false);
+  const [useAdvisoryDb, setUseAdvisoryDb] = useState(false);
+  const [advisoryDbPath, setAdvisoryDbPath] = useState("");
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const discoveryRequestRef = useRef(0);
@@ -150,6 +152,17 @@ export function DepsScanPage() {
       detail: phase === "parsing" ? "Parsing lockfiles" : phase === "querying-osv" ? "Querying OSV" : phase === "loading-cache" ? "Loading cached advisories" : undefined,
     });
   }, [ownsCurrentInvocation, phase, running, setPageStatus]);
+
+  const changeAdvisoryDb = useCallback((enabled: boolean) => {
+    setUseAdvisoryDb(enabled);
+    if (enabled && !advisoryDbPath.trim()) {
+      api.defaultAdvisoryDbPath().then((defaultPath) => {
+        setAdvisoryDbPath((current) => current || defaultPath);
+      }).catch(() => {
+        // The field stays editable; a failed default lookup must not block scans.
+      });
+    }
+  }, [advisoryDbPath]);
 
   const changePath = useCallback((nextPath: string) => {
     if (nextPath === path) return;
@@ -269,7 +282,8 @@ export function DepsScanPage() {
         return;
       }
       if (useScanWorkStore.getState().active?.cancelling) return;
-      const scanResult = await api.scanDependencies(requestedPath, offline);
+      const advisoryDb = useAdvisoryDb && advisoryDbPath.trim() ? advisoryDbPath.trim() : null;
+      const scanResult = await api.scanDependencies(requestedPath, offline, advisoryDb);
       if (requestId !== discoveryRequestRef.current) return;
       // Terminal publication must invalidate running effects synchronously;
       // React may flush an older running render before finally commits.
@@ -462,6 +476,25 @@ export function DepsScanPage() {
           inputLabel="Project folder path"
           buttonLabel="Browse…"
         />
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Switch
+            checked={useAdvisoryDb}
+            onChange={changeAdvisoryDb}
+            disabled={running || discovering}
+            label="Local advisory database"
+          />
+          {useAdvisoryDb && (
+            <input
+              aria-label="Advisory database path"
+              title="Answer advisories from this local database instead of the network, built on the Advisory Database page"
+              className="min-w-[240px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
+              placeholder="advisories.sqlite3"
+              value={advisoryDbPath}
+              onChange={(event) => setAdvisoryDbPath(event.target.value)}
+              disabled={running || discovering}
+            />
+          )}
+        </div>
       </TargetBar>
 
       <RunTimeline

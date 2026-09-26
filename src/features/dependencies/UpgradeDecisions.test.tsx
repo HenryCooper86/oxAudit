@@ -28,7 +28,7 @@ test('group detail preserves location and copies a checklist, displaying partial
 test('a local advisory database answer states its freshness and matching limits',()=>{
   render(<UpgradeDecisions result={{...result,summary:{...result.summary,advisorySource:'local-db',advisoryFetchedAtMs:2000000,advisoryNotes:['2 advisory match(es) could not be decided locally; they are kept as findings']}}} onSelect={()=>{}} onRecheck={()=>{}} disabled/>);
   expect(screen.getByText(/Advisory source: local-db/)).toBeInTheDocument();
-  expect(screen.getByText(/refresh it with/)).toBeInTheDocument();
+  expect(screen.getByText(/refresh it from the Advisory Database page/)).toBeInTheDocument();
   expect(screen.getByText(/could not be decided locally/)).toBeInTheDocument();
 });
 

@@ -192,6 +192,7 @@ pub fn run() {
             commands::history::scan_history_secrets,
             commands::advisories::advisory_db_status,
             commands::advisories::advisory_db_update,
+            commands::advisories::default_advisory_db_path,
             commands::image::scan_image,
             commands::image::cancel_image_scan,
             commands::vex::vex_claim_sets,

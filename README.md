@@ -207,7 +207,7 @@ with a reason, an expiry, and a pull request.
 - **Dashboard** — overview and quick actions
 - **Source Scan** — folder picker, scan options, live progress, filterable findings grouped by file, JSON report export, and a severity trend over stored runs (findings by severity per completed scan, oldest to newest, with the latest run's new/resolved counts against its baseline)
 - **History Scan** — the same secret rules over every blob reachable from any ref; findings at their historical paths, redacted evidence, truncation stated when a budget stopped the scan
-- **Dependencies** — lockfile discovery, OSV check, vulnerable-package table with fixed versions and reference links
+- **Dependencies** — lockfile discovery, OSV check, vulnerable-package table with fixed versions and reference links; optionally answers advisories from the local advisory database built on the Advisory Database page (the same file `oxaudit-cli deps --advisory-db` reads), with the coverage discipline described there
 - **Binary Scan** — file/folder target, cve-bin-tool detection with a first-class "not installed" state, live progress, components grouped with their CVEs
 - **Inventory** — all normalized components, versions, aliases, purl/CPE identities, source artifacts, confidence, and advisory matches—including components with no match
 - **Rule Library** — built-in provenance/fixture health plus safe validation and installation of external declarative TOML packs: enabled packs' text-engine rules run beside the built-ins in every source scan (findings carry a `pack/rule` id), with per-pack enable/disable and stated engine limits — nothing executes

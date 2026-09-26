@@ -180,8 +180,8 @@ export const api = {
   refreshBinaryDatabase: () => invoke<void>("refresh_binary_database"),
   openScanFinding: (root: string, relativePath: string, line: number, column: number) =>
     invoke<void>("open_scan_finding", { root, relativePath, line, column }),
-  scanDependencies: (path: string, offline = false) =>
-    invoke<DependencyScanResult>("scan_dependencies", { path, offline }),
+  scanDependencies: (path: string, offline = false, advisoryDbPath: string | null = null) =>
+    invoke<DependencyScanResult>("scan_dependencies", { path, offline, advisoryDbPath }),
   cancelDependencyScan: () => invoke<void>("cancel_dependency_scan"),
   findLockfiles: (path: string) =>
     invoke<LockfileInfo[]>("find_lockfiles", { path }),
@@ -263,5 +263,7 @@ export const api = {
   collectDiagnostics: () => invoke<Diagnostics>("collect_diagnostics"),
   saveFindingReviews: (requests: ReviewRequest[]) =>
     invoke<BulkReviewOutcome>("save_finding_reviews", { requests }),
+  /** The advisory database file the app manages by default. */
+  defaultAdvisoryDbPath: () => invoke<string>("default_advisory_db_path"),
 
 };

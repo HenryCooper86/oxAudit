@@ -10,10 +10,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const advisoryDbStatus = vi.fn();
 const advisoryDbUpdate = vi.fn();
+const defaultAdvisoryDbPath = vi.fn();
 vi.mock("../lib/api", () => ({
   api: {
     advisoryDbStatus: (...args: unknown[]) => advisoryDbStatus(...args),
     advisoryDbUpdate: (...args: unknown[]) => advisoryDbUpdate(...args),
+    defaultAdvisoryDbPath: (...args: unknown[]) => defaultAdvisoryDbPath(...args),
   },
 }));
 
@@ -35,9 +37,11 @@ const status = {
 };
 
 test("status shows coverage and freshness after a refresh", async () => {
+  defaultAdvisoryDbPath.mockResolvedValue("/tmp/advisories.sqlite3");
   advisoryDbStatus.mockResolvedValue(status);
   render(<AdvisoryDatabasePage />);
-  await userEvent.type(screen.getByLabelText("Advisory database path"), "/tmp/advisories.sqlite3");
+  const pathInput = screen.getByLabelText("Advisory database path");
+  await waitFor(() => expect(pathInput).toHaveValue("/tmp/advisories.sqlite3"));
   await userEvent.click(screen.getByRole("button", { name: /status/i }));
   expect(await screen.findByText(/npm, Debian:12/)).toBeInTheDocument();
   expect(screen.getByText(/1200 \/ 900/)).toBeInTheDocument();
@@ -45,6 +49,7 @@ test("status shows coverage and freshness after a refresh", async () => {
 });
 
 test("update downloads defaults plus the extra ecosystems named", async () => {
+  defaultAdvisoryDbPath.mockResolvedValue("/tmp/advisories.sqlite3");
   advisoryDbStatus.mockResolvedValue(status);
   advisoryDbUpdate.mockResolvedValue({
     ecosystems: [{ ecosystem: "npm", records: 1000 }],
@@ -53,7 +58,8 @@ test("update downloads defaults plus the extra ecosystems named", async () => {
     builtAtMs: 1,
   });
   render(<AdvisoryDatabasePage />);
-  await userEvent.type(screen.getByLabelText("Advisory database path"), "/tmp/advisories.sqlite3");
+  const pathInput = screen.getByLabelText("Advisory database path");
+  await waitFor(() => expect(pathInput).toHaveValue("/tmp/advisories.sqlite3"));
   await userEvent.type(screen.getByLabelText("Extra ecosystems"), "Debian:12, Hex");
   await userEvent.click(screen.getByRole("button", { name: /download defaults/i }));
   await waitFor(() =>

@@ -38,6 +38,20 @@ export function AdvisoryDatabasePage() {
     return () => stop?.();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    api.defaultAdvisoryDbPath()
+      .then((defaultPath) => {
+        if (!cancelled) setPath((current) => current || defaultPath);
+      })
+      .catch(() => {
+        // The field stays editable when no default can be resolved.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const refreshStatus = async () => {
     if (!path.trim()) return;
     setBusy("status");
@@ -87,7 +101,7 @@ export function AdvisoryDatabasePage() {
             <input
               aria-label="Advisory database path"
               className="min-w-[320px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[13px] text-text-primary"
-              placeholder="advisories.sqlite3 (the same file oxaudit-cli advisory-db manages)"
+              placeholder="advisories.sqlite3 — the file dependency and image scans answer from offline"
               value={path}
               onChange={(event) => setPath(event.target.value)}
             />

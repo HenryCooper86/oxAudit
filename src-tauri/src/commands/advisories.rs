@@ -27,6 +27,21 @@ fn open_db(path: &str) -> Result<crate::advisories::store::AdvisoryDb, String> {
     crate::advisories::store::AdvisoryDb::open(path)
 }
 
+/// The advisory database file the app manages by default, so pages that use
+/// one can prefill the path instead of asking the user to invent one. The CLI
+/// has no equivalent default — it always takes an explicit `--db`.
+#[tauri::command]
+pub fn default_advisory_db_path(app: AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("cannot resolve the app data directory: {error}"))?;
+    Ok(dir
+        .join("advisories.sqlite3")
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
 #[tauri::command]
 pub fn advisory_db_status(path: String) -> Result<AdvisoryDbStatus, String> {
     let db = open_db(&path)?;

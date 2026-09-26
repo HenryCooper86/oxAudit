@@ -13,6 +13,7 @@ pub async fn scan_dependencies(
     findings: State<'_, FindingsState>,
     path: String,
     offline: bool,
+    advisory_db_path: Option<String>,
 ) -> Result<DependencyScanResult, String> {
     struct Events(AppHandle);
     impl crate::findings::service::ScanEventSink for Events {
@@ -24,6 +25,15 @@ pub async fn scan_dependencies(
     let root = Path::new(&path)
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    // Held across awaits on purpose: the connection sits in a Mutex, so the
+    // reference is Send even though rusqlite's connection alone is not.
+    let advisory_db = match &advisory_db_path {
+        Some(path) => Some(
+            crate::advisories::store::AdvisoryDb::open(std::path::Path::new(path))
+                .map_err(|error| format!("cannot open {path}: {error}"))?,
+        ),
+        None => None,
+    };
     state.cancel_dependency_scan.store(false, Ordering::SeqCst);
     let service = findings.service().map_err(|error| error.to_string())?;
     let settings = state.settings.lock().unwrap().clone();
@@ -39,7 +49,7 @@ pub async fn scan_dependencies(
         root: &root,
         ignored_dirs: &settings.scan.ignored_dirs,
         offline,
-        advisory_db: None,
+        advisory_db: advisory_db.as_ref(),
         repository: service.repository(),
         providers: &providers,
         cancel: &state.cancel_dependency_scan,
