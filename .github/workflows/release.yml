@@ -183,7 +183,7 @@ jobs:
           # in the committed ground-truth fixtures, or it is not working.
           "$cli" scan benchmarks/ground-truth/source-smoke --format sarif -q -o /tmp/smoke.sarif
           node -e '
-            const sarif = require("/tmp/smoke.sarif");
+            const sarif = JSON.parse(require("node:fs").readFileSync("/tmp/smoke.sarif", "utf8"));
             const results = sarif.runs[0].results.length;
             const rules = sarif.runs[0].tool.driver.rules.length;
             if (results < 5) throw new Error(`expected planted findings, got ${results}`);
@@ -349,7 +349,7 @@ jobs:
           # in the committed ground-truth fixtures, or it is not working.
           "$cli" scan benchmarks/ground-truth/source-smoke --format sarif -q -o /tmp/smoke.sarif
           node -e '
-            const sarif = require("/tmp/smoke.sarif");
+            const sarif = JSON.parse(require("node:fs").readFileSync("/tmp/smoke.sarif", "utf8"));
             const results = sarif.runs[0].results.length;
             const rules = sarif.runs[0].tool.driver.rules.length;
             if (results < 5) throw new Error(`expected planted findings, got ${results}`);
