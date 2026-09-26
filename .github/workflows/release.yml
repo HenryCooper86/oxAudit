@@ -548,6 +548,7 @@ jobs:
           # Draft, so a human checks the artifact list and native desktop-signing
           # posture before anyone can download the release.
           gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
             --draft \
             --title "oxAudit ${GITHUB_REF_NAME}" \
             --notes-file notes.md \
@@ -565,7 +566,7 @@ jobs:
             [ -f "$file" ] || continue
             cosign sign-blob --yes --bundle "$file.bundle" "$file"
           done
-          gh release upload "${GITHUB_REF_NAME}" ./*.bundle
+          gh release upload "${GITHUB_REF_NAME}" ./*.bundle --repo "${GITHUB_REPOSITORY}"
 
       # Owner decision 2026-09-26: minisign on top of keyless cosign, for
       # verification that depends on nothing but the committed public key
@@ -598,4 +599,4 @@ jobs:
             printf '\n' | minisign -Sm "$file" -s /tmp/minisign.key
           done
           rm -f /tmp/minisign.key
-          gh release upload "${GITHUB_REF_NAME}" ./*.minisig
+          gh release upload "${GITHUB_REF_NAME}" ./*.minisig --repo "${GITHUB_REPOSITORY}"
