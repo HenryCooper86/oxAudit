@@ -13,7 +13,7 @@ oxaudit-application = { path = "../oxaudit-application" }
 oxaudit-domain = { path = "../oxaudit-domain" }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.11"
+sha2 = "0.10"
 thiserror = "2"
 toml = "1.1"
 object = { version = "0.40", default-features = false, features = ["read_core", "elf", "macho", "pe", "std"] }
