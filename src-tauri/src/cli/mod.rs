@@ -1193,7 +1193,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     };
     let service = FindingsService::new(repository);
 
-    let options = ScanOptions {
+    let mut options = ScanOptions {
         path: args.path.to_string_lossy().into_owned(),
         include_git: args.include_git,
         follow_symlinks: args.follow_symlinks,
@@ -1220,7 +1220,13 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     // pipeline report clean with rules silently missing.
     let mut compiled_packs = Vec::new();
     for pack_path in &args.rule_pack_files {
-        let (compiled, _) = crate::rulepack_store::compile_pack_file(pack_path).map_err(usage)?;
+        let pack_path = pack_path
+            .canonicalize()
+            .map_err(|error| usage(format!("cannot resolve the rule pack: {error}")))?;
+        let (compiled, _) = crate::rulepack_store::compile_pack_file(&pack_path).map_err(usage)?;
+        options
+            .extra_rule_pack_files
+            .push(pack_path.to_string_lossy().into_owned());
         if !quiet {
             eprintln!(
                 "Rule pack {} v{} validated ({} rules)",
@@ -1231,7 +1237,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
         }
         compiled_packs.push(std::sync::Arc::new(compiled));
     }
-    if !args.rule_packs.is_empty() {
+    let installed_packs = if !args.rule_packs.is_empty() {
         let store_db = args
             .rule_pack_db
             .as_deref()
@@ -1249,15 +1255,19 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
                 "selected rule pack(s) could not be applied — {reasons}"
             )));
         }
-        compiled_packs.extend(resolved.packs);
-    }
-    if !quiet && !compiled_packs.is_empty() {
+        resolved.packs
+    } else {
+        Vec::new()
+    };
+    let pack_count = compiled_packs.len() + installed_packs.len();
+    if !quiet && pack_count > 0 {
         eprintln!(
             "Applying {} rule pack(s); pack findings carry pack/rule ids",
-            compiled_packs.len()
+            pack_count
         );
     }
-    let packs = crate::scanners::rulepacks::AppliedRulePacks::from_compiled(compiled_packs);
+    let packs =
+        crate::scanners::rulepacks::AppliedRulePacks::from_sources(installed_packs, compiled_packs);
 
     let detail = block_on(service.scan_with_packs(options, &cve, &cancel, &events, &packs))
         .map_err(|error| {

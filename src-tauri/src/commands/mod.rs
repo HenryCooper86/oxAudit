@@ -790,7 +790,7 @@ pub(crate) async fn scan_project_engine(
     // selection, and a scan that quietly skipped enabled rules would be a
     // lie. A pack whose snapshot no longer validates is skipped with its
     // reason logged — the scan proceeds with the packs that hold.
-    let mut compiled_packs = match rule_packs.store() {
+    let installed_packs = match rule_packs.store() {
         Ok(store) => {
             let resolved = store.resolve_enabled();
             for (id, reason) in &resolved.skipped {
@@ -809,16 +809,22 @@ pub(crate) async fn scan_project_engine(
     // --rule-pack-file, a pack that cannot be compiled is a caller-fixable
     // problem: it fails the scan rather than reporting clean without the
     // rules the caller explicitly asked for.
-    for pack_file in &durable_options.extra_rule_pack_files {
-        let (compiled, _) = crate::rulepack_store::compile_pack_file(Path::new(pack_file))
-            .map_err(|error| {
-                CommandError::data_operation_failed(format!(
-                    "The rule pack file could not be applied to this scan: {error}"
-                ))
-            })?;
-        compiled_packs.push(std::sync::Arc::new(compiled));
+    let mut one_off_packs = Vec::new();
+    for pack_file in &mut durable_options.extra_rule_pack_files {
+        let pack_error = |error: String| {
+            CommandError::data_operation_failed(format!(
+                "The rule pack file could not be applied to this scan: {error}"
+            ))
+        };
+        let path = Path::new(pack_file)
+            .canonicalize()
+            .map_err(|error| pack_error(format!("cannot resolve the rule pack: {error}")))?;
+        let (compiled, _) = crate::rulepack_store::compile_pack_file(&path).map_err(pack_error)?;
+        *pack_file = path.to_string_lossy().into_owned();
+        one_off_packs.push(std::sync::Arc::new(compiled));
     }
-    let packs = crate::scanners::rulepacks::AppliedRulePacks::from_compiled(compiled_packs);
+    let packs =
+        crate::scanners::rulepacks::AppliedRulePacks::from_sources(installed_packs, one_off_packs);
 
     findings
         .service()?
@@ -839,11 +845,10 @@ pub async fn recheck_source_run(
     state: State<'_, AppState>,
     findings: State<'_, FindingsState>,
     cve: State<'_, CveState>,
+    rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
     original_run_id: String,
     project_id: String,
 ) -> Result<RecheckSourceResult, CommandError> {
-    let service = findings.service()?;
-    let options = service.recheck_options(&original_run_id, &project_id)?;
     struct RecheckEvents(AppHandle);
     impl ScanEventSink for RecheckEvents {
         fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
@@ -851,13 +856,100 @@ pub async fn recheck_source_run(
             Ok(())
         }
     }
+    recheck_source_run_engine(
+        &state,
+        &findings,
+        &cve,
+        &rule_packs,
+        &original_run_id,
+        &project_id,
+        &RecheckEvents(app),
+    )
+    .await
+}
+
+pub(crate) async fn recheck_source_run_engine(
+    state: &AppState,
+    findings: &FindingsState,
+    cve: &CveState,
+    rule_packs: &crate::rulepack_store::RulePacksState,
+    original_run_id: &str,
+    project_id: &str,
+    events: &dyn ScanEventSink,
+) -> Result<RecheckSourceResult, CommandError> {
+    let service = findings.service()?;
+    let options = service.recheck_options(original_run_id, project_id)?;
+    let identity = oxaudit_domain::RunId::parse(original_run_id.to_owned())
+        .map_err(|_| CommandError::not_found())?;
+    let mut required_ids = service
+        .repository()
+        .canonical_load_run(&identity)?
+        .map(|run| {
+            run.rule_pack_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    // Legacy runs may lack a canonical pack list; their observed qualified
+    // rule IDs still identify detectors that must not disappear on recheck.
+    for finding in service.load_run(original_run_id)?.findings {
+        if finding.observation_run_id != original_run_id {
+            continue;
+        }
+        if let Some((id, _)) = finding.rule_id.split_once('/') {
+            required_ids.insert(id.to_owned());
+        }
+    }
+    let pack_error = |error: String| {
+        CommandError::data_operation_failed(format!(
+            "A rule pack required by the original scan is unavailable: {error}"
+        ))
+    };
+    let mut one_off_packs = Vec::new();
+    for path in &options.extra_rule_pack_files {
+        let (compiled, _) =
+            crate::rulepack_store::compile_pack_file(Path::new(path)).map_err(pack_error)?;
+        one_off_packs.push(Arc::new(compiled));
+    }
+    if let Some(installed_ids) = service
+        .repository()
+        .run_coverage(original_run_id)?
+        .and_then(|coverage| coverage.installed_rule_pack_ids)
+    {
+        required_ids = installed_ids;
+    } else {
+        // Older runs did not record pack sources. One-off files account for
+        // their IDs, but absent legacy snapshot proof never claims resolution.
+        for compiled in &one_off_packs {
+            required_ids.remove(&compiled.metadata().id.to_string());
+        }
+    }
+    let mut installed_packs = Vec::new();
+    if !required_ids.is_empty() {
+        let required_ids = required_ids.into_iter().collect::<Vec<_>>();
+        let resolved = rule_packs
+            .store()
+            .map_err(pack_error)?
+            .resolve_selected(&required_ids);
+        if !resolved.skipped.is_empty()
+            || required_ids.iter().any(|id| {
+                !resolved
+                    .packs
+                    .iter()
+                    .any(|pack| pack.metadata().id.to_string() == *id)
+            })
+        {
+            return Err(pack_error(
+                "restore the original installed packs before retrying".into(),
+            ));
+        }
+        installed_packs = resolved.packs;
+    }
+    let packs =
+        crate::scanners::rulepacks::AppliedRulePacks::from_sources(installed_packs, one_off_packs);
     let run = service
-        .scan(
-            options.clone(),
-            &cve,
-            &state.cancel_scan,
-            &RecheckEvents(app),
-        )
+        .scan_with_packs(options.clone(), cve, &state.cancel_scan, events, &packs)
         .await?;
     Ok(RecheckSourceResult { run, options })
 }

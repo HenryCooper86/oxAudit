@@ -11,19 +11,15 @@ import { onUnauthorized, serverToken, setServerToken } from "../lib/transport";
  * render anything meaningful without API access.
  */
 export function ServerTokenGate(): JSX.Element | null {
-  const [needed, setNeeded] = useState(() => serverToken() === "");
   const [value, setValue] = useState("");
-  const [rejected, setRejected] = useState(false);
+  const [rejected, setRejected] = useState(() => serverToken() !== "");
 
   useEffect(() => {
     const release = onUnauthorized(() => {
-      setNeeded(true);
       setRejected(true);
     });
     return release;
   }, []);
-
-  if (!needed) return null;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();

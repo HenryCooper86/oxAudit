@@ -9,6 +9,14 @@ use crate::findings::fingerprint::FINGERPRINT_VERSION;
 pub struct CoverageManifest {
     pub fingerprint_version: u16,
     pub paths: BTreeMap<String, BTreeSet<String>>,
+    /// A pack detector can establish absence only under the same validated
+    /// content as the baseline. Legacy coverage lacks that proof.
+    #[serde(default)]
+    pub rule_pack_hashes: BTreeMap<String, BTreeSet<String>>,
+    /// Preserve installed selection separately from one-off files, which may
+    /// carry the same pack ID with different detector content.
+    #[serde(default)]
+    pub installed_rule_pack_ids: Option<BTreeSet<String>>,
 }
 
 fn normalize_path(path: &str) -> Option<String> {
@@ -34,6 +42,8 @@ impl CoverageManifest {
         let mut coverage = Self {
             fingerprint_version: FINGERPRINT_VERSION,
             paths: BTreeMap::new(),
+            rule_pack_hashes: BTreeMap::new(),
+            installed_rule_pack_ids: None,
         };
         for (path, families) in entries {
             let path = path.into();
@@ -65,6 +75,27 @@ impl CoverageManifest {
                         .values()
                         .any(|other_families| other_families.contains(family))
                 })
+            })
+    }
+
+    pub fn is_finding_covered(
+        &self,
+        path: &str,
+        family: &str,
+        rule_id: &str,
+        baseline: &Self,
+    ) -> bool {
+        if !self.is_covered(path, family) {
+            return false;
+        }
+        let Some((pack_id, _)) = rule_id.split_once('/') else {
+            return true;
+        };
+        baseline
+            .rule_pack_hashes
+            .get(pack_id)
+            .is_some_and(|hashes| {
+                !hashes.is_empty() && self.rule_pack_hashes.get(pack_id) == Some(hashes)
             })
     }
 }

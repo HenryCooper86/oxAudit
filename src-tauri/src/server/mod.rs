@@ -244,7 +244,10 @@ fn provided_token(req: &Request<axum::body::Body>) -> Option<String> {
     let query = req.uri().query()?;
     for pair in query.split('&') {
         if let Some(token) = pair.strip_prefix("token=") {
-            return Some(token.to_string());
+            return percent_encoding::percent_decode_str(token)
+                .decode_utf8()
+                .ok()
+                .map(|value| value.into_owned());
         }
     }
     None
@@ -322,16 +325,33 @@ async fn static_files(
     };
     let raw = req.uri().path().trim_start_matches('/');
     let raw = if raw.is_empty() { "index.html" } else { raw };
-    // Percent-decode the minimum the browsers require; reject traversal.
-    if raw.contains("..") {
+    let relative = match req_path_bytes(raw) {
+        Ok(path) => path,
+        Err(()) => return (StatusCode::BAD_REQUEST, "invalid path").into_response(),
+    };
+    let Ok(root) = web_root.canonicalize() else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let candidate = root.join(relative).canonicalize();
+    if candidate
+        .as_ref()
+        .is_ok_and(|path| !path.starts_with(&root))
+    {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
-    let candidate = web_root.join(req_path_bytes(raw));
-    let path = if candidate.is_file() {
-        candidate
-    } else {
-        // SPA fallback: unknown paths get the app shell.
-        web_root.join("index.html")
+    let path = match candidate {
+        Ok(path) if path.is_file() => path,
+        _ => {
+            // SPA fallback: unknown paths get the app shell, which must
+            // satisfy the same containment check as every other asset.
+            let Ok(path) = root.join("index.html").canonicalize() else {
+                return (StatusCode::NOT_FOUND, "not found").into_response();
+            };
+            if !path.starts_with(&root) {
+                return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+            }
+            path
+        }
     };
     match std::fs::read(&path) {
         Ok(bytes) => {
@@ -356,14 +376,23 @@ async fn static_files(
     }
 }
 
-fn req_path_bytes(raw: &str) -> PathBuf {
-    // Split off any query string remainder; the percent-decoding here covers
-    // the characters a static asset name can contain.
-    let without_query = raw.split('?').next().unwrap_or(raw);
-    percent_encoding::percent_decode_str(without_query)
-        .decode_utf8_lossy()
-        .into_owned()
-        .into()
+fn req_path_bytes(raw: &str) -> Result<PathBuf, ()> {
+    // Validate after decoding: encoded separators and dot segments have
+    // exactly the same filesystem meaning as their literal counterparts.
+    let decoded = percent_encoding::percent_decode_str(raw)
+        .decode_utf8()
+        .map_err(|_| ())?;
+    if decoded.contains(['\\', '\0']) {
+        return Err(());
+    }
+    let path = PathBuf::from(decoded.as_ref());
+    if !path
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(());
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -403,6 +432,96 @@ mod tests {
         assert!(!token_matches("secret-toke", "secret-token"));
         assert!(!token_matches("secret-token-longer", "secret-token"));
         assert!(!token_matches("", "secret-token"));
+    }
+
+    #[test]
+    fn events_query_tokens_are_percent_decoded() {
+        let request = Request::builder()
+            .uri("/api/events?token=custom%2Btoken%2Fwith%3Dsymbols")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            provided_token(&request).as_deref(),
+            Some("custom+token/with=symbols")
+        );
+    }
+
+    async fn static_response(ctx: Arc<ServerContext>, uri: &str) -> Response {
+        static_files(
+            State(ctx),
+            Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    fn web_context() -> (Arc<ServerContext>, tempfile::TempDir) {
+        let (mut ctx, directory) = test_context();
+        let web_root = directory.path().join("web");
+        std::fs::create_dir(&web_root).unwrap();
+        std::fs::write(web_root.join("index.html"), "app shell").unwrap();
+        std::fs::write(directory.path().join("private.txt"), "private contents").unwrap();
+        Arc::get_mut(&mut ctx).unwrap().web_root = Some(web_root);
+        (ctx, directory)
+    }
+
+    #[tokio::test]
+    async fn static_assets_reject_encoded_traversal_and_absolute_paths() {
+        let (ctx, directory) = web_context();
+        let absolute = format!(
+            "/%2F{}",
+            directory
+                .path()
+                .join("private.txt")
+                .display()
+                .to_string()
+                .trim_start_matches('/')
+        );
+        for uri in [
+            "/%2e%2e/private.txt",
+            "/%2e%2e%2fprivate.txt",
+            "/..%5cprivate.txt",
+            &absolute,
+        ] {
+            let response = static_response(ctx.clone(), uri).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn static_assets_never_follow_symlinks_outside_the_web_root() {
+        let (ctx, directory) = web_context();
+        std::os::unix::fs::symlink(
+            directory.path().join("private.txt"),
+            ctx.web_root.as_ref().unwrap().join("leak.txt"),
+        )
+        .unwrap();
+        let response = static_response(ctx, "/leak.txt").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn static_assets_allow_encoded_names_and_spa_routes() {
+        let (ctx, _directory) = web_context();
+        std::fs::write(
+            ctx.web_root.as_ref().unwrap().join("build.. notes.txt"),
+            "asset",
+        )
+        .unwrap();
+        for (uri, expected) in [
+            ("/build..%20notes.txt", "asset"),
+            ("/project/results", "app shell"),
+        ] {
+            let response = static_response(ctx.clone(), uri).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(body.as_ref(), expected.as_bytes());
+        }
     }
 
     #[tokio::test]
@@ -460,5 +579,434 @@ mod tests {
             path.as_str().unwrap(),
             expected.to_string_lossy().replace('\\', "/")
         );
+    }
+
+    #[tokio::test]
+    async fn schedule_removal_accepts_the_frontends_project_id() {
+        let (mut ctx, directory) = test_context();
+        let store =
+            crate::schedule_store::ScheduleStore::open(&directory.path().join("schedules.sqlite3"))
+                .unwrap();
+        Arc::get_mut(&mut ctx).unwrap().schedules =
+            crate::schedule_store::ScheduleState::available(store);
+        dispatch::dispatch(
+            &ctx,
+            "set_scan_schedule",
+            serde_json::json!({
+                "projectId": "project-one", "canonicalPath": directory.path(),
+                "displayName": "Project", "intervalHours": 1, "enabled": true
+            }),
+        )
+        .await
+        .unwrap();
+        dispatch::dispatch(
+            &ctx,
+            "remove_scan_schedule",
+            serde_json::json!({"projectId": "project-one"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            dispatch::dispatch(&ctx, "list_scan_schedules", serde_json::json!({}))
+                .await
+                .unwrap(),
+            serde_json::json!([])
+        );
+    }
+
+    #[tokio::test]
+    async fn save_retries_accept_the_frontends_retry_token() {
+        let (ctx, _directory) = test_context();
+        let error = dispatch::dispatch(
+            &ctx,
+            "retry_source_run_save",
+            serde_json::json!({"retryToken": "missing"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error["code"], "notFound");
+    }
+
+    #[tokio::test]
+    async fn source_rechecks_repeat_the_original_options_through_the_server() {
+        let (ctx, directory) = test_context();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join("ignored")).unwrap();
+        std::fs::write(
+            project.join("handler.js"),
+            "function run(input) { eval(input); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("ignored/other.js"),
+            "function run(input) { eval(input); }\n",
+        )
+        .unwrap();
+        let original = dispatch::dispatch(
+            &ctx,
+            "scan_project",
+            serde_json::json!({"options": {
+                "path": project, "includeGit": false, "followSymlinks": false,
+                "maxFileSizeKb": 512, "scanSecrets": false, "scanVulnerabilities": true,
+                "extraIgnoredDirs": ["ignored"]
+            }}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(original["status"], "completed");
+        std::fs::write(
+            project.join("handler.js"),
+            "function run(input) { return JSON.parse(input); }\n",
+        )
+        .unwrap();
+        let rechecked = dispatch::dispatch(
+            &ctx,
+            "recheck_source_run",
+            serde_json::json!({
+                "originalRunId": original["runId"], "projectId": original["projectId"]
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(rechecked["run"]["status"], "completed");
+        assert_ne!(rechecked["run"]["runId"], original["runId"]);
+        assert_eq!(rechecked["run"]["summary"]["totalFindings"], 0);
+        assert_eq!(rechecked["options"]["scanSecrets"], false);
+        assert_eq!(rechecked["options"]["maxFileSizeKb"], 512);
+        assert!(rechecked["options"]["extraIgnoredDirs"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("ignored")));
+    }
+
+    fn write_custom_pack(directory: &std::path::Path, pattern: &str) -> PathBuf {
+        use oxaudit_scanners::{
+            FixtureExpectation, RuleDefinition, RuleEngine, RulePack, RulePackMetadata, RuleScope,
+        };
+        use sha2::{Digest, Sha256};
+        let provenance = |hash: String| oxaudit_domain::Provenance {
+            authors: vec!["oxAudit contributors".into()],
+            source: "independent test fixture".into(),
+            license: "Apache-2.0".into(),
+            creation_method: oxaudit_domain::CreationMethod::IndependentlyDerived,
+            content_sha256: hash,
+        };
+        let fixture = |id: &str| FixtureExpectation {
+            id: id.into(),
+            path: format!("{id}.txt"),
+            sha256: format!("{:x}", Sha256::digest(id.as_bytes())),
+            expected_values: Vec::new(),
+        };
+        let rules = vec![RuleDefinition {
+            id: "source.custom".into(),
+            version: "1".into(),
+            title: "Custom dangerous call".into(),
+            description: "Detect a custom call".into(),
+            recommendation: "Use a safe parser".into(),
+            engine: RuleEngine::SourceRegex,
+            severity: oxaudit_domain::Severity::High,
+            scope: RuleScope {
+                languages: vec!["javascript".into()],
+                platforms: Vec::new(),
+                architectures: Vec::new(),
+                file_extensions: Vec::new(),
+            },
+            pattern: pattern.into(),
+            classifications: Vec::new(),
+            provenance: provenance("b".repeat(64)),
+            positive_fixtures: vec![fixture("positive")],
+            negative_fixtures: vec![fixture("negative")],
+        }];
+        let hash = RulePack::computed_content_sha256(&rules).unwrap();
+        let pack = RulePack {
+            pack: RulePackMetadata {
+                schema_version: 1,
+                id: oxaudit_domain::RulePackId::parse("rulepack.recheck").unwrap(),
+                name: "Recheck pack".into(),
+                version: "1.0.0".into(),
+                minimum_oxaudit_version: "0.1.0".into(),
+                content_sha256: hash.clone(),
+                provenance: provenance(hash),
+            },
+            rules,
+        };
+        std::fs::write(directory.join("positive.txt"), "positive").unwrap();
+        std::fs::write(directory.join("negative.txt"), "negative").unwrap();
+        let path = directory.join("pack.toml");
+        std::fs::write(&path, toml::to_string(&pack).unwrap()).unwrap();
+        path
+    }
+
+    async fn custom_pack_scan(
+        one_off: bool,
+    ) -> (Arc<ServerContext>, tempfile::TempDir, Value, PathBuf) {
+        let (mut ctx, directory) = test_context();
+        let store =
+            crate::rulepack_store::RulePackStore::open(&directory.path().join("packs.sqlite3"))
+                .unwrap();
+        Arc::get_mut(&mut ctx).unwrap().rule_packs =
+            crate::rulepack_store::RulePacksState::available(store);
+        let pack_path = write_custom_pack(directory.path(), r"dangerousEval\([^)]+\)");
+        if !one_off {
+            dispatch::dispatch(
+                &ctx,
+                "install_rule_pack",
+                serde_json::json!({"path": pack_path}),
+            )
+            .await
+            .unwrap();
+        }
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(
+            project.join("handler.js"),
+            "function run(input) { dangerousEval(input); }\n",
+        )
+        .unwrap();
+        let original = dispatch::dispatch(&ctx, "scan_project", serde_json::json!({"options": {
+            "path": project, "includeGit": false, "followSymlinks": false,
+            "maxFileSizeKb": 512, "scanSecrets": false, "scanVulnerabilities": true,
+            "extraIgnoredDirs": [], "extraRulePackFiles": if one_off { vec![pack_path.clone()] } else { Vec::new() }
+        }})).await.unwrap();
+        assert_eq!(original["summary"]["totalFindings"], 1);
+        (ctx, directory, original, pack_path)
+    }
+
+    async fn recheck_custom(ctx: &ServerContext, original: &Value) -> Result<Value, Value> {
+        dispatch::dispatch(
+            ctx,
+            "recheck_source_run",
+            serde_json::json!({
+                "originalRunId": original["runId"], "projectId": original["projectId"]
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn rechecks_keep_installed_and_one_off_pack_findings_detected() {
+        for one_off in [false, true] {
+            let (ctx, directory, original, _pack_path) = custom_pack_scan(one_off).await;
+            if !one_off {
+                dispatch::dispatch(
+                    &ctx,
+                    "set_rule_pack_enabled",
+                    serde_json::json!({"id": "rulepack.recheck", "enabled": false}),
+                )
+                .await
+                .unwrap();
+            }
+            let rechecked = recheck_custom(&ctx, &original).await.unwrap();
+            assert_eq!(
+                rechecked["run"]["summary"]["totalFindings"], 1,
+                "one_off={one_off}"
+            );
+            assert_eq!(rechecked["run"]["findings"][0]["diffStatus"], "unchanged");
+            std::fs::write(
+                directory.path().join("project/handler.js"),
+                "function run(input) { return JSON.parse(input); }\n",
+            )
+            .unwrap();
+            let fixed = recheck_custom(&ctx, &original).await.unwrap();
+            assert_eq!(fixed["run"]["summary"]["totalFindings"], 0);
+            let comparison = dispatch::dispatch(
+                &ctx,
+                "compare_source_runs",
+                serde_json::json!({
+                    "currentRunId": fixed["run"]["runId"], "baselineRunId": original["runId"]
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(comparison[0]["diffStatus"], "resolved");
+        }
+    }
+
+    #[tokio::test]
+    async fn source_scans_capture_absolute_one_off_paths_for_rechecks() {
+        let (ctx, directory) = test_context();
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let packs = tempfile::tempdir_in(&cwd).unwrap();
+        let path = write_custom_pack(packs.path(), r"dangerousEval\([^)]+\)");
+        let relative = path.strip_prefix(&cwd).unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("handler.js"), "dangerousEval(input);\n").unwrap();
+        let original = dispatch::dispatch(
+            &ctx,
+            "scan_project",
+            serde_json::json!({"options": {
+                "path": project, "includeGit": false, "followSymlinks": false,
+                "maxFileSizeKb": 512, "scanSecrets": false, "scanVulnerabilities": true,
+                "extraIgnoredDirs": [], "extraRulePackFiles": [relative]
+            }}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(original["summary"]["totalFindings"], 1);
+        let options = ctx
+            .findings
+            .service()
+            .unwrap()
+            .recheck_options(
+                original["runId"].as_str().unwrap(),
+                original["projectId"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            options.extra_rule_pack_files,
+            [path.to_string_lossy().into_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn rechecks_preserve_distinct_pack_contents_with_the_same_id() {
+        for installed in [true, false] {
+            let (ctx, directory, first, _pack_path) = custom_pack_scan(!installed).await;
+            let extra_directory = directory.path().join("extra-pack");
+            std::fs::create_dir(&extra_directory).unwrap();
+            let extra = write_custom_pack(&extra_directory, r"otherEval\([^)]+\)");
+            let mut options = ctx
+                .findings
+                .service()
+                .unwrap()
+                .recheck_options(
+                    first["runId"].as_str().unwrap(),
+                    first["projectId"].as_str().unwrap(),
+                )
+                .unwrap();
+            options
+                .extra_rule_pack_files
+                .push(extra.to_string_lossy().into_owned());
+            let original = dispatch::dispatch(
+                &ctx,
+                "scan_project",
+                serde_json::json!({"options": options}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(original["summary"]["totalFindings"], 1);
+            if installed {
+                dispatch::dispatch(
+                    &ctx,
+                    "set_rule_pack_enabled",
+                    serde_json::json!({"id": "rulepack.recheck", "enabled": false}),
+                )
+                .await
+                .unwrap();
+            }
+            let rechecked = recheck_custom(&ctx, &original).await.unwrap();
+            assert_eq!(
+                rechecked["run"]["summary"]["totalFindings"], 1,
+                "installed={installed}"
+            );
+            assert_eq!(rechecked["run"]["findings"][0]["diffStatus"], "unchanged");
+            if installed {
+                dispatch::dispatch(
+                    &ctx,
+                    "remove_rule_pack",
+                    serde_json::json!({"id": "rulepack.recheck"}),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    recheck_custom(&ctx, &original).await.unwrap_err()["code"],
+                    "dataOperationFailed"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_pack_snapshots_cannot_claim_that_a_finding_is_resolved() {
+        for one_off in [false, true] {
+            let (ctx, directory, original, pack_path) = custom_pack_scan(one_off).await;
+            write_custom_pack(directory.path(), r"differentEval\([^)]+\)");
+            if !one_off {
+                dispatch::dispatch(
+                    &ctx,
+                    "install_rule_pack",
+                    serde_json::json!({"path": pack_path}),
+                )
+                .await
+                .unwrap();
+            }
+            let rechecked = recheck_custom(&ctx, &original).await.unwrap();
+            assert_eq!(rechecked["run"]["summary"]["totalFindings"], 0);
+            let comparison = dispatch::dispatch(
+                &ctx,
+                "compare_source_runs",
+                serde_json::json!({
+                    "currentRunId": rechecked["run"]["runId"], "baselineRunId": original["runId"]
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                comparison[0]["diffStatus"], "notEvaluated",
+                "one_off={one_off}"
+            );
+            assert_eq!(comparison[0]["resolvedByRunId"], Value::Null);
+            let history = dispatch::dispatch(
+                &ctx,
+                "list_source_runs",
+                serde_json::json!({"projectId": original["projectId"]}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(history[0]["resolvedFindings"], 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_required_packs_fail_rechecks_instead_of_reporting_absence() {
+        for one_off in [false, true] {
+            let (ctx, _directory, original, pack_path) = custom_pack_scan(one_off).await;
+            if one_off {
+                std::fs::remove_file(pack_path).unwrap();
+            } else {
+                dispatch::dispatch(
+                    &ctx,
+                    "remove_rule_pack",
+                    serde_json::json!({"id": "rulepack.recheck"}),
+                )
+                .await
+                .unwrap();
+            }
+            let error = recheck_custom(&ctx, &original).await.unwrap_err();
+            assert_eq!(error["code"], "dataOperationFailed");
+        }
+    }
+
+    #[tokio::test]
+    async fn rechecks_do_not_require_packs_from_baseline_only_observations() {
+        let (ctx, _directory, first, _pack_path) = custom_pack_scan(false).await;
+        dispatch::dispatch(
+            &ctx,
+            "remove_rule_pack",
+            serde_json::json!({"id": "rulepack.recheck"}),
+        )
+        .await
+        .unwrap();
+        let options = ctx
+            .findings
+            .service()
+            .unwrap()
+            .recheck_options(
+                first["runId"].as_str().unwrap(),
+                first["projectId"].as_str().unwrap(),
+            )
+            .unwrap();
+        let without_pack = dispatch::dispatch(
+            &ctx,
+            "scan_project",
+            serde_json::json!({"options": options}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(without_pack["summary"]["totalFindings"], 0);
+        assert_eq!(without_pack["findings"][0]["diffStatus"], "notEvaluated");
+        let rechecked = recheck_custom(&ctx, &without_pack).await.unwrap();
+        assert_eq!(rechecked["run"]["status"], "completed");
     }
 }

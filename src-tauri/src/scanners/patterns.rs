@@ -182,7 +182,7 @@ pub static SOURCE_RULES: Lazy<Vec<SourceRule>> = Lazy::new(|| {
 
         // --------------------------------------------------------------- Rust
         srule!("rs-command-sh", "Command::new with a shell", &["rust"], "high", "CWE-78", r#"Command::new\s*\(\s*['"](?:sh|bash)['"]\)"#, "Spawning sh/bash to execute constructed command strings is a command-injection sink.", "Invoke the program directly with .arg() values — never pass a command string to a shell."),
-        srule!("rs-sql-format", "SQL built with format!/+", &["rust"], "high", "CWE-89", r#"(?:query|execute|execute_batch|execute_many)\s*\(\s*[^;]{0,160}?(?:format!|write!|"\s*\+|\+\s*")"#, "SQL statements assembled with format! or + are SQL-injection sinks.", "Use sqlx/rusqlite bound parameters (? or $1)."),
+        srule!("rs-sql-format", "SQL built with format!/+", &["rust"], "high", "CWE-89", r#"(?:query|execute|execute_batch|execute_many)\s*\(\s*[^;]{0,160}?(?:format!|write!|\+)"#, "SQL statements assembled with format! or + are SQL-injection sinks.", "Use sqlx/rusqlite bound parameters (? or $1)."),
         srule!("rs-weak-hash", "md5::compute usage", &["rust"], "medium", "CWE-327", r"\bmd5::compute\b", "MD5 is cryptographically broken.", "Use sha2 or blake3 for hashing, or a password hasher (argon2/bcrypt)."),
 
         // ------------------------------------------------------------ Generic
@@ -447,7 +447,7 @@ pub fn scan_content_bounded(
         if !rule.languages.is_empty() && !rule.languages.contains(&language) {
             continue;
         }
-        for captures in rule.regex.captures_iter(content) {
+        let mut add_hit = |captures: regex::Captures<'_>| {
             // Rust's regex has no lookbehind, so a rule that must exclude a
             // preceding character has to consume it — `(?:^|[^.\w$])eval\s*\(`
             // is how `parser.eval(` is told apart from the builtin. Reporting
@@ -456,15 +456,36 @@ pub fn scan_content_bounded(
             // fingerprint. When a rule captures group 1, that group is the
             // finding; the rest is context the rule needed in order to decide.
             let span = captures.get(1).or_else(|| captures.get(0));
-            let Some(span) = span else { continue };
+            let Some(span) = span else { return false };
             if hits.len() >= limit {
-                return (hits, true);
+                return true;
             }
             hits.push(PatternHit {
                 rule_index: i,
                 offset: span.start(),
                 match_text: span.as_str().to_string(),
             });
+            false
+        };
+        if rule.id == "rs-sql-format" {
+            // An outer call can span into a nested sink or error handler.
+            // Consider every sink start; rejecting the outer span must not
+            // consume and hide the independently unsafe inner statement.
+            let mut next_start = 0;
+            while let Some(captures) = rule.regex.captures_at(content, next_start) {
+                let Some(whole) = captures.get(0) else { break };
+                // This rule starts with an ASCII query/execute identifier.
+                next_start = whole.start() + 1;
+                if add_hit(captures) {
+                    return (hits, true);
+                }
+            }
+        } else {
+            for captures in rule.regex.captures_iter(content) {
+                if add_hit(captures) {
+                    return (hits, true);
+                }
+            }
         }
     }
     hits.retain(|hit| !match_is_excluded(SOURCE_RULES[hit.rule_index].id, &hit.match_text));

@@ -51,6 +51,75 @@ impl FileSyntax {
         &self.spans
     }
 
+    /// A regex can extend beyond a call into error handling or another
+    /// argument. Only construction inside the statement argument is a SQL sink.
+    pub fn match_stays_in_argument(
+        &self,
+        offset: usize,
+        match_end: usize,
+        index: usize,
+    ) -> Option<bool> {
+        use super::dataflow;
+        let tree = self.tree.as_ref()?;
+        let root = tree.root_node();
+        let node = root.descendant_for_byte_range(offset, offset)?;
+        if node.parent().is_some_and(|parent| {
+            matches!(parent.kind(), "function_item" | "function_signature_item")
+                && parent
+                    .child_by_field_name("name")
+                    .is_some_and(|name| name.byte_range().contains(&offset))
+        }) {
+            return Some(false);
+        }
+        let call = dataflow::innermost_call(root, offset)?;
+        if !dataflow::names_the_call(call, offset) {
+            return None;
+        }
+        let argument = *dataflow::own_arguments(call).get(index)?;
+        Some(match_end <= argument.end_byte())
+    }
+
+    /// `"secret" : "Vulnerability"` across two ternary branches is a pair
+    /// of labels, while a credential object inside one branch is an assignment.
+    pub fn crosses_conditional_branches(&self, start: usize, value_offset: usize) -> bool {
+        // Identifier-based fallbacks such as password ? password : "..."
+        // still contain a hardcoded credential. Only quoted labels qualify.
+        if self.spans.context_at(start) != Context::StringLiteral {
+            return false;
+        }
+        let Some(tree) = self.tree.as_ref() else {
+            return false;
+        };
+        let Some(mut node) = tree
+            .root_node()
+            .descendant_for_byte_range(value_offset, value_offset)
+        else {
+            return false;
+        };
+        loop {
+            if matches!(node.kind(), "ternary_expression" | "conditional_expression") {
+                let branches = ["condition", "consequence", "alternative"];
+                let key_branch = branches.iter().position(|field| {
+                    node.child_by_field_name(field).is_some_and(|branch| {
+                        branch.byte_range().contains(&start)
+                            || branch.byte_range().contains(&start.saturating_add(1))
+                    })
+                });
+                let value_branch = branches.iter().position(|field| {
+                    node.child_by_field_name(field)
+                        .is_some_and(|branch| branch.byte_range().contains(&value_offset))
+                });
+                if key_branch.is_some() && value_branch.is_some() && key_branch != value_branch {
+                    return true;
+                }
+            }
+            let Some(parent) = node.parent() else {
+                return false;
+            };
+            node = parent;
+        }
+    }
+
     /// Classify one argument of the call at `offset`, by position.
     ///
     /// For a sink where only one argument is the injection vector, reading the

@@ -29,6 +29,7 @@ use crate::models::Finding;
 #[derive(Clone, Default)]
 pub struct AppliedRulePacks {
     packs: Vec<Arc<CompiledRulePack>>,
+    installed_ids: std::collections::BTreeSet<String>,
 }
 
 impl AppliedRulePacks {
@@ -37,7 +38,26 @@ impl AppliedRulePacks {
     }
 
     pub fn from_compiled(packs: Vec<Arc<CompiledRulePack>>) -> Self {
-        Self { packs }
+        Self::from_sources(packs, Vec::new())
+    }
+
+    pub fn from_sources(
+        mut installed: Vec<Arc<CompiledRulePack>>,
+        one_off: Vec<Arc<CompiledRulePack>>,
+    ) -> Self {
+        let installed_ids = installed
+            .iter()
+            .map(|pack| pack.metadata().id.to_string())
+            .collect();
+        installed.extend(one_off);
+        Self {
+            packs: installed,
+            installed_ids,
+        }
+    }
+
+    pub fn installed_ids(&self) -> &std::collections::BTreeSet<String> {
+        &self.installed_ids
     }
 
     pub fn is_empty(&self) -> bool {
@@ -54,6 +74,20 @@ impl AppliedRulePacks {
         ids.sort();
         ids.dedup();
         ids
+    }
+
+    pub fn snapshot_hashes(
+        &self,
+    ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+        let mut hashes =
+            std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+        for pack in &self.packs {
+            hashes
+                .entry(pack.metadata().id.to_string())
+                .or_default()
+                .insert(pack.metadata().content_sha256.clone());
+        }
+        hashes
     }
 
     /// Run every applicable rule over one file's content.

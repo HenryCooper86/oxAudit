@@ -165,8 +165,12 @@ and scan absence does not prove a credential was revoked.
 
 After saving your change, select **Recheck finding** on a saved completed run.
 It repeats the full source scan with that run's captured effective options,
-including ignored directories, then compares against that exact original run
-under current policy. The outcome retains the original fingerprint/evidence,
+including ignored directories, installed rule-pack selection and one-off pack
+files, then compares against that exact original run under current policy.
+Missing required packs stop the recheck. Custom-rule absence establishes
+resolution only when the original and new runs captured the same pack content
+hashes; changed packs or older runs without that evidence remain not evaluated.
+The outcome retains the original fingerprint/evidence,
 shows the captured options, and links the original and new runs. It distinguishes
 still detected, no longer detected in covered file/rule-family evidence, and not
 evaluated. A same-rule finding within 20 lines is called out as changed context,
@@ -468,9 +472,9 @@ rule. See the [corpus documentation](docs/corpus.md) for provenance and limits.
 |---|---|---|
 | Corpus precision | 46.2% | **100% on the committed authored scenarios** |
 | Corpus recall | 85.7% | **100% on the committed authored scenarios** |
-| Corpus size | 26 fixtures | **220 fixtures** |
+| Corpus size | 26 fixtures | **227 fixtures** |
 
-The corpus is 220 fixtures: 100 positives and 120 negatives. It includes observed
+The corpus is 227 fixtures: 104 positives and 123 negatives. It includes observed
 false-positive shapes from oxAudit's own source or dependency trees — type
 declarations, prose in Markdown, comments, environment lookups, function
 parameters, JSON schemas, UI labels, hardened XML parsers, non-security uses of

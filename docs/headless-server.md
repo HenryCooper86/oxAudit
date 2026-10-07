@@ -54,7 +54,8 @@ ghcr.io/henrycooper86/oxaudit scan /workspace --format sarif`.
   keep the server off the raw network.
 - The token gates data, not code: the served GUI assets are the same public
   bundle anyone can download from the repository.
-- Static paths are traversal-checked; request bodies are bounded at 64 MiB.
+- Static paths are decoded before traversal checks, and symlink targets must
+  remain within the configured web root; request bodies are bounded at 64 MiB.
 
 ## Stated limits
 

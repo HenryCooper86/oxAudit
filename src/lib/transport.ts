@@ -48,10 +48,16 @@ export function serverToken(): string {
 }
 
 export function setServerToken(token: string): void {
+  const previousToken = storedToken;
   storedToken = token.trim();
   if (typeof localStorage !== "undefined") {
     if (storedToken) localStorage.setItem(TOKEN_KEY, storedToken);
     else localStorage.removeItem(TOKEN_KEY);
+  }
+  if (source && previousToken !== storedToken) {
+    source.close();
+    source = null;
+    ensureSource();
   }
 }
 
@@ -99,14 +105,31 @@ const eventListeners = new Map<string, Set<Handler>>();
 let source: EventSource | null = null;
 let sourceRefcount = 0;
 
+function listenForEvent(src: EventSource, event: string): void {
+  src.addEventListener(event, (message) => {
+    const frame = message as MessageEvent<string>;
+    let payload: unknown = null;
+    try {
+      payload = JSON.parse(frame.data);
+    } catch {
+      payload = frame.data;
+    }
+    for (const listener of eventListeners.get(event) ?? []) {
+      listener({ payload });
+    }
+  });
+}
+
 function ensureSource(): EventSource {
-  if (source) return source;
+  if (source && source.readyState !== EventSource.CLOSED) return source;
   const token = encodeURIComponent(storedToken);
-  source = new EventSource(`/api/events${token ? `?token=${token}` : ""}`);
-  source.onerror = () => {
+  const created = new EventSource(`/api/events${token ? `?token=${token}` : ""}`);
+  source = created;
+  for (const event of eventListeners.keys()) listenForEvent(created, event);
+  created.onerror = () => {
     // EventSource retries on its own; a 401 stops it for good, so surface
     // the token gate.
-    if (source && source.readyState === EventSource.CLOSED) {
+    if (source === created && created.readyState === EventSource.CLOSED) {
       unauthorizedListeners.forEach((listener) => listener());
     }
   };
@@ -123,23 +146,12 @@ export function sseListen<T>(
   if (!set) {
     set = new Set();
     eventListeners.set(event, set);
-    src.addEventListener(event, (message) => {
-      const frame = message as MessageEvent<string>;
-      let payload: unknown = null;
-      try {
-        payload = JSON.parse(frame.data);
-      } catch {
-        payload = frame.data;
-      }
-      for (const listener of eventListeners.get(event) ?? []) {
-        listener({ payload });
-      }
-    });
+    listenForEvent(src, event);
   }
   const entry: Handler = (message) => handler(message as { payload: T });
   set.add(entry);
   return () => {
-    set!.delete(entry);
+    if (!set!.delete(entry)) return;
     sourceRefcount -= 1;
     if (sourceRefcount === 0) {
       source?.close();

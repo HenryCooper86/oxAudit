@@ -1583,6 +1583,14 @@ impl FindingsRepository {
         from_json(&json)
     }
 
+    pub(crate) fn run_coverage(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<CoverageManifest>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        Ok(load_comparison_run(&connection, run_id)?.coverage)
+    }
+
     pub fn load_run(&self, run_id: &str) -> Result<ScanRunDetail, CommandError> {
         let connection = self.connection.lock().map_err(persistence_error)?;
         load_run_with_comparison_from_connection(&connection, run_id)?
@@ -1955,6 +1963,7 @@ impl FindingsRepository {
             fingerprint: String,
             category: String,
             file_path: String,
+            rule_id: String,
         }
 
         let connection = self.connection.lock().map_err(persistence_error)?;
@@ -2047,7 +2056,8 @@ impl FindingsRepository {
             let sql = format!(
                 r#"SELECT run_id, fingerprint_version, fingerprint, category,
                           json_extract(payload_json, '$.filePath'),
-                          json_extract(payload_json, '$.severity')
+                          json_extract(payload_json, '$.severity'),
+                          rule_id
                    FROM findings WHERE run_id IN ({placeholders}) ORDER BY run_id, rowid"#
             );
             let mut statement = connection.prepare(&sql).map_err(persistence_error)?;
@@ -2061,6 +2071,7 @@ impl FindingsRepository {
                                 fingerprint: row.get(2)?,
                                 category: row.get(3)?,
                                 file_path: row.get(4)?,
+                                rule_id: row.get(6)?,
                             },
                             row.get::<_, String>(5)?,
                         ),
@@ -2080,51 +2091,58 @@ impl FindingsRepository {
         runs.into_iter()
             .map(|run| {
                 let current = observations.get(&run.run_id).cloned().unwrap_or_default();
-                let (total_findings, new_findings, resolved_findings) = if run.status
-                    != RunStatus::Completed
-                {
-                    (0, 0, 0)
-                } else if let Some(baseline_run_id) = run.baseline_run_id.as_deref() {
-                    let baseline = observations
-                        .get(baseline_run_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    let current_keys = current
-                        .iter()
-                        .map(|(observation, _)| {
-                            (
-                                observation.fingerprint_version,
-                                observation.fingerprint.as_str(),
-                            )
-                        })
-                        .collect::<BTreeSet<_>>();
-                    let baseline_keys = baseline
-                        .iter()
-                        .map(|(observation, _)| {
-                            (
-                                observation.fingerprint_version,
-                                observation.fingerprint.as_str(),
-                            )
-                        })
-                        .collect::<BTreeSet<_>>();
-                    let coverage = run
-                        .coverage
-                        .as_ref()
-                        .ok_or_else(CommandError::persistence_unavailable)?;
-                    let new_findings = current_keys.difference(&baseline_keys).count();
-                    let resolved_findings = baseline
-                        .iter()
-                        .filter(|(observation, _)| {
-                            !current_keys.contains(&(
-                                observation.fingerprint_version,
-                                observation.fingerprint.as_str(),
-                            )) && coverage.is_covered(&observation.file_path, &observation.category)
-                        })
-                        .count();
-                    (current.len(), new_findings, resolved_findings)
-                } else {
-                    (current.len(), current.len(), 0)
-                };
+                let (total_findings, new_findings, resolved_findings) =
+                    if run.status != RunStatus::Completed {
+                        (0, 0, 0)
+                    } else if let Some(baseline_run_id) = run.baseline_run_id.as_deref() {
+                        let baseline = observations
+                            .get(baseline_run_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let current_keys = current
+                            .iter()
+                            .map(|(observation, _)| {
+                                (
+                                    observation.fingerprint_version,
+                                    observation.fingerprint.as_str(),
+                                )
+                            })
+                            .collect::<BTreeSet<_>>();
+                        let baseline_keys = baseline
+                            .iter()
+                            .map(|(observation, _)| {
+                                (
+                                    observation.fingerprint_version,
+                                    observation.fingerprint.as_str(),
+                                )
+                            })
+                            .collect::<BTreeSet<_>>();
+                        let coverage = run
+                            .coverage
+                            .as_ref()
+                            .ok_or_else(CommandError::persistence_unavailable)?;
+                        let baseline_coverage = load_comparison_run(&connection, baseline_run_id)?
+                            .coverage
+                            .unwrap_or_default();
+                        let new_findings = current_keys.difference(&baseline_keys).count();
+                        let resolved_findings = baseline
+                            .iter()
+                            .filter(|(observation, _)| {
+                                !current_keys.contains(&(
+                                    observation.fingerprint_version,
+                                    observation.fingerprint.as_str(),
+                                )) && coverage.is_finding_covered(
+                                    &observation.file_path,
+                                    &observation.category,
+                                    &observation.rule_id,
+                                    &baseline_coverage,
+                                )
+                            })
+                            .count();
+                        (current.len(), new_findings, resolved_findings)
+                    } else {
+                        (current.len(), current.len(), 0)
+                    };
                 let severity_counts = if run.status != RunStatus::Completed {
                     SeverityCounts::default()
                 } else {
@@ -2755,7 +2773,12 @@ fn compare_runs_from_connection(
             continue;
         }
         finding.observation_run_id = baseline_run_id.into();
-        if current_coverage.is_covered(&finding.file_path, &finding.category) {
+        if current_coverage.is_finding_covered(
+            &finding.file_path,
+            &finding.category,
+            &finding.rule_id,
+            baseline_coverage,
+        ) {
             finding.resolved_by_run_id = Some(current_run_id.into());
             finding.diff_status = Some(DiffStatus::Resolved);
         } else {

@@ -845,7 +845,9 @@ impl FindingsService {
                     after: git_after,
                 });
             }
-            let coverage = CoverageManifest::from_entries(coverage_entries);
+            let mut coverage = CoverageManifest::from_entries(coverage_entries);
+            coverage.rule_pack_hashes = packs.snapshot_hashes();
+            coverage.installed_rule_pack_ids = Some(packs.installed_ids().clone());
             let started_cutoff = DateTime::parse_from_rfc3339(&started_at)
                 .map_err(|_| CommandError::persistence_unavailable())?
                 .with_timezone(&Utc);
@@ -1689,7 +1691,11 @@ fn apply_advisory_comparison(
             continue;
         }
         let mut projected = finding.clone();
-        if coverage.is_covered(&projected.file_path, &projected.category) {
+        // An unsaved projection has no authoritative baseline pack snapshot.
+        // Keep custom detector absence unknown until durable comparison.
+        if !projected.rule_id.contains('/')
+            && coverage.is_covered(&projected.file_path, &projected.category)
+        {
             projected.diff_status = Some(DiffStatus::Resolved);
             projected.resolved_by_run_id = Some(detail.run_id.clone());
         } else {

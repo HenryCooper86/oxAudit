@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { ServerTokenGate } from "./components/ServerTokenGate";
-import { serverMode, serverToken } from "./lib/transport";
+import { onUnauthorized, serverMode, serverToken } from "./lib/transport";
 import { Toasts } from "./components/Toasts";
 import { CommandPalette } from "./components/workbench/CommandPalette";
 import { ReadinessWizard } from "./components/onboarding/ReadinessWizard";
@@ -126,6 +126,9 @@ function Page({ page }: { page: PageName }) {
 
 export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [serverAuthRequired, setServerAuthRequired] = useState(
+    () => serverMode && serverToken() === "",
+  );
   const page = useAppStore((s) => s.page);
   const setPage = useAppStore((s) => s.setPage);
   const setSettings = useAppStore((s) => s.setSettings);
@@ -133,6 +136,11 @@ export default function App() {
   const setSettingsLoadError = useAppStore((s) => s.setSettingsLoadError);
 
   useEffect(() => {
+    if (serverMode) return onUnauthorized(() => setServerAuthRequired(true));
+  }, []);
+
+  useEffect(() => {
+    if (serverAuthRequired) return;
     let mounted = true;
     const token = persistedSettingsRequests.begin();
     setAiReadiness(loadingAiReadiness(token));
@@ -162,7 +170,7 @@ export default function App() {
         persistedSettingsRequests.invalidate();
       }
     };
-  }, [setSettings, setAiReadiness, setSettingsLoadError]);
+  }, [serverAuthRequired, setSettings, setAiReadiness, setSettingsLoadError]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -177,7 +185,7 @@ export default function App() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  if (serverMode && serverToken() === "") {
+  if (serverAuthRequired) {
     // Nothing behind the gate can load without API access anyway.
     return <ServerTokenGate />;
   }

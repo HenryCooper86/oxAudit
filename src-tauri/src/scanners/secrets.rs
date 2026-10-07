@@ -591,6 +591,7 @@ pub fn is_placeholder(value: &str) -> bool {
 pub(super) struct SecretHit {
     pub(super) rule_index: usize,
     pub(super) offset: usize,
+    pub(super) secret_offset: usize,
     pub(super) match_text: String,
     pub(super) secret_value: String,
     pub(super) entropy: f32,
@@ -646,6 +647,10 @@ pub(super) fn scan_content_bounded(content: &str, limit: usize) -> (Vec<SecretHi
             hits.push(SecretHit {
                 rule_index: i,
                 offset: off,
+                secret_offset: caps
+                    .get(rule.secret_group)
+                    .or_else(|| caps.get(0))
+                    .map_or(off, |secret| secret.start()),
                 match_text: whole.to_string(),
                 secret_value: secret.to_string(),
                 entropy: e,

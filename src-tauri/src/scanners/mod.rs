@@ -29,6 +29,7 @@ pub fn benchmark_observations(
     let spans = parsed.spans();
     if source_patterns {
         let mut hits = patterns::scan_content(content, language);
+        hits.retain(|hit| pattern_hit_stays_in_sink(&parsed, hit));
         parsed.drop_nested_duplicates(&mut hits);
         observations.extend(
             hits.into_iter()
@@ -49,11 +50,25 @@ pub fn benchmark_observations(
         observations.extend(
             secrets::scan_content(content)
                 .into_iter()
-                .filter(|hit| spans.allows_secret_match(hit.offset))
+                .filter(|hit| secret_hit_is_reportable(&parsed, hit))
                 .map(|hit| (secrets::SECRET_RULES[hit.rule_index].id, "redacted_secret")),
         );
     }
     observations
+}
+
+fn secret_hit_is_reportable(parsed: &syntax::FileSyntax, hit: &secrets::SecretHit) -> bool {
+    parsed.spans().allows_secret_match(hit.offset)
+        && (!matches!(
+            secrets::SECRET_RULES[hit.rule_index].id,
+            "generic-password" | "generic-api-key" | "json-credential"
+        ) || !parsed.crosses_conditional_branches(hit.offset, hit.secret_offset))
+}
+
+fn pattern_hit_stays_in_sink(parsed: &syntax::FileSyntax, hit: &patterns::PatternHit) -> bool {
+    patterns::SOURCE_RULES[hit.rule_index].id != "rs-sql-format"
+        || parsed.match_stays_in_argument(hit.offset, hit.offset + hit.match_text.len(), 0)
+            != Some(false)
 }
 
 /// Should a pattern match be reported, given what reaches its sink?
@@ -500,7 +515,7 @@ fn scan_file_in_project_and_limit(
         secrets::scan_content_bounded(&content, max_findings.saturating_add(1));
     let secret_hits: Vec<_> = raw_secret_hits
         .into_iter()
-        .filter(|hit| spans.allows_secret_match(hit.offset))
+        .filter(|hit| secret_hit_is_reportable(&parsed, hit))
         .collect();
     if secret_hit_overflow || secret_hits.len() > max_findings {
         return ScanFileOutcome {
@@ -597,6 +612,9 @@ fn scan_file_in_project_and_limit(
                 };
             }
             // One nested expression is one defect, not one per constructor.
+            // Drop out-of-argument regex spans first, so a safe outer call
+            // cannot suppress an unsafe SQL call nested in its parameters.
+            hits.retain(|hit| pattern_hit_stays_in_sink(&parsed, hit));
             parsed.drop_nested_duplicates(&mut hits);
             for hit in hits {
                 // A rule matching inside a comment or a string literal is
@@ -705,6 +723,119 @@ mod tests {
     };
 
     const CANARY: &str = "oxaudit-secret-canary-7D4zP9q2";
+
+    #[test]
+    fn rust_sql_formatting_must_occur_in_the_statement_argument() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("query.rs");
+        for source in [
+            r#"fn execute(on_progress: Arc<dyn Fn(String) + Send + Sync>) {}"#,
+            r#"fn safe(conn: Connection, id: String) {
+                conn.execute("DELETE FROM users WHERE id = ?1", params![id])
+                    .map_err(|error| format!("query failed: {error}"));
+            }"#,
+            r#"fn safe(stmt: Statement, id: String) {
+                stmt.execute(params![id]).map_err(|error| format!("query failed: {error}"));
+            }"#,
+            r#"fn safe(conn: Connection, id: String) {
+                conn.execute("DELETE FROM users WHERE id = ?1", params![format!("{id}")]);
+            }"#,
+        ] {
+            std::fs::write(&path, source).unwrap();
+            assert!(
+                !scan_file_with_relative_path(&path, "query.rs", 64, false, true)
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule_id == "rs-sql-format"),
+                "parameterized statement was reported: {source}"
+            );
+        }
+        for source in [
+            r#"fn unsafe_query(conn: Connection, id: String) {
+                conn.execute(&format!("DELETE FROM users WHERE id = {id}"), [])
+                    .map_err(|error| format!("query failed: {error}"));
+            }"#,
+            r#"fn unsafe_query(conn: Connection, id: String) {
+                conn.execute(&(String::from("DELETE FROM users WHERE id = ") + &id), []);
+            }"#,
+            r#"fn unsafe_query(conn: Connection, id: String) {
+                conn.execute("INSERT INTO log(count) VALUES (?1)",
+                    [conn.execute(&format!("DELETE FROM users WHERE id = '{id}'"), [])? as i64]);
+            }"#,
+            r#"fn unsafe_query(conn: Connection, id: String) {
+                conn.execute("DELETE FROM users WHERE id = ?1", params![id]).map_err(|error| {
+                    conn.execute(&format!("DELETE FROM audit WHERE id = '{id}'"), []);
+                    error
+                });
+            }"#,
+        ] {
+            std::fs::write(&path, source).unwrap();
+            assert!(
+                scan_file_with_relative_path(&path, "query.rs", 64, false, true)
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule_id == "rs-sql-format"),
+                "statement construction was missed: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_labels_are_not_credential_assignments() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, source) in [
+            (
+                "labels.js",
+                r#"function family(path) { return path.includes('/secrets/') ? "secret" : "source-pattern"; }"#,
+            ),
+            (
+                "labels.tsx",
+                r#"function Label({ secret }) { return <span>{secret ? "Secret" : "Vulnerability"}</span>; }"#,
+            ),
+        ] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, source).unwrap();
+            assert!(
+                scan_file_with_relative_path(&path, name, 64, true, false)
+                    .findings
+                    .is_empty(),
+                "label was reported as a credential: {source}"
+            );
+        }
+        let path = directory.path().join("credentials.js");
+        std::fs::write(
+            &path,
+            r#"const config = choice ? {"secret": "7Gk9Qz2Mp4Xt8Va6"} : {};"#,
+        )
+        .unwrap();
+        let findings =
+            scan_file_with_relative_path(&path, "credentials.js", 64, true, false).findings;
+        assert!(findings
+            .iter()
+            .any(|finding| finding.rule_id == "json-credential"));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.rule_id == "generic-password"));
+        for (key, rule) in [
+            ("password", "generic-password"),
+            ("token", "generic-api-key"),
+        ] {
+            std::fs::write(
+                &path,
+                format!(
+                    r#"function choose({key}) {{ return {key} ? {key} : "7Gk9Qz2Mp4Xt8Va6"; }}"#
+                ),
+            )
+            .unwrap();
+            assert!(
+                scan_file_with_relative_path(&path, "credentials.js", 64, true, false)
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule_id == rule),
+                "hardcoded {key} fallback was missed"
+            );
+        }
+    }
 
     #[test]
     fn arbitrary_tool_text_uses_the_scanner_secret_redaction_rules() {

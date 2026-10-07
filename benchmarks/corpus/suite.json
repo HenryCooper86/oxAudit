@@ -12,12 +12,119 @@
     "creationMethod": "authored"
   },
   "counts": {
-    "fixtures": 220,
-    "positives": 100,
-    "negatives": 120,
-    "rules": 85
+    "fixtures": 227,
+    "positives": 104,
+    "negatives": 123,
+    "rules": 86
   },
   "targets": [
+    {
+      "id": "azure-storage-account-key.negative.docs",
+      "inputPath": "secrets/azure-storage-account-key__negative__docs.md",
+      "inputSha256": "97d41d2d2ab63fa4dc9d8841bf89922951315246976b5902c4f742f6d777b48f",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "azure-storage-account-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "azure-storage-account-key"
+        }
+      ]
+    },
+    {
+      "id": "azure-storage-account-key.positive.upload",
+      "inputPath": "secrets/azure-storage-account-key__positive__upload.py",
+      "inputSha256": "95e0f65440f334e9bd8e2bd86a648627efe2aae0c8c5db67671377e775e02807",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "azure-storage-account-key",
+      "expected": [
+        {
+          "ruleId": "azure-storage-account-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "datadog-api-key.negative.docs",
+      "inputPath": "secrets/datadog-api-key__negative__docs.md",
+      "inputSha256": "e6d34cfde79590efdd6f6e4f23e9a3018cc71627c8f7690517e1ca337d1f44e4",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "datadog-api-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "datadog-api-key"
+        }
+      ]
+    },
+    {
+      "id": "datadog-api-key.positive.agent",
+      "inputPath": "secrets/datadog-api-key__positive__agent.yaml",
+      "inputSha256": "3b991dd301efe1dd4aca1f6f265f02c93d6178a27e58a165d787c1c7d1d52256",
+      "language": "yaml",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "datadog-api-key",
+      "expected": [
+        {
+          "ruleId": "datadog-api-key",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "figma-token.negative.docs",
+      "inputPath": "secrets/figma-token__negative__docs.md",
+      "inputSha256": "312c752c8c96b8edb1b62f8bfb95f7fb2550e9a3ba0a9ee4aa5f52efdf7bff9a",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "figma-token",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "figma-token"
+        }
+      ]
+    },
+    {
+      "id": "figma-token.positive.export",
+      "inputPath": "secrets/figma-token__positive__export.js",
+      "inputSha256": "c983a143dfc66ffb4b1c06f0b8699e7fd6886f1ff0f8a485f2d3bf823a25e542",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "figma-token",
+      "expected": [
+        {
+          "ruleId": "figma-token",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
     {
       "id": "generic-api-key.negative.documentation",
       "inputPath": "secrets/generic-api-key__negative__documentation.md",
@@ -67,6 +174,23 @@
       ]
     },
     {
+      "id": "generic-api-key.positive.conditional-fallback",
+      "inputPath": "secrets/generic-api-key__positive__conditional-fallback.js",
+      "inputSha256": "80c4986dcf8238e26ca3487b8ffe701658103624458c43ef6b709123023ea4c9",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-api-key",
+      "expected": [
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "generic-api-key.positive.literal",
       "inputPath": "secrets/generic-api-key__positive__literal.js",
       "inputSha256": "5d0c7eceda66f87eeca2c1674993536559437440af1a2786d86dcb43ad19ca5b",
@@ -88,6 +212,22 @@
       "inputPath": "secrets/generic-password__negative__comment.py",
       "inputSha256": "228103f46f59a9666280415afe5b515db22d308001de97cf06fb23dad681c34d",
       "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "generic-password"
+        }
+      ]
+    },
+    {
+      "id": "generic-password.negative.conditional-labels",
+      "inputPath": "secrets/generic-password__negative__conditional-labels.tsx",
+      "inputSha256": "ff0e012cc86ee3d123a72fa44d527c66da3c208e2071270068b37727643f3804",
+      "language": "javascript",
       "scannerFamilies": [
         "secret"
       ],
@@ -260,6 +400,23 @@
       ]
     },
     {
+      "id": "generic-password.positive.conditional-fallback",
+      "inputPath": "secrets/generic-password__positive__conditional-fallback.js",
+      "inputSha256": "293922c2435574c2a6b6210d20101fec34bae2ae52a382f6a6fbc25acb89ed9c",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "generic-password",
+      "expected": [
+        {
+          "ruleId": "generic-password",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "generic-password.positive.python-assignment",
       "inputPath": "secrets/generic-password__positive__python-assignment.py",
       "inputSha256": "1c2589411f80f14d69f5a6ff7161d532d84cdb772163f386bd30388a36108d51",
@@ -294,6 +451,207 @@
       "expectedAbsent": []
     },
     {
+      "id": "grafana-service-account-token.negative.docs",
+      "inputPath": "secrets/grafana-service-account-token__negative__docs.md",
+      "inputSha256": "08e5a3cb4f8c7885559d7e2d536086dd15f1172a9ba8f03f8e29f4226eff3526",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "grafana-service-account-token",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "grafana-service-account-token"
+        }
+      ]
+    },
+    {
+      "id": "grafana-service-account-token.positive.dashboard",
+      "inputPath": "secrets/grafana-service-account-token__positive__dashboard.yaml",
+      "inputSha256": "2baa13e3b425b9377375623106bb7dfd46adec5cf872da4ca9c13e9f04db3aef",
+      "language": "yaml",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "grafana-service-account-token",
+      "expected": [
+        {
+          "ruleId": "grafana-service-account-token",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "json-credential.negative.conditional-labels",
+      "inputPath": "secrets/json-credential__negative__conditional-labels.js",
+      "inputSha256": "f7c2804fff77e20a84ad185978185f8656c7151905f1485f931808eebfa3ee13",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "json-credential",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "json-credential"
+        }
+      ]
+    },
+    {
+      "id": "linear-api-key.negative.docs",
+      "inputPath": "secrets/linear-api-key__negative__docs.md",
+      "inputSha256": "24d4c679d045cad45a9680e395b96c759a47e791e88aa797a32cc94fb021b8a2",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "linear-api-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "linear-api-key"
+        }
+      ]
+    },
+    {
+      "id": "linear-api-key.positive.sync",
+      "inputPath": "secrets/linear-api-key__positive__sync.py",
+      "inputSha256": "91c9398bb2a9c5bdbb0a27b815b884ab8d9cfc8b4928d78311a621a1d3985a28",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "linear-api-key",
+      "expected": [
+        {
+          "ruleId": "linear-api-key",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "newrelic-api-key.negative.docs",
+      "inputPath": "secrets/newrelic-api-key__negative__docs.md",
+      "inputSha256": "fd7dbedcbd1257294b01d2aa93e942b3f93e074c6ad832831b6088428d6608df",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "newrelic-api-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "newrelic-api-key"
+        }
+      ]
+    },
+    {
+      "id": "newrelic-api-key.positive.collector",
+      "inputPath": "secrets/newrelic-api-key__positive__collector.yaml",
+      "inputSha256": "3e98cf4fe2508460443470ef4c5678ba6dedba1282a1e644930c126ef6ac303a",
+      "language": "yaml",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "newrelic-api-key",
+      "expected": [
+        {
+          "ruleId": "newrelic-api-key",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "plaid-api-key.negative.docs",
+      "inputPath": "secrets/plaid-api-key__negative__docs.md",
+      "inputSha256": "ed86f94388244f58cd91e7987103638021051b3ca1bbbce85b8c254d1832187f",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "plaid-api-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "plaid-api-key"
+        }
+      ]
+    },
+    {
+      "id": "plaid-api-key.positive.bank-sync",
+      "inputPath": "secrets/plaid-api-key__positive__bank_sync.py",
+      "inputSha256": "58f06c282e3337d662c2e858ac1e3484840fe189e89db36af8c0911f1a3ee343",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "plaid-api-key",
+      "expected": [
+        {
+          "ruleId": "plaid-api-key",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-password",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "postman-api-key.negative.docs",
+      "inputPath": "secrets/postman-api-key__negative__docs.md",
+      "inputSha256": "86fca575e20ab6487a7fd4e0f77d0b007e6dae886c92ea059e2530c164b7145a",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "postman-api-key",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "postman-api-key"
+        }
+      ]
+    },
+    {
+      "id": "postman-api-key.positive.collection",
+      "inputPath": "secrets/postman-api-key__positive__collection.js",
+      "inputSha256": "4a64b7a2d0affc147f9b4415fd258461b5d4e8873ca231362a14cd5df1b6c740",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "postman-api-key",
+      "expected": [
+        {
+          "ruleId": "postman-api-key",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
       "id": "private-key.negative.detector-pattern",
       "inputPath": "secrets/private-key__negative__detector-pattern.rs",
       "inputSha256": "f67594a55a499727cd4f81bab8600677b7efffd5bc947ff14c05ccab9aa8184c",
@@ -321,6 +679,113 @@
       "expected": [
         {
           "ruleId": "private-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "sentry-token.negative.docs",
+      "inputPath": "secrets/sentry-token__negative__docs.md",
+      "inputSha256": "b28d6d45f17ede9d9f412b0d63c06df8675897edd1df8ac61a12b237afe922ec",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "sentry-token",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "sentry-token"
+        }
+      ]
+    },
+    {
+      "id": "sentry-token.positive.client",
+      "inputPath": "secrets/sentry-token__positive__client.js",
+      "inputSha256": "69f0966bfb733d3361a833230f5d149c7342fcdee9c9d6118a160adbcca24cec",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "sentry-token",
+      "expected": [
+        {
+          "ruleId": "sentry-token",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "square-access-token.negative.docs",
+      "inputPath": "secrets/square-access-token__negative__docs.md",
+      "inputSha256": "d4e00f0b8ac835391e1019934bd01150f422fbf76685c31209670f99142833b0",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "square-access-token",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "square-access-token"
+        }
+      ]
+    },
+    {
+      "id": "square-access-token.positive.checkout",
+      "inputPath": "secrets/square-access-token__positive__checkout.js",
+      "inputSha256": "49086104efc8257807bd8b59cd747b95ceeedb9768533b2428da6a129ebace2d",
+      "language": "javascript",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "square-access-token",
+      "expected": [
+        {
+          "ruleId": "square-access-token",
+          "minimum": 1
+        },
+        {
+          "ruleId": "generic-api-key",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "telegram-bot-token.negative.docs",
+      "inputPath": "secrets/telegram-bot-token__negative__docs.md",
+      "inputSha256": "87705071a1382690cbb6d10e5ad3c71707c9f7edbc118af0baaf2d40f3542cb2",
+      "language": null,
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "telegram-bot-token",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "telegram-bot-token"
+        }
+      ]
+    },
+    {
+      "id": "telegram-bot-token.positive.bot",
+      "inputPath": "secrets/telegram-bot-token__positive__bot.py",
+      "inputSha256": "b312e2f02a070c3459c76fbbc6b9d77242ee635659695a31c26dbdcf936bc2a3",
+      "language": "python",
+      "scannerFamilies": [
+        "secret"
+      ],
+      "ruleId": "telegram-bot-token",
+      "expected": [
+        {
+          "ruleId": "telegram-bot-token",
           "minimum": 1
         }
       ],
@@ -3012,6 +3477,22 @@
       "expectedAbsent": []
     },
     {
+      "id": "rs-sql-format.negative.formatted-errors",
+      "inputPath": "source/rs-sql-format__negative__formatted-errors.rs",
+      "inputSha256": "b03d031c93461f4fb944070c8a9189daa61542961162678d44c3e81a5cf1017a",
+      "language": "rust",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rs-sql-format",
+      "expected": [],
+      "expectedAbsent": [
+        {
+          "ruleId": "rs-sql-format"
+        }
+      ]
+    },
+    {
       "id": "rs-sql-format.negative.parameterized-query",
       "inputPath": "source/rs-sql-format__negative__parameterized-query.rs",
       "inputSha256": "01fa8d5710119cab8d3b7e201f84430814e475dfdc7cfd67968b84861c1ce2a5",
@@ -3031,6 +3512,40 @@
       "id": "rs-sql-format.positive.format-macro",
       "inputPath": "source/rs-sql-format__positive__format-macro.rs",
       "inputSha256": "af8d901f4747178460fa3689e4071db7f5f3a8af5dd72d676bf998d982162bfe",
+      "language": "rust",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rs-sql-format",
+      "expected": [
+        {
+          "ruleId": "rs-sql-format",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "rs-sql-format.positive.nested-error-handler",
+      "inputPath": "source/rs-sql-format__positive__nested-error-handler.rs",
+      "inputSha256": "bc90cdd5195215c3debae7526ab86281ff6cd0389fc0ec44c3b394a368edb354",
+      "language": "rust",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "rs-sql-format",
+      "expected": [
+        {
+          "ruleId": "rs-sql-format",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "rs-sql-format.positive.string-concat",
+      "inputPath": "source/rs-sql-format__positive__string-concat.rs",
+      "inputSha256": "09f46bf15072ff58b0e92fb55d8b58daf3b68b4ca63530efd75f1b11cbba8eae",
       "language": "rust",
       "scannerFamilies": [
         "source-pattern"
@@ -3274,405 +3789,6 @@
         }
       ],
       "expectedAbsent": []
-    },
-    {
-      "id": "telegram-bot-token.positive.bot",
-      "inputPath": "secrets/telegram-bot-token__positive__bot.py",
-      "inputSha256": "b312e2f02a070c3459c76fbbc6b9d77242ee635659695a31c26dbdcf936bc2a3",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "telegram-bot-token",
-      "expected": [
-        {
-          "ruleId": "telegram-bot-token",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "telegram-bot-token.negative.docs",
-      "inputPath": "secrets/telegram-bot-token__negative__docs.md",
-      "inputSha256": "87705071a1382690cbb6d10e5ad3c71707c9f7edbc118af0baaf2d40f3542cb2",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "telegram-bot-token",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "telegram-bot-token"
-        }
-      ]
-    },
-    {
-      "id": "sentry-token.positive.client",
-      "inputPath": "secrets/sentry-token__positive__client.js",
-      "inputSha256": "69f0966bfb733d3361a833230f5d149c7342fcdee9c9d6118a160adbcca24cec",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "sentry-token",
-      "expected": [
-        {
-          "ruleId": "sentry-token",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-api-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "sentry-token.negative.docs",
-      "inputPath": "secrets/sentry-token__negative__docs.md",
-      "inputSha256": "b28d6d45f17ede9d9f412b0d63c06df8675897edd1df8ac61a12b237afe922ec",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "sentry-token",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "sentry-token"
-        }
-      ]
-    },
-    {
-      "id": "newrelic-api-key.positive.collector",
-      "inputPath": "secrets/newrelic-api-key__positive__collector.yaml",
-      "inputSha256": "3e98cf4fe2508460443470ef4c5678ba6dedba1282a1e644930c126ef6ac303a",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "newrelic-api-key",
-      "expected": [
-        {
-          "ruleId": "newrelic-api-key",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-api-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "newrelic-api-key.negative.docs",
-      "inputPath": "secrets/newrelic-api-key__negative__docs.md",
-      "inputSha256": "fd7dbedcbd1257294b01d2aa93e942b3f93e074c6ad832831b6088428d6608df",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "newrelic-api-key",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "newrelic-api-key"
-        }
-      ]
-    },
-    {
-      "id": "postman-api-key.positive.collection",
-      "inputPath": "secrets/postman-api-key__positive__collection.js",
-      "inputSha256": "4a64b7a2d0affc147f9b4415fd258461b5d4e8873ca231362a14cd5df1b6c740",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "postman-api-key",
-      "expected": [
-        {
-          "ruleId": "postman-api-key",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-api-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "postman-api-key.negative.docs",
-      "inputPath": "secrets/postman-api-key__negative__docs.md",
-      "inputSha256": "86fca575e20ab6487a7fd4e0f77d0b007e6dae886c92ea059e2530c164b7145a",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "postman-api-key",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "postman-api-key"
-        }
-      ]
-    },
-    {
-      "id": "linear-api-key.positive.sync",
-      "inputPath": "secrets/linear-api-key__positive__sync.py",
-      "inputSha256": "91c9398bb2a9c5bdbb0a27b815b884ab8d9cfc8b4928d78311a621a1d3985a28",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "linear-api-key",
-      "expected": [
-        {
-          "ruleId": "linear-api-key",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-api-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "linear-api-key.negative.docs",
-      "inputPath": "secrets/linear-api-key__negative__docs.md",
-      "inputSha256": "24d4c679d045cad45a9680e395b96c759a47e791e88aa797a32cc94fb021b8a2",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "linear-api-key",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "linear-api-key"
-        }
-      ]
-    },
-    {
-      "id": "figma-token.positive.export",
-      "inputPath": "secrets/figma-token__positive__export.js",
-      "inputSha256": "c983a143dfc66ffb4b1c06f0b8699e7fd6886f1ff0f8a485f2d3bf823a25e542",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "figma-token",
-      "expected": [
-        {
-          "ruleId": "figma-token",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-api-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "figma-token.negative.docs",
-      "inputPath": "secrets/figma-token__negative__docs.md",
-      "inputSha256": "312c752c8c96b8edb1b62f8bfb95f7fb2550e9a3ba0a9ee4aa5f52efdf7bff9a",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "figma-token",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "figma-token"
-        }
-      ]
-    },
-    {
-      "id": "grafana-service-account-token.positive.dashboard",
-      "inputPath": "secrets/grafana-service-account-token__positive__dashboard.yaml",
-      "inputSha256": "2baa13e3b425b9377375623106bb7dfd46adec5cf872da4ca9c13e9f04db3aef",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "grafana-service-account-token",
-      "expected": [
-        {
-          "ruleId": "grafana-service-account-token",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-api-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "grafana-service-account-token.negative.docs",
-      "inputPath": "secrets/grafana-service-account-token__negative__docs.md",
-      "inputSha256": "08e5a3cb4f8c7885559d7e2d536086dd15f1172a9ba8f03f8e29f4226eff3526",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "grafana-service-account-token",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "grafana-service-account-token"
-        }
-      ]
-    },
-    {
-      "id": "square-access-token.positive.checkout",
-      "inputPath": "secrets/square-access-token__positive__checkout.js",
-      "inputSha256": "49086104efc8257807bd8b59cd747b95ceeedb9768533b2428da6a129ebace2d",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "square-access-token",
-      "expected": [
-        {
-          "ruleId": "square-access-token",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-api-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "square-access-token.negative.docs",
-      "inputPath": "secrets/square-access-token__negative__docs.md",
-      "inputSha256": "d4e00f0b8ac835391e1019934bd01150f422fbf76685c31209670f99142833b0",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "square-access-token",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "square-access-token"
-        }
-      ]
-    },
-    {
-      "id": "plaid-api-key.positive.bank-sync",
-      "inputPath": "secrets/plaid-api-key__positive__bank_sync.py",
-      "inputSha256": "58f06c282e3337d662c2e858ac1e3484840fe189e89db36af8c0911f1a3ee343",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "plaid-api-key",
-      "expected": [
-        {
-          "ruleId": "plaid-api-key",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-password",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "plaid-api-key.negative.docs",
-      "inputPath": "secrets/plaid-api-key__negative__docs.md",
-      "inputSha256": "ed86f94388244f58cd91e7987103638021051b3ca1bbbce85b8c254d1832187f",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "plaid-api-key",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "plaid-api-key"
-        }
-      ]
-    },
-    {
-      "id": "datadog-api-key.positive.agent",
-      "inputPath": "secrets/datadog-api-key__positive__agent.yaml",
-      "inputSha256": "3b991dd301efe1dd4aca1f6f265f02c93d6178a27e58a165d787c1c7d1d52256",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "datadog-api-key",
-      "expected": [
-        {
-          "ruleId": "datadog-api-key",
-          "minimum": 1
-        },
-        {
-          "ruleId": "generic-api-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "datadog-api-key.negative.docs",
-      "inputPath": "secrets/datadog-api-key__negative__docs.md",
-      "inputSha256": "e6d34cfde79590efdd6f6e4f23e9a3018cc71627c8f7690517e1ca337d1f44e4",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "datadog-api-key",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "datadog-api-key"
-        }
-      ]
-    },
-    {
-      "id": "azure-storage-account-key.positive.upload",
-      "inputPath": "secrets/azure-storage-account-key__positive__upload.py",
-      "inputSha256": "95e0f65440f334e9bd8e2bd86a648627efe2aae0c8c5db67671377e775e02807",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "azure-storage-account-key",
-      "expected": [
-        {
-          "ruleId": "azure-storage-account-key",
-          "minimum": 1
-        }
-      ],
-      "expectedAbsent": []
-    },
-    {
-      "id": "azure-storage-account-key.negative.docs",
-      "inputPath": "secrets/azure-storage-account-key__negative__docs.md",
-      "inputSha256": "97d41d2d2ab63fa4dc9d8841bf89922951315246976b5902c4f742f6d777b48f",
-      "language": null,
-      "scannerFamilies": [
-        "secret"
-      ],
-      "ruleId": "azure-storage-account-key",
-      "expected": [],
-      "expectedAbsent": [
-        {
-          "ruleId": "azure-storage-account-key"
-        }
-      ]
     }
   ]
 }

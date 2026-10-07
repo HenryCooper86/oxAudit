@@ -23,6 +23,20 @@ import { join, relative, extname } from "node:path";
 const CORPUS = "benchmarks/corpus";
 const MANIFEST = join(CORPUS, "suite.json");
 
+// These fixtures intentionally exercise both a provider-specific detector
+// and a generic secret detector. Keep both expectations in generated output.
+const ADDITIONAL_EXPECTATIONS = {
+  "secrets/datadog-api-key__positive__agent.yaml": "generic-api-key",
+  "secrets/figma-token__positive__export.js": "generic-api-key",
+  "secrets/grafana-service-account-token__positive__dashboard.yaml": "generic-api-key",
+  "secrets/linear-api-key__positive__sync.py": "generic-api-key",
+  "secrets/newrelic-api-key__positive__collector.yaml": "generic-api-key",
+  "secrets/plaid-api-key__positive__bank_sync.py": "generic-password",
+  "secrets/postman-api-key__positive__collection.js": "generic-api-key",
+  "secrets/sentry-token__positive__client.js": "generic-api-key",
+  "secrets/square-access-token__positive__checkout.js": "generic-api-key",
+};
+
 /** Language for a fixture, from its extension. Drives which rules apply. */
 const LANGUAGE_BY_EXTENSION = {
   ".js": "javascript",
@@ -99,9 +113,11 @@ function familyFor(path) {
 const fixtures = walk(CORPUS).map((path) => {
   const { ruleId, polarity, slug } = parseFixtureName(path);
   const content = readFileSync(path);
+  const inputPath = relative(CORPUS, path).replaceAll("\\", "/");
+  const additionalRule = ADDITIONAL_EXPECTATIONS[inputPath];
   return {
-    id: `${ruleId}.${polarity}.${slug}`,
-    inputPath: relative(CORPUS, path).replaceAll("\\", "/"),
+    id: `${ruleId}.${polarity}.${slug.replaceAll("_", "-")}`,
+    inputPath,
     inputSha256: createHash("sha256").update(content).digest("hex"),
     language: languageFor(path),
     scannerFamilies: [familyFor(path)],
@@ -109,7 +125,12 @@ const fixtures = walk(CORPUS).map((path) => {
     // A positive asserts the rule fires here; a negative asserts it does not.
     // Both are load-bearing: a corpus of only positives measures recall and
     // says nothing about the false positives that make a scanner unusable.
-    expected: polarity === "positive" ? [{ ruleId, minimum: 1 }] : [],
+    expected: polarity === "positive"
+      ? [
+          { ruleId, minimum: 1 },
+          ...(additionalRule ? [{ ruleId: additionalRule, minimum: 1 }] : []),
+        ]
+      : [],
     expectedAbsent: polarity === "negative" ? [{ ruleId }] : [],
   };
 });

@@ -36,6 +36,28 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
             )
         }
         "cancel_scan" => ok_st(crate::commands::cancel_scan_inner(&ctx.app)),
+        "recheck_source_run" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                original_run_id: String,
+                project_id: String,
+            }
+            let a: Args = from_args(&args)?;
+            let hub_events = ctx.events();
+            ok_ce(
+                crate::commands::recheck_source_run_engine(
+                    &ctx.app,
+                    &ctx.findings,
+                    &ctx.cve,
+                    &ctx.rule_packs,
+                    &a.original_run_id,
+                    &a.project_id,
+                    &hub_events,
+                )
+                .await,
+            )
+        }
         "inspect_source_project" => {
             let a = path_args(&args)?;
             ok_ce(crate::commands::inspect_source_project_inner(
@@ -955,7 +977,15 @@ struct IdArgs {
 fn id_args(args: &Value) -> Result<IdArgs, Value> {
     // The desktop commands name this parameter per command (runId, id,
     // findingId...); accept any single string-valued identity field.
-    for key in ["runId", "id", "assessmentId", "sessionId", "contentSha256"] {
+    for key in [
+        "runId",
+        "id",
+        "assessmentId",
+        "sessionId",
+        "contentSha256",
+        "projectId",
+        "retryToken",
+    ] {
         if let Some(value) = args.get(key).and_then(Value::as_str) {
             return Ok(IdArgs {
                 id: value.to_string(),

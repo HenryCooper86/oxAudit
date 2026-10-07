@@ -18,6 +18,27 @@ async function loadTransport(serverMode: boolean) {
 describe("the server transport", () => {
   const originalFetch = globalThis.fetch;
 
+  class TestEventSource extends EventTarget {
+    static CLOSED = 2;
+    static instances: TestEventSource[] = [];
+    readyState = 1;
+    onerror: (() => void) | null = null;
+    constructor(readonly url: string) {
+      super();
+      TestEventSource.instances.push(this);
+    }
+    close() { this.readyState = TestEventSource.CLOSED; }
+    emit(name: string, payload: unknown) {
+      this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(payload) }));
+    }
+  }
+
+  function eventSources() {
+    TestEventSource.instances = [];
+    vi.stubGlobal("EventSource", TestEventSource);
+    return TestEventSource.instances;
+  }
+
   afterEach(() => {
     globalThis.fetch = originalFetch;
     vi.unstubAllGlobals();
@@ -67,5 +88,35 @@ describe("the server transport", () => {
       code: "credentialUnavailable",
     });
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps other subscribers connected when an unsubscribe is called twice", async () => {
+    const transport = await loadTransport(true);
+    const sources = eventSources();
+    const first = transport.sseListen("scan://progress", () => {});
+    const received: unknown[] = [];
+    const second = transport.sseListen("run://event", ({ payload }) => received.push(payload));
+    first();
+    first();
+    expect(sources[0].readyState).toBe(1);
+    sources[0].emit("run://event", { phase: "completed" });
+    expect(received).toEqual([{ phase: "completed" }]);
+    second();
+    expect(sources[0].readyState).toBe(TestEventSource.CLOSED);
+  });
+
+  it("reconnects existing event subscriptions with an updated token", async () => {
+    const transport = await loadTransport(true);
+    const sources = eventSources();
+    transport.setServerToken("old-token");
+    const received: unknown[] = [];
+    const release = transport.sseListen("scan://progress", ({ payload }) => received.push(payload));
+    transport.setServerToken("new+token");
+    expect(sources).toHaveLength(2);
+    expect(sources[0].readyState).toBe(TestEventSource.CLOSED);
+    expect(sources[1].url).toBe("/api/events?token=new%2Btoken");
+    sources[1].emit("scan://progress", { phase: "completed" });
+    expect(received).toEqual([{ phase: "completed" }]);
+    release();
   });
 });

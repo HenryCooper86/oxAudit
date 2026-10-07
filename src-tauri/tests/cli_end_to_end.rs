@@ -1485,6 +1485,51 @@ fn scan_applies_an_ephemeral_rule_pack_file_with_pack_qualified_ids() {
 }
 
 #[test]
+fn persisted_one_off_scans_capture_absolute_pack_paths_for_rechecks() {
+    let packs = tempfile::tempdir().unwrap();
+    let pack_path = rule_pack_fixture(packs.path());
+    let project = rule_pack_project();
+    let db = packs.path().join("private/findings.sqlite3");
+    let output = cli()
+        .current_dir(packs.path())
+        .args([
+            "scan",
+            &project.path().to_string_lossy(),
+            "--rule-pack-file",
+            "pack.toml",
+            "--db",
+            &db.to_string_lossy(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let repository = oxaudit_lib::findings::repository::FindingsRepository::open(&db).unwrap();
+    let options = repository
+        .run_options(
+            document["findings"][0]["observationRunId"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        options.extra_rule_pack_files,
+        [pack_path
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()]
+    );
+}
+
+#[test]
 fn an_invalid_rule_pack_file_is_a_usage_error_before_any_scanning() {
     let packs = tempfile::tempdir().unwrap();
     let bad = packs.path().join("bad.toml");

@@ -17,3 +17,12 @@ request-derived and fixed outbound URLs. On 2026-09-07, the committed runner
 measured 220 fixtures (100 expected-positive and 120 expected-negative), with 100
 true positives, zero false positives, and zero false negatives. That result
 describes this authored corpus only.
+
+On 2026-10-07, the expanded runner measured 227 fixtures (104 expected-positive
+and 123 expected-negative), with 113 true positives, zero false positives, and
+zero false negatives. Some positive fixtures require both a provider-specific
+and a generic detector, so true positives outnumber positive fixtures. The new
+regressions cover Rust function declarations, formatted SQL errors and bound
+parameters, string concatenation and nested SQL sinks, ternary UI labels, and
+hardcoded credential fallbacks. Rebuilding the manifest preserves the
+overlapping expectations.
