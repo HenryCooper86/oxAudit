@@ -229,12 +229,26 @@ fn parse_yarn_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     let mut current_names: Vec<String> = Vec::new();
     let mut current_version: Option<String> = None;
+    let mut field_indent: Option<usize> = None;
+    let mut classic = false;
 
-    fn flush(names: &[String], version: Option<&String>, out: &mut Vec<(String, String)>) {
+    fn flush(
+        names: &[String],
+        version: Option<&String>,
+        classic: bool,
+        out: &mut Vec<(String, String)>,
+    ) {
         if let Some(v) = version {
-            for n in names {
-                if !n.is_empty() {
-                    out.push((n.clone(), v.clone()));
+            for selector in names {
+                // Classic's npm: descriptor names the aliased package.
+                // Berry also uses npm: for ordinary semver descriptors.
+                let target = match selector.split_once("@npm:") {
+                    Some((_, target)) if classic || target.contains('@') => target,
+                    _ => selector.as_str(),
+                };
+                let name = split_name_range(target).0;
+                if !name.is_empty() {
+                    out.push((name, v.clone()));
                 }
             }
         }
@@ -247,9 +261,11 @@ fn parse_yarn_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         }
         let is_header = trimmed.ends_with(':') && !line.starts_with([' ', '\t']);
         if is_header {
-            flush(&current_names, current_version.as_ref(), &mut out);
+            flush(&current_names, current_version.as_ref(), classic, &mut out);
             current_names.clear();
             current_version = None;
+            field_indent = None;
+            classic = false;
             if trimmed == "__metadata:" {
                 continue;
             }
@@ -259,19 +275,27 @@ fn parse_yarn_lock(content: &str) -> Result<Vec<(String, String)>, String> {
                 if part.is_empty() {
                     continue;
                 }
-                current_names.push(split_name_range(part).0);
+                current_names.push(part.to_owned());
             }
         } else if !current_names.is_empty() {
-            if let Some((key, value)) = trimmed.split_once(':') {
-                let key = key.trim().trim_matches(['"', '\'']);
+            let indent = line.len() - line.trim_start().len();
+            if indent != *field_indent.get_or_insert(indent) {
+                continue;
+            }
+            // Classic uses `version "1.2.3"`; Berry uses `version: 1.2.3`.
+            if let Some(value) = trimmed
+                .strip_prefix("version ")
+                .or_else(|| trimmed.strip_prefix("version:"))
+            {
                 let value = value.trim().trim_matches(['"', '\'']);
-                if key == "version" {
+                if !value.is_empty() {
+                    classic = trimmed.starts_with("version ");
                     current_version = Some(value.to_string());
                 }
             }
         }
     }
-    flush(&current_names, current_version.as_ref(), &mut out);
+    flush(&current_names, current_version.as_ref(), classic, &mut out);
 
     if out.is_empty() {
         return Err("no packages found in yarn.lock".into());
@@ -301,11 +325,27 @@ fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     if let Some(packages) = root.get("packages").and_then(|p| p.as_mapping()) {
         for (key, _val) in packages {
             if let Some(k) = key.as_str() {
-                // key format: /name@1.2.3 or /@scope/name@1.2.3
-                let k = k.trim_start_matches('/');
-                let (name, version) = split_name_range(k);
+                // v5 uses /name/version; v6+ uses name@version. Peer
+                // contexts are install identities, not advisory versions.
+                let coordinate = k.trim_start_matches('/').split('(').next().unwrap_or("");
+                let name_start = if coordinate.starts_with('@') {
+                    coordinate
+                        .find('/')
+                        .map(|slash| slash + 1)
+                        .unwrap_or(coordinate.len())
+                } else {
+                    0
+                };
+                let Some(separator) = coordinate[name_start..]
+                    .find(['@', '/'])
+                    .map(|offset| name_start + offset)
+                else {
+                    continue;
+                };
+                let name = &coordinate[..separator];
+                let version = coordinate[separator + 1..].split('_').next().unwrap_or("");
                 if !name.is_empty() && !version.is_empty() {
-                    out.push((name, version));
+                    out.push((name.to_string(), version.to_string()));
                 }
             }
         }
@@ -722,39 +762,62 @@ fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
 
 fn parse_requirements(content: &str) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
-    for line in content.lines() {
+    let logical_lines = content.replace("\\\r\n", " ").replace("\\\n", " ");
+    for line in logical_lines.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Index options do not change inventory. Includes and editable
+        // requirements do, and cannot be silently omitted from coverage.
+        if [
+            "--index-url",
+            "--extra-index-url",
+            "--no-index",
+            "--find-links",
+            "--trusted-host",
+            "--require-hashes",
+            "--pre",
+            "--only-binary",
+            "--no-binary",
+        ]
+        .iter()
+        .any(|option| {
+            line == *option
+                || line
+                    .strip_prefix(option)
+                    .is_some_and(|suffix| suffix.starts_with([' ', '=']))
+        }) {
             continue;
         }
         // strip environment markers: "pkg==1.0; python_version < '3.8'"
-        let base = line.split(';').next().unwrap_or(line).trim();
+        let base = line.split(';').next().unwrap_or(line);
+        let base = base.split(" #").next().unwrap_or(base);
+        let base = base.split(" --hash").next().unwrap_or(base).trim();
         // strip extras: pkg[extra]==1.0
-        let (name, version) = if let Some((n, v)) = base.split_once("==") {
-            (n.trim(), Some(v.trim().to_string()))
-        } else if let Some((n, v)) = base.split_once(">=") {
-            (n.trim(), Some(v.trim().to_string()))
-        } else if let Some((n, v)) = base.split_once("<=") {
-            (n.trim(), Some(v.trim().to_string()))
-        } else if let Some((n, v)) = base.split_once("~=") {
-            (n.trim(), Some(v.trim().to_string()))
-        } else {
-            (base.trim(), None)
+        let unresolved = || {
+            format!("unresolved requirement {line:?}: pin every package to an exact version and scan included files separately; advisory coverage is incomplete")
         };
-        let name = name.trim_matches(['[', ']', ' ', '\'', '"']).to_string();
-        if let Some(v) = version {
-            let v = v.trim_matches([' ', '\'', '"', ',']);
-            if !name.is_empty()
-                && !v.is_empty()
-                && v.chars().all(|c| {
-                    c.is_ascii_digit()
-                        || c.is_ascii_alphabetic()
-                        || matches!(c, '.' | '-' | '_' | '!')
-                })
-            {
-                out.push((name, v.to_string()));
-            }
+        let (name, version) = base.split_once("==").ok_or_else(unresolved)?;
+        let name = name.trim();
+        let name = match name.split_once('[') {
+            Some((name, extras)) if extras.ends_with(']') => name.trim(),
+            Some(_) => return Err(unresolved()),
+            None => name,
+        };
+        let version = version.trim();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+            || version.is_empty()
+            || !version
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '!' | '+'))
+        {
+            return Err(unresolved());
         }
+        out.push((name.to_string(), version.to_string()));
     }
     if out.is_empty() {
         return Err(
@@ -890,6 +953,209 @@ mod pom_tests {
 {body}
 </project>"#
         )
+    }
+
+    fn lockfile_packages(name: &str, content: &str) -> Result<Vec<(String, String)>, String> {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        super::parse_lockfile(&path, super::lockfile_kind(name)).map(|dependencies| {
+            dependencies
+                .into_iter()
+                .map(|d| (d.name, d.version))
+                .collect()
+        })
+    }
+
+    #[test]
+    fn yarn_classic_resolved_versions_are_queryable() {
+        let packages = lockfile_packages(
+            "yarn.lock",
+            r#"
+# yarn lockfile v1
+lodash@^4.17.0:
+  version "4.17.21"
+  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"
+
+"@scope/tool@^2.0.0":
+  version "2.3.0"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            packages,
+            vec![
+                ("lodash".into(), "4.17.21".into()),
+                ("@scope/tool".into(), "2.3.0".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_yarn_dependencies_cannot_overwrite_the_resolved_version() {
+        for content in [
+            r#"
+tool@^1.0.0:
+  version "1.2.3"
+  dependencies:
+    version "^0.1.0"
+"#,
+            r#"
+"tool@npm:^1.0.0":
+  version: 1.2.3
+  dependencies:
+    version: "npm:^0.1.0"
+"#,
+        ] {
+            assert_eq!(
+                lockfile_packages("yarn.lock", content).unwrap(),
+                vec![("tool".into(), "1.2.3".into())]
+            );
+        }
+    }
+
+    #[test]
+    fn yarn_npm_aliases_use_the_registry_package_name() {
+        let packages = lockfile_packages(
+            "yarn.lock",
+            r#"
+"my-tool@npm:tool@1.2.3":
+  version "1.2.3"
+"my-scoped@npm:@scope/tool@^2":
+  version "2.3.4"
+"my-any@npm:tool":
+  version "3.4.5"
+"my-scoped-any@npm:@scope/tool":
+  version "4.5.6"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            packages,
+            vec![
+                ("tool".into(), "1.2.3".into()),
+                ("@scope/tool".into(), "2.3.4".into()),
+                ("tool".into(), "3.4.5".into()),
+                ("@scope/tool".into(), "4.5.6".into()),
+            ]
+        );
+        let berry = lockfile_packages(
+            "yarn.lock",
+            r#"
+"tool@npm:^1":
+  version: 1.2.3
+"alias@npm:@scope/tool@^2":
+  version: 2.3.4
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            berry,
+            vec![
+                ("tool".into(), "1.2.3".into()),
+                ("@scope/tool".into(), "2.3.4".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn pnpm_peer_context_does_not_become_part_of_the_package_coordinate() {
+        let packages = lockfile_packages(
+            "pnpm-lock.yaml",
+            r#"
+lockfileVersion: '6.0'
+packages:
+  /plugin@1.2.3(react@18.2.0): {}
+  /@scope/tool@2.3.4(@scope/peer@1.0.0): {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            packages,
+            vec![
+                ("plugin".into(), "1.2.3".into()),
+                ("@scope/tool".into(), "2.3.4".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pnpm_legacy_slash_coordinates_and_peer_suffixes_are_queryable() {
+        let packages = lockfile_packages(
+            "pnpm-lock.yaml",
+            r#"
+lockfileVersion: 5.4
+packages:
+  /lodash/4.17.21: {}
+  /@scope/tool/2.3.4_react@18.2.0: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            packages,
+            vec![
+                ("lodash".into(), "4.17.21".into()),
+                ("@scope/tool".into(), "2.3.4".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pnpm_package_names_keep_underscores_and_scoped_peer_paths() {
+        let packages = lockfile_packages(
+            "pnpm-lock.yaml",
+            r#"
+packages:
+  /some_pkg@1.2.3: {}
+  /@my_scope/tool_name/2.3.4_@peer/lib@1.0.0: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            packages,
+            vec![
+                ("some_pkg".into(), "1.2.3".into()),
+                ("@my_scope/tool_name".into(), "2.3.4".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pinned_requirements_strip_extras_comments_and_hash_options() {
+        let packages = lockfile_packages(
+            "requirements.txt",
+            r#"requests[security,socks]==2.31.0 # pinned
+example==1.0+local \
+    --hash=sha256:abcdef
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            packages,
+            vec![
+                ("requests".into(), "2.31.0".into()),
+                ("example".into(), "1.0+local".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn requirement_ranges_and_unread_includes_cannot_look_like_complete_inventory() {
+        for unresolved in [
+            "flask>=2.0",
+            "flask<=2.0",
+            "flask~=2.0",
+            "flask",
+            "flask==2.*",
+            "-r more.txt",
+        ] {
+            let error = lockfile_packages(
+                "requirements.txt",
+                &format!("requests==2.31.0\n{unresolved}\n"),
+            )
+            .expect_err("unresolved requirements must leave coverage incomplete");
+            assert!(error.contains(unresolved), "{error}");
+        }
     }
 
     #[test]

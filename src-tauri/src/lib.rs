@@ -152,11 +152,6 @@ pub fn run() {
                     let schedules = store.list();
                     let due = crate::schedule_store::due(&schedules, chrono::Utc::now());
                     for schedule in due {
-                        // Marked before launching so a long scan does not
-                        // re-fire every minute; a launch that collides with a
-                        // user scan waits out the interval, visibly.
-                        let _ = store
-                            .mark_started(&schedule.project_id, &chrono::Utc::now().to_rfc3339());
                         tracing::info!(
                             project = %schedule.project_id,
                             "scheduled rescan starting"

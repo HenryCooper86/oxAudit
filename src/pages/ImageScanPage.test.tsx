@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { ImageScanPage } from "./ImageScanPage";
@@ -93,4 +93,22 @@ test("the offline switch travels with the request and cancel is reachable while 
   expect(cancelImageScan).toHaveBeenCalled();
   expect(scanImage).toHaveBeenCalledWith({ target: "saved.tar", advisoryDbPath: null, offline: true });
   release(outcome);
+});
+
+test("pressing Enter while an image scan is running cannot start a second scan", async () => {
+  scanImage.mockClear();
+  scanImage.mockReturnValue(new Promise(() => {}));
+  render(<ImageScanPage />);
+  await userEvent.type(screen.getByLabelText("Image target"), "saved.tar{enter}{enter}");
+  expect(scanImage).toHaveBeenCalledTimes(1);
+});
+
+test("a late image event subscription is released after the page unmounts", async () => {
+  let resolve!: (stop: () => void) => void;
+  listen.mockReturnValue(new Promise((done) => { resolve = done; }));
+  const stop = vi.fn();
+  const view = render(<ImageScanPage />);
+  view.unmount();
+  await act(async () => resolve(stop));
+  expect(stop).toHaveBeenCalledOnce();
 });

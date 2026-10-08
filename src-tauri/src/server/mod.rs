@@ -162,7 +162,6 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
             let schedules = store.list();
             let due = crate::schedule_store::due(&schedules, chrono::Utc::now());
             for schedule in due {
-                let _ = store.mark_started(&schedule.project_id, &chrono::Utc::now().to_rfc3339());
                 tracing::info!(project = %schedule.project_id, "scheduled rescan starting");
                 let hub_events = ticker_ctx.events();
                 let hub = ticker_ctx.hub.clone();
@@ -174,14 +173,7 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
                 >| {
                     hub.publish(
                         "schedule://completed",
-                        serde_json::json!({
-                            "projectId": project_id,
-                            "canonicalPath": path,
-                            "ok": result.is_ok(),
-                            "runId": result.as_ref().ok().map(|detail| detail.run_id.clone()),
-                            "findings": result.as_ref().ok().map(|detail| detail.summary.total_findings),
-                            "error": result.as_ref().err().map(|error| error.to_string()),
-                        }),
+                        crate::commands::schedule::completion_payload(&project_id, &path, result),
                     );
                 };
                 let _ = crate::commands::schedule::run_scheduled_scan_engine(
@@ -191,7 +183,11 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
                     Some(&ticker_ctx.rule_packs),
                     &hub_events,
                     &publish,
-                    &schedule.canonical_path,
+                    crate::commands::schedule::ScheduledScanTarget {
+                        canonical_path: &schedule.canonical_path,
+                        project_id: &schedule.project_id,
+                        schedules: Some(store),
+                    },
                 )
                 .await;
             }

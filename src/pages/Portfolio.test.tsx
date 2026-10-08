@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { PortfolioPage } from "./Portfolio";
-import type { RecentProject, ScanRunDetail, ScanScheduleStatus } from "../lib/types";
+import { sourceResult } from "../../tests/fixtures/projectHome";
+import type { RecentProject, ScanScheduleStatus } from "../lib/types";
 
 const listen = vi.fn().mockResolvedValue(() => {});
 vi.mock("@tauri-apps/api/event", () => ({
@@ -101,10 +102,10 @@ test("an existing schedule can be unscheduled and re-disabled", async () => {
 test("scan now runs through the scheduler path and reports the run", async () => {
   listSourceProjects.mockResolvedValue([project()]);
   listScanSchedules.mockResolvedValue([]);
-  runScanNow.mockResolvedValue({
-    runId: "abcd1234-0000",
-    summary: { totalFindings: 3 },
-  } as unknown as ScanRunDetail);
+  const completed = sourceResult();
+  completed.runId = "abcd1234-0000";
+  completed.summary.totalFindings = 3;
+  runScanNow.mockResolvedValue(completed);
   render(<PortfolioPage />);
   await screen.findByText("service-a");
   await userEvent.click(screen.getByRole("button", { name: /scan now/i }));
@@ -112,4 +113,56 @@ test("scan now runs through the scheduler path and reports the run", async () =>
   await waitFor(() =>
     expect(toast).toHaveBeenCalledWith("success", expect.stringContaining("3 finding(s)")),
   );
+});
+
+test("unavailable finding counts are not presented as zero open findings", async () => {
+  listSourceProjects.mockResolvedValue([project({ countsAvailable: false, openFindings: 0, critical: 0, high: 0 })]);
+  listScanSchedules.mockResolvedValue([]);
+  render(<PortfolioPage />);
+  await screen.findByText("service-a");
+  expect(screen.getByText(/finding counts unavailable/i)).toBeInTheDocument();
+  expect(screen.queryByText(/0 open/i)).not.toBeInTheDocument();
+});
+
+test("unsaved scans are reported explicitly instead of claiming durable success", async () => {
+  listSourceProjects.mockResolvedValue([project()]);
+  listScanSchedules.mockResolvedValue([]);
+  runScanNow.mockResolvedValue({ ...sourceResult(), persistence: { status: "notSaved", retryToken: "retry" } });
+  toast.mockClear();
+  render(<PortfolioPage />);
+  await screen.findByText("service-a");
+  await userEvent.click(screen.getByRole("button", { name: /scan now/i }));
+  await waitFor(() => expect(toast).toHaveBeenCalledWith("error", expect.stringMatching(/not saved/i)));
+  expect(toast).not.toHaveBeenCalledWith("success", expect.anything());
+});
+
+test("a delayed portfolio refresh cannot undo a newly saved schedule", async () => {
+  let receive!: (event: { payload: { projectId: string; ok: boolean; findings: number; error: null } }) => void;
+  listen.mockImplementation((_name, handler) => { receive = handler; return Promise.resolve(() => {}); });
+  listSourceProjects.mockResolvedValue([project()]);
+  let release!: (schedules: ScanScheduleStatus[]) => void;
+  listScanSchedules.mockResolvedValueOnce([])
+    .mockReturnValueOnce(new Promise((resolve) => { release = resolve; }))
+    .mockResolvedValue([schedule()]);
+  setScanSchedule.mockResolvedValue({});
+  render(<PortfolioPage />);
+  await screen.findByText("service-a");
+  await act(async () => receive({ payload: { projectId: "p1", ok: true, findings: 0, error: null } }));
+  await userEvent.click(screen.getByRole("button", { name: /schedule daily/i }));
+  await screen.findByText(/next rescan/i);
+  await act(async () => release([]));
+  expect(screen.getByText(/next rescan/i)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /schedule daily/i })).not.toBeInTheDocument();
+});
+
+test("a late schedule subscription is released after the portfolio unmounts", async () => {
+  listSourceProjects.mockResolvedValue([]);
+  listScanSchedules.mockResolvedValue([]);
+  let resolve!: (stop: () => void) => void;
+  listen.mockReturnValue(new Promise((done) => { resolve = done; }));
+  const stop = vi.fn();
+  const view = render(<PortfolioPage />);
+  view.unmount();
+  await act(async () => resolve(stop));
+  expect(stop).toHaveBeenCalledOnce();
 });

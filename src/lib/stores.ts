@@ -54,7 +54,17 @@ const RECENT_KEY = "vc.recentScans";
 
 function loadRecent(): RecentScan[] {
   try {
-    return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    const value: unknown = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    if (!Array.isArray(value)) return [];
+    return value.filter((entry): entry is RecentScan => {
+      if (!entry || typeof entry !== "object") return false;
+      return typeof entry.id === "string" &&
+        (entry.kind === "source" || entry.kind === "deps") &&
+        typeof entry.path === "string" && typeof entry.at === "string" &&
+        [entry.findings, entry.critical, entry.high].every((count) =>
+          Number.isSafeInteger(count) && count >= 0,
+        );
+    }).slice(0, 12);
   } catch {
     return [];
   }

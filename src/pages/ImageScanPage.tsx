@@ -17,6 +17,7 @@ export function ImageScanPage() {
   const [outcome, setOutcome] = useState<ImageScanOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
+  const scanInFlight = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -25,17 +26,22 @@ export function ImageScanPage() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
     let stop: (() => void) | undefined;
     void listen<string>("image://progress", (event) => {
-      if (mounted.current) setProgress((lines) => [...lines.slice(-200), event.payload]);
+      if (!disposed) setProgress((lines) => [...lines.slice(-199), event.payload]);
     }).then((unlisten) => {
-      stop = unlisten;
+      if (disposed) unlisten();
+      else stop = unlisten;
+    }).catch((cause) => {
+      if (!disposed) setError(String(cause));
     });
-    return () => stop?.();
+    return () => { disposed = true; stop?.(); };
   }, []);
 
   const scan = async () => {
-    if (!target.trim()) return;
+    if (!target.trim() || scanInFlight.current) return;
+    scanInFlight.current = true;
     setBusy(true);
     setProgress([]);
     setOutcome(null);
@@ -52,6 +58,7 @@ export function ImageScanPage() {
     } catch (cause) {
       if (mounted.current) setError(String(cause));
     } finally {
+      scanInFlight.current = false;
       if (mounted.current) setBusy(false);
     }
   };

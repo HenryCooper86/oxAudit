@@ -719,14 +719,7 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
             let publish = move |result: &Result<crate::findings::domain::ScanRunDetail, crate::findings::error::CommandError>| {
                 hub.publish(
                     "schedule://completed",
-                    serde_json::json!({
-                        "projectId": completed_project_id,
-                        "canonicalPath": completed_path,
-                        "ok": result.is_ok(),
-                        "runId": result.as_ref().ok().map(|detail| detail.run_id.clone()),
-                        "findings": result.as_ref().ok().map(|detail| detail.summary.total_findings),
-                        "error": result.as_ref().err().map(|error| error.to_string()),
-                    }),
+                    crate::commands::schedule::completion_payload(&completed_project_id, &completed_path, result),
                 );
             };
             ok_ce(
@@ -737,7 +730,11 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                     Some(&ctx.rule_packs),
                     &hub_events,
                     &publish,
-                    &a.canonical_path,
+                    crate::commands::schedule::ScheduledScanTarget {
+                        canonical_path: &a.canonical_path,
+                        project_id: &a.project_id,
+                        schedules: ctx.schedules.store().ok(),
+                    },
                 )
                 .await,
             )

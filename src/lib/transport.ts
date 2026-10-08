@@ -30,8 +30,12 @@ export const serverMode: boolean =
 const TOKEN_KEY = "oxaudit-server-token";
 
 let storedToken = "";
-if (serverMode && typeof localStorage !== "undefined") {
-  storedToken = localStorage.getItem(TOKEN_KEY) ?? "";
+if (serverMode) {
+  try {
+    storedToken = localStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    // Storage restrictions must not prevent connecting for this session.
+  }
 }
 
 type UnauthorizedListener = () => void;
@@ -50,9 +54,11 @@ export function serverToken(): string {
 export function setServerToken(token: string): void {
   const previousToken = storedToken;
   storedToken = token.trim();
-  if (typeof localStorage !== "undefined") {
+  try {
     if (storedToken) localStorage.setItem(TOKEN_KEY, storedToken);
     else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Keep the in-memory token when persistence is unavailable.
   }
   if (source && previousToken !== storedToken) {
     source.close();
@@ -68,16 +74,19 @@ export function setServerToken(token: string): void {
  * needs no changes.
  */
 export async function httpInvoke<T>(cmd: string, args?: unknown): Promise<T> {
+  const requestedToken = storedToken;
   const response = await fetch(`/api/invoke/${encodeURIComponent(cmd)}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(storedToken ? { authorization: `Bearer ${storedToken}` } : {}),
+      ...(requestedToken ? { authorization: `Bearer ${requestedToken}` } : {}),
     },
     body: JSON.stringify(args ?? {}),
   });
   if (response.status === 401) {
-    unauthorizedListeners.forEach((listener) => listener());
+    if (requestedToken === storedToken) {
+      unauthorizedListeners.forEach((listener) => listener());
+    }
     throw {
       code: "credentialUnavailable",
       message: "This server requires an access token.",

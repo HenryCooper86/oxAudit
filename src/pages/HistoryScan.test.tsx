@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { HistoryScanPage } from "./HistoryScan";
 import type { Finding, HistoryScanResult } from "../lib/types";
+import { useAppStore } from "../lib/stores";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
@@ -91,6 +92,44 @@ test("a clean history reports the blob count, not safety", async () => {
   await runScan(result({ findings: [], blobsScanned: 88 }));
   expect(screen.getByText(/no secrets in history — 88 blobs scanned/i)).toBeInTheDocument();
   expect(screen.getByText(/not proof no credential was ever typed/i)).toBeInTheDocument();
+});
+
+test("partial empty history scans never report a clean history", async () => {
+  await runScan(result({ findings: [], truncated: true, limitNote: "time budget reached" }));
+  expect(screen.getByText("History scan stopped early")).toBeInTheDocument();
+  expect(screen.queryByText(/no secrets in history/i)).not.toBeInTheDocument();
+  expect(useAppStore.getState().pageStatus["history-scan"]?.label).toMatch(/partial/i);
+  expect(useAppStore.getState().pageStatus["history-scan"]?.label).not.toMatch(/clean/i);
+});
+
+test("filtering history findings also updates the displayed detail", async () => {
+  await runScan(result({ findings: [
+    finding({ title: "Hidden AWS credential", severity: "high" }),
+    finding({ id: "finding-2", fingerprint: "def456", severity: "critical", title: "Visible critical credential", filePath: "src/critical.sh" }),
+  ] }));
+  await userEvent.selectOptions(screen.getByRole("combobox", { name: /finding severity/i }), "critical");
+  expect(screen.getByText("Visible critical credential")).toBeInTheDocument();
+  expect(screen.queryByText("Hidden AWS credential")).not.toBeInTheDocument();
+  await userEvent.type(screen.getByRole("textbox", { name: /search history findings/i }), "no-match");
+  expect(screen.queryByText("Visible critical credential")).not.toBeInTheDocument();
+});
+
+test.each(["completed", "failed"])("a %s history scan cannot overwrite status after its page unmounts", async (outcome) => {
+  let complete!: (result: HistoryScanResult) => void;
+  let fail!: (error: Error) => void;
+  scanHistorySecrets.mockReturnValueOnce(new Promise((resolve, reject) => { complete = resolve; fail = reject; }));
+  const previous = render(<HistoryScanPage />);
+  await userEvent.type(screen.getByRole("textbox", { name: /repository folder/i }), "/tmp/repo");
+  await userEvent.click(screen.getByRole("button", { name: /scan history$/i }));
+  previous.unmount();
+  expect(useAppStore.getState().pageStatus["history-scan"]).toBeUndefined();
+  await runScan(result({ findings: [], blobsScanned: 2 }));
+  const current = useAppStore.getState().pageStatus["history-scan"];
+  await act(async () => {
+    if (outcome === "completed") complete(result());
+    else fail(new Error("previous scan failed"));
+  });
+  expect(useAppStore.getState().pageStatus["history-scan"]).toEqual(current);
 });
 
 test("a failed scan surfaces the error with a retry", async () => {

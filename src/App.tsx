@@ -187,7 +187,7 @@ export default function App() {
 
   if (serverAuthRequired) {
     // Nothing behind the gate can load without API access anyway.
-    return <ServerTokenGate />;
+    return <ServerTokenGate onConnected={() => setServerAuthRequired(false)} />;
   }
 
   return (

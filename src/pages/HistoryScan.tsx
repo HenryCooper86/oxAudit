@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { Clipboard, History, Play } from "lucide-react";
 import { FolderPicker } from "../components/FolderPicker";
 import { SeverityBadge } from "../components/SeverityBadge";
@@ -41,8 +41,15 @@ export function HistoryScanPage(): JSX.Element {
   const [search, setSearch] = useState("");
   const [selectedFingerprint, setSelectedFingerprint] = useState<string | null>(null);
   const [validate, setValidate] = useState(false);
+  const mounted = useRef(true);
 
-  useEffect(() => () => clearPageStatus("history-scan"), [clearPageStatus]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearPageStatus("history-scan");
+    };
+  }, [clearPageStatus]);
 
   const run = async () => {
     const target = path.trim();
@@ -54,20 +61,24 @@ export function HistoryScanPage(): JSX.Element {
     setPageStatus("history-scan", { label: "Scanning git history…", detail: target, tone: "running" });
     try {
       const scanned = await api.scanHistorySecrets(target, validate);
+      if (!mounted.current) return;
       setResult(scanned);
       setSelectedFingerprint(scanned.findings[0]?.fingerprint ?? null);
       setPageStatus("history-scan", {
-        label: scanned.findings.length
+        label: scanned.truncated
+          ? `History scan · partial (${scanned.blobsScanned} blobs, ${scanned.findings.length} findings)`
+          : scanned.findings.length
           ? `History scan · ${scanned.findings.length} historical secret${scanned.findings.length === 1 ? "" : "s"}`
           : `History scan · clean (${scanned.blobsScanned} blobs)`,
-        tone: scanned.findings.length ? "success" : "neutral",
+        tone: scanned.truncated ? "neutral" : scanned.findings.length ? "success" : "neutral",
       });
     } catch (failure) {
+      if (!mounted.current) return;
       const message = failure instanceof Error ? failure.message : String(failure);
       setError(message);
       setPageStatus("history-scan", { label: "History scan failed", tone: "error" });
     } finally {
-      setRunning(false);
+      if (mounted.current) setRunning(false);
     }
   };
 
@@ -85,7 +96,7 @@ export function HistoryScanPage(): JSX.Element {
       })
       .sort((a, b) => severityOrder(a) - severityOrder(b) || a.filePath.localeCompare(b.filePath) || a.line - b.line);
   }, [findings, severity, search]);
-  const selected = findings.find((finding) => finding.fingerprint === selectedFingerprint) ?? filtered[0] ?? null;
+  const selected = filtered.find((finding) => finding.fingerprint === selectedFingerprint) ?? filtered[0] ?? null;
 
   const copyFinding = async (finding: Finding) => {
     try {
@@ -166,7 +177,7 @@ export function HistoryScanPage(): JSX.Element {
           />
         )}
 
-        {result && findings.length === 0 && !running && (
+        {result && !result.truncated && findings.length === 0 && !running && (
           <InlineState
             tone="empty"
             title={`No secrets in history — ${result.blobsScanned} blob${result.blobsScanned === 1 ? "" : "s"} scanned`}

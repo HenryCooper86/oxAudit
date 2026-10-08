@@ -1,6 +1,6 @@
 import { CalendarClock, Play, RefreshCw } from "lucide-react";
 import { listen, type UnlistenFn } from "../lib/events";
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { Button, Select, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
@@ -22,7 +22,7 @@ const INTERVALS: Array<{ hours: number; label: string }> = [
  * cadence keeping that evidence fresh. The stated limits are on the page,
  * not in a manual: scheduled scans run only while the app is open, one at
  * a time, and a scan that collides with one you started waits out the
- * interval rather than fighting it.
+ * next scheduler tick rather than fighting it.
  */
 export function PortfolioPage(): JSX.Element {
   const push = useToastStore((state) => state.push);
@@ -30,27 +30,34 @@ export function PortfolioPage(): JSX.Element {
   const [schedules, setSchedules] = useState<ScanScheduleStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyProject, setBusyProject] = useState<string | null>(null);
+  const mounted = useRef(true);
+  const refreshGeneration = useRef(0);
 
   const refresh = async () => {
+    const generation = ++refreshGeneration.current;
     try {
       const [nextProjects, nextSchedules] = await Promise.all([
         api.listSourceProjects(50),
         api.listScanSchedules(),
       ]);
+      if (!mounted.current || generation !== refreshGeneration.current) return;
       setProjects(nextProjects);
       setSchedules(nextSchedules);
       setError(null);
     } catch (cause) {
-      setError(String(cause));
+      if (mounted.current && generation === refreshGeneration.current) setError(String(cause));
     }
   };
 
   useEffect(() => {
+    mounted.current = true;
     void refresh();
+    let disposed = false;
     let unlisten: UnlistenFn | undefined;
     void listen<{ projectId: string; ok: boolean; findings: number | null; error: string | null }>(
       "schedule://completed",
       (event) => {
+        if (disposed) return;
         const { projectId, ok, findings, error: failure } = event.payload;
         if (ok) {
           push("success", `Scheduled scan finished — ${findings ?? 0} finding(s).`);
@@ -61,9 +68,17 @@ export function PortfolioPage(): JSX.Element {
         void refresh();
       },
     ).then((stop) => {
-      unlisten = stop;
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch((cause) => {
+      if (!disposed) setError(String(cause));
     });
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      mounted.current = false;
+      refreshGeneration.current += 1;
+      unlisten?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -114,10 +129,13 @@ export function PortfolioPage(): JSX.Element {
     push("info", `Scanning ${project.displayName}…`);
     try {
       const detail = await api.runScanNow(project.projectId, project.canonicalPath);
-      push(
-        "success",
-        `${project.displayName}: ${detail.summary.totalFindings} finding(s) in run ${detail.runId.slice(0, 8)}.`,
-      );
+      if (detail.status !== "completed") {
+        push("error", `${project.displayName}: scan did not complete.`);
+      } else if (detail.persistence.status !== "saved") {
+        push("error", `${project.displayName}: scan completed, but results were not saved.`);
+      } else {
+        push("success", `${project.displayName}: ${detail.summary.totalFindings} finding(s) in run ${detail.runId.slice(0, 8)}.`);
+      }
       await refresh();
     } catch (cause) {
       push("error", `${project.displayName}: scan failed — ${String(cause)}`);
@@ -159,9 +177,11 @@ export function PortfolioPage(): JSX.Element {
                       {project.lastCompletedAt ? (
                         <>
                           Last scan {fmtDateTime(project.lastCompletedAt)} ·{" "}
-                          <span className="font-medium">{project.openFindings} open</span>
-                          {project.critical + project.high > 0 &&
-                            ` (${project.critical} critical / ${project.high} high)`}
+                          {project.countsAvailable ? <>
+                            <span className="font-medium">{project.openFindings} open</span>
+                            {project.critical + project.high > 0 &&
+                              ` (${project.critical} critical / ${project.high} high)`}
+                          </> : "Finding counts unavailable"}
                         </>
                       ) : (
                         "Never scanned"
@@ -234,7 +254,7 @@ export function PortfolioPage(): JSX.Element {
           <p className="border-t border-border px-4 py-3 text-[11px] text-text-muted">
             Scheduled scans run only while oxAudit is open, one at a time, through the same engine
             and enabled rule packs as a manual scan. A scheduled scan that collides with one you
-            started waits for the next interval. Scheduled scans do not bypass an invalid project
+            started retries on a later scheduler tick. Scheduled scans do not bypass an invalid project
             policy — the failure surfaces here and in the completion toast.
           </p>
         </section>

@@ -54,6 +54,22 @@ describe("the server transport", () => {
     expect(transport.serverMode).toBe(true);
   });
 
+  it("can start and authenticate when browser storage is unavailable", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("Blocked", "SecurityError"); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("Full", "QuotaExceededError"); });
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => { throw new DOMException("Blocked", "SecurityError"); });
+    const transport = await loadTransport(true);
+    expect(transport.serverToken()).toBe("");
+    transport.setServerToken("session-token");
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, data: 42 })));
+    await expect(transport.httpInvoke("quality_status")).resolves.toBe(42);
+    expect(globalThis.fetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      headers: expect.objectContaining({ authorization: "Bearer session-token" }),
+    }));
+    transport.setServerToken("");
+    expect(transport.serverToken()).toBe("");
+  });
+
   it("unwraps a successful invoke envelope", async () => {
     const transport = await loadTransport(true);
     globalThis.fetch = vi.fn().mockResolvedValue(
@@ -88,6 +104,22 @@ describe("the server transport", () => {
       code: "credentialUnavailable",
     });
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("an old request's 401 cannot reject a newly entered token", async () => {
+    const transport = await loadTransport(true);
+    let respond!: (response: Response) => void;
+    globalThis.fetch = vi.fn().mockReturnValue(new Promise((resolve) => { respond = resolve; }));
+    const rejected = vi.fn();
+    transport.onUnauthorized(rejected);
+    transport.setServerToken("old-token");
+    const request = transport.httpInvoke("quality_status");
+    const failure = expect(request).rejects.toMatchObject({ code: "credentialUnavailable" });
+    transport.setServerToken("new-token");
+    respond(new Response("", { status: 401 }));
+    await failure;
+    expect(rejected).not.toHaveBeenCalled();
+    expect(transport.serverToken()).toBe("new-token");
   });
 
   it("keeps other subscribers connected when an unsubscribe is called twice", async () => {

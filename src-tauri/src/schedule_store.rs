@@ -4,7 +4,7 @@
 //! the scheduler's decisions are testable without a clock. Stated limits
 //! that shape the design: scans run only while the app is open (there is no
 //! background service), one scheduled scan at a time, and a project whose
-//! scan collides with a user scan simply waits for the next interval —
+//! scan collides with a user scan simply waits for the next scheduler tick —
 //! `last_started_at` moves when a scan actually starts, so a skipped tick
 //! does not silently stretch the cadence.
 
@@ -117,8 +117,8 @@ impl ScheduleStore {
             .connection
             .lock()
             .map_err(|_| "the schedule store is locked".to_owned())?;
-        connection
-            .execute(
+        let last_started_at = connection
+            .query_row(
                 "INSERT INTO scan_schedules
                      (project_id, canonical_path, display_name, interval_hours, enabled, last_started_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, NULL)
@@ -126,7 +126,8 @@ impl ScheduleStore {
                      canonical_path = excluded.canonical_path,
                      display_name = excluded.display_name,
                      interval_hours = excluded.interval_hours,
-                     enabled = excluded.enabled",
+                     enabled = excluded.enabled
+                 RETURNING last_started_at",
                 rusqlite::params![
                     project_id,
                     canonical_path,
@@ -134,6 +135,7 @@ impl ScheduleStore {
                     interval_hours as i64,
                     i64::from(enabled),
                 ],
+                |row| row.get(0),
             )
             .map_err(|error| format!("cannot save the schedule: {error}"))?;
         Ok(ScheduleRecord {
@@ -142,7 +144,7 @@ impl ScheduleStore {
             display_name: display_name.to_owned(),
             interval_hours,
             enabled,
-            last_started_at: None,
+            last_started_at,
         })
     }
 
@@ -328,9 +330,17 @@ mod tests {
         );
         // Updating a schedule keeps the recorded start, so re-tuning an
         // interval does not instantly re-fire every project.
-        store
+        let updated = store
             .upsert("p1", "/tmp/project", "Project", 12, true)
             .unwrap();
+        assert_eq!(
+            updated.last_started_at.as_deref(),
+            Some("2026-09-24T00:00:00Z")
+        );
+        assert_eq!(
+            next_due(&updated).unwrap().to_rfc3339(),
+            "2026-09-24T12:00:00+00:00"
+        );
         assert_eq!(
             store.list()[0].last_started_at.as_deref(),
             Some("2026-09-24T00:00:00Z")

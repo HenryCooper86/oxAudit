@@ -2,7 +2,8 @@ import { ShieldCheck } from "lucide-react";
 import type { FormEvent } from "react";
 import { useEffect, useState, type JSX } from "react";
 import { Button, Input } from "./ui";
-import { onUnauthorized, serverToken, setServerToken } from "../lib/transport";
+import { httpInvoke, onUnauthorized, serverToken, setServerToken } from "../lib/transport";
+import { normalizeCommandError } from "../lib/commandError";
 
 /**
  * The headless server refuses every API call without its access token.
@@ -10,9 +11,11 @@ import { onUnauthorized, serverToken, setServerToken } from "../lib/transport";
  * the UI shows until a working token is stored — the app behind it cannot
  * render anything meaningful without API access.
  */
-export function ServerTokenGate(): JSX.Element | null {
+export function ServerTokenGate({ onConnected }: { onConnected: () => void }): JSX.Element | null {
   const [value, setValue] = useState("");
   const [rejected, setRejected] = useState(() => serverToken() !== "");
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const release = onUnauthorized(() => {
@@ -21,14 +24,22 @@ export function ServerTokenGate(): JSX.Element | null {
     return release;
   }, []);
 
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!value.trim()) return;
-    setServerToken(value);
-    // The transport fires unauthorized again if the token is wrong; on
-    // success the next API call simply works. Reload clears stale module
-    // state cheaply and deterministically.
-    window.location.reload();
+    if (!value.trim() || connecting) return;
+    setConnecting(true);
+    setError(null);
+    try {
+      setServerToken(value);
+      // This command needs no persisted state, so settings corruption cannot
+      // trap an authenticated user outside the workbench.
+      await httpInvoke("list_compiled_grammars");
+      onConnected();
+    } catch (cause) {
+      setError(normalizeCommandError(cause).message);
+    } finally {
+      setConnecting(false);
+    }
   };
 
   return (
@@ -53,22 +64,23 @@ export function ServerTokenGate(): JSX.Element | null {
           printed by <code className="font-mono text-[11px]">oxaudit-server</code> on
           startup and stored beside its data directory.
         </p>
-        {rejected && serverToken() !== "" && (
+        {(error || (rejected && serverToken() !== "")) && (
           <p role="alert" className="text-[12px] text-error">
-            That token was rejected. Paste the current one and try again.
+            {error ?? "That token was rejected. Paste the current one and try again."}
           </p>
         )}
         <Input
           aria-label="Access token"
           type="password"
+          disabled={connecting}
           autoFocus
           value={value}
           onChange={(event) => setValue(event.target.value)}
           placeholder="Paste the access token"
         />
         <div className="flex justify-end">
-          <Button type="submit" variant="primary" size="md" disabled={!value.trim()}>
-            Connect
+          <Button type="submit" variant="primary" size="md" disabled={connecting || !value.trim()}>
+            {connecting ? "Connecting…" : "Connect"}
           </Button>
         </div>
       </form>

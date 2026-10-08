@@ -2,6 +2,58 @@
 
 use super::*;
 
+pub(crate) struct ScheduledScanTarget<'a> {
+    pub canonical_path: &'a str,
+    pub project_id: &'a str,
+    pub schedules: Option<&'a crate::schedule_store::ScheduleStore>,
+}
+
+pub(crate) fn completion_payload(
+    project_id: &str,
+    canonical_path: &str,
+    result: &Result<ScanRunDetail, CommandError>,
+) -> Value {
+    let error = match result {
+        Err(error) => Some(error.to_string()),
+        Ok(detail) if detail.status != crate::findings::domain::RunStatus::Completed => {
+            Some("The scan did not complete.".to_owned())
+        }
+        Ok(detail) if detail.persistence != crate::findings::domain::RunPersistence::Saved => {
+            Some("The scan completed, but results were not saved.".to_owned())
+        }
+        _ => None,
+    };
+    serde_json::json!({
+        "projectId": project_id,
+        "canonicalPath": canonical_path,
+        "ok": error.is_none(),
+        "runId": result.as_ref().ok().map(|detail| detail.run_id.clone()),
+        "findings": result.as_ref().ok().map(|detail| detail.summary.total_findings),
+        "error": error,
+    })
+}
+
+/// Record a launch only after the scan acquired its project and started a run.
+/// A rejected target, policy, or colliding scan cannot advance the cadence.
+struct ScheduledEvents<'a> {
+    events: &'a dyn ScanEventSink,
+    target: ScheduledScanTarget<'a>,
+    started: AtomicBool,
+}
+
+impl ScanEventSink for ScheduledEvents<'_> {
+    fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+        if event == "scan://progress" && !self.started.swap(true, Ordering::SeqCst) {
+            if let Some(store) = self.target.schedules {
+                // Scan now is also available to projects without a schedule.
+                let _ =
+                    store.mark_started(self.target.project_id, &chrono::Utc::now().to_rfc3339());
+            }
+        }
+        self.events.emit(event, payload)
+    }
+}
+
 /// One project's schedule with its next fire time, as the Portfolio shows it.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,16 +146,10 @@ pub async fn run_scheduled_scan(
     let emit_schedule_completed = |result: &Result<ScanRunDetail, CommandError>| {
         let _ = app.emit(
             "schedule://completed",
-            serde_json::json!({
-                "projectId": project_id,
-                "canonicalPath": canonical_path,
-                "ok": result.is_ok(),
-                "runId": result.as_ref().map(|detail| detail.run_id.clone()),
-                "findings": result.as_ref().map(|detail| detail.summary.total_findings),
-                "error": result.as_ref().err().map(|error| error.to_string()),
-            }),
+            completion_payload(project_id, canonical_path, result),
         );
     };
+    let schedules = app.try_state::<crate::schedule_store::ScheduleState>();
     run_scheduled_scan_engine(
         &state,
         &findings,
@@ -111,7 +157,11 @@ pub async fn run_scheduled_scan(
         rule_packs.as_deref(),
         &events,
         &emit_schedule_completed,
-        canonical_path,
+        ScheduledScanTarget {
+            canonical_path,
+            project_id,
+            schedules: schedules.as_ref().and_then(|state| state.store().ok()),
+        },
     )
     .await
 }
@@ -126,17 +176,17 @@ pub(crate) async fn run_scheduled_scan_engine(
     rule_packs: Option<&crate::rulepack_store::RulePacksState>,
     events: &dyn ScanEventSink,
     publish_completed: &(dyn Fn(&Result<ScanRunDetail, CommandError>) + Send + Sync),
-    canonical_path: &str,
+    target: ScheduledScanTarget<'_>,
 ) -> Result<ScanRunDetail, CommandError> {
     let saved = state.settings.lock().unwrap().scan.clone();
     let options = ScanOptions {
-        path: canonical_path.to_owned(),
+        path: target.canonical_path.to_owned(),
         include_git: saved.include_git,
         follow_symlinks: saved.follow_symlinks,
         max_file_size_kb: saved.max_file_size_kb.max(1),
         scan_secrets: saved.scan_secrets,
         scan_vulnerabilities: saved.scan_vulnerabilities,
-        extra_ignored_dirs: Vec::new(),
+        extra_ignored_dirs: saved.ignored_dirs,
         // A broken policy must surface through the scheduled scan, not be
         // quietly bypassed by an unattended run.
         ignore_invalid_policy: false,
@@ -161,11 +211,198 @@ pub(crate) async fn run_scheduled_scan_engine(
     };
 
     let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let events = ScheduledEvents {
+        events,
+        target,
+        started: AtomicBool::new(false),
+    };
 
-    let result = findings
-        .service()?
-        .scan_with_packs(options, cve, &cancel, events, &packs)
-        .await;
+    let result = if !options.scan_secrets && !options.scan_vulnerabilities {
+        Err(CommandError::data_operation_failed(
+            "Enable a source scan category in Settings before running a scheduled scan.",
+        ))
+    } else {
+        match findings.service() {
+            Ok(service) => {
+                service
+                    .scan_with_packs(options, cve, &cancel, &events, &packs)
+                    .await
+            }
+            Err(error) => Err(error),
+        }
+    };
     publish_completed(&result);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoEvents;
+    impl ScanEventSink for NoEvents {
+        fn emit(&self, _event: &str, _payload: Value) -> Result<(), CommandError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduled_scans_honor_saved_ignored_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir_all(project.join("excluded")).unwrap();
+        std::fs::write(project.join("app.js"), "const safe = 1;\n").unwrap();
+        std::fs::write(project.join("excluded/app.js"), "eval(input);\n").unwrap();
+        let app = AppState::new();
+        {
+            let mut settings = app.settings.lock().unwrap();
+            settings.scan.ignored_dirs = vec!["excluded".into()];
+            settings.scan.scan_secrets = false;
+        }
+        let findings =
+            crate::initialize_findings_state(&directory.path().join("data"), chrono::Utc::now());
+        let cve = CveState::new(app.http.clone());
+        *cve.kev.lock().unwrap() = Some((std::time::Instant::now(), Default::default()));
+        let store =
+            crate::schedule_store::ScheduleStore::open(&directory.path().join("schedules.sqlite3"))
+                .unwrap();
+        store
+            .upsert("p1", project.to_str().unwrap(), "project", 24, true)
+            .unwrap();
+        let completed = Mutex::new(Value::Null);
+        let result = run_scheduled_scan_engine(
+            &app,
+            &findings,
+            &cve,
+            None,
+            &NoEvents,
+            &|result| {
+                *completed.lock().unwrap() =
+                    completion_payload("p1", project.to_str().unwrap(), result)
+            },
+            ScheduledScanTarget {
+                canonical_path: project.to_str().unwrap(),
+                project_id: "p1",
+                schedules: Some(&store),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.summary.files_scanned, 1);
+        assert!(result.findings.is_empty());
+        let payload = completed.lock().unwrap();
+        assert_eq!(payload["findings"], 0);
+        assert_eq!(payload["runId"], result.run_id);
+        assert!(
+            store.list()[0].last_started_at.is_some(),
+            "real launches must advance the schedule, including Scan now"
+        );
+        let mut unsaved = result.clone();
+        unsaved.persistence = crate::findings::domain::RunPersistence::NotSaved {
+            retry_token: "retry".into(),
+        };
+        let payload = completion_payload("p1", project.to_str().unwrap(), &Ok(unsaved));
+        assert_eq!(payload["ok"], false);
+        assert!(payload["error"].as_str().unwrap().contains("not saved"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_findings_storage_still_publishes_schedule_failure() {
+        let app = AppState::new();
+        let findings = FindingsState::unavailable(CommandError::persistence_unavailable());
+        let cve = CveState::new(app.http.clone());
+        let completed = Mutex::new(Vec::new());
+        let result = run_scheduled_scan_engine(
+            &app,
+            &findings,
+            &cve,
+            None,
+            &NoEvents,
+            &|result| completed.lock().unwrap().push(result.is_ok()),
+            ScheduledScanTarget {
+                canonical_path: "/unused",
+                project_id: "p1",
+                schedules: None,
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(*completed.lock().unwrap(), [false]);
+    }
+
+    #[test]
+    fn failed_schedule_events_have_null_run_and_finding_fields() {
+        let payload = completion_payload("p1", "/project", &Err(CommandError::invalid_target()));
+        assert_eq!(payload["ok"], false);
+        assert!(payload["runId"].is_null());
+        assert!(payload["findings"].is_null());
+        assert!(payload["error"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_refused_schedule_launch_keeps_its_previous_start_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            crate::schedule_store::ScheduleStore::open(&directory.path().join("schedules.sqlite3"))
+                .unwrap();
+        store.upsert("p1", "/missing", "project", 24, true).unwrap();
+        store.mark_started("p1", "2026-10-01T00:00:00Z").unwrap();
+        let app = AppState::new();
+        let findings =
+            crate::initialize_findings_state(&directory.path().join("data"), chrono::Utc::now());
+        let cve = CveState::new(app.http.clone());
+        assert!(run_scheduled_scan_engine(
+            &app,
+            &findings,
+            &cve,
+            None,
+            &NoEvents,
+            &|_| {},
+            ScheduledScanTarget {
+                canonical_path: directory.path().join("missing").to_str().unwrap(),
+                project_id: "p1",
+                schedules: Some(&store)
+            }
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            store.list()[0].last_started_at.as_deref(),
+            Some("2026-10-01T00:00:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_scan_categories_cannot_produce_a_clean_scheduled_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let app = AppState::new();
+        {
+            let mut settings = app.settings.lock().unwrap();
+            settings.scan.scan_secrets = false;
+            settings.scan.scan_vulnerabilities = false;
+        }
+        let findings =
+            crate::initialize_findings_state(&directory.path().join("data"), chrono::Utc::now());
+        let cve = CveState::new(app.http.clone());
+        let completed = Mutex::new(Vec::new());
+        let result = run_scheduled_scan_engine(
+            &app,
+            &findings,
+            &cve,
+            None,
+            &NoEvents,
+            &|result| completed.lock().unwrap().push(result.is_ok()),
+            ScheduledScanTarget {
+                canonical_path: project.to_str().unwrap(),
+                project_id: "p1",
+                schedules: None,
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(*completed.lock().unwrap(), [false]);
+    }
 }
