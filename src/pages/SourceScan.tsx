@@ -2,7 +2,7 @@ import { assessRecheck } from "../features/source-scan/recheck";
 import { ReviewChangesPanel } from "../features/source-scan/ReviewChangesPanel";
 import { useReviewChanges } from "../features/source-scan/useReviewChanges";
 import { acquireScan, cancelActiveScan, detachScan, reconcileSourceRunSave, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
-import { CoverageWarnings } from "../features/source-scan/CoverageWarnings";
+import { EvidenceSummary, sourceEvidence } from "../features/runs/EvidenceSummary";
 import { listen, type UnlistenFn } from "../lib/events";
 import { Clipboard, RotateCcw, Search } from "lucide-react";
 import {
@@ -880,9 +880,9 @@ export function SourceScanPage(): JSX.Element {
       />
       {project && <ReviewChangesPanel review={reviewChanges} run={run} runs={runs} newOnly={Boolean(query.newOnly)} onNewOnly={newOnly => setQuery(current => ({ ...current, newOnly }))} />}
       <RunTimeline
-        active={!running && run ? "completed" : !running ? "discovering" : progress?.phase === "walking" ? "discovering" : progress?.phase === "scanning" ? "detecting" : "persisting"}
+        active={!running && run?.status === "completed" ? "completed" : !running && run?.status === "incomplete" ? "incomplete" : !running ? "discovering" : progress?.phase === "walking" ? "discovering" : progress?.phase === "scanning" ? "detecting" : "persisting"}
         running={running}
-        hasCompletedResult={Boolean(run)}
+        hasCompletedResult={run?.status === "completed"}
       />
 
       {!scanOptions.resolved && (
@@ -942,7 +942,12 @@ export function SourceScanPage(): JSX.Element {
         </div>
       )}
 
-      <CoverageWarnings warnings={run?.summary.coverageWarnings} />
+      {run && <EvidenceSummary label="Source" evidence={sourceEvidence(run)} running={running} cancelling={cancelling}
+        operation={cancelled ? "Latest operation cancelled" : operationError && operationRetry?.kind === "scan" ? "Latest operation failed" : null}>
+        <p>Target: <span className="break-all font-mono">{run.summary.path}</span></p>
+        <p>Analysis tiers on recorded findings: {run.findings.filter(finding => finding.analysis === "syntax").length} syntax · {run.findings.filter(finding => finding.analysis === "text").length} text. These counts describe findings, not coverage of every file.</p>
+        {run.baselineRunId && <p>Baseline run: <span className="break-all font-mono">{run.baselineRunId}</span></p>}
+      </EvidenceSummary>}
 
       {run?.persistence.status === "notSaved" && (
         <InlineState
@@ -956,10 +961,6 @@ export function SourceScanPage(): JSX.Element {
             </Button>
           }
         />
-      )}
-
-      {run?.maintenanceWarning && (
-        <InlineState tone="unavailable" compact title="History maintenance needs attention" description={run.maintenanceWarning} />
       )}
 
       {recheck && recheck.originalRunId === run?.runId && (
@@ -1152,7 +1153,7 @@ function ScanCancelled({ hasPreviousResults }: { hasPreviousResults: boolean }):
       tone="idle"
       compact
       title="Scan cancelled"
-      description={hasPreviousResults ? "The previous completed results are still available." : "No results were changed. You can run the scan again when ready."}
+      description={hasPreviousResults ? "The previous results are still available." : "No results were changed. You can run the scan again when ready."}
     />
   );
 }

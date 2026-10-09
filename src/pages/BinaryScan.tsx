@@ -11,7 +11,7 @@ import { usePagination } from "../lib/pagination";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
-import { latestCompletedRun } from "../lib/durableRuns";
+import { latestCompletedRun, normalizedTarget } from "../lib/durableRuns";
 import { useAppStore, useToastStore } from "../lib/stores";
 import {
   filterComponents,
@@ -19,8 +19,9 @@ import {
   SEVERITY_FILTERS,
   type SeverityFilter,
 } from "../lib/binaryScan";
-import type { BinaryComponent, BinaryScannersStatus, BinaryScanResult } from "../lib/types";
+import type { BinaryComponent, BinaryScannersStatus, BinaryScanResult, CanonicalRun } from "../lib/types";
 import { RunTimeline } from "../features/runs/RunTimeline";
+import { binaryEvidence, EvidenceSummary } from "../features/runs/EvidenceSummary";
 import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
 import { normalizeCommandError } from "../lib/commandError";
 
@@ -46,7 +47,13 @@ export function BinaryScanPage(): JSX.Element {
   // Caveats that are not failures — a rate-limited or capped CVE lookup means
   // "fewer findings than exist", which looks exactly like "clean" unless said.
   const [notes, setNotes] = useState<string[]>([]);
+  const notesRef = useRef<string[]>([]);
+  const [resultNotes, setResultNotes] = useState<string[]>([]);
   const [result, setResult] = useState<BinaryScanResult | null>(null);
+  const [receipt, setReceipt] = useState<CanonicalRun | null>(null);
+  const [attempt, setAttempt] = useState<CanonicalRun | null>(null);
+  const [resultOffline, setResultOffline] = useState<boolean | undefined>();
+  const [operationState, setOperationState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<SeverityFilter>("all");
   const mountedRef = useRef(true);
@@ -119,6 +126,10 @@ export function BinaryScanPage(): JSX.Element {
         const restored = await api.loadCanonicalProjection<BinaryScanResult>(saved.id);
         if (requestId !== historyRequestRef.current || !mountedRef.current) return;
         setResult(restored);
+        setReceipt(saved);
+        setAttempt(runs.filter(run => run.kind === "binary" && normalizedTarget(run.targetLabel) === normalizedTarget(requestedPath)).sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id))[0] ?? null);
+        setResultOffline(undefined);
+        setResultNotes([]);
         setPageStatus("binary-scan", {
           label: `Saved binary results · ${restored.summary.vulnerabilities} CVEs`,
           tone: restored.summary.vulnerabilities > 0 ? "error" : "success",
@@ -157,7 +168,10 @@ export function BinaryScanPage(): JSX.Element {
       const note = typeof payload === "string" ? payload : payload.message;
       // De-duplicated: one note per distinct message, however many sources
       // raised it.
-      if (!disposed) setNotes((current) => (current.includes(note) ? current : [...current, note]));
+      if (!disposed && !notesRef.current.includes(note)) {
+        notesRef.current = [...notesRef.current, note];
+        setNotes(notesRef.current);
+      }
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -185,8 +199,10 @@ export function BinaryScanPage(): JSX.Element {
     historyRequestRef.current += 1;
     setRunning(true);
     setError(null);
+    setOperationState(null);
     setProgress("");
     setNotes([]);
+    notesRef.current = [];
     setPageStatus("binary-scan", { label: "Scanning binaries", tone: "running" });
 
     try {
@@ -203,12 +219,17 @@ export function BinaryScanPage(): JSX.Element {
       const active = useScanWorkStore.getState().active;
       if (!mountedRef.current || active?.id !== ownership) return;
       if (active.cancelling || active.terminalStatus === "cancelled") {
+        setOperationState("Latest operation cancelled");
         setPageStatus("binary-scan", { label: "Binary scan cancelled", tone: "neutral" });
         return;
       }
       invocationRef.current = null;
       settledRevisionRef.current = { path: path.trim(), revision: useScanWorkStore.getState().recoveryRevision };
       setResult(scan);
+      setReceipt(null);
+      setAttempt(null);
+      setResultOffline(offline);
+      setResultNotes(notesRef.current);
       setPageStatus("binary-scan", {
         label: `${scan.summary.vulnerabilities} CVEs in ${scan.summary.components} components`,
         tone: scan.summary.vulnerabilities > 0 ? "error" : "success",
@@ -217,6 +238,7 @@ export function BinaryScanPage(): JSX.Element {
       if (!mountedRef.current || useScanWorkStore.getState().active?.id !== ownership) return;
       const message = normalizeCommandError(cause).message;
       setError(message);
+      setOperationState(message.includes("cancelled") ? "Latest operation cancelled" : "Latest operation failed");
       if (message.includes("cancelled")) {
         setPageStatus("binary-scan", { label: "Binary scan cancelled", tone: "neutral" });
       } else {
@@ -240,8 +262,14 @@ export function BinaryScanPage(): JSX.Element {
     historyRequestRef.current += 1;
     setPath(nextPath);
     setResult(null);
+    setReceipt(null);
+    setAttempt(null);
+    setResultOffline(undefined);
+    setResultNotes([]);
+    setOperationState(null);
     setError(null);
     setNotes([]);
+    notesRef.current = [];
     clearPageStatus("binary-scan");
   };
 
@@ -472,6 +500,13 @@ export function BinaryScanPage(): JSX.Element {
         hasCompletedResult={Boolean(result)}
       />
 
+      {result && <EvidenceSummary label="Binary" evidence={binaryEvidence(result, receipt, resultNotes, resultOffline)} running={running} cancelling={activeWork?.cancelling} attempt={attempt} operation={operationState} operationWarnings={running || operationState ? notes : undefined}>
+        <p>Target: <span className="break-all font-mono">{result.target}</span></p>
+        <p>Database updated: {result.databaseLastUpdated ?? "Unknown"}. Advisory mode: {resultOffline == null ? "Not recorded for this saved result" : resultOffline ? "Offline" : "Online permitted"}.</p>
+        {result.semanticAnalysis && <p>Deep analysis: {result.semanticAnalysis.functionsAnalyzed.toLocaleString()} functions analyzed · {result.semanticAnalysis.callEdges.toLocaleString()} call edges · {result.semanticAnalysis.architecture}</p>}
+        {progress && <pre className="max-h-32 overflow-auto whitespace-pre-wrap font-mono">{progress}</pre>}
+      </EvidenceSummary>}
+
       {running && (
         <InlineState
           tone="running"
@@ -483,7 +518,7 @@ export function BinaryScanPage(): JSX.Element {
         />
       )}
 
-      {notes.length > 0 && !running && (
+      {notes.length > 0 && !running && !result && (
         <div className="rounded-sm border border-warning-subtle bg-warning-subtle px-4 py-3">
           <SectionLabel>Caveats</SectionLabel>
           <ul className="mt-2 space-y-1">

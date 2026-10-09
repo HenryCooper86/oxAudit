@@ -1,0 +1,300 @@
+{
+  "schemaVersion": 1,
+  "before": {
+    "schemaVersion": 1,
+    "provenance": {
+      "benchmarkCommit": "550021e915c06cbcf994d97bc258128b78d890db",
+      "evaluator": "owasp-java-cwe-v1",
+      "expectationsSha256": "1809f6a690c6cf7dd6685df6ebe2eef8fe3ca93d19a7ca0ce45987ca4f5d78e1",
+      "toolCommit": "b0146a99c0b379a93765e55077567354f5393e8e",
+      "toolWorkingTreeDirty": true,
+      "cliSha256": "f569225bbf108793962dd3406fd03b5e1d651f7eedf57343507551746226ba9d",
+      "measuredAt": "2026-10-09T14:46:34.339Z"
+    },
+    "report": {
+      "suite": "OWASP Benchmark 1.2",
+      "cases": 2740,
+      "coveredTotals": {
+        "truePositives": 1346,
+        "falsePositives": 724,
+        "trueNegatives": 601,
+        "falseNegatives": 69
+      },
+      "uncoveredTotals": {
+        "truePositives": 0,
+        "falsePositives": 0,
+        "trueNegatives": 0,
+        "falseNegatives": 0
+      },
+      "categories": [
+        {
+          "category": "cmdi",
+          "cwe": 78,
+          "covered": true,
+          "truePositives": 126,
+          "falsePositives": 125,
+          "trueNegatives": 0,
+          "falseNegatives": 0
+        },
+        {
+          "category": "crypto",
+          "cwe": 327,
+          "covered": true,
+          "truePositives": 130,
+          "falsePositives": 0,
+          "trueNegatives": 116,
+          "falseNegatives": 0
+        },
+        {
+          "category": "hash",
+          "cwe": 328,
+          "covered": true,
+          "truePositives": 129,
+          "falsePositives": 0,
+          "trueNegatives": 107,
+          "falseNegatives": 0
+        },
+        {
+          "category": "ldapi",
+          "cwe": 90,
+          "covered": true,
+          "truePositives": 27,
+          "falsePositives": 32,
+          "trueNegatives": 0,
+          "falseNegatives": 0
+        },
+        {
+          "category": "pathtraver",
+          "cwe": 22,
+          "covered": true,
+          "truePositives": 123,
+          "falsePositives": 114,
+          "trueNegatives": 21,
+          "falseNegatives": 10
+        },
+        {
+          "category": "securecookie",
+          "cwe": 614,
+          "covered": true,
+          "truePositives": 36,
+          "falsePositives": 0,
+          "trueNegatives": 31,
+          "falseNegatives": 0
+        },
+        {
+          "category": "sqli",
+          "cwe": 89,
+          "covered": true,
+          "truePositives": 272,
+          "falsePositives": 232,
+          "trueNegatives": 0,
+          "falseNegatives": 0
+        },
+        {
+          "category": "trustbound",
+          "cwe": 501,
+          "covered": true,
+          "truePositives": 33,
+          "falsePositives": 16,
+          "trueNegatives": 27,
+          "falseNegatives": 50
+        },
+        {
+          "category": "weakrand",
+          "cwe": 330,
+          "covered": true,
+          "truePositives": 218,
+          "falsePositives": 0,
+          "trueNegatives": 275,
+          "falseNegatives": 0
+        },
+        {
+          "category": "xpathi",
+          "cwe": 643,
+          "covered": true,
+          "truePositives": 15,
+          "falsePositives": 20,
+          "trueNegatives": 0,
+          "falseNegatives": 0
+        },
+        {
+          "category": "xss",
+          "cwe": 79,
+          "covered": true,
+          "truePositives": 237,
+          "falsePositives": 185,
+          "trueNegatives": 24,
+          "falseNegatives": 9
+        }
+      ],
+      "runtimeMs": 12874
+    }
+  },
+  "after": {
+    "schemaVersion": 1,
+    "provenance": {
+      "benchmarkCommit": "550021e915c06cbcf994d97bc258128b78d890db",
+      "evaluator": "owasp-java-cwe-v1",
+      "expectationsSha256": "1809f6a690c6cf7dd6685df6ebe2eef8fe3ca93d19a7ca0ce45987ca4f5d78e1",
+      "toolCommit": "b0146a99c0b379a93765e55077567354f5393e8e",
+      "toolWorkingTreeDirty": true,
+      "cliSha256": "f88b646f12a69a38957259cd8ba15ed853f5206e2d36794486dc96df0acd7ab0",
+      "measuredAt": "2026-10-09T15:01:46.659Z"
+    },
+    "report": {
+      "suite": "OWASP Benchmark 1.2",
+      "cases": 2740,
+      "coveredTotals": {
+        "truePositives": 1346,
+        "falsePositives": 689,
+        "trueNegatives": 636,
+        "falseNegatives": 69
+      },
+      "uncoveredTotals": {
+        "truePositives": 0,
+        "falsePositives": 0,
+        "trueNegatives": 0,
+        "falseNegatives": 0
+      },
+      "categories": [
+        {
+          "category": "cmdi",
+          "cwe": 78,
+          "covered": true,
+          "truePositives": 126,
+          "falsePositives": 125,
+          "trueNegatives": 0,
+          "falseNegatives": 0
+        },
+        {
+          "category": "crypto",
+          "cwe": 327,
+          "covered": true,
+          "truePositives": 130,
+          "falsePositives": 0,
+          "trueNegatives": 116,
+          "falseNegatives": 0
+        },
+        {
+          "category": "hash",
+          "cwe": 328,
+          "covered": true,
+          "truePositives": 129,
+          "falsePositives": 0,
+          "trueNegatives": 107,
+          "falseNegatives": 0
+        },
+        {
+          "category": "ldapi",
+          "cwe": 90,
+          "covered": true,
+          "truePositives": 27,
+          "falsePositives": 31,
+          "trueNegatives": 1,
+          "falseNegatives": 0
+        },
+        {
+          "category": "pathtraver",
+          "cwe": 22,
+          "covered": true,
+          "truePositives": 123,
+          "falsePositives": 112,
+          "trueNegatives": 23,
+          "falseNegatives": 10
+        },
+        {
+          "category": "securecookie",
+          "cwe": 614,
+          "covered": true,
+          "truePositives": 36,
+          "falsePositives": 0,
+          "trueNegatives": 31,
+          "falseNegatives": 0
+        },
+        {
+          "category": "sqli",
+          "cwe": 89,
+          "covered": true,
+          "truePositives": 272,
+          "falsePositives": 212,
+          "trueNegatives": 20,
+          "falseNegatives": 0
+        },
+        {
+          "category": "trustbound",
+          "cwe": 501,
+          "covered": true,
+          "truePositives": 33,
+          "falsePositives": 14,
+          "trueNegatives": 29,
+          "falseNegatives": 50
+        },
+        {
+          "category": "weakrand",
+          "cwe": 330,
+          "covered": true,
+          "truePositives": 218,
+          "falsePositives": 0,
+          "trueNegatives": 275,
+          "falseNegatives": 0
+        },
+        {
+          "category": "xpathi",
+          "cwe": 643,
+          "covered": true,
+          "truePositives": 15,
+          "falsePositives": 16,
+          "trueNegatives": 4,
+          "falseNegatives": 0
+        },
+        {
+          "category": "xss",
+          "cwe": 79,
+          "covered": true,
+          "truePositives": 237,
+          "falsePositives": 179,
+          "trueNegatives": 30,
+          "falseNegatives": 9
+        }
+      ],
+      "runtimeMs": 14174
+    }
+  },
+  "beforeCommand": {
+    "exit": 0,
+    "elapsedMs": 12932.756584,
+    "memory": {
+      "peakRssBytes": 47349760,
+      "method": "/usr/bin/time",
+      "scope": "command resource usage; not an aggregate of simultaneously resident descendant processes",
+      "reason": null
+    },
+    "stderr": "       12.93 real        12.32 user         0.19 sys\n            47349760  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2527  page reclaims\n                 658  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                2747  voluntary context switches\n                1646  involuntary context switches\n        196905899140  instructions retired\n         56983700452  cycles elapsed\n            31294088  peak memory footprint\n",
+    "refusedRequests": []
+  },
+  "afterCommand": {
+    "exit": 0,
+    "elapsedMs": 15660.935042000001,
+    "memory": {
+      "peakRssBytes": 47677440,
+      "method": "/usr/bin/time",
+      "scope": "command resource usage; not an aggregate of simultaneously resident descendant processes",
+      "reason": null
+    },
+    "stderr": "       15.65 real        14.02 user         0.16 sys\n            47677440  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                3204  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                1489  involuntary context switches\n        222344023294  instructions retired\n         64215378035  cycles elapsed\n            31359624  peak memory footprint\n",
+    "refusedRequests": []
+  },
+  "validation": {
+    "samePinnedPopulation": true,
+    "unchangedTruePositivesAndFalseNegativesInEveryCategory": true,
+    "noFalsePositiveIncreaseInAnyCategory": true,
+    "existingCategoryGatesPassedBeforeBaselineRefresh": true
+  },
+  "notes": [
+    "Both CLIs are macOS arm64 debug builds with default grammars and server feature; checksums identify the exact binaries.",
+    "The before binary was copied before scanner implementation; the tool checkout was dirty when measurements ran.",
+    "Single sequential observations without concurrent project validation; timing is not a stable or cross-host budget.",
+    "OWASP source/expected labels were not changed or executed; the internal corpus is contributor authored.",
+    "Final after measurements use one preserved CLI copy, avoiding replacement of the Cargo build path during validation."
+  ]
+}

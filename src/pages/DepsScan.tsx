@@ -15,12 +15,13 @@ import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import { resolveRuntimeProject } from "../lib/assistantSessions";
-import { latestCompletedRun } from "../lib/durableRuns";
+import { latestCompletedRun, normalizedTarget } from "../lib/durableRuns";
 import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
-import type { DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
+import type { CanonicalRun, DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
 import { Button, Switch } from "../components/ui";
 import { RunTimeline } from "../features/runs/RunTimeline";
+import { dependencyEvidence, EvidenceSummary } from "../features/runs/EvidenceSummary";
 
 import { vulnerabilityKey } from "../features/dependencies/decisions";
 import { UpgradeDecisions } from "../features/dependencies/UpgradeDecisions";
@@ -67,6 +68,9 @@ export function DepsScanPage() {
   const [handoffResult, setHandoffResult] = useState<DependencyScanResult | null>(null);
   const handoffRevisionRef = useRef(recoveryRevision);
   const [result, setResult] = useState<DependencyScanResult | null>(null);
+  const [receipt, setReceipt] = useState<CanonicalRun | null>(null);
+  const [attempt, setAttempt] = useState<CanonicalRun | null>(null);
+  const [operationState, setOperationState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failedOperation, setFailedOperation] = useState<FailedOperation | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
@@ -96,6 +100,8 @@ export function DepsScanPage() {
     if (!requestedPath || running) return;
     if (handoffResult && handoffResult.summary.path === requestedPath && handoffRevisionRef.current === recoveryRevision) {
       setResult(handoffResult);
+      setReceipt(null);
+      setAttempt(null);
       setPreview(previewFromResult(handoffResult));
       return;
     }
@@ -108,6 +114,8 @@ export function DepsScanPage() {
         const restored = await api.loadCanonicalProjection<DependencyScanResult>(saved.id);
         if (requestId !== historyRequestRef.current) return;
         setResult(restored);
+        setReceipt(saved);
+        setAttempt(runs.filter(run => run.kind === "dependencies" && normalizedTarget(run.targetLabel) === normalizedTarget(requestedPath)).sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id))[0] ?? null);
         setPreview(previewFromResult(restored));
         setPageStatus("deps-scan", {
           label: `Saved dependency results · ${restored.summary.vulnerabilitiesFound} vulnerabilities`,
@@ -183,6 +191,9 @@ export function DepsScanPage() {
     setDiscovering(false);
     setPreview(null);
     setResult(null);
+    setReceipt(null);
+    setAttempt(null);
+    setOperationState(null);
     setError(null);
     setFailedOperation(null);
     setProgress(null);
@@ -277,6 +288,7 @@ export function DepsScanPage() {
     setPhase(null);
     setError(null);
     setFailedOperation(null);
+    setOperationState(null);
     setProgress({ done: 0, total: 0 });
     const requestedPath = path;
     try {
@@ -296,6 +308,7 @@ export function DepsScanPage() {
       const scanResult = await api.scanDependencies(requestedPath, offline, advisoryDb, scanOperationId(ownership));
       if (requestId !== discoveryRequestRef.current || useScanWorkStore.getState().active?.id !== ownership) return;
       if (useScanWorkStore.getState().active?.cancelling || useScanWorkStore.getState().active?.terminalStatus === "cancelled") {
+        setOperationState("Latest operation cancelled");
         setPageStatus("deps-scan", { label: "Dependency check cancelled", tone: "neutral" });
         scanInvocationRef.current = null;
         return;
@@ -306,6 +319,9 @@ export function DepsScanPage() {
       handoffRevisionRef.current = useScanWorkStore.getState().recoveryRevision;
       setHandoffResult(scanResult);
       setResult(scanResult);
+      setReceipt(null);
+      setAttempt(null);
+      setOperationState(null);
       setSelectedKey(null);
       setPreview(previewFromResult(scanResult));
       setPageStatus("deps-scan", {
@@ -329,6 +345,7 @@ export function DepsScanPage() {
       if (requestId !== discoveryRequestRef.current) return;
       scanInvocationRef.current = null;
       setError(String(scanError));
+      setOperationState("Latest operation failed");
       setFailedOperation("check");
       setPageStatus("deps-scan", { label: "Dependency check failed", tone: "error" });
       push("error", "Dependency checking failed");
@@ -340,6 +357,7 @@ export function DepsScanPage() {
             label: useScanWorkStore.getState().active?.cancelling ? "Dependency check cancelled" : "Dependency check not started",
             tone: "neutral",
           });
+          if (useScanWorkStore.getState().active?.cancelling) setOperationState("Latest operation cancelled");
         }
       }
       releaseScan(ownership);
@@ -521,6 +539,12 @@ export function DepsScanPage() {
         running={running || discovering}
         hasCompletedResult={Boolean(result)}
       />
+
+      {result && <EvidenceSummary label="Dependency" evidence={dependencyEvidence(result, receipt)} running={running} cancelling={activeWork?.cancelling} attempt={attempt} operation={operationState}>
+        <p>Target: <span className="break-all font-mono">{result.summary.path}</span></p>
+        <p>Advisory fetched time: {result.summary.advisoryFetchedAtMs == null ? "Unknown" : new Date(result.summary.advisoryFetchedAtMs).toISOString()}</p>
+        <p>Exploitation enrichment: {result.summary.enrichment?.status ?? "unknown"}</p>
+      </EvidenceSummary>}
 
       {result && (
         <section

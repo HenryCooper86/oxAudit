@@ -69,8 +69,8 @@ describe OWASP performance.
 Workflow artifacts retain raw JSON, provenance, command receipts, the per-category
 comparisons and local performance JSON for 90 days, including a comparison that
 fails. Build or fetch failure remains a failed job; missing artifacts are not
-evidence of success. Hosted workflow execution remains pending until an actual
-GitHub run supplies its outcome.
+evidence of success. The first hosted run passed on 2026-10-09: [Quality and performance benchmarks](https://github.com/HenryCooper86/oxAudit/actions/runs/37938034829).
+Each later revision still needs its own successful run.
 
 ## Owned CLI performance workloads
 

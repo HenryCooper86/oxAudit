@@ -8,9 +8,10 @@ export type RunTimelineStage =
   | "enriching"
   | "assessing"
   | "persisting"
+  | "incomplete"
   | "completed";
 
-const STAGES: Array<{ id: Exclude<RunTimelineStage, "completed">; label: string }> = [
+const STAGES: Array<{ id: Exclude<RunTimelineStage, "completed" | "incomplete">; label: string }> = [
   { id: "discovering", label: "Discover" },
   { id: "detecting", label: "Detect" },
   { id: "normalizing", label: "Normalize" },
@@ -37,8 +38,8 @@ export function RunTimeline({ active, running, hasCompletedResult }: { active: R
             </li>
           );
         })}
-        <li className={`flex items-center gap-1.5 text-[10px] ${active === "completed" ? "font-semibold text-success" : hasCompletedResult ? "text-text-secondary" : "text-text-muted"}`}>
-          <Check size={12} aria-hidden="true" />Complete
+        <li className={`flex items-center gap-1.5 text-[10px] ${active === "completed" ? "font-semibold text-success" : active === "incomplete" ? "text-warning" : hasCompletedResult ? "text-text-secondary" : "text-text-muted"}`}>
+          <Check size={12} aria-hidden="true" />{active === "incomplete" ? "Incomplete" : "Complete"}
         </li>
       </ol>
       {running && hasCompletedResult && <p className="mt-2 text-[10px] text-text-muted">A previous completed result remains available while this run advances.</p>}

@@ -14,10 +14,10 @@
 //!
 //! Two things about the result are worth stating before the number is:
 //!
-//! * **oxAudit has rules for six of the eleven categories.** Scoring the other
-//!   five would measure absent rules, not inaccurate ones, so they are counted
-//!   and reported separately rather than folded into one average that hides
-//!   which is which.
+//! * **Coverage is derived from the shipped Java rules.** Categories with no
+//!   matching rule are counted separately: scoring them as detection misses
+//!   would blend absent rules with inaccurate ones. Rule coverage alone does
+//!   not establish complete analysis of a category.
 //! * **The Benchmark is built for interprocedural taint analysis.** Its test
 //!   cases route a value from a request through helper methods and back. Every
 //!   README caveat about this analysis being intraprocedural is exactly what

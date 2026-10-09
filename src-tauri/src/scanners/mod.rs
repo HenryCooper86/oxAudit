@@ -1,5 +1,7 @@
 pub mod config_values;
 pub mod dataflow;
+#[cfg(feature = "grammar-java")]
+mod java_values;
 pub mod patterns;
 pub mod rulepacks;
 pub mod secrets;
@@ -1630,6 +1632,162 @@ mod tests {
     }
 
     // ------------------------------------ values the analysis can settle
+
+    #[test]
+    fn java_a_shadowed_parameter_name_keeps_its_input_finding() {
+        // Java rejects a local redeclaration of a parameter, but the parser can
+        // retain this incomplete edit without a syntax error. A local proof
+        // must not override the enclosing function's parameter classification.
+        let source = r#"class ParameterQuery {
+            void run(java.sql.Statement statement, String input) throws Exception {
+                String input = "SELECT 1";
+                statement.execute(input);
+            }
+        }"#;
+        assert!(rules_firing("ParameterQuery.java", source)
+            .iter()
+            .any(|rule| rule == "java-sql-concat"));
+    }
+
+    #[test]
+    fn java_joined_boolean_values_do_not_select_a_safe_query_branch() {
+        let source = r#"class JoinedBooleanQuery {
+            void run(java.sql.Statement statement, String input, boolean choose) throws Exception {
+                boolean allowed;
+                if (choose) allowed = true;
+                else allowed = false;
+                String sql;
+                if (allowed) sql = "SELECT 1";
+                else sql = input;
+                statement.execute(sql);
+            }
+        }"#;
+        assert!(rules_firing("JoinedBooleanQuery.java", source)
+            .iter()
+            .any(|rule| rule == "java-sql-concat"));
+    }
+
+    #[test]
+    fn java_string_interpolation_keeps_the_query_finding() {
+        // The Java grammar can recognize interpolation even without a
+        // template processor. Both shapes must retain the input finding.
+        for expression in [
+            r#""SELECT * FROM people WHERE name = '\{input}'""#,
+            r#"STR."SELECT * FROM people WHERE name = '\{input}'""#,
+        ] {
+            let source = format!(
+                r#"class InterpolatedQuery {{
+                void run(java.sql.Statement statement, String input) throws Exception {{
+                    String sql = {expression};
+                    statement.execute(sql);
+                }}
+            }}"#
+            );
+            assert!(
+                rules_firing("InterpolatedQuery.java", &source)
+                    .iter()
+                    .any(|rule| rule == "java-sql-concat"),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn java_constant_branch_excludes_unreachable_input_from_queries() {
+        let source = r#"class LocalQuery {
+            void run(java.sql.Statement statement, String input) throws Exception {
+                int limit = 13;
+                String query;
+                if ((5 * 9) - limit > 30) query = "SELECT 1";
+                else query = input;
+                statement.execute(query);
+            }
+        }"#;
+        assert!(!rules_firing("LocalQuery.java", source)
+            .iter()
+            .any(|rule| rule == "java-sql-concat"));
+    }
+
+    #[test]
+    fn java_constant_ternary_excludes_unreachable_input_from_ldap() {
+        let source = r#"class LocalDirectory {
+            void run(javax.naming.directory.DirContext context, String input) throws Exception {
+                int window = 7;
+                String filter = window * 3 == 21 ? "(uid=guest)" : input;
+                context.search("ou=people", filter, new javax.naming.directory.SearchControls());
+            }
+        }"#;
+        assert!(!rules_firing("LocalDirectory.java", source)
+            .iter()
+            .any(|rule| rule == "java-ldap-injection"));
+    }
+
+    #[test]
+    fn java_unconditional_overwrite_replaces_input_before_xpath() {
+        let source = r#"class LocalPath {
+            void run(javax.xml.xpath.XPath xpath, String input, org.w3c.dom.Document document) throws Exception {
+                String expression = input;
+                expression = "/people/person";
+                xpath.evaluate(expression, document);
+            }
+        }"#;
+        assert!(!rules_firing("LocalPath.java", source)
+            .iter()
+            .any(|rule| rule == "java-xpath-injection"));
+    }
+
+    #[test]
+    fn java_every_branch_replacing_input_with_literals_is_safe() {
+        let source = r#"class LocalCommand {
+            void run(boolean useVersion, String input) throws Exception {
+                String command = input;
+                if (useVersion) command = "java -version";
+                else command = "java --help";
+                Runtime.getRuntime().exec(command);
+            }
+        }"#;
+        assert!(!rules_firing("LocalCommand.java", source)
+            .iter()
+            .any(|rule| rule == "java-runtime-exec"));
+    }
+
+    #[test]
+    fn java_local_value_proofs_keep_unsafe_and_unknown_paths() {
+        // Each declaration changes a different boundary of the same proof:
+        // selected input, unknown branch, integer wraparound, mutation, scope,
+        // unknown return values, and a branch that might leave input intact.
+        for body in [
+            r#"int limit = 14; String query; if ((5 * 9) - limit > 31) query = "SELECT 1"; else query = input;"#,
+            r#"String query = choose ? "SELECT 1" : input;"#,
+            r#"int count = 2147483647; String query = count + 1 < 0 ? input : "SELECT 1";"#,
+            r#"int count = 3; count++; String query = count == 3 ? "SELECT 1" : input;"#,
+            r#"int count = 3; while (choose) { count++; } String query = count == 3 ? "SELECT 1" : input;"#,
+            r#"String query = input; { class Inner { String query = "SELECT 1"; } }"#,
+            r#"String query = values.get("fixed-key");"#,
+            r#"String query = "SELECT 1"; query = values.get("fixed-key");"#,
+            r#"String query = values.query;"#,
+            r#"String query = input; if (choose) query = "SELECT 1";"#,
+            r#"String query = "SELECT 1"; query += input;"#,
+            r#"int count = 0; String[] slots = {"unused"}; slots[count++] = input; String query = count == 0 ? "SELECT 1" : input;"#,
+            r#"String query = input; while (choose) { query = "SELECT 1"; }"#,
+            r#"String query = input; try { query = "SELECT 1"; } catch (Exception exception) { query = input; }"#,
+        ] {
+            let source = format!(
+                r#"class LocalQuery {{
+                void run(java.sql.Statement statement, String input, boolean choose, Values values) throws Exception {{
+                    {body}
+                    statement.execute(query);
+                }}
+            }}"#
+            );
+            assert!(
+                rules_firing("LocalQuery.java", &source)
+                    .iter()
+                    .any(|rule| rule == "java-sql-concat"),
+                "{body}"
+            );
+        }
+    }
 
     #[test]
     fn a_flags_constant_beside_the_argument_does_not_flip_the_verdict() {

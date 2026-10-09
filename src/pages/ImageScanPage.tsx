@@ -6,6 +6,7 @@ import type { BinaryComponent, CanonicalRun, ImageScanOutcome } from "../lib/typ
 import { useAppStore, useToastStore } from "../lib/stores";
 import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
 import { readSavedScanReceipt } from "../features/runs/savedScanReceipt";
+import { EvidenceSummary, imageEvidence } from "../features/runs/EvidenceSummary";
 import { ResultPagination } from "../components/workbench/ResultPagination";
 import { usePagination } from "../lib/pagination";
 import { normalizeCommandError } from "../lib/commandError";
@@ -28,6 +29,7 @@ export function ImageScanPage() {
   const [outcome, setOutcome] = useState<ImageScanOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState<CanonicalRun | null>(null);
+  const [receipt, setReceipt] = useState<CanonicalRun | null>(null);
   const mounted = useRef(true);
   const scanInFlight = useRef<number | null>(null);
   const receiptRequest = useRef(0);
@@ -53,6 +55,7 @@ export function ImageScanPage() {
       if (saved.loadError) setError(`Saved image evidence could not be loaded: ${saved.loadError}`);
       if (saved.data) {
         setOutcome(saved.data);
+        setReceipt(saved.receipt);
         if (!target.trim()) setTarget(saved.target);
         setPageStatus("image-scan", { label: `Saved image results · ${saved.data.state} · ${saved.data.result.summary.vulnerabilities} vulnerabilities`, tone: saved.data.state === "completed" ? "success" : "neutral" });
       }
@@ -106,6 +109,7 @@ export function ImageScanPage() {
       }
       setOutcome(next);
       setAttempt(null);
+      setReceipt(null);
       const complete = (!next.state || next.state === "completed") && active.terminalStatus !== "failed" && active.terminalStatus !== "incomplete";
       setPageStatus("image-scan", { label: `Image scan ${complete ? "complete" : next.state ?? active.terminalStatus} · ${next.result.summary.vulnerabilities} vulnerabilities`, tone: complete ? "success" : "neutral" });
       push(complete ? "success" : "info", `Image scan ${complete ? "complete" : next.state ?? active.terminalStatus}: ${next.result.summary.vulnerabilities} vulnerabilities`);
@@ -143,7 +147,7 @@ export function ImageScanPage() {
             placeholder="registry-1.docker.io/library/nginx:1.25, a saved image tar, an OCI layout directory, a firmware archive"
             value={target}
             disabled={busy}
-            onChange={(event) => { targetEdited.current = true; receiptRequest.current += 1; setTarget(event.target.value); setOutcome(null); setAttempt(null); setError(null); }}
+            onChange={(event) => { targetEdited.current = true; receiptRequest.current += 1; setTarget(event.target.value); setOutcome(null); setReceipt(null); setAttempt(null); setError(null); }}
             onKeyDown={(event) => {
               if (event.key === "Enter") void scan();
             }}
@@ -180,42 +184,41 @@ export function ImageScanPage() {
         {error && (
           <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-warning">{error}</section>
         )}
-        {attempt && attempt.state !== "completed" && (
-          <p role="status" className="text-[12px] text-warning">Latest saved attempt: {attempt.state} · {attempt.id}. {outcome?.runId !== attempt.id ? "Previous saved evidence is shown below." : ""}</p>
+        {attempt && !outcome && attempt.state !== "completed" && (
+          <p role="status" className="text-[12px] text-warning">Latest saved attempt: {attempt.state}. Saved evidence could not be loaded.</p>
         )}
 
-        {progress.length > 0 && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4">
-            <SectionLabel>Progress</SectionLabel>
+        {progress.length > 0 && !outcome && (
+          <details className="rounded-sm border border-border bg-surface-secondary p-4">
+            <summary className="cursor-pointer text-[12px] text-text-muted">Progress log</summary>
             <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-text-secondary">
               {progress.join("\n")}
             </pre>
-          </section>
+          </details>
         )}
 
-        {outcome && summary && (
-          <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary text-[13px]">
-            <div className="space-y-1 border-b border-border px-4 py-3 text-[11px] text-text-muted">
-              <p>Saved run: {outcome.runId} · {outcome.state ?? "completed"} · {outcome.offline ? "Offline advisories" : "Online advisories permitted"}</p>
-              {outcome.state && outcome.state !== "completed" && <p className="text-warning">Coverage is unproven for this {outcome.state} receipt. Zero recorded vulnerabilities does not establish a clean image.</p>}
+        {outcome && <EvidenceSummary label="Image" evidence={imageEvidence(outcome, receipt)} running={busy} cancelling={activeWork?.cancelling} attempt={attempt}
+          operation={error ? error.toLowerCase().includes("cancelled") ? "Latest operation cancelled" : "Latest operation failed or evidence unavailable" : null}
+          action={<Button type="button" variant="outline" size="sm" onClick={() => openExport(outcome.runId)}>Open Export Center</Button>}>
+              <p>Target: <span className="break-all font-mono">{outcome.result.target}</span></p>
               {outcome.imageDigest && <p>Image digest: <span className="break-all font-mono">{outcome.imageDigest}</span></p>}
               {outcome.localEvidence && <div className="space-y-1 border-t border-border pt-2">
-                <p>Pre-scan identity snapshot · {outcome.localEvidence.kind}. This records evidence before scanning and does not bind the bytes read later by the scan.</p>
-                {!outcome.localEvidence.complete && <p className="text-warning">Local identity capture is incomplete; complete byte identity is unproven.</p>}
+                <p>Local identity kind: {outcome.localEvidence.kind}</p>
                 {outcome.localEvidence.file?.sha256 && <p>File SHA-256: <span className="break-all font-mono">{outcome.localEvidence.file.sha256}</span> · {outcome.localEvidence.file.bytesHashed.toLocaleString()} bytes hashed</p>}
                 {outcome.localEvidence.file?.prefixSha256 && <p>Prefix SHA-256: <span className="break-all font-mono">{outcome.localEvidence.file.prefixSha256}</span> · {outcome.localEvidence.file.bytesHashed.toLocaleString()} bytes hashed</p>}
-                {outcome.localEvidence.file?.changedDuringRead === true && <p className="text-warning">The file changed while its identity was captured.</p>}
                 {outcome.localEvidence.oci?.indexSha256 && <p>OCI index SHA-256: <span className="break-all font-mono">{outcome.localEvidence.oci.indexSha256}</span></p>}
-                {outcome.localEvidence.notes.map((note, index) => <p key={index}>{note}</p>)}
               </div>}
-              <Button type="button" variant="outline" size="sm" onClick={() => openExport(outcome.runId)}>Open Export Center</Button>
-            </div>
             {layers.length > 0 && <>
               <ul aria-label="Saved image layers" className="divide-y divide-border px-4 text-[11px] text-text-muted">
                 {layerPagination.items.map(layer => <li key={layer.digest} className="py-2"><span className="font-mono break-all">{layer.digest}</span> · {layer.sizeBytes.toLocaleString()} bytes · {layer.mediaType ?? "Media type unknown"}</li>)}
               </ul>
               {layerPagination.pageCount > 1 && <ResultPagination pagination={layerPagination} label="image layers" onPageChange={layerPagination.setPage} />}
             </>}
+            {progress.length > 0 && <pre className="max-h-32 overflow-auto whitespace-pre-wrap font-mono">{progress.join("\n")}</pre>}
+        </EvidenceSummary>}
+
+        {outcome && summary && (
+          <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary text-[13px]">
             <div className="border-b border-border px-4 py-3 font-semibold">
               {outcome.result.target}: {summary.components} component{summary.components === 1 ? "" : "s"},{" "}
               {summary.vulnerabilities} vulnerabilit{summary.vulnerabilities === 1 ? "y" : "ies"}
@@ -231,13 +234,6 @@ export function ImageScanPage() {
               ))}
             </ul>
             <ResultPagination pagination={pagination} label="image components" onPageChange={pagination.setPage} />
-            {outcome.notes.length > 0 && (
-              <div className="border-t border-border px-4 py-3 text-[11px] text-text-muted">
-                {outcome.notes.map((note, index) => (
-                  <p key={index}>{note}</p>
-                ))}
-              </div>
-            )}
           </section>
         )}
 

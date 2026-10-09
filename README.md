@@ -475,9 +475,9 @@ rule. See the [corpus documentation](docs/corpus.md) for provenance and limits.
 |---|---|---|
 | Corpus precision | 46.2% | **100% on the committed authored scenarios** |
 | Corpus recall | 85.7% | **100% on the committed authored scenarios** |
-| Corpus size | 26 fixtures | **227 fixtures** |
+| Corpus size | 26 fixtures | **234 fixtures** |
 
-The corpus is 227 fixtures: 104 positives and 123 negatives. It includes observed
+The corpus is 234 fixtures: 107 positives and 127 negatives. It includes observed
 false-positive shapes from oxAudit's own source or dependency trees — type
 declarations, prose in Markdown, comments, environment lookups, function
 parameters, JSON schemas, UI labels, hardened XML parsers, non-security uses of
@@ -513,7 +513,8 @@ node tools/fetch-external-benchmark.mjs
 cargo run --release --bin oxaudit-cli -- external-benchmark
 ```
 
-Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
+The initial run covered six Java categories (1,998 cases). Adding rules for the
+remaining categories brought the scored population to all 2,740 cases:
 
 | | First run | After acting on it |
 |---|---|---|
@@ -523,12 +524,20 @@ Over the six categories oxAudit has Java rules for — 1,998 of the 2,740 cases:
 | False positive rate | 3.0% | 54.6% |
 | Youden index (recall − FPR) | 0.030 | 0.405 |
 
-The two columns do not measure the same population. Rules were written for all
+These historical columns do not measure the same population. Rules were written for all
 five categories that had none, moving 742 cases *into* the scored set, and they
 arrived carrying the same false positives as everything else here — so the
 Youden index reads lower than an intermediate run that covered fewer
 categories. Coverage went from 73% of the benchmark to all of it; that is the
 row to read.
+
+The 2026-10-09 bounded Java local-value refinement scored the same pinned
+2,740 cases: **35 fewer false alerts** (724 → 689), precision **65.0% → 66.1%**,
+and aggregate recall **95.1% unchanged**, with no category recall decrease. Unknown helper returns and
+unsupported paths remain conservative. The
+[validation report](docs/alert-evidence-validation-2026-10-09.md) retains the
+before/after confusion matrices, exact binary provenance and measured timing
+tradeoff. The narrative below describes the earlier category expansion.
 
 The first column is what a corpus written by the rules' own authors had been
 reporting as 100%. Five rules were wrong in ways no internal fixture caught,

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { HistoryScanPage } from "./HistoryScan";
@@ -106,7 +106,7 @@ test("a truncated history scan says so instead of implying completeness", async 
 
 test("a clean history reports the blob count, not safety", async () => {
   await runScan(result({ findings: [], blobsScanned: 88 }));
-  expect(screen.getByText(/no secrets in history — 88 blobs scanned/i)).toBeInTheDocument();
+  expect(screen.getByText(/no findings recorded — 88 blobs scanned/i)).toBeInTheDocument();
   expect(screen.getByText(/not proof no credential was ever typed/i)).toBeInTheDocument();
 });
 
@@ -258,9 +258,12 @@ test('history reopens the latest canonical receipt after restart without a selec
   listCanonicalRuns.mockResolvedValue([{ id: 'latest-history', kind: 'history', targetLabel: '/tmp/restarted-repo', state: 'incomplete', attempt: 1, createdAtMs: 1, updatedAtMs: 2, engineIds: [], rulePackIds: [], providerSnapshotIds: [], warnings: [] }]);
   loadCanonicalProjection.mockResolvedValue(result({ runId: 'latest-history', findings: [], state: 'incomplete', gitContext: { headBefore: 'old-head', headAfter: null, refsBefore: [], refsAfter: [], refsCompleteAfter: false, contextChanged: null } }));
   render(<HistoryScanPage />);
-  expect(await screen.findByText('Saved run latest-history')).toBeInTheDocument();
+  const evidence = await screen.findByRole('region', { name: 'History evidence summary' });
+  expect(within(evidence).getByText('latest-history')).not.toBeVisible();
+  await userEvent.click(within(evidence).getByRole('button', { name: 'Evidence details' }));
+  expect(within(evidence).getByText('latest-history')).toBeVisible();
   expect(screen.getByRole('textbox', { name: /repository folder/i })).toHaveValue('/tmp/restarted-repo');
-  expect(screen.getByText('Git history coverage changed or is unknown')).toBeInTheDocument();
+  expect(within(evidence).getByText(/Git history coverage changed or is unknown/)).toBeVisible();
   expect(screen.queryByText(/No secrets in history/)).not.toBeInTheDocument();
   expect(scanHistorySecrets).not.toHaveBeenCalled();
 });

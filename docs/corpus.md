@@ -26,3 +26,13 @@ regressions cover Rust function declarations, formatted SQL errors and bound
 parameters, string concatenation and nested SQL sinks, ternary UI labels, and
 hardcoded credential fallbacks. Rebuilding the manifest preserves the
 overlapping expectations.
+
+On 2026-10-09, seven independently written Java regressions brought the corpus to
+234 fixtures (107 expected-positive and 127 expected-negative), with 116 true
+positives, zero false positives and zero false negatives. They cover constant
+SQL/LDAP/XPath/command branches and overwrites, plus integer overflow, mutable
+array-index conditions and interpolated template inputs that must remain
+flagged. Scanner tests also guard unequal boolean joins and exhausted local and
+step budgets. These remain contributor-authored regression scenarios; the
+pinned external measurement is recorded separately in
+[the alert and evidence validation report](alert-evidence-validation-2026-10-09.md).

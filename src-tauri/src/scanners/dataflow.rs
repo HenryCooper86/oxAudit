@@ -843,6 +843,19 @@ fn classify_with_depth(
 
     if is_identifier_kind(kind) {
         let name = text(node, source);
+        let formal_parameter =
+            function.is_some_and(|function| is_parameter(function, source, name));
+        #[cfg(feature = "grammar-java")]
+        // The local proof has no parameter bindings. Java also forbids a
+        // local declaration from shadowing this function's parameter, so
+        // interpreting the method cannot prove a parameter constant.
+        if !formal_parameter
+            && function.is_some_and(|function| {
+                super::java_values::constant_local(function, source, name, node.start_byte())
+            })
+        {
+            return Taint::Constant;
+        }
         // A value named `request` is a request however it arrived. The member
         // branch above already reads `request.body` as external; a servlet
         // writes `request.getCookies()` instead, where `request` reaches the
@@ -858,7 +871,7 @@ fn classify_with_depth(
         let Some(function) = function else {
             return Taint::Unknown;
         };
-        if is_parameter(function, source, name) {
+        if formal_parameter {
             return Taint::Tainted {
                 origin: Origin::Parameter,
             };
@@ -1843,6 +1856,22 @@ mod tests {
     }
 
     // ---------------------------------------------------------------- origin
+
+    #[test]
+    fn java_formal_parameters_keep_request_origin_precedence() {
+        for (name, origin) in [
+            ("command", Origin::Parameter),
+            ("request", Origin::External),
+        ] {
+            let source = format!(
+                "class Command {{ void run(String {name}) {{ Runtime.getRuntime().exec({name}); }} }}"
+            );
+            assert_eq!(
+                taint_for_cwe(&source, "java", "exec(", Some("CWE-78")),
+                Taint::Tainted { origin }
+            );
+        }
+    }
 
     #[test]
     fn a_parameter_and_a_request_are_distinguished() {
