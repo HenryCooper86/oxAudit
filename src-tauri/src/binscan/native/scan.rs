@@ -114,14 +114,54 @@ pub fn scan_file_as(
     signatures: &SignatureSet,
     notes: &mut Vec<String>,
 ) -> Vec<Detection> {
-    let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            notes.push(format!(
+                "{}: cannot open file; not scanned: {error}",
+                path.display()
+            ));
+            return Vec::new();
+        }
     };
 
-    // One read, capped. Reading twice — once to classify, once to scan — is
-    // the obvious shape and it doubles the I/O on a tree of 20,000 files.
-    let Ok(extracted) = strings::read_capped(file) else {
+    scan_reader_as(file, path, alias, signatures, notes)
+}
+
+fn scan_reader_as(
+    mut reader: impl std::io::Read,
+    path: &Path,
+    alias: Option<&str>,
+    signatures: &SignatureSet,
+    notes: &mut Vec<String>,
+) -> Vec<Detection> {
+    use std::io::Read;
+
+    // Classify before loading the full file. The prefix is replayed from
+    // memory, so scannable files still read each byte from disk only once.
+    let mut prefix = Vec::with_capacity(PROBE_BYTES);
+    if let Err(error) = (&mut reader)
+        .take(PROBE_BYTES as u64)
+        .read_to_end(&mut prefix)
+    {
+        notes.push(format!(
+            "{}: cannot read file; not scanned: {error}",
+            path.display()
+        ));
         return Vec::new();
+    }
+    if !filetype::classify(&prefix).is_scannable() {
+        return Vec::new();
+    }
+    let extracted = match strings::read_capped(prefix.as_slice().chain(reader)) {
+        Ok(extracted) => extracted,
+        Err(error) => {
+            notes.push(format!(
+                "{}: cannot read file; not scanned: {error}",
+                path.display()
+            ));
+            return Vec::new();
+        }
     };
 
     let display = path.to_string_lossy().into_owned();
@@ -153,6 +193,12 @@ fn scan_buffer(
     notes: &mut Vec<String>,
     distro: &mut Option<DistroIdentity>,
 ) -> Vec<Detection> {
+    if truncated {
+        notes.push(format!(
+            "{display}: scanned only the first {} bytes (prefix); later content was not examined",
+            bytes.len()
+        ));
+    }
     let classification = filetype::classify(&bytes[..bytes.len().min(PROBE_BYTES)]);
     if !classification.is_scannable() {
         return Vec::new();
@@ -161,15 +207,15 @@ fn scan_buffer(
     // A raw firmware blob is usually a header, a kernel, and a squashfs
     // partition bolted together — opaque to magic classification, but the
     // filesystem inside is the entire finding surface. The search is the
-    // smallest useful slice of binwalk: one magic at erase-block alignment,
+    // smallest useful slice of binwalk: a bounded sliding magic search,
     // behind the same budgets as every other container.
     if classification == Classification::OpaqueBinary {
         let budget = extract::ExtractBudget::default();
         let embedded = extract::extract_embedded_squashfs(file_name, bytes, &budget);
+        if let Some(note) = embedded.stats.note(display) {
+            notes.push(note);
+        }
         if !embedded.members.is_empty() {
-            if let Some(note) = embedded.stats.note(display) {
-                notes.push(note);
-            }
             return scan_members(&embedded.members, signatures, notes, distro);
         }
     }
@@ -177,18 +223,16 @@ fn scan_buffer(
     if let Classification::Archive(_) = classification {
         let budget = extract::ExtractBudget::default();
         let extracted = extract::extract(file_name, bytes, &budget);
+        if let Some(note) = extracted.stats.note(display) {
+            notes.push(note);
+        }
         if !extracted.members.is_empty() {
-            if let Some(note) = extracted.stats.note(display) {
-                notes.push(note);
-            }
             return scan_members(&extracted.members, signatures, notes, distro);
         }
         // An archive that yielded nothing — empty, unreadable, or stopped by
         // a budget before the first member — falls back to scanning its own
         // bytes, which is what this scanner did before extraction existed.
-        if let Some(note) = extracted.stats.note(display) {
-            notes.push(note);
-        }
+        notes.push(format!("{display}: no members were extracted; scanning raw archive bytes only; member coverage is unavailable"));
     }
 
     let mut detections = Vec::new();
@@ -251,10 +295,13 @@ fn candidates_with_budget(
     let mut files = Vec::new();
     let mut total_bytes = 0_u64;
 
-    if root.is_file() {
-        let size = std::fs::metadata(root)
-            .map_err(|error| format!("cannot inspect {}: {error}", root.display()))?
-            .len();
+    if cancel.load(Ordering::Relaxed) {
+        return Err("scan cancelled".into());
+    }
+    let metadata = std::fs::metadata(root)
+        .map_err(|error| format!("cannot inspect {}: {error}", root.display()))?;
+    if metadata.is_file() {
+        let size = metadata.len();
         if max_files == 0 {
             return Err(format!(
                 "binary inventory exceeds the safety limit of {max_files} files; scan a smaller \
@@ -269,12 +316,20 @@ fn candidates_with_budget(
         }
         return Ok(vec![root.to_path_buf()]);
     }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "{} is not a regular file or directory",
+            root.display()
+        ));
+    }
 
     for entry in WalkDir::new(root).follow_links(false).into_iter() {
         if cancel.load(Ordering::Relaxed) {
             return Err("scan cancelled".into());
         }
-        let Ok(entry) = entry else { continue };
+        let entry = entry.map_err(|error| {
+            format!("cannot walk binary scan target {}: {error}", root.display())
+        })?;
         if !entry.file_type().is_file() {
             continue;
         }
@@ -284,9 +339,9 @@ fn candidates_with_budget(
                  subdirectory or ignore generated/vendor paths"
             ));
         }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("cannot inspect {}: {error}", entry.path().display()))?;
         total_bytes = total_bytes.checked_add(metadata.len()).ok_or_else(|| {
             format!(
                 "binary inventory exceeds the safety limit of {max_bytes} bytes; scan a smaller \
@@ -761,6 +816,10 @@ pub fn scan_image_layers(
         ));
     }
 
+    if cancel.load(Ordering::Relaxed) {
+        return Err("scan cancelled".into());
+    }
+
     let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
     on_progress(format!("{} components detected", components.len()));
@@ -850,6 +909,159 @@ fn oci_aliases_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_files_are_skipped_after_reading_only_the_classification_prefix() {
+        let mut reader = std::io::Cursor::new(vec![b'A'; 64 * 1024]);
+        let mut notes = Vec::new();
+        let detections = scan_reader_as(
+            &mut reader,
+            Path::new("README.txt"),
+            None,
+            &SIGNATURES,
+            &mut notes,
+        );
+        assert!(detections.is_empty());
+        assert!(notes.is_empty());
+        assert_eq!(reader.position(), PROBE_BYTES as u64);
+    }
+
+    #[test]
+    fn a_binary_banner_after_the_classification_prefix_is_still_detected() {
+        let mut bytes = vec![0; PROBE_BYTES + 200];
+        bytes.extend_from_slice(b"BusyBox is a multi-call binary\0BusyBox v1.38.0\0");
+        let size = bytes.len();
+        let mut reader = std::io::Cursor::new(bytes);
+        let detections = scan_reader_as(
+            &mut reader,
+            Path::new("vendord"),
+            None,
+            &SIGNATURES,
+            &mut Vec::new(),
+        );
+        assert!(detections
+            .iter()
+            .any(|detection| detection.product == "busybox"
+                && detection.version.as_deref() == Some("1.38.0")));
+        assert_eq!(reader.position(), size as u64);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_opened_has_a_coverage_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.bin");
+        let mut notes = Vec::new();
+        assert!(scan_file(&path, &SIGNATURES, &mut notes).is_empty());
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("cannot open") && note.contains("missing.bin")));
+    }
+
+    #[test]
+    fn a_file_read_error_has_a_coverage_note() {
+        struct Unreadable;
+        impl std::io::Read for Unreadable {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("unreadable fixture"))
+            }
+        }
+        let mut notes = Vec::new();
+        assert!(scan_reader_as(
+            Unreadable,
+            Path::new("broken.bin"),
+            None,
+            &SIGNATURES,
+            &mut notes
+        )
+        .is_empty());
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("cannot read") && note.contains("broken.bin")));
+    }
+
+    #[test]
+    fn a_truncated_file_reports_coverage_even_when_no_component_was_detected() {
+        let mut notes = Vec::new();
+        let detections = scan_buffer(
+            "/fw.bin",
+            "fw.bin",
+            &[0; 8],
+            true,
+            &SIGNATURES,
+            &mut notes,
+            &mut None,
+        );
+        assert!(detections.is_empty());
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("prefix") && note.contains("/fw.bin")));
+    }
+
+    #[test]
+    fn an_embedded_magic_search_stop_reaches_the_scan_notes() {
+        let mut bytes = vec![0; 4];
+        for _ in 0..100 {
+            bytes.extend_from_slice(b"hsqs");
+        }
+        let mut notes = Vec::new();
+        scan_buffer(
+            "/fw.bin",
+            "fw.bin",
+            &bytes,
+            false,
+            &SIGNATURES,
+            &mut notes,
+            &mut None,
+        );
+        assert!(notes.iter().any(|note| note.contains("magic search")));
+    }
+
+    #[test]
+    fn an_archive_that_cannot_be_extracted_reports_the_raw_fallback() {
+        let mut notes = Vec::new();
+        scan_buffer(
+            "/broken.zip",
+            "broken.zip",
+            b"PK\x03\x04broken",
+            false,
+            &SIGNATURES,
+            &mut notes,
+            &mut None,
+        );
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("no members") && note.contains("raw")));
+    }
+
+    #[test]
+    fn a_missing_scan_root_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let result = scan(&missing, Arc::new(AtomicBool::new(false)), Arc::new(|_| {}));
+        assert!(
+            result.is_err(),
+            "an inaccessible target must not appear to have no components"
+        );
+    }
+
+    #[test]
+    fn cancellation_during_the_last_image_layer_prevents_success() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let progress_cancel = Arc::clone(&cancel);
+        let layers = vec![super::super::super::registry::Layer {
+            name: "layer-0000.tar".into(),
+            bytes: vec![0; 8],
+        }];
+        let result = scan_image_layers(
+            "image",
+            &layers,
+            &cancel,
+            Arc::new(move |_| {
+                progress_cancel.store(true, Ordering::Relaxed);
+            }),
+        );
+        assert!(result.unwrap_err().contains("cancelled"));
+    }
 
     /// A whole on-disk OCI layout — marker, index, manifest, one tar layer
     /// carrying a detectable busybox banner — scanned as a tree: the layer's

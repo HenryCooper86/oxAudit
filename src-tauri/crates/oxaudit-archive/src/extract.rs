@@ -13,9 +13,9 @@
 //!   one — `.tar.gz`, `.tar.xz`, `.tar.zst`, `.tar.bz2`), zip, gzip, xz,
 //!   zstd, bzip2, `ar` — which makes `.deb` packages and `.a` static
 //!   libraries readable — RPM packages (lead, headers, compressed cpio
-//!   payload, hand-parsed), and squashfs v4 through the maintained,
+//!   payload, hand-parsed), plain zlib CramFS, and squashfs v4 through the maintained,
 //!   fuzzed `backhand` reader, including filesystems embedded in raw
-//!   firmware blobs at erase-block alignment. A saved `docker`/OCI image
+//!   firmware blobs at unaligned offsets. A saved `docker`/OCI image
 //!   is a tar of layer tars, so nesting handles it with no image-specific
 //!   code at all.
 //! - **In memory, never on disk.** Members are scanned from buffers and
@@ -31,12 +31,13 @@
 //!   its own fuzzing story; a raw firmware blob additionally gets a
 //!   bounded, unaligned sliding magic search for embedded squashfs within
 //!   the first 256 MiB, with a parse-attempt cap against magic sprays.
-//!   CramFS, UBI, and the long tail of vendor filesystems
+//!   UBI/UBIFS and the long tail of vendor filesystems
 //!   are still *not* unpacked — each needs its own vetted reader, and
 //!   pretending otherwise would be the exact kind of silent gap this
 //!   module exists to eliminate. Squashfs v3 (pre-2009) parses or yields
 //!   nothing; the blob then scans raw, as before.
 
+use std::borrow::Cow;
 use std::io::Read;
 
 use crate::filetype::{archive_kind, ArchiveKind};
@@ -76,6 +77,8 @@ pub struct ExtractStats {
     pub entries: usize,
     /// Members skipped for exceeding the per-entry cap.
     pub skipped_oversized: usize,
+    /// Members or compression streams skipped because their bytes could not be read or decoded.
+    pub skipped_unreadable: usize,
     /// Members skipped for being markers rather than content: directories,
     /// symlinks, devices, container whiteouts.
     pub skipped_markers: usize,
@@ -85,9 +88,13 @@ pub struct ExtractStats {
 }
 
 impl ExtractStats {
-    /// One user-facing line, or `None` when nothing was extracted at all.
+    /// One user-facing line, or `None` when neither extraction nor skipped content needs reporting.
     pub fn note(&self, container: &str) -> Option<String> {
-        if self.entries == 0 && self.stopped.is_none() {
+        if self.entries == 0
+            && self.skipped_oversized == 0
+            && self.skipped_unreadable == 0
+            && self.stopped.is_none()
+        {
             return None;
         }
         let mut note = format!(
@@ -98,6 +105,12 @@ impl ExtractStats {
             note.push_str(&format!(
                 ", skipped {} over the per-member cap",
                 self.skipped_oversized
+            ));
+        }
+        if self.skipped_unreadable > 0 {
+            note.push_str(&format!(
+                ", skipped {} unreadable member(s) or stream(s)",
+                self.skipped_unreadable
             ));
         }
         if self.skipped_markers > 0 {
@@ -157,6 +170,9 @@ fn extract_into(
         }
         return;
     }
+    if budget_stop(budget, total, out) {
+        return;
+    }
     // A decompression wrapper resolves to one member whose name is the
     // compressed name minus its extension; the payload then re-dispatches,
     // because a `.tar.gz` is a gzip around a tar. Every wrapper level counts
@@ -164,24 +180,25 @@ fn extract_into(
     // input, not a format to honor.
     match archive_kind(bytes) {
         Some(ArchiveKind::Gzip) => {
-            if let Some(plain) = decompress(&mut flate2::read::GzDecoder::new(bytes), budget) {
-                dispatch_decompressed(name, &plain, depth, budget, total, out);
+            if let Some(plain) = decompress(&mut flate2::read::GzDecoder::new(bytes), budget, out) {
+                dispatch_decompressed(name, plain, depth, budget, total, out);
             }
         }
         Some(ArchiveKind::Bzip2) => {
-            if let Some(plain) = decompress(&mut bzip2::read::BzDecoder::new(bytes), budget) {
-                dispatch_decompressed(name, &plain, depth, budget, total, out);
+            if let Some(plain) = decompress(&mut bzip2::read::BzDecoder::new(bytes), budget, out) {
+                dispatch_decompressed(name, plain, depth, budget, total, out);
             }
         }
         Some(ArchiveKind::Xz) => {
-            if let Some(plain) = decompress(&mut liblzma::read::XzDecoder::new(bytes), budget) {
-                dispatch_decompressed(name, &plain, depth, budget, total, out);
+            if let Some(plain) = decompress(&mut liblzma::read::XzDecoder::new(bytes), budget, out)
+            {
+                dispatch_decompressed(name, plain, depth, budget, total, out);
             }
         }
         Some(ArchiveKind::Zstd) => {
             if let Ok(mut decoder) = zstd::stream::read::Decoder::new(bytes) {
-                if let Some(plain) = decompress(&mut decoder, budget) {
-                    dispatch_decompressed(name, &plain, depth, budget, total, out);
+                if let Some(plain) = decompress(&mut decoder, budget, out) {
+                    dispatch_decompressed(name, plain, depth, budget, total, out);
                 }
             }
         }
@@ -207,7 +224,7 @@ fn extract_into(
             // cleanly. Those blobs still scan raw, as before.
             let cursor = std::io::Cursor::new(bytes);
             if let Ok(filesystem) = backhand::FilesystemReader::from_reader(cursor) {
-                drain_squashfs(name, &filesystem, budget, total, out);
+                drain_squashfs(name, &filesystem, depth, budget, total, out);
             }
         }
         None => {}
@@ -220,7 +237,7 @@ fn extract_into(
 /// single-file compression wrapper.
 fn dispatch_decompressed(
     name: &str,
-    plain: &[u8],
+    plain: Vec<u8>,
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
@@ -228,10 +245,10 @@ fn dispatch_decompressed(
 ) {
     if archive_kind(&plain[..plain.len().min(512)]).is_some() {
         let plain_name = strip_archive_suffix(name);
-        extract_into(&plain_name, plain, depth + 1, budget, total, out);
+        extract_into(&plain_name, &plain, depth + 1, budget, total, out);
     } else {
         let member_name = strip_archive_suffix(name);
-        read_member_bytes(name, &member_name, plain, depth, budget, total, out);
+        read_member_bytes(name, &member_name, plain.into(), depth, budget, total, out);
     }
 }
 
@@ -240,6 +257,7 @@ fn dispatch_decompressed(
 fn drain_squashfs(
     container: &str,
     filesystem: &backhand::FilesystemReader<'_>,
+    depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
     out: &mut Extracted,
@@ -258,7 +276,7 @@ fn drain_squashfs(
             continue;
         };
         let mut reader = filesystem.file(file).reader();
-        read_member(container, &member, &mut reader, 0, budget, total, out);
+        read_member(container, &member, &mut reader, depth, budget, total, out);
     }
 }
 
@@ -416,18 +434,27 @@ fn walk_cramfs_dir(
                     walk.out.stats.skipped_markers += 1;
                     continue;
                 };
+                if u64::from(node.size) > walk.budget.max_entry_bytes {
+                    walk.out.stats.skipped_oversized += 1;
+                    continue;
+                }
+                if u64::from(node.size) > walk.budget.max_total_bytes.saturating_sub(*walk.total) {
+                    *walk.total = walk.budget.max_total_bytes;
+                    budget_stop(walk.budget, walk.total, walk.out);
+                    return;
+                }
                 if let Some(content) = cramfs_file_bytes(walk.bytes, &node, walk.budget) {
                     read_member_bytes(
                         walk.container,
                         &member,
-                        &content,
+                        content.into(),
                         depth,
                         walk.budget,
                         walk.total,
                         walk.out,
                     );
                 } else {
-                    walk.out.stats.skipped_markers += 1;
+                    walk.out.stats.skipped_unreadable += 1;
                 }
             }
             _ => walk.out.stats.skipped_markers += 1,
@@ -439,12 +466,16 @@ fn walk_cramfs_dir(
 /// exactly one pointer per block, each naming its block's END (one-past);
 /// block zero starts immediately after the table, later blocks where the
 /// previous pointer said. Blocks are zlib streams unless the uncompressed
-/// flag is set — `mkfs.cramfs` stores raw when compression would grow the
-/// block, which an inflate failure identifies here.
+/// flag is set. Each block expands to at most one 4 KiB page; a zero-length
+/// block is a hole. Short pages are zero-filled, as in Linux's CramFS reader
+/// (fs/cramfs/inode.c, cramfs_read_folio). Corrupt zlib is never raw content.
 fn cramfs_file_bytes(bytes: &[u8], node: &CramfsInode, budget: &ExtractBudget) -> Option<Vec<u8>> {
     const PAGE: u32 = 4096;
     const FLAG_UNCOMPRESSED: u32 = 0x8000_0000;
     const FLAG_DIRECT: u32 = 0x4000_0000;
+    if u64::from(node.size) > budget.max_entry_bytes {
+        return None;
+    }
     let pointer = |entry: usize| -> Option<u32> {
         let raw = bytes.get(entry..entry + 4)?;
         Some(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
@@ -467,23 +498,29 @@ fn cramfs_file_bytes(bytes: &[u8], node: &CramfsInode, budget: &ExtractBudget) -
             return None;
         }
         let block = &bytes[start..end];
-        if value & FLAG_UNCOMPRESSED != 0 {
-            content.extend_from_slice(block);
-            continue;
-        }
-        let mut plain = Vec::new();
-        let mut limited = flate2::read::ZlibDecoder::new(block).take(budget.max_entry_bytes + 1);
-        if limited.read_to_end(&mut plain).is_err() || plain.len() as u64 > budget.max_entry_bytes {
-            // Not zlib: stored raw because compression would have grown it —
-            // the same fallback the kernel reader makes.
-            if block.len() as u64 > budget.max_entry_bytes {
+        let expected = (node.size as usize - index * PAGE as usize).min(PAGE as usize);
+        let page_end = content.len() + expected;
+        if block.is_empty() {
+            content.resize(page_end, 0);
+        } else if value & FLAG_UNCOMPRESSED != 0 {
+            if block.len() > PAGE as usize {
                 return None;
             }
-            plain = block.to_vec();
+            content.extend_from_slice(&block[..block.len().min(expected)]);
+            content.resize(page_end, 0);
+        } else {
+            if block.len() > 2 * PAGE as usize {
+                return None;
+            }
+            let mut plain = Vec::new();
+            let mut limited = flate2::read::ZlibDecoder::new(block).take(u64::from(PAGE) + 1);
+            if limited.read_to_end(&mut plain).is_err() || plain.len() > PAGE as usize {
+                return None;
+            }
+            content.extend_from_slice(&plain[..plain.len().min(expected)]);
+            content.resize(page_end, 0);
         }
-        content.extend_from_slice(&plain);
     }
-    content.truncate(node.size as usize);
     Some(content)
 }
 
@@ -517,14 +554,20 @@ fn extract_rpm(
     // The payload's own magic says which codec; an unrecognized magic means
     // uncompressed cpio, which is what very old packages carry.
     let plain = match archive_kind(&payload[..payload.len().min(512)]) {
-        Some(ArchiveKind::Gzip) => decompress(&mut flate2::read::GzDecoder::new(payload), budget),
-        Some(ArchiveKind::Bzip2) => decompress(&mut bzip2::read::BzDecoder::new(payload), budget),
-        Some(ArchiveKind::Xz) => decompress(&mut liblzma::read::XzDecoder::new(payload), budget),
+        Some(ArchiveKind::Gzip) => {
+            decompress(&mut flate2::read::GzDecoder::new(payload), budget, out)
+        }
+        Some(ArchiveKind::Bzip2) => {
+            decompress(&mut bzip2::read::BzDecoder::new(payload), budget, out)
+        }
+        Some(ArchiveKind::Xz) => {
+            decompress(&mut liblzma::read::XzDecoder::new(payload), budget, out)
+        }
         Some(ArchiveKind::Zstd) => {
             let Ok(mut decoder) = zstd::stream::read::Decoder::new(payload) else {
                 return;
             };
-            decompress(&mut decoder, budget)
+            decompress(&mut decoder, budget, out)
         }
         _ => Some(payload.to_vec()),
     };
@@ -624,7 +667,7 @@ fn extract_cpio(
                 let data = bytes
                     .get(entry.data_start..entry.data_start + entry.size)
                     .unwrap_or(&[]);
-                read_member_bytes(container, &member, data, depth, budget, total, out);
+                read_member_bytes(container, &member, data.into(), depth, budget, total, out);
             } else {
                 out.stats.skipped_markers += 1;
             }
@@ -674,9 +717,16 @@ pub fn extract_embedded_squashfs(name: &str, bytes: &[u8], budget: &ExtractBudge
             let cursor = std::io::Cursor::new(&bytes[hit..]);
             if let Ok(filesystem) = backhand::FilesystemReader::from_reader(cursor) {
                 found += 1;
+                if budget.max_depth == 0 {
+                    out.stats
+                        .stopped
+                        .get_or_insert_with(|| "nesting deeper than 0".into());
+                    break;
+                }
                 drain_squashfs(
                     &format!("{name}!sqfs@0x{hit:x}"),
                     &filesystem,
+                    0,
                     budget,
                     &mut total,
                     &mut out,
@@ -691,14 +741,22 @@ pub fn extract_embedded_squashfs(name: &str, bytes: &[u8], budget: &ExtractBudge
 /// Decompress a single stream up to `max_entry_bytes + 1`, so an oversized
 /// result is detected rather than read to exhaustion. `None` on malformed
 /// input or an oversized payload.
-fn decompress(reader: &mut dyn Read, budget: &ExtractBudget) -> Option<Vec<u8>> {
+fn decompress(
+    reader: &mut dyn Read,
+    budget: &ExtractBudget,
+    out: &mut Extracted,
+) -> Option<Vec<u8>> {
     let mut plain = Vec::new();
-    let mut limited = reader.take(budget.max_entry_bytes + 1);
+    let mut limited = reader.take(budget.max_entry_bytes.saturating_add(1));
     // A decompression error after some output is still useful output, but
     // distinguishing the two invites half-files; treat both as unusable,
     // because a truncated member can misreport versions.
-    limited.read_to_end(&mut plain).ok()?;
+    if limited.read_to_end(&mut plain).is_err() {
+        out.stats.skipped_unreadable += 1;
+        return None;
+    }
     if plain.len() as u64 > budget.max_entry_bytes {
+        out.stats.skipped_oversized += 1;
         return None;
     }
     Some(plain)
@@ -719,6 +777,7 @@ fn extract_tar(
     };
     for entry in entries {
         let Ok(mut entry) = entry else {
+            out.stats.skipped_unreadable += 1;
             continue;
         };
         let header = entry.header();
@@ -757,6 +816,7 @@ fn extract_zip(
     };
     for index in 0..archive.len() {
         let Ok(mut file) = archive.by_index(index) else {
+            out.stats.skipped_unreadable += 1;
             continue;
         };
         if file.is_dir() {
@@ -799,6 +859,9 @@ fn extract_ar(
     let mut offset = 8; // "!<arch>\n"
     let mut long_names: Vec<u8> = Vec::new();
     while offset + HEADER <= bytes.len() {
+        if budget_stop(budget, total, out) {
+            return;
+        }
         let header = &bytes[offset..offset + HEADER];
         let field = |range: std::ops::Range<usize>| {
             header[range]
@@ -856,7 +919,7 @@ fn extract_ar(
                 read_member_bytes(
                     container,
                     &member,
-                    &bytes[body..end],
+                    (&bytes[body..end]).into(),
                     depth,
                     budget,
                     total,
@@ -896,38 +959,42 @@ fn read_member(
     total: &mut u64,
     out: &mut Extracted,
 ) {
-    if out.members.len() >= budget.max_entries {
-        out.stats
-            .stopped
-            .get_or_insert_with(|| format!("more than {} members", budget.max_entries));
+    if budget_stop(budget, total, out) {
         return;
     }
     let mut bytes = Vec::new();
-    let mut limited = reader.take(budget.max_entry_bytes + 1);
+    let remaining = budget.max_total_bytes.saturating_sub(*total);
+    let limit = budget.max_entry_bytes.min(remaining);
+    let mut limited = reader.take(limit.saturating_add(1));
     if limited.read_to_end(&mut bytes).is_err() {
         // An unreadable member is skipped; the container's other members
         // still count.
+        out.stats.skipped_unreadable += 1;
         return;
     }
-    if bytes.len() as u64 > budget.max_entry_bytes {
-        out.stats.skipped_oversized += 1;
-        return;
-    }
-    read_member_bytes(container, member, &bytes, depth, budget, total, out);
+    read_member_bytes(container, member, bytes.into(), depth, budget, total, out);
 }
 
 /// Budget accounting plus push-or-recurse for one member's bytes.
 fn read_member_bytes(
     container: &str,
     member: &str,
-    bytes: &[u8],
+    bytes: Cow<'_, [u8]>,
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
     out: &mut Extracted,
 ) {
+    if budget_stop(budget, total, out) {
+        return;
+    }
     let length = bytes.len() as u64;
-    if *total + length > budget.max_total_bytes {
+    if length > budget.max_entry_bytes {
+        out.stats.skipped_oversized += 1;
+        return;
+    }
+    if length > budget.max_total_bytes.saturating_sub(*total) {
+        *total = budget.max_total_bytes;
         out.stats
             .stopped
             .get_or_insert_with(|| format!("expanded past {} bytes", budget.max_total_bytes));
@@ -939,7 +1006,7 @@ fn read_member_bytes(
         out.stats.entries += 1;
         out.members.push(ExtractedMember {
             path: format!("{container}!/{member}"),
-            bytes: bytes.to_vec(),
+            bytes: bytes.into_owned(),
         });
     } else {
         // A nested container expands in place; its own members carry the
@@ -947,7 +1014,7 @@ fn read_member_bytes(
         if !bytes.is_empty() {
             extract_into(
                 &format!("{container}!/{member}"),
-                bytes,
+                &bytes,
                 depth + 1,
                 budget,
                 total,
@@ -1065,6 +1132,23 @@ mod tests {
             std::io::Write::write_all(&mut writer, bytes).expect("zip write");
         }
         writer.finish().expect("zip finish").into_inner()
+    }
+
+    fn ar_with(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut bytes = b"!<arch>\n".to_vec();
+        for (name, body) in members {
+            let header = format!(
+                "{name:<16}{0:<12}{0:<6}{0:<6}{0:<8}{1:<10}`\n",
+                0,
+                body.len()
+            );
+            bytes.extend_from_slice(header.as_bytes());
+            bytes.extend_from_slice(body);
+            if body.len() % 2 == 1 {
+                bytes.push(b'\n');
+            }
+        }
+        bytes
     }
 
     fn budget() -> ExtractBudget {
@@ -1288,6 +1372,129 @@ mod tests {
     }
 
     #[test]
+    fn ar_members_obey_the_per_member_cap() {
+        let archive = ar_with(&[("huge.o", vec![1; 512]), ("busybox.o", busybox())]);
+        let small = ExtractBudget {
+            max_entry_bytes: 256,
+            ..budget()
+        };
+        let extracted = extract("lib.a", &archive, &small);
+        assert_eq!(paths(&extracted), vec!["lib.a!/busybox.o"]);
+        assert_eq!(extracted.stats.skipped_oversized, 1);
+    }
+
+    #[test]
+    fn ar_members_obey_the_member_count_cap() {
+        let archive = ar_with(&[("one.o", busybox()), ("two.o", busybox())]);
+        let small = ExtractBudget {
+            max_entries: 1,
+            ..budget()
+        };
+        let extracted = extract("lib.a", &archive, &small);
+        assert_eq!(paths(&extracted), vec!["lib.a!/one.o"]);
+        assert_eq!(
+            extracted.stats.stopped.as_deref(),
+            Some("more than 1 members")
+        );
+    }
+
+    #[test]
+    fn an_oversized_compression_wrapper_reports_the_skip() {
+        let compressed = gzip(&vec![7; 512]);
+        let small = ExtractBudget {
+            max_entry_bytes: 256,
+            ..budget()
+        };
+        let extracted = extract("firmware.gz", &compressed, &small);
+        assert!(extracted.members.is_empty());
+        assert_eq!(extracted.stats.skipped_oversized, 1);
+        assert!(extracted
+            .stats
+            .note("firmware.gz")
+            .unwrap()
+            .contains("per-member cap"));
+    }
+
+    #[test]
+    fn a_member_read_stops_at_the_remaining_total_budget() {
+        let mut reader = std::io::Cursor::new(vec![7; 4096]);
+        let small = ExtractBudget {
+            max_entry_bytes: 1024,
+            max_total_bytes: 32,
+            ..budget()
+        };
+        let mut out = Extracted {
+            members: Vec::new(),
+            stats: ExtractStats::default(),
+        };
+        let mut total = 0;
+        read_member(
+            "fw.tar",
+            "huge.bin",
+            &mut reader,
+            0,
+            &small,
+            &mut total,
+            &mut out,
+        );
+        assert_eq!(
+            reader.position(),
+            33,
+            "only the budget and one probe byte are read"
+        );
+        assert!(out.members.is_empty());
+        assert_eq!(out.stats.stopped.as_deref(), Some("expanded past 32 bytes"));
+    }
+
+    #[test]
+    fn a_single_oversized_member_still_has_a_coverage_note() {
+        let archive = tar_with(&[("huge.bin", vec![7; 512])]);
+        let small = ExtractBudget {
+            max_entry_bytes: 256,
+            ..budget()
+        };
+        let extracted = extract("fw.tar", &archive, &small);
+        assert!(extracted.members.is_empty());
+        assert!(extracted
+            .stats
+            .note("fw.tar")
+            .unwrap()
+            .contains("skipped 1"));
+    }
+
+    #[test]
+    fn a_corrupt_zip_member_reports_incomplete_extraction() {
+        // Stored bytes make the CRC corruption independent of the compressor.
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in [
+            ("broken.bin", b"corrupt-me".to_vec()),
+            ("busybox", busybox()),
+        ] {
+            writer
+                .start_file(
+                    name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )
+                .unwrap();
+            std::io::Write::write_all(&mut writer, &bytes).unwrap();
+        }
+        let mut archive = writer.finish().unwrap().into_inner();
+        let offset = archive
+            .windows(10)
+            .position(|bytes| bytes == b"corrupt-me")
+            .unwrap();
+        archive[offset] ^= 1;
+        let extracted = extract("fw.zip", &archive, &budget());
+        assert_eq!(paths(&extracted), vec!["fw.zip!/busybox"]);
+        assert!(extracted
+            .stats
+            .note("fw.zip")
+            .unwrap()
+            .contains("unreadable"));
+    }
+
+    #[test]
     fn the_member_count_budget_stops_extraction() {
         let members: Vec<(String, Vec<u8>)> = (0..6)
             .map(|index| (format!("m{index}"), busybox()))
@@ -1418,6 +1625,7 @@ mod tests {
         let mut stats = ExtractStats {
             entries: 12,
             skipped_oversized: 1,
+            skipped_unreadable: 0,
             skipped_markers: 4,
             stopped: Some("nesting deeper than 3".into()),
         };
@@ -1606,6 +1814,43 @@ mod squashfs_tests {
     }
 
     #[test]
+    fn nested_squashfs_keeps_the_container_depth() {
+        let leaf = squashfs_with(&[("bin/busybox", busybox())]);
+        let inner = squashfs_with(&[("inner.sqfs", leaf)]);
+        let outer = squashfs_with(&[("inner.sqfs", inner)]);
+        let small = ExtractBudget {
+            max_depth: 2,
+            ..ExtractBudget::default()
+        };
+        let extracted = extract("outer.sqfs", &outer, &small);
+        assert!(
+            extracted.members.is_empty(),
+            "the third filesystem must stay unopened"
+        );
+        assert_eq!(
+            extracted.stats.stopped.as_deref(),
+            Some("nesting deeper than 2")
+        );
+    }
+
+    #[test]
+    fn an_embedded_squashfs_obeys_a_zero_depth_budget() {
+        let image = squashfs_with(&[("bin/busybox", busybox())]);
+        let mut blob = vec![0; 7];
+        blob.extend_from_slice(&image);
+        let small = ExtractBudget {
+            max_depth: 0,
+            ..ExtractBudget::default()
+        };
+        let extracted = extract_embedded_squashfs("fw.bin", &blob, &small);
+        assert!(extracted.members.is_empty());
+        assert_eq!(
+            extracted.stats.stopped.as_deref(),
+            Some("nesting deeper than 0")
+        );
+    }
+
+    #[test]
     fn an_rpm_package_finds_the_files_in_its_payload() {
         // A minimal but structurally real RPM: lead, signature and main
         // headers (empty indexes), and an xz-compressed cpio payload —
@@ -1676,6 +1921,58 @@ mod cramfs_tests {
         std::fs::read(path).expect("committed fixture")
     }
 
+    fn block_table(size: u32, blocks: &[(u32, Vec<u8>)]) -> (Vec<u8>, CramfsInode) {
+        let mut bytes = vec![0; blocks.len() * 4];
+        for (index, (flags, block)) in blocks.iter().enumerate() {
+            bytes.extend_from_slice(block);
+            let pointer = bytes.len() as u32 | flags;
+            bytes[index * 4..index * 4 + 4].copy_from_slice(&pointer.to_le_bytes());
+        }
+        (
+            bytes,
+            CramfsInode {
+                mode: 0o100755,
+                size,
+                namelen: 0,
+                offset: 0,
+            },
+        )
+    }
+
+    fn zlib(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn cramfs_rejects_a_block_that_expands_past_one_page() {
+        let (bytes, node) = block_table(4096, &[(0, zlib(&vec![7; 8192]))]);
+        assert!(cramfs_file_bytes(&bytes, &node, &ExtractBudget::default()).is_none());
+    }
+
+    #[test]
+    fn cramfs_rejects_corrupt_compressed_data_instead_of_treating_it_as_raw() {
+        let (bytes, node) = block_table(8, &[(0, b"not zlib".to_vec())]);
+        assert!(cramfs_file_bytes(&bytes, &node, &ExtractBudget::default()).is_none());
+    }
+
+    #[test]
+    fn cramfs_rejects_an_uncompressed_block_larger_than_one_page() {
+        let (bytes, node) = block_table(4096, &[(0x8000_0000, vec![7; 8192])]);
+        assert!(cramfs_file_bytes(&bytes, &node, &ExtractBudget::default()).is_none());
+    }
+
+    #[test]
+    fn cramfs_holes_preserve_the_offsets_of_later_content() {
+        let (bytes, node) = block_table(4099, &[(0, Vec::new()), (0, zlib(b"end"))]);
+        let content = cramfs_file_bytes(&bytes, &node, &ExtractBudget::default()).unwrap();
+        assert_eq!(content.len(), 4099);
+        assert!(content[..4096].iter().all(|byte| *byte == 0));
+        assert_eq!(&content[4096..], b"end");
+    }
+
     #[test]
     fn a_real_mkfs_cramfs_image_yields_its_files() {
         let image = real_image();
@@ -1715,6 +2012,20 @@ mod cramfs_tests {
             extracted.stats.stopped.as_deref(),
             Some("more than 1 members")
         );
+    }
+
+    #[test]
+    fn cramfs_files_obey_the_per_member_cap() {
+        let image = real_image();
+        let small = ExtractBudget {
+            max_entry_bytes: 9,
+            ..ExtractBudget::default()
+        };
+        let extracted = extract("rootfs.cramfs", &image, &small);
+        assert_eq!(extracted.members.len(), 1);
+        assert_eq!(extracted.members[0].path, "rootfs.cramfs!/etc/app.conf");
+        assert_eq!(extracted.members[0].bytes, b"config\x00\x00\n");
+        assert_eq!(extracted.stats.skipped_oversized, 1);
     }
 
     #[test]
