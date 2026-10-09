@@ -13,6 +13,7 @@
 
 pub mod detect;
 pub mod grype;
+pub mod image_identity;
 pub mod native;
 pub mod registry;
 pub mod report;

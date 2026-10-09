@@ -932,14 +932,30 @@ impl FindingsRepository {
         let connection = self.connection.lock().map_err(persistence_error)?;
         let payload = connection
             .query_row(
-                "SELECT payload_json FROM canonical_projections WHERE run_id = ?1",
+                "SELECT p.payload_json, r.kind, r.state FROM canonical_projections p
+                 JOIN canonical_runs r ON r.id = p.run_id WHERE p.run_id = ?1",
                 [run_id.as_str()],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(persistence_error)?;
         payload
-            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .map(|(payload, kind, state)| {
+                let mut value: serde_json::Value =
+                    serde_json::from_str(&payload).map_err(persistence_error)?;
+                if matches!(kind.as_str(), "image" | "history") {
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("state".into(), serde_json::Value::String(state));
+                    }
+                }
+                Ok(value)
+            })
             .transpose()
     }
 
@@ -3395,6 +3411,8 @@ impl From<&Finding> for StoredFindingPayload {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredScanSummary {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    coverage_warnings: Vec<String>,
     #[serde(default)]
     git_context: Option<crate::git_context::GitEvidence>,
     path: String,
@@ -3416,6 +3434,7 @@ struct StoredScanSummary {
 impl From<&ScanSummary> for StoredScanSummary {
     fn from(summary: &ScanSummary) -> Self {
         Self {
+            coverage_warnings: summary.coverage_warnings.clone(),
             git_context: summary.git_context.clone(),
             path: summary.path.clone(),
             files_scanned: summary.files_scanned,
@@ -3438,6 +3457,7 @@ impl From<&ScanSummary> for StoredScanSummary {
 impl From<StoredScanSummary> for ScanSummary {
     fn from(summary: StoredScanSummary) -> Self {
         Self {
+            coverage_warnings: summary.coverage_warnings,
             git_context: summary.git_context,
             path: summary.path,
             files_scanned: summary.files_scanned,
@@ -3929,6 +3949,7 @@ fn parse_run_status(value: &str) -> Result<RunStatus, CommandError> {
 
 fn empty_summary() -> ScanSummary {
     ScanSummary {
+        coverage_warnings: Vec::new(),
         git_context: None,
         path: String::new(),
         files_scanned: 0,

@@ -40,20 +40,19 @@ fn is_printable(byte: u8) -> bool {
 
 /// Pull ASCII runs out of `bytes`, appending each followed by a newline.
 fn push_ascii_runs(bytes: &[u8], out: &mut String) {
-    let mut run = String::new();
-    for &byte in bytes {
-        if is_printable(byte) {
-            run.push(byte as char);
-            continue;
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if !is_printable(byte) {
+            if index - start >= MIN_RUN {
+                // Every byte in this span is printable ASCII.
+                out.push_str(std::str::from_utf8(&bytes[start..index]).expect("ASCII run"));
+                out.push('\n');
+            }
+            start = index + 1;
         }
-        if run.len() >= MIN_RUN {
-            out.push_str(&run);
-            out.push('\n');
-        }
-        run.clear();
     }
-    if run.len() >= MIN_RUN {
-        out.push_str(&run);
+    if bytes.len() - start >= MIN_RUN {
+        out.push_str(std::str::from_utf8(&bytes[start..]).expect("ASCII run"));
         out.push('\n');
     }
 }
@@ -62,33 +61,32 @@ fn push_ascii_runs(bytes: &[u8], out: &mut String) {
 /// the high byte. Both alignments are tried, because a run's parity is set by
 /// where it happens to sit in the file, not by the file's own alignment.
 fn push_utf16le_runs(bytes: &[u8], out: &mut String) {
-    for start in 0..2usize {
-        let mut run = String::new();
-        let mut index = start;
+    for alignment in 0..2usize {
+        let mut start = alignment;
+        let mut index = alignment;
         while index + 1 < bytes.len() {
-            let low = bytes[index];
-            let high = bytes[index + 1];
-            if high == 0 && is_printable(low) {
-                run.push(low as char);
-            } else {
-                if run.len() >= MIN_RUN {
-                    out.push_str(&run);
-                    out.push('\n');
-                }
-                run.clear();
+            if bytes[index + 1] != 0 || !is_printable(bytes[index]) {
+                push_utf16_span(bytes, start, index, out);
+                start = index + 2;
             }
             index += 2;
         }
-        if run.len() >= MIN_RUN {
-            out.push_str(&run);
-            out.push('\n');
+        push_utf16_span(bytes, start, index, out);
+    }
+}
+
+fn push_utf16_span(bytes: &[u8], start: usize, end: usize, out: &mut String) {
+    if (end - start) / 2 >= MIN_RUN {
+        for index in (start..end).step_by(2) {
+            out.push(bytes[index] as char);
         }
+        out.push('\n');
     }
 }
 
 /// Extract every run from an in-memory buffer.
 pub fn extract(bytes: &[u8]) -> String {
-    let mut out = String::new();
+    let mut out = String::with_capacity(bytes.len().saturating_add(1));
     push_ascii_runs(bytes, &mut out);
     push_utf16le_runs(bytes, &mut out);
     out
@@ -96,22 +94,69 @@ pub fn extract(bytes: &[u8]) -> String {
 
 /// Read at most [`MAX_FILE_BYTES`] from `reader`, reporting whether there was
 /// more.
-pub fn read_capped<R: Read>(mut reader: R) -> std::io::Result<Capped> {
+pub fn read_capped<R: Read>(reader: R) -> std::io::Result<Capped> {
+    read_capped_limit(reader, MAX_FILE_BYTES)
+}
+
+/// Read a bounded prefix while observing cancellation between 64 KiB reads.
+pub fn read_capped_cancellable<R: Read>(
+    reader: R,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<Capped> {
+    read_capped_limit_with_cancel(reader, MAX_FILE_BYTES, Some(cancel))
+}
+
+fn read_capped_limit<R: Read>(reader: R, limit: usize) -> std::io::Result<Capped> {
+    read_capped_limit_with_cancel(reader, limit, None)
+}
+
+fn read_capped_limit_with_cancel<R: Read>(
+    mut reader: R,
+    limit: usize,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> std::io::Result<Capped> {
     let mut bytes = Vec::new();
-    let read = (&mut reader)
-        .take(MAX_FILE_BYTES as u64)
-        .read_to_end(&mut bytes)?;
-
-    // One more byte would mean there was more file than we agreed to read.
+    let mut chunk = [0; 64 * 1024];
+    while bytes.len() < limit {
+        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err(std::io::Error::other("scan cancelled"));
+        }
+        let remaining = (limit - bytes.len()).min(chunk.len());
+        let read = match reader.read(&mut chunk[..remaining]) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => other?,
+        };
+        if read == 0 {
+            break;
+        }
+        let needed = bytes.len() + read;
+        if needed > bytes.capacity() {
+            let capacity = needed.max(bytes.capacity().saturating_mul(2)).min(limit);
+            bytes
+                .try_reserve_exact(capacity - bytes.len())
+                .map_err(std::io::Error::other)?;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
     let mut probe = [0u8; 1];
-    let truncated = read == MAX_FILE_BYTES && reader.read(&mut probe)? > 0;
-
+    let truncated = bytes.len() == limit && reader.read(&mut probe)? > 0;
     Ok(Capped { bytes, truncated })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capped_reader_does_not_double_its_buffer_at_the_boundary() {
+        let capped = read_capped_limit(&vec![7; 128 * 1024][..], 64 * 1024).unwrap();
+        assert_eq!(capped.bytes.len(), 64 * 1024);
+        assert!(capped.truncated);
+        assert!(
+            capped.bytes.capacity() <= 64 * 1024,
+            "a full buffer's probe must not reserve a second buffer"
+        );
+    }
 
     #[test]
     fn runs_shorter_than_the_minimum_are_dropped() {

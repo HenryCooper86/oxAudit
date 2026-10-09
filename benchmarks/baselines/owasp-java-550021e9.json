@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "benchmarkCommit": "550021e915c06cbcf994d97bc258128b78d890db",
+    "evaluator": "owasp-java-cwe-v1",
+    "expectationsSha256": "1809f6a690c6cf7dd6685df6ebe2eef8fe3ca93d19a7ca0ce45987ca4f5d78e1",
+    "toolCommit": "1e27c8f0d46abc319e78e643bb5c53e8e1339a92",
+    "toolWorkingTreeDirty": true,
+    "cliSha256": "e426f1f86a7d04f483d04dcae70f34a8eb3811740dd0568cc1b4fc7ad8782e42",
+    "measuredAt": "2026-10-09T09:02:16.988Z"
+  },
+  "report": {
+    "suite": "OWASP Benchmark 1.2",
+    "cases": 2740,
+    "coveredTotals": {
+      "truePositives": 1346,
+      "falsePositives": 724,
+      "trueNegatives": 601,
+      "falseNegatives": 69
+    },
+    "uncoveredTotals": {
+      "truePositives": 0,
+      "falsePositives": 0,
+      "trueNegatives": 0,
+      "falseNegatives": 0
+    },
+    "categories": [
+      {
+        "category": "cmdi",
+        "cwe": 78,
+        "covered": true,
+        "truePositives": 126,
+        "falsePositives": 125,
+        "trueNegatives": 0,
+        "falseNegatives": 0
+      },
+      {
+        "category": "crypto",
+        "cwe": 327,
+        "covered": true,
+        "truePositives": 130,
+        "falsePositives": 0,
+        "trueNegatives": 116,
+        "falseNegatives": 0
+      },
+      {
+        "category": "hash",
+        "cwe": 328,
+        "covered": true,
+        "truePositives": 129,
+        "falsePositives": 0,
+        "trueNegatives": 107,
+        "falseNegatives": 0
+      },
+      {
+        "category": "ldapi",
+        "cwe": 90,
+        "covered": true,
+        "truePositives": 27,
+        "falsePositives": 32,
+        "trueNegatives": 0,
+        "falseNegatives": 0
+      },
+      {
+        "category": "pathtraver",
+        "cwe": 22,
+        "covered": true,
+        "truePositives": 123,
+        "falsePositives": 114,
+        "trueNegatives": 21,
+        "falseNegatives": 10
+      },
+      {
+        "category": "securecookie",
+        "cwe": 614,
+        "covered": true,
+        "truePositives": 36,
+        "falsePositives": 0,
+        "trueNegatives": 31,
+        "falseNegatives": 0
+      },
+      {
+        "category": "sqli",
+        "cwe": 89,
+        "covered": true,
+        "truePositives": 272,
+        "falsePositives": 232,
+        "trueNegatives": 0,
+        "falseNegatives": 0
+      },
+      {
+        "category": "trustbound",
+        "cwe": 501,
+        "covered": true,
+        "truePositives": 33,
+        "falsePositives": 16,
+        "trueNegatives": 27,
+        "falseNegatives": 50
+      },
+      {
+        "category": "weakrand",
+        "cwe": 330,
+        "covered": true,
+        "truePositives": 218,
+        "falsePositives": 0,
+        "trueNegatives": 275,
+        "falseNegatives": 0
+      },
+      {
+        "category": "xpathi",
+        "cwe": 643,
+        "covered": true,
+        "truePositives": 15,
+        "falsePositives": 20,
+        "trueNegatives": 0,
+        "falseNegatives": 0
+      },
+      {
+        "category": "xss",
+        "cwe": 79,
+        "covered": true,
+        "truePositives": 237,
+        "falsePositives": 185,
+        "trueNegatives": 24,
+        "falseNegatives": 9
+      }
+    ],
+    "runtimeMs": 13080
+  },
+  "thresholds": {
+    "maxPrecisionDrop": 0.005,
+    "maxRecallDrop": 0.005,
+    "maxFalsePositiveRateIncrease": 0.005,
+    "maxYoudenDrop": 0.01
+  },
+  "baselineNotes": {
+    "build": "fresh final macOS arm64 debug CLI with default grammars and server feature; binary checksum is authoritative",
+    "purpose": "pinned per-category detection baseline; timing is not a cross-host performance budget",
+    "source": "record-quality-benchmark.mjs actual final CLI run; all category counts matched the prior fresh baseline and its gate passed"
+  }
+}

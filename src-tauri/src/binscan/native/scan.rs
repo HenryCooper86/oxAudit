@@ -40,6 +40,75 @@ pub const NATIVE: &str = "oxaudit";
 pub const MAX_BINARY_FILES: usize = 100_000;
 pub const MAX_BINARY_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 pub const NATIVE_WORKERS: usize = 4;
+/// Payload reservation includes input, two buffers per extraction level
+/// (nested member and RPM staging), and at most two input sizes of strings.
+/// Codec internals and result metadata are outside this payload allowance.
+pub const NATIVE_WORKSPACE_BYTES: usize = (2 * 3 + 3) * (strings::MAX_FILE_BYTES + 1) + 1024 * 1024;
+pub const NATIVE_RETAINED_BYTES: usize = 2 * NATIVE_WORKSPACE_BYTES;
+
+fn native_allowance() -> &'static NativeAllowance {
+    static ALLOWANCE: std::sync::OnceLock<NativeAllowance> = std::sync::OnceLock::new();
+    ALLOWANCE.get_or_init(|| NativeAllowance::new(NATIVE_RETAINED_BYTES))
+}
+
+struct NativeAllowance {
+    limit: usize,
+    retained: std::sync::Mutex<usize>,
+    available: std::sync::Condvar,
+}
+
+struct NativeReservation<'a> {
+    allowance: &'a NativeAllowance,
+    bytes: usize,
+}
+
+impl NativeAllowance {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            retained: std::sync::Mutex::new(0),
+            available: std::sync::Condvar::new(),
+        }
+    }
+
+    fn acquire(&self, bytes: usize, cancel: &AtomicBool) -> Result<NativeReservation<'_>, String> {
+        if bytes > self.limit {
+            return Err("native workspace exceeds the shared payload allowance".into());
+        }
+        let mut retained = self
+            .retained
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("scan cancelled".into());
+            }
+            if bytes <= self.limit.saturating_sub(*retained) {
+                *retained += bytes;
+                return Ok(NativeReservation {
+                    allowance: self,
+                    bytes,
+                });
+            }
+            let (next, _) = self
+                .available
+                .wait_timeout(retained, std::time::Duration::from_millis(50))
+                .unwrap_or_else(|error| error.into_inner());
+            retained = next;
+        }
+    }
+}
+
+impl Drop for NativeReservation<'_> {
+    fn drop(&mut self) {
+        *self
+            .allowance
+            .retained
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) -= self.bytes;
+        self.allowance.available.notify_all();
+    }
+}
 
 /// How a component was recognized, strongest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -129,11 +198,28 @@ pub fn scan_file_as(
 }
 
 fn scan_reader_as(
+    reader: impl std::io::Read,
+    path: &Path,
+    alias: Option<&str>,
+    signatures: &SignatureSet,
+    notes: &mut Vec<String>,
+) -> Vec<Detection> {
+    let mut distro = None;
+    let cancel = AtomicBool::new(false);
+    let mut detections =
+        scan_reader_in_context(reader, path, alias, signatures, notes, &mut distro, &cancel);
+    finish_metadata(&mut detections, &distro, notes);
+    detections
+}
+
+fn scan_reader_in_context(
     mut reader: impl std::io::Read,
     path: &Path,
     alias: Option<&str>,
     signatures: &SignatureSet,
     notes: &mut Vec<String>,
+    distro: &mut Option<DistroIdentity>,
+    cancel: &AtomicBool,
 ) -> Vec<Detection> {
     use std::io::Read;
 
@@ -150,10 +236,43 @@ fn scan_reader_as(
         ));
         return Vec::new();
     }
-    if !filetype::classify(&prefix).is_scannable() {
+    let classification = filetype::classify(&prefix);
+    if !classification.is_scannable() {
         return Vec::new();
     }
-    let extracted = match strings::read_capped(prefix.as_slice().chain(reader)) {
+    if classification == Classification::Archive(filetype::ArchiveKind::Tar) {
+        let name = alias.map(str::to_owned).unwrap_or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+        return scan_layer_reader(
+            &mut prefix.as_slice().chain(reader),
+            path,
+            &name,
+            signatures,
+            notes,
+            distro,
+            cancel,
+        );
+    }
+    let reservation = if matches!(
+        classification,
+        Classification::Archive(_) | Classification::OpaqueBinary
+    ) {
+        NATIVE_WORKSPACE_BYTES
+    } else {
+        3 * (strings::MAX_FILE_BYTES + 1) + 1024 * 1024
+    };
+    let _reservation = match native_allowance().acquire(reservation, cancel) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            notes.push(error);
+            return Vec::new();
+        }
+    };
+    let extracted = match strings::read_capped_cancellable(prefix.as_slice().chain(reader), cancel)
+    {
         Ok(extracted) => extracted,
         Err(error) => {
             notes.push(format!(
@@ -164,26 +283,30 @@ fn scan_reader_as(
         }
     };
 
-    let display = path.to_string_lossy().into_owned();
+    let display = alias
+        .map(str::to_owned)
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
     let file_name = alias.map(str::to_owned).unwrap_or_else(|| {
         path.file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default()
     });
-    let mut distro = None;
-    scan_buffer(
+    scan_buffer_at_depth(
         &display,
         &file_name,
         &extracted.bytes,
         extracted.truncated,
         signatures,
         notes,
-        &mut distro,
+        distro,
+        0,
+        cancel,
     )
 }
 
 /// The scan of one already-read buffer: classification, extraction when the
 /// buffer is an archive, package-note and signature detection otherwise.
+#[cfg(test)]
 fn scan_buffer(
     display: &str,
     file_name: &str,
@@ -192,6 +315,33 @@ fn scan_buffer(
     signatures: &SignatureSet,
     notes: &mut Vec<String>,
     distro: &mut Option<DistroIdentity>,
+) -> Vec<Detection> {
+    let mut detections = scan_buffer_at_depth(
+        display,
+        file_name,
+        bytes,
+        truncated,
+        signatures,
+        notes,
+        distro,
+        0,
+        &AtomicBool::new(false),
+    );
+    finish_metadata(&mut detections, distro, notes);
+    detections
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_buffer_at_depth(
+    display: &str,
+    file_name: &str,
+    bytes: &[u8],
+    truncated: bool,
+    signatures: &SignatureSet,
+    notes: &mut Vec<String>,
+    distro: &mut Option<DistroIdentity>,
+    depth: usize,
+    cancel: &AtomicBool,
 ) -> Vec<Detection> {
     if truncated {
         notes.push(format!(
@@ -209,31 +359,71 @@ fn scan_buffer(
     // filesystem inside is the entire finding surface. The search is the
     // smallest useful slice of binwalk: a bounded sliding magic search,
     // behind the same budgets as every other container.
-    if classification == Classification::OpaqueBinary {
-        let budget = extract::ExtractBudget::default();
-        let embedded = extract::extract_embedded_squashfs(file_name, bytes, &budget);
-        if let Some(note) = embedded.stats.note(display) {
+    let budget = extract::ExtractBudget {
+        max_depth: extract::ExtractBudget::default()
+            .max_depth
+            .saturating_sub(depth),
+        ..extract::ExtractBudget::default()
+    };
+    if classification == Classification::OpaqueBinary
+        || matches!(classification, Classification::Archive(_))
+    {
+        let mut detections = Vec::new();
+        let mut maven_artifacts = 0;
+        let mut maven_bounded = false;
+        let mut visitor = |member: extract::ExtractedMember| {
+            if cancel.load(Ordering::Relaxed) {
+                return false;
+            }
+            scan_member(
+                &member,
+                signatures,
+                notes,
+                distro,
+                &mut detections,
+                &mut maven_artifacts,
+                &mut maven_bounded,
+                depth + member.depth,
+                cancel,
+            );
+            !cancel.load(Ordering::Relaxed)
+        };
+        let stats = if classification == Classification::OpaqueBinary {
+            extract::extract_embedded_squashfs_visit_cancellable(
+                file_name,
+                bytes,
+                &budget,
+                cancel,
+                &mut visitor,
+            )
+        } else {
+            extract::extract_visit_cancellable(file_name, bytes, &budget, cancel, &mut visitor)
+        };
+        if let Some(note) = stats.note(display) {
             notes.push(note);
         }
-        if !embedded.members.is_empty() {
-            return scan_members(&embedded.members, signatures, notes, distro);
+        if stats.entries > 0 {
+            annotate_packages(&mut detections, distro);
+            supersede_manifest_identities(&mut detections);
+            return detections;
+        }
+        if matches!(classification, Classification::Archive(_)) {
+            notes.push(format!("{display}: no members were extracted; scanning raw archive bytes only; member coverage is unavailable"));
         }
     }
 
-    if let Classification::Archive(_) = classification {
-        let budget = extract::ExtractBudget::default();
-        let extracted = extract::extract(file_name, bytes, &budget);
-        if let Some(note) = extracted.stats.note(display) {
-            notes.push(note);
-        }
-        if !extracted.members.is_empty() {
-            return scan_members(&extracted.members, signatures, notes, distro);
-        }
-        // An archive that yielded nothing — empty, unreadable, or stopped by
-        // a budget before the first member — falls back to scanning its own
-        // bytes, which is what this scanner did before extraction existed.
-        notes.push(format!("{display}: no members were extracted; scanning raw archive bytes only; member coverage is unavailable"));
+    // The compatible in-memory layer API can borrow inputs larger than the
+    // ordinary file cap. Archive extraction remains member-bounded, and a
+    // raw fallback must also bound its additional string buffer.
+    let raw_truncated = bytes.len() > strings::MAX_FILE_BYTES;
+    if raw_truncated {
+        notes.push(format!(
+            "{display}: scanned only the first {} bytes (prefix); later content was not examined",
+            strings::MAX_FILE_BYTES
+        ));
     }
+    let bytes = &bytes[..bytes.len().min(strings::MAX_FILE_BYTES)];
+    let truncated = truncated || raw_truncated;
 
     let mut detections = Vec::new();
 
@@ -360,158 +550,161 @@ fn candidates_with_budget(
     Ok(files)
 }
 
-/// Fold detections into one component per (product, version).
-///
-/// A product detected both with and without a version stays split: "openssl,
-/// version unknown" is a different statement from "openssl 3.0.2", and merging
-/// them would let the unknown disappear behind the known one.
-/// One extracted member list: package databases and os-release become
-/// detections and identity, everything else recurses through
-/// [`scan_buffer`].
-///
-/// os-release is read in a pre-pass so a package database is annotated even
-/// when the archive orders it after the database — `etc/` before `var/lib/`
-/// is convention, not a contract. The distro context is shared across the
-/// whole target, so an identity discovered in one layer of a saved image
-/// annotates package databases found in later layers too; an image that only
-/// ever states its identity after its databases leaves them unannotated, and
-/// that is said out loud rather than guessed around.
-fn scan_members(
-    members: &[extract::ExtractedMember],
+/// Consume one decoded member immediately. Metadata becomes detections,
+/// which can be annotated after later identity members arrive.
+#[allow(clippy::too_many_arguments)]
+fn scan_member(
+    member: &extract::ExtractedMember,
     signatures: &SignatureSet,
     notes: &mut Vec<String>,
     distro: &mut Option<DistroIdentity>,
-) -> Vec<Detection> {
-    for member in members {
-        if os_packages::is_os_release_path(&member.path) {
-            match os_packages::parse_os_release(&member.bytes) {
-                os_packages::OsReleaseMatch::Distro(identity) => {
-                    if distro.is_none() {
-                        *distro = Some(identity);
-                    }
-                }
-                os_packages::OsReleaseMatch::Unsupported(reason) => notes.push(reason),
-                os_packages::OsReleaseMatch::NotOsRelease => {}
+    detections: &mut Vec<Detection>,
+    maven_artifacts: &mut usize,
+    maven_bounded: &mut bool,
+    depth: usize,
+    cancel: &AtomicBool,
+) {
+    if os_packages::is_os_release_path(&member.path) {
+        match os_packages::parse_os_release(&member.bytes) {
+            os_packages::OsReleaseMatch::Distro(identity) if distro.is_none() => {
+                *distro = Some(identity)
             }
+            os_packages::OsReleaseMatch::Unsupported(reason) => notes.push(reason),
+            _ => {}
         }
+        return;
     }
-
-    let mut detections = Vec::new();
-    let mut unannotated_packages = 0usize;
-    let mut maven_artifacts = 0usize;
-    let mut maven_bounded = false;
-    for member in members {
-        let package_list = if os_packages::is_dpkg_status_path(&member.path) {
-            Some(os_packages::parse_dpkg_status(&member.bytes))
-        } else if os_packages::is_apk_installed_path(&member.path) {
-            Some(os_packages::parse_apk_installed(&member.bytes))
-        } else {
-            None
-        };
-        if let Some(packages) = package_list {
-            if packages.len() >= os_packages::MAX_PACKAGES_PER_DATABASE {
+    let package_list = if os_packages::is_dpkg_status_path(&member.path) {
+        Some(os_packages::parse_dpkg_status(&member.bytes))
+    } else if os_packages::is_apk_installed_path(&member.path) {
+        Some(os_packages::parse_apk_installed(&member.bytes))
+    } else {
+        None
+    };
+    if let Some(packages) = package_list {
+        if packages.len() >= os_packages::MAX_PACKAGES_PER_DATABASE {
+            notes.push(format!(
+                "package database {} is bounded at {} packages; later entries are not reported",
+                member.path,
+                os_packages::MAX_PACKAGES_PER_DATABASE
+            ));
+        }
+        let ecosystem = distro
+            .as_ref()
+            .map(|identity| identity.osv_ecosystem.clone());
+        for (name, version) in packages {
+            detections.push(Detection {
+                vendor: String::new(),
+                product: name.clone(),
+                version: Some(version.clone()),
+                raw_version: Some(version),
+                ecosystem: ecosystem.clone(),
+                package_name: Some(name),
+                path: member.path.clone(),
+                source: DetectionSource::OsPackageDatabase,
+                truncated: false,
+            });
+        }
+        return;
+    }
+    if is_manifest_path(&member.path) {
+        // Inventory only: a manifest declares a name and a version but
+        // never Maven coordinates or an ecosystem, and an advisory
+        // query on a guessed identity would answer the wrong package.
+        if let Some((name, version)) = parse_manifest_identity(&member.bytes) {
+            detections.push(Detection {
+                vendor: String::new(),
+                product: name,
+                version: Some(version.clone()),
+                raw_version: Some(version),
+                ecosystem: None,
+                package_name: None,
+                path: member.path.clone(),
+                source: DetectionSource::JarManifest,
+                truncated: false,
+            });
+        }
+        return;
+    }
+    if is_pom_properties_path(&member.path) {
+        if *maven_artifacts >= MAX_MAVEN_ARTIFACTS {
+            if !*maven_bounded {
+                *maven_bounded = true;
                 notes.push(format!(
-                    "package database {} is bounded at {} packages; later entries are not reported",
-                    member.path,
-                    os_packages::MAX_PACKAGES_PER_DATABASE
-                ));
-            }
-            if distro.is_none() && !packages.is_empty() {
-                unannotated_packages += packages.len();
-            }
-            let ecosystem = distro
-                .as_ref()
-                .map(|identity| identity.osv_ecosystem.clone());
-            for (name, version) in packages {
-                detections.push(Detection {
-                    vendor: String::new(),
-                    product: name.clone(),
-                    version: Some(version.clone()),
-                    raw_version: Some(version),
-                    ecosystem: ecosystem.clone(),
-                    package_name: Some(name),
-                    path: member.path.clone(),
-                    source: DetectionSource::OsPackageDatabase,
-                    truncated: false,
-                });
-            }
-            continue;
-        }
-        if os_packages::is_os_release_path(&member.path) {
-            continue;
-        }
-        if is_manifest_path(&member.path) {
-            // Inventory only: a manifest declares a name and a version but
-            // never Maven coordinates or an ecosystem, and an advisory
-            // query on a guessed identity would answer the wrong package.
-            if let Some((name, version)) = parse_manifest_identity(&member.bytes) {
-                detections.push(Detection {
-                    vendor: String::new(),
-                    product: name,
-                    version: Some(version.clone()),
-                    raw_version: Some(version),
-                    ecosystem: None,
-                    package_name: None,
-                    path: member.path.clone(),
-                    source: DetectionSource::JarManifest,
-                    truncated: false,
-                });
-            }
-            continue;
-        }
-        if is_pom_properties_path(&member.path) {
-            if maven_artifacts >= MAX_MAVEN_ARTIFACTS {
-                if !maven_bounded {
-                    maven_bounded = true;
-                    notes.push(format!(
                         "Maven coordinates are bounded at {MAX_MAVEN_ARTIFACTS} artifacts per archive; later pom.properties members are not reported"
                     ));
-                }
-                continue;
             }
-            if let Some((group, artifact, version)) = parse_pom_properties(&member.bytes) {
-                // OSV's Maven ecosystem keys on group:artifact; the bare
-                // artifactId would answer for whichever project owns it.
-                let coordinates = format!("{group}:{artifact}");
-                detections.push(Detection {
-                    vendor: String::new(),
-                    product: coordinates.clone(),
-                    version: Some(version.clone()),
-                    raw_version: Some(version),
-                    ecosystem: Some("Maven".to_string()),
-                    package_name: Some(coordinates),
-                    path: member.path.clone(),
-                    source: DetectionSource::PomProperties,
-                    truncated: false,
-                });
-                maven_artifacts += 1;
-            }
-            continue;
+            return;
         }
-        let member_name = member
-            .path
-            .rsplit('/')
-            .next()
-            .unwrap_or(&member.path)
-            .to_string();
-        detections.extend(scan_buffer(
-            &member.path,
-            &member_name,
-            &member.bytes,
-            false,
-            signatures,
-            notes,
-            distro,
-        ));
+        if let Some((group, artifact, version)) = parse_pom_properties(&member.bytes) {
+            // OSV's Maven ecosystem keys on group:artifact; the bare
+            // artifactId would answer for whichever project owns it.
+            let coordinates = format!("{group}:{artifact}");
+            detections.push(Detection {
+                vendor: String::new(),
+                product: coordinates.clone(),
+                version: Some(version.clone()),
+                raw_version: Some(version),
+                ecosystem: Some("Maven".to_string()),
+                package_name: Some(coordinates),
+                path: member.path.clone(),
+                source: DetectionSource::PomProperties,
+                truncated: false,
+            });
+            *maven_artifacts += 1;
+        }
+        return;
     }
-    if unannotated_packages > 0 {
-        notes.push(format!(
-            "{unannotated_packages} package(s) from a package database carry no distribution identity (no usable os-release in this target); they are reported as components but not matched against a distribution advisory source"
-        ));
+    let member_name = member
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&member.path)
+        .to_string();
+    detections.extend(scan_buffer_at_depth(
+        &member.path,
+        &member_name,
+        &member.bytes,
+        false,
+        signatures,
+        notes,
+        distro,
+        depth,
+        cancel,
+    ));
+}
+
+fn annotate_packages(detections: &mut [Detection], distro: &Option<DistroIdentity>) {
+    if let Some(identity) = distro {
+        for detection in detections {
+            if detection.source == DetectionSource::OsPackageDatabase
+                && detection.ecosystem.is_none()
+            {
+                detection.ecosystem = Some(identity.osv_ecosystem.clone());
+            }
+        }
     }
-    // A JAR that also carries Maven coordinates does not need its weaker
-    // manifest identity: when the manifest's name is that JAR's artifact
-    // id, the coordinates already cover it with a queryable identity.
+}
+
+fn finish_metadata(
+    detections: &mut Vec<Detection>,
+    distro: &Option<DistroIdentity>,
+    notes: &mut Vec<String>,
+) {
+    annotate_packages(detections, distro);
+    let unannotated = detections
+        .iter()
+        .filter(|detection| {
+            detection.source == DetectionSource::OsPackageDatabase && detection.ecosystem.is_none()
+        })
+        .count();
+    if unannotated > 0 {
+        notes.push(format!("{unannotated} package(s) from a package database carry no distribution identity (no usable os-release in this target); they are reported as components but not matched against a distribution advisory source"));
+    }
+    supersede_manifest_identities(detections);
+}
+
+fn supersede_manifest_identities(detections: &mut Vec<Detection>) {
     let maven_artifacts: Vec<String> = detections
         .iter()
         .filter(|detection| detection.source == DetectionSource::PomProperties)
@@ -530,7 +723,6 @@ fn scan_members(
                 .iter()
                 .any(|artifact| *artifact == detection.product.to_ascii_lowercase())
     });
-    detections
 }
 
 /// Cap on Maven artifacts read from one member list, so a crafted archive
@@ -737,12 +929,26 @@ pub fn scan(
                     return Vec::new().into_iter();
                 }
                 let mut file_notes = Vec::new();
-                let detections = scan_file_as(
-                    path,
-                    oci_aliases.get(path).map(String::as_str),
-                    signatures,
-                    &mut file_notes,
-                );
+                let mut distro = None;
+                let mut detections = match std::fs::File::open(path) {
+                    Ok(file) => scan_reader_in_context(
+                        file,
+                        path,
+                        oci_aliases.get(path).map(String::as_str),
+                        signatures,
+                        &mut file_notes,
+                        &mut distro,
+                        &cancel,
+                    ),
+                    Err(error) => {
+                        file_notes.push(format!(
+                            "{}: cannot open file; not scanned: {error}",
+                            path.display()
+                        ));
+                        Vec::new()
+                    }
+                };
+                finish_metadata(&mut detections, &distro, &mut file_notes);
                 if !file_notes.is_empty() {
                     if let Ok(mut notes) = extraction_notes.lock() {
                         notes.extend(file_notes);
@@ -805,7 +1011,8 @@ pub fn scan_image_layers(
         }
         on_progress(format!("scanning layer {}/{}", index + 1, layers.len()));
         let chain = format!("{display}!{}", layer.name);
-        detections.extend(scan_buffer(
+        let _reservation = native_allowance().acquire(NATIVE_WORKSPACE_BYTES, cancel)?;
+        detections.extend(scan_buffer_at_depth(
             &chain,
             &chain,
             &layer.bytes,
@@ -813,6 +1020,8 @@ pub fn scan_image_layers(
             signatures,
             &mut notes,
             &mut distro,
+            0,
+            cancel,
         ));
     }
 
@@ -820,6 +1029,153 @@ pub fn scan_image_layers(
         return Err("scan cancelled".into());
     }
 
+    finish_metadata(&mut detections, &distro, &mut notes);
+    let queries = super::enrich::queries_from(&detections);
+    let components = fold(detections);
+    on_progress(format!("{} components detected", components.len()));
+
+    Ok(NativeScan {
+        queries,
+        notes,
+        result: BinaryScanResult {
+            target: display.to_string(),
+            summary: BinaryScanSummary {
+                components: components.len(),
+                ..BinaryScanSummary::default()
+            },
+            components,
+            database_last_updated: None,
+            duration_ms: started.elapsed().as_millis() as u64,
+            scanners: vec![NATIVE.to_string()],
+            semantic_analysis: None,
+        },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_layer_reader(
+    mut reader: &mut dyn std::io::Read,
+    path: &Path,
+    chain: &str,
+    signatures: &SignatureSet,
+    notes: &mut Vec<String>,
+    distro: &mut Option<DistroIdentity>,
+    cancel: &AtomicBool,
+) -> Vec<Detection> {
+    use std::io::Read;
+    let mut prefix = Vec::with_capacity(PROBE_BYTES);
+    if let Err(error) = (&mut reader)
+        .take(PROBE_BYTES as u64)
+        .read_to_end(&mut prefix)
+    {
+        notes.push(format!("{chain}: cannot read layer; not scanned: {error}"));
+        return Vec::new();
+    }
+    let kind = match filetype::classify(&prefix) {
+        Classification::Archive(
+            kind @ (filetype::ArchiveKind::Tar
+            | filetype::ArchiveKind::Gzip
+            | filetype::ArchiveKind::Bzip2
+            | filetype::ArchiveKind::Xz
+            | filetype::ArchiveKind::Zstd),
+        ) => kind,
+        _ => {
+            return scan_reader_in_context(
+                prefix.as_slice().chain(reader),
+                path,
+                Some(chain),
+                signatures,
+                notes,
+                distro,
+                cancel,
+            )
+        }
+    };
+    let _reservation = match native_allowance().acquire(NATIVE_WORKSPACE_BYTES, cancel) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            notes.push(error);
+            return Vec::new();
+        }
+    };
+    let mut detections = Vec::new();
+    let mut maven_artifacts = 0;
+    let mut maven_bounded = false;
+    let mut visitor = |member: extract::ExtractedMember| {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        scan_member(
+            &member,
+            signatures,
+            notes,
+            distro,
+            &mut detections,
+            &mut maven_artifacts,
+            &mut maven_bounded,
+            member.depth,
+            cancel,
+        );
+        !cancel.load(Ordering::Relaxed)
+    };
+    let stats = extract::extract_layer_visit(
+        chain,
+        &mut prefix.as_slice().chain(reader),
+        kind,
+        &extract::ExtractBudget::default(),
+        cancel,
+        &mut visitor,
+    );
+    if let Some(note) = stats.note(chain) {
+        notes.push(note);
+    }
+    if stats.entries == 0 {
+        notes.push(format!(
+            "{chain}: no layer members were extracted; member coverage is unavailable"
+        ));
+    }
+    annotate_packages(&mut detections, distro);
+    supersede_manifest_identities(&mut detections);
+    detections
+}
+
+/// Scan verified registry layers from owned spool files, in manifest order.
+/// Tar and compressed tar layers stream without a whole-layer buffer, under
+/// the same process-wide native payload allowance used by directory scans.
+/// The caller owns spool cleanup.
+pub fn scan_image_layer_files(
+    display: &str,
+    layers: &[(String, std::path::PathBuf)],
+    cancel: &Arc<AtomicBool>,
+    on_progress: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<NativeScan, String> {
+    let started = std::time::Instant::now();
+    let signatures: &SignatureSet = &SIGNATURES;
+    let mut notes = Vec::new();
+    let mut detections = Vec::new();
+    let mut distro = None;
+    for (index, (name, path)) in layers.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("scan cancelled".into());
+        }
+        on_progress(format!("scanning layer {}/{}", index + 1, layers.len()));
+        let mut file = std::fs::File::open(path)
+            .map_err(|error| format!("cannot open registry layer {name}: {error}"))?;
+        let chain = format!("{display}!{name}");
+        detections.extend(scan_layer_reader(
+            &mut file,
+            path,
+            &chain,
+            signatures,
+            &mut notes,
+            &mut distro,
+            cancel,
+        ));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("scan cancelled".into());
+    }
+    finish_metadata(&mut detections, &distro, &mut notes);
     let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
     on_progress(format!("{} components detected", components.len()));
@@ -909,6 +1265,203 @@ fn oci_aliases_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_native_allowance_waits_until_a_retained_workspace_is_released() {
+        let allowance = Arc::new(NativeAllowance::new(64));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let first = allowance.acquire(64, &cancel).unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker_allowance = allowance.clone();
+        let worker_cancel = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            let _permit = worker_allowance.acquire(64, &worker_cancel).unwrap();
+            send.send(()).unwrap();
+        });
+        assert!(
+            receive
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "a second workspace must wait while the allowance is exhausted"
+        );
+        drop(first);
+        receive
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        worker.join().unwrap();
+        assert_eq!(*allowance.retained.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn cancellation_while_waiting_for_native_memory_releases_no_unowned_bytes() {
+        let allowance = Arc::new(NativeAllowance::new(64));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let first = allowance.acquire(64, &cancel).unwrap();
+        let worker_allowance = allowance.clone();
+        let worker_cancel = cancel.clone();
+        let worker =
+            std::thread::spawn(move || worker_allowance.acquire(64, &worker_cancel).err().unwrap());
+        cancel.store(true, Ordering::Relaxed);
+        assert!(worker.join().unwrap().contains("cancelled"));
+        assert_eq!(*allowance.retained.lock().unwrap(), 64);
+        drop(first);
+        assert_eq!(*allowance.retained.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn legacy_in_memory_layers_bound_raw_fallback_and_report_the_prefix() {
+        let mut bytes = vec![0; strings::MAX_FILE_BYTES + 16];
+        let banner = b"\x7fELF\x02\x01\x01\0BusyBox is a multi-call binary\0BusyBox v1.38.0\0";
+        bytes[..banner.len()].copy_from_slice(banner);
+        let layers = [super::super::super::registry::Layer {
+            name: "layer-0000.tar".into(),
+            bytes,
+        }];
+        let scanned = scan_image_layers(
+            "legacy-image",
+            &layers,
+            &Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        assert!(scanned
+            .result
+            .components
+            .iter()
+            .any(|c| c.product == "busybox" && c.version == "1.38.0"));
+        assert!(scanned.notes.iter().any(|note| note.contains("prefix") && note.contains("later content")),
+            "caller-owned oversized raw layers still require bounded string extraction and honest coverage");
+    }
+
+    #[test]
+    fn an_image_identity_in_a_later_layer_annotates_earlier_package_inventory() {
+        let layers = vec![
+            super::super::super::registry::Layer {
+                name: "layer-0000.tar".into(),
+                bytes: tar_with(
+                    "var/lib/dpkg/status",
+                    b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
+                ),
+            },
+            super::super::super::registry::Layer {
+                name: "layer-0001.tar".into(),
+                bytes: tar_with("etc/os-release", b"ID=debian\nVERSION_ID=12\n"),
+            },
+        ];
+        let scanned = scan_image_layers(
+            "image",
+            &layers,
+            &Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let package = scanned
+            .queries
+            .iter()
+            .find(|q| q.product == "libc6")
+            .unwrap();
+        assert_eq!(package.ecosystem.as_deref(), Some("Debian:12"));
+        assert!(scanned
+            .notes
+            .iter()
+            .all(|note| !note.contains("no distribution identity")));
+    }
+
+    #[test]
+    fn a_spooled_tar_layer_detects_members_beyond_the_file_prefix_cap() {
+        use std::io::{Seek, SeekFrom, Write};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("large.tar");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let size = strings::MAX_FILE_BYTES as u64 + 512;
+        let mut header = tar::Header::new_gnu();
+        header.set_path("oversized.bin").unwrap();
+        header.set_mode(0o755);
+        header.set_size(size);
+        header.set_cksum();
+        file.write_all(header.as_bytes()).unwrap();
+        file.seek(SeekFrom::Current(size as i64)).unwrap();
+        let banner = b"\x7fELF\x02\x01\x01\0BusyBox is a multi-call binary\0BusyBox v1.38.0\0";
+        header.set_path("bin/busybox").unwrap();
+        header.set_size(banner.len() as u64);
+        header.set_cksum();
+        file.write_all(header.as_bytes()).unwrap();
+        file.write_all(banner).unwrap();
+        file.write_all(&vec![0; 512 - banner.len() + 1024]).unwrap();
+        drop(file);
+        let scanned = scan_image_layer_files(
+            "image",
+            &[("layer-0000.tar".into(), path)],
+            &Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        assert!(scanned
+            .result
+            .components
+            .iter()
+            .any(|c| c.product == "busybox" && c.version == "1.38.0"));
+        assert!(scanned
+            .notes
+            .iter()
+            .any(|note| note.contains("per-member cap")));
+        assert!(scanned.notes.iter().all(|note| !note.contains("prefix")));
+    }
+
+    #[test]
+    fn spooled_layers_preserve_aliases_and_late_distribution_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let packages = directory.path().join("packages.tar");
+        let identity = directory.path().join("identity.tar");
+        std::fs::write(
+            &packages,
+            tar_with(
+                "var/lib/dpkg/status",
+                b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &identity,
+            tar_with("etc/os-release", b"ID=debian\nVERSION_ID=12\n"),
+        )
+        .unwrap();
+        let scanned = scan_image_layer_files(
+            "image@immutable",
+            &[
+                ("layer-0000.tar".into(), packages),
+                ("layer-0001.tar".into(), identity),
+            ],
+            &Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let package = scanned
+            .queries
+            .iter()
+            .find(|q| q.product == "libc6")
+            .unwrap();
+        assert_eq!(package.ecosystem.as_deref(), Some("Debian:12"));
+        assert!(
+            scanned.result.components[0].paths[0].starts_with("image@immutable!layer-0000.tar!/")
+        );
+        assert!(scanned
+            .notes
+            .iter()
+            .all(|note| !note.contains("no distribution identity")));
+    }
+
+    #[test]
+    fn a_missing_spooled_layer_prevents_a_successful_empty_scan() {
+        let directory = tempfile::tempdir().unwrap();
+        let result = scan_image_layer_files(
+            "image",
+            &[("layer-0000.tar".into(), directory.path().join("missing"))],
+            &Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        );
+        assert!(result.unwrap_err().contains("cannot open registry layer"));
+    }
 
     #[test]
     fn text_files_are_skipped_after_reading_only_the_classification_prefix() {

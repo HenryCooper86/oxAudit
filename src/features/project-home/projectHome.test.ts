@@ -13,6 +13,7 @@ import {
   useScanWorkStore,
   acquireScan,
   releaseScan,
+  reconcileBackendWork,
 } from "./coordinator";
 import type { CanonicalRun, RecentProject } from "../../lib/types";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -50,7 +51,7 @@ const canonical = (
   warnings: [],
 });
 beforeEach(() => {
-  useScanWorkStore.setState({ active: null, check: null });
+  useScanWorkStore.setState({ active: null, check: null, backend: { active: null, recent: [] } });
 });
 test("selection parsing rejects malformed storage without granting runtime authority", () => {
   for (const input of [
@@ -314,4 +315,20 @@ test("a save during dependency checking remains saved in the final project-check
     dependencies: "completed",
     sourceResult: { persistence: { status: "saved" } },
   });
+});
+
+test('another client replacing backend work ends the local project check and retains its settled source receipt', async () => {
+  mockCheck();
+  let finish!: (value: typeof source) => void;
+  vi.mocked(api.scanProject).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const pending = startProjectCheck('/alias', settings);
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  const localOperationId = useScanWorkStore.getState().active!.operationId;
+  reconcileBackendWork({ active: { operationId: 'external-image', kind: 'image', target: 'registry/app', status: 'running', startedAtMs: 1, updatedAtMs: 3 }, recent: [{ operationId: localOperationId, kind: 'source', target: '/real/project', status: 'completed', runId: source.runId, startedAtMs: 1, updatedAtMs: 2 }] });
+  expect(useScanWorkStore.getState().check?.status).toBe('incomplete');
+  finish(source);
+  await pending;
+  expect(useScanWorkStore.getState().check).toMatchObject({ status: 'incomplete', sourceResult: source, dependencies: 'not run' });
+  expect(useScanWorkStore.getState().active?.operationId).toBe('external-image');
+  expect(api.scanDependencies).not.toHaveBeenCalled();
 });

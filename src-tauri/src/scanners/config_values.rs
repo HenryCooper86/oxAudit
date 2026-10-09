@@ -64,7 +64,7 @@ impl ProjectConfig {
             if std::fs::metadata(path).is_ok_and(|meta| meta.len() > MAX_PROPERTIES_BYTES) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(path) else {
+            let Some(text) = crate::fs_utils::read_text_file(path, MAX_PROPERTIES_BYTES) else {
                 continue;
             };
             config.absorb(&text);

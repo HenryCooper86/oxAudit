@@ -105,6 +105,73 @@ from an absence of feedback.
 | Most confusing step / qualitative friction | |
 | Suggested next improvement | |
 
+## Validated participant capture
+
+The [blank JSON form](pilot-feedback.template.json) and
+[schema](pilot-feedback.schema.json) prepare capture with **zero observations**.
+No external participant has supplied feedback for this reliability change.
+Create one local input per actual session, then fill it while the engineer
+performs the tasks above:
+
+```bash
+node tools/pilot-feedback.mjs init --output /tmp/pilot-engineer-input.json
+node tools/pilot-feedback.mjs validate --input /tmp/pilot-engineer-input.json
+# After real observations and consent have been recorded:
+node tools/pilot-feedback.mjs capture --input /tmp/pilot-engineer-input.json \
+  --output /tmp/pilot-engineer-observed.json
+```
+
+`init` creates a new file without overwriting another record. `validate` accepts
+the blank preparation form and reports `prepared: 0 observations`. `capture`
+rejects it until actual observations exist. The capture command writes a new
+file, records the capture date and derives per-participant task acceptance;
+it never sends a message or uploads feedback. Validation exits 2 on invalid
+input and leaves no captured output. External, internal and maintainer sessions
+are explicitly distinguished and must not be combined into an external pilot
+claim.
+
+Use a pseudonymous participant identifier, the actual UTC observation date,
+OS/architecture/app version/editor, artifact SHA-256 and explicit consent to
+share the record. Each observation records one task, `completed`, `blocked`, or
+`not-evaluated`, measured elapsed seconds (or `null` when blocked/not evaluated),
+actual notes, evidence references and canonical run IDs. Evidence references
+can be local screenshot/report paths; do not fabricate them to satisfy validation.
+Copy an empty observation object into `observations` only when recording a real
+task, then fill its fields:
+
+```json
+{
+  "task": "installation",
+  "outcome": "not-evaluated",
+  "elapsedSeconds": null,
+  "evidence": [],
+  "notes": "",
+  "runIds": []
+}
+```
+
+This unfilled example deliberately fails validation until actual notes are
+supplied. Valid task IDs are `installation`, `first-actionable-finding`,
+`verified-resolution`, `malformed-dependency`, `restart-export`, and optional
+`ci-adoption`. A completed finding task needs its canonical run ID. A completed
+verified resolution additionally requires `coverageProof` with `state:
+"completed"`, `compatible: true`, the actual `coveredFile`, and distinct
+`previousRunId`/`currentRunId` also included in `runIds`. A JSON baseline showing
+absence without that coverage proof is not a verified resolution; record the
+task as blocked or not evaluated with its actual limitation.
+
+All five required desktop tasks must have observed completed outcomes before
+that participant's `acceptance.complete` becomes true. A blocked task retains
+its evidence and keeps acceptance incomplete. CI adoption is optional and its
+actual run outcomes need evidence if attempted. The validator checks the record's
+consistency, not whether a human performed it or whether an evidence reference
+exists. Maintainer review of the referenced evidence remains required before
+making a usability claim. Keep the committed template blank and retain real
+records only in a location the participant has consented to share.
+
+Automated detection and performance receipts are documented separately in
+[quality/performance validation](quality-performance-validation.md).
+
 ## Observed evidence versus pending acceptance
 
 The implementation exercise on 2026-09-07 ran the local CLI smoke and the actual

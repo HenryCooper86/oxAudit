@@ -193,26 +193,40 @@ pub(crate) async fn run_scheduled_scan_engine(
         extra_rule_pack_files: Vec::new(),
     };
 
+    let mut coverage_warnings = Vec::new();
     let packs = match rule_packs {
         Some(rule_packs) => match rule_packs.store() {
             Ok(store) => {
                 let resolved = store.resolve_enabled();
                 for (id, reason) in &resolved.skipped {
                     tracing::warn!(pack = %id, reason = %reason, "enabled rule pack skipped");
+                    coverage_warnings
+                        .push(format!("Enabled rule pack {id} was not applied: {reason}"));
                 }
                 crate::scanners::rulepacks::AppliedRulePacks::from_compiled(resolved.packs)
             }
             Err(error) => {
                 tracing::warn!(reason = %error, "rule packs not applied");
+                coverage_warnings.push(format!("Installed rule packs could not be loaded; built-in rules were applied: {error}"));
                 crate::scanners::rulepacks::AppliedRulePacks::empty()
             }
         },
         None => crate::scanners::rulepacks::AppliedRulePacks::empty(),
     };
 
-    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let mut work = state
+        .scan_work
+        .begin(
+            crate::scan_work::WorkKind::Source,
+            target.canonical_path,
+            None,
+            events,
+        )
+        .map_err(CommandError::data_operation_failed)?;
+    let cancel = work.cancellation();
+    let canonical_path = target.canonical_path;
     let events = ScheduledEvents {
-        events,
+        events: &work,
         target,
         started: AtomicBool::new(false),
     };
@@ -225,18 +239,91 @@ pub(crate) async fn run_scheduled_scan_engine(
         match findings.service() {
             Ok(service) => {
                 service
-                    .scan_with_packs(options, cve, &cancel, &events, &packs)
+                    .scan_scoped_with_packs(
+                        options,
+                        Path::new(canonical_path),
+                        cve,
+                        &cancel,
+                        &events,
+                        &packs,
+                        &coverage_warnings,
+                    )
                     .await
             }
             Err(error) => Err(error),
         }
     };
+    if let Ok(run) = &result {
+        work.finish(
+            if run.status == crate::findings::domain::RunStatus::Completed
+                && run.persistence == crate::findings::domain::RunPersistence::Saved
+            {
+                "completed"
+            } else {
+                "incomplete"
+            },
+            Some(&run.run_id),
+        );
+    }
     publish_completed(&result);
     result
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn unsaved_scheduled_result_records_incomplete_work_and_preserves_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+        let app = super::AppState::new();
+        app.settings.lock().unwrap().scan.scan_secrets = false;
+        let findings =
+            crate::initialize_findings_state(&directory.path().join("data"), chrono::Utc::now());
+        findings
+            .service()
+            .unwrap()
+            .fail_next_completions_for_test(2);
+        let cve = super::CveState::new(app.http.clone());
+        *cve.kev.lock().unwrap() = Some((std::time::Instant::now(), Default::default()));
+        let run = super::run_scheduled_scan_engine(
+            &app,
+            &findings,
+            &cve,
+            None,
+            &NoEvents,
+            &|_| {},
+            super::ScheduledScanTarget {
+                canonical_path: project.to_str().unwrap(),
+                project_id: "fixture",
+                schedules: None,
+            },
+        )
+        .await
+        .unwrap();
+        let crate::findings::domain::RunPersistence::NotSaved { retry_token } = &run.persistence
+        else {
+            panic!("save fault must remain retryable");
+        };
+        assert_eq!(
+            app.scan_work.snapshot().unwrap().recent[0].status,
+            "incomplete"
+        );
+        assert_eq!(
+            super::completion_payload("fixture", project.to_str().unwrap(), &Ok(run.clone()))["ok"],
+            false
+        );
+        assert_eq!(
+            findings
+                .service()
+                .unwrap()
+                .retry_save(retry_token)
+                .unwrap()
+                .persistence,
+            crate::findings::domain::RunPersistence::Saved
+        );
+    }
     use super::*;
 
     struct NoEvents;

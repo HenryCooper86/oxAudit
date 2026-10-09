@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
-import { Clipboard, History, Play } from "lucide-react";
+import { Ban, Clipboard, History, Play } from "lucide-react";
 import { FolderPicker } from "../components/FolderPicker";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
+import { ResultPagination } from "../components/workbench/ResultPagination";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { Button, Select, Switch } from "../components/ui";
 import { api } from "../lib/api";
 import { useAppStore, useToastStore } from "../lib/stores";
-import type { Finding, HistoryScanResult, Severity } from "../lib/types";
+import type { CanonicalRun, Finding, HistoryScanResult, Severity } from "../lib/types";
+import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
+import { readSavedScanReceipt } from "../features/runs/savedScanReceipt";
+import { usePagination } from "../lib/pagination";
+import { normalizeCommandError } from "../lib/commandError";
 
 const SEVERITIES: Array<Severity | "all"> = ["all", "critical", "high", "medium", "low", "info"];
 
@@ -32,9 +37,13 @@ export function HistoryScanPage(): JSX.Element {
   const setPageStatus = useAppStore((state) => state.setPageStatus);
   const clearPageStatus = useAppStore((state) => state.clearPageStatus);
   const push = useToastStore((state) => state.push);
+  const openExport = useAppStore(state => state.openExport);
+  const activeWork = useScanWorkStore(state => state.active);
+  const recoveryRevision = useScanWorkStore(state => state.recoveryRevision);
 
-  const [path, setPath] = useState(activeProject ?? selectedProject ?? "");
-  const [running, setRunning] = useState(false);
+  const [path, setPath] = useState(() => useScanWorkStore.getState().lastTargets.history ?? activeProject ?? selectedProject ?? "");
+  const [localRunning, setRunning] = useState(false);
+  const running = localRunning || activeWork?.owner === "history";
   const [result, setResult] = useState<HistoryScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [severity, setSeverity] = useState<Severity | "all">("all");
@@ -42,47 +51,87 @@ export function HistoryScanPage(): JSX.Element {
   const [selectedFingerprint, setSelectedFingerprint] = useState<string | null>(null);
   const [validate, setValidate] = useState(false);
   const mounted = useRef(true);
+  const invocation = useRef<number | null>(null);
+  const receiptRequest = useRef(0);
+  const pathEdited = useRef(false);
+  const [attempt, setAttempt] = useState<CanonicalRun | null>(null);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      receiptRequest.current += 1;
+      if (invocation.current !== null) detachScan(invocation.current);
       clearPageStatus("history-scan");
     };
   }, [clearPageStatus]);
 
+  useEffect(() => {
+    const generation = ++receiptRequest.current;
+    if (activeWork?.owner === "history" && !path.trim()) { setPath(activeWork.path); return; }
+    if (running || (!path.trim() && pathEdited.current)) return;
+    const recent = useScanWorkStore.getState().backend.recent.find(work => work.kind === "history" && work.target === path.trim());
+    void readSavedScanReceipt<HistoryScanResult>("history", path.trim(), recent?.runId).then(saved => {
+      if (!mounted.current || generation !== receiptRequest.current) return;
+      setAttempt(saved.attempt);
+      if (saved.loadError) setError(`Saved history evidence could not be loaded: ${saved.loadError}`);
+      if (saved.data) {
+        setResult(saved.data);
+        if (!path.trim()) setPath(saved.target);
+        setSelectedFingerprint(current => saved.data!.findings.some(finding => finding.fingerprint === current) ? current : null);
+        setPageStatus("history-scan", { label: `Saved history results · ${saved.data.findings.length} findings · ${saved.data.state ?? "state unknown"}`, tone: saved.data.state === "completed" ? "success" : "neutral" });
+      }
+    }).catch(cause => {
+      if (mounted.current && generation === receiptRequest.current) setError(`Saved history evidence could not be loaded: ${String(cause)}`);
+    });
+    return () => { receiptRequest.current += 1; };
+  }, [activeWork?.owner, activeWork?.path, path, recoveryRevision, running, setPageStatus]);
+
   const run = async () => {
     const target = path.trim();
-    if (!target || running) return;
+    if (!target || running || invocation.current !== null) return;
+    const ownership = acquireScan("history", target, "Scanning git history");
+    if (ownership === null) return;
+    invocation.current = ownership;
+    receiptRequest.current += 1;
     setRunning(true);
     setError(null);
-    setResult(null);
     setSelectedFingerprint(null);
     setPageStatus("history-scan", { label: "Scanning git history…", detail: target, tone: "running" });
     try {
-      const scanned = await api.scanHistorySecrets(target, validate);
-      if (!mounted.current) return;
+      const scanned = await api.scanHistorySecrets(target, validate, scanOperationId(ownership));
+      const active = useScanWorkStore.getState().active;
+      if (!mounted.current || active?.id !== ownership) return;
+      if (active.cancelling || active.terminalStatus === "cancelled" || scanned.state === "cancelled") {
+        setError("History scan cancelled; previous saved results remain available.");
+        setPageStatus("history-scan", { label: "History scan cancelled", tone: "neutral" });
+        return;
+      }
       setResult(scanned);
-      setSelectedFingerprint(scanned.findings[0]?.fingerprint ?? null);
+      setAttempt(null);
       setPageStatus("history-scan", {
-        label: scanned.truncated
+        label: scanned.truncated || (scanned.state && scanned.state !== "completed")
           ? `History scan · partial (${scanned.blobsScanned} blobs, ${scanned.findings.length} findings)`
           : scanned.findings.length
           ? `History scan · ${scanned.findings.length} historical secret${scanned.findings.length === 1 ? "" : "s"}`
           : `History scan · clean (${scanned.blobsScanned} blobs)`,
-        tone: scanned.truncated ? "neutral" : scanned.findings.length ? "success" : "neutral",
+        tone: scanned.truncated || (scanned.state && scanned.state !== "completed") ? "neutral" : scanned.findings.length ? "success" : "neutral",
       });
     } catch (failure) {
-      if (!mounted.current) return;
-      const message = failure instanceof Error ? failure.message : String(failure);
+      if (!mounted.current || useScanWorkStore.getState().active?.id !== ownership) return;
+      const message = normalizeCommandError(failure).message;
       setError(message);
-      setPageStatus("history-scan", { label: "History scan failed", tone: "error" });
+      const cancelled = message.includes("cancelled") || useScanWorkStore.getState().active?.cancelling;
+      setPageStatus("history-scan", { label: cancelled ? "History scan cancelled" : "History scan failed", tone: cancelled ? "neutral" : "error" });
     } finally {
       if (mounted.current) setRunning(false);
+      invocation.current = null;
+      releaseScan(ownership);
+      void refreshScanWork(true);
     }
   };
 
-  const findings = result?.findings ?? [];
+  const findings = useMemo(() => result?.findings ?? [], [result]);
   const filtered = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
     return findings
@@ -97,6 +146,8 @@ export function HistoryScanPage(): JSX.Element {
       .sort((a, b) => severityOrder(a) - severityOrder(b) || a.filePath.localeCompare(b.filePath) || a.line - b.line);
   }, [findings, severity, search]);
   const selected = filtered.find((finding) => finding.fingerprint === selectedFingerprint) ?? filtered[0] ?? null;
+  const pagination = usePagination(filtered, 50, selected ? filtered.indexOf(selected) : -1);
+  const partial = Boolean(result?.truncated || (result?.state && result.state !== "completed"));
 
   const copyFinding = async (finding: Finding) => {
     try {
@@ -111,18 +162,21 @@ export function HistoryScanPage(): JSX.Element {
     <ToolPage
       title="History Scan"
       description="Was this credential ever committed — including in files deleted long ago? Reads every blob reachable from any ref; rotation, not deletion, closes a leaked credential."
-      context={<span className="rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-text-muted">Not saved</span>}
+      context={<span className="rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-text-muted">{result?.runId ? `Saved run ${result.runId}` : running ? "Running" : "Ready"}</span>}
     >
       <div className="mt-4 space-y-4">
         <TargetBar
           primary={
-            <Button type="button" variant="primary" onClick={() => void run()} disabled={running || !path.trim()}>
+            <>
+            <Button type="button" variant="primary" onClick={() => void run()} disabled={Boolean(activeWork) || running || !path.trim()}>
               <Play size={13} aria-hidden="true" />
               {running ? "Scanning history…" : "Scan history"}
             </Button>
+            {running && <Button type="button" variant="danger" disabled={activeWork?.cancelling} onClick={() => void cancelActiveScan()}><Ban size={13} aria-hidden="true" />Cancel</Button>}
+            </>
           }
         >
-          <FolderPicker value={path} onChange={setPath} disabled={running} inputLabel="Repository folder" placeholder="Choose a repository…" />
+          <FolderPicker value={path} onChange={value => { pathEdited.current = true; receiptRequest.current += 1; setPath(value); setResult(null); setAttempt(null); setSelectedFingerprint(null); setError(null); }} disabled={running} inputLabel="Repository folder" placeholder="Choose a repository…" />
         </TargetBar>
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -133,6 +187,9 @@ export function HistoryScanPage(): JSX.Element {
             Nothing is sent anywhere else, and only the verdict is kept.
           </p>
         </div>
+
+        {attempt && attempt.state !== "completed" && <InlineState tone="unavailable" title={`Latest saved history attempt: ${attempt.state}`} description={`${attempt.id}${result?.runId !== attempt.id ? ". Previous saved evidence remains available below." : ""}`} />}
+        {result?.gitContext && (result.gitContext.contextChanged !== false || !result.gitContext.refsCompleteAfter) && <InlineState tone="unavailable" title="Git history coverage changed or is unknown" description={result.gitContext.contextChanged === true ? "Git refs changed during the scan. Evidence retains the recorded objects; absence does not establish complete current history coverage." : "The final Git ref snapshot was unavailable. Evidence retains the recorded objects; complete history coverage is unproven."} />}
 
         {result?.validation && (() => {
           const v = result.validation;
@@ -152,7 +209,7 @@ export function HistoryScanPage(): JSX.Element {
           <InlineState
             tone="running"
             title="Reading git history"
-            description="Every distinct blob is read through the same bounded, read-only plumbing as the review panel. Large repositories can take up to the two-minute budget."
+            description={`Scanning ${activeWork?.path ?? path}. Every distinct blob is read through bounded, read-only plumbing. Large repositories can take up to the two-minute budget.`}
           />
         )}
 
@@ -162,22 +219,22 @@ export function HistoryScanPage(): JSX.Element {
             title="History scan failed"
             description={error}
             action={
-              <Button type="button" variant="outline" onClick={() => void run()} disabled={running}>
+              <Button type="button" variant="outline" onClick={() => void run()} disabled={running || Boolean(activeWork)}>
                 Retry
               </Button>
             }
           />
         )}
 
-        {result && result.truncated && (
+        {result && partial && (
           <InlineState
             tone="unavailable"
             title="History scan stopped early"
-            description={`${result.limitNote ?? "A budget was reached"}. The findings below are partial — treat absence as unproven.`}
+            description={`${result.limitNote ?? (result.state ? `Run state: ${result.state}` : "A budget was reached")}. The findings below are partial — treat absence as unproven.`}
           />
         )}
 
-        {result && !result.truncated && findings.length === 0 && !running && (
+        {result && !partial && findings.length === 0 && !running && (
           <InlineState
             tone="empty"
             title={`No secrets in history — ${result.blobsScanned} blob${result.blobsScanned === 1 ? "" : "s"} scanned`}
@@ -220,8 +277,9 @@ export function HistoryScanPage(): JSX.Element {
                 panelId="history-findings"
                 listLabel="Historical secrets"
                 list={
+                  <>
                   <ul className="max-h-[36rem] overflow-auto" aria-label="Historical secret findings">
-                    {filtered.map((finding) => {
+                    {pagination.items.map((finding) => {
                       const active = selected?.fingerprint === finding.fingerprint;
                       return (
                         <li key={finding.fingerprint}>
@@ -253,9 +311,12 @@ export function HistoryScanPage(): JSX.Element {
                       );
                     })}
                   </ul>
+                  <ResultPagination pagination={pagination} label="historical findings" onPageChange={pagination.setPage} />
+                  </>
                 }
                 detailLabel="Finding detail"
-                hasSelection={selected !== null}
+                hasSelection={selectedFingerprint !== null && selected?.fingerprint === selectedFingerprint}
+                onBackToList={() => setSelectedFingerprint(null)}
                 detail={
                   selected ? (
                     <div className="space-y-4 p-4 text-[13px] text-text-secondary">
@@ -286,6 +347,7 @@ export function HistoryScanPage(): JSX.Element {
                         <p className="mt-1 break-all font-mono text-[12px]">
                           {selected.filePath}:{selected.line}:{selected.column}
                         </p>
+                        {result.findingBlobIds?.[selected.id] && <p className="mt-1 break-all font-mono text-[12px]">Git blob: <span>{result.findingBlobIds[selected.id]}</span></p>}
                         <p className="mt-1 text-[12px] text-text-muted">
                           The file may no longer exist; the path and position describe the object in history, not your working tree.
                         </p>
@@ -314,9 +376,7 @@ export function HistoryScanPage(): JSX.Element {
                         </Button>
                       </div>
                       <p className="border-t border-border pt-3 text-[12px] text-text-muted">
-                        Match text and context are redacted. This finding is not a stored run: nothing was written to the
-                        project history database, and leaving this page discards the result. Rotation, not deletion,
-                        closes a leaked credential.
+                        Match text and context are redacted. Saved evidence retains Git object identities and historical locations. Rotation, not deletion, closes a leaked credential.
                       </p>
                     </div>
                   ) : (
@@ -339,8 +399,9 @@ export function HistoryScanPage(): JSX.Element {
 
         <p className="flex items-center gap-1.5 text-[12px] text-text-muted">
           <History size={13} aria-hidden="true" />
-          History runs are not saved as canonical runs and export no standards formats; the CLI keeps a record when you need one.
+          Saved history runs can be reloaded and exported with historical Git object locations.
         </p>
+          {result?.runId && <Button type="button" variant="outline" size="sm" onClick={() => openExport(result.runId!)}>Open Export Center</Button>}
       </div>
     </ToolPage>
   );

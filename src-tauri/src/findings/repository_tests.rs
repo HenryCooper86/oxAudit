@@ -41,6 +41,7 @@ fn set_mode(path: &Path, mode: u32) {
 
 fn summary(total_findings: usize) -> ScanSummary {
     ScanSummary {
+        coverage_warnings: Vec::new(),
         git_context: None,
         path: "/project".into(),
         files_scanned: 1,

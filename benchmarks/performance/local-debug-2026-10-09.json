@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "measuredAt": "2026-10-09T09:02:25.625Z",
+  "cli": "${MEASURED_CLI}",
+  "cliVersion": "oxaudit 0.1.0",
+  "cliSha256": "e426f1f86a7d04f483d04dcae70f34a8eb3811740dd0568cc1b4fc7ad8782e42",
+  "toolCommit": "1e27c8f0d46abc319e78e643bb5c53e8e1339a92",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "osRelease": "27.0.0",
+    "cpu": "Apple M5 Max",
+    "node": "v22.22.2"
+  },
+  "fixtureVersion": "owned-inert-v1",
+  "recipeSha256": "a278b448173b68fe87d8928f41e1415e7b12c43d9a652494ed150913cc9f2742",
+  "temporaryDirectory": "${OWNED_WORKSPACE}",
+  "retained": false,
+  "repetitions": 1,
+  "publicNetwork": "refusing loopback proxy for optional enrichment; never forwards requests; not an OS sandbox",
+  "refusedRequests": [
+    {
+      "method": "CONNECT",
+      "target": "www.cisa.gov:443"
+    }
+  ],
+  "workloads": [
+    {
+      "id": "source-findings",
+      "population": {
+        "sourceFiles": 128,
+        "plantedEvalCalls": 2048
+      },
+      "fixtureSha256": "e8c8c4b01d88fe7668530adfde79d30511d85a58070cd7ca1b9a0c1e4d2ea724",
+      "argv": [
+        "scan",
+        "${OWNED_WORKSPACE}/source",
+        "--db",
+        "${OWNED_WORKSPACE}/source.sqlite"
+      ],
+      "elapsedMs": 956.8417080000002,
+      "memory": {
+        "peakRssBytes": 112427008,
+        "method": "/usr/bin/time",
+        "scope": "command resource usage; not an aggregate of simultaneously resident descendant processes",
+        "reason": null
+      },
+      "exit": 0,
+      "stderr": "        0.95 real         1.10 user         0.07 sys\n           112427008  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               11038  page reclaims\n                  14  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   1  messages sent\n                   1  messages received\n                   0  signals received\n                  38  voluntary context switches\n                 942  involuntary context switches\n         18554593249  instructions retired\n          5225139300  cycles elapsed\n            88949456  peak memory footprint\n",
+      "reportPath": "${OWNED_WORKSPACE}/source-findings.json",
+      "observed": {
+        "filesScanned": 128,
+        "findings": 2048
+      }
+    },
+    {
+      "id": "nested-archive",
+      "population": {
+        "nestedTarDepth": 2,
+        "osPackages": 1000,
+        "inputBytes": 88064
+      },
+      "fixtureSha256": "adcb0e390be41e96caffd38e734fa854c7c48496732aeb1ee2ea680c9e7047a2",
+      "argv": [
+        "image",
+        "${OWNED_WORKSPACE}/nested.tar",
+        "--offline"
+      ],
+      "elapsedMs": 275.537417,
+      "memory": {
+        "peakRssBytes": 41959424,
+        "method": "/usr/bin/time",
+        "scope": "command resource usage; not an aggregate of simultaneously resident descendant processes",
+        "reason": null
+      },
+      "exit": 0,
+      "stderr": "        0.27 real         0.26 user         0.00 sys\n            41959424  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2895  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                 160  involuntary context switches\n          4625365912  instructions retired\n          1238245057  cycles elapsed\n            19907160  peak memory footprint\n",
+      "reportPath": "${OWNED_WORKSPACE}/nested-archive.json",
+      "observed": {
+        "components": 1000,
+        "vulnerabilities": 0,
+        "advisoryCoverage": "not measured; offline inventory fixture"
+      }
+    },
+    {
+      "id": "saved-image",
+      "population": {
+        "imageLayers": 1,
+        "osPackages": 1000,
+        "inputBytes": 90112
+      },
+      "fixtureSha256": "9dc03987d5aa6813c1782f2043059090cb14aa9f047b01a1329cd28be6f5cf3a",
+      "argv": [
+        "image",
+        "${OWNED_WORKSPACE}/saved-image.tar",
+        "--offline"
+      ],
+      "elapsedMs": 274.31329099999994,
+      "memory": {
+        "peakRssBytes": 42270720,
+        "method": "/usr/bin/time",
+        "scope": "command resource usage; not an aggregate of simultaneously resident descendant processes",
+        "reason": null
+      },
+      "exit": 0,
+      "stderr": "        0.27 real         0.26 user         0.00 sys\n            42270720  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2912  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                 168  involuntary context switches\n          4634650580  instructions retired\n          1236282138  cycles elapsed\n            20251248  peak memory footprint\n",
+      "reportPath": "${OWNED_WORKSPACE}/saved-image.json",
+      "observed": {
+        "components": 1000,
+        "vulnerabilities": 0,
+        "advisoryCoverage": "not measured; offline inventory fixture"
+      }
+    },
+    {
+      "id": "dependency-cache",
+      "population": {
+        "lockfiles": 1,
+        "packageQueries": 2000,
+        "syntheticAdvisories": 0
+      },
+      "fixtureSha256": "ab9762a1ef0ddd09b1d545df329a776113784f078b47d9b9b0b13ceae8238fbc",
+      "advisoryEvidence": "synthetic empty test receipt; no provider accuracy claim",
+      "argv": [
+        "deps",
+        "${OWNED_WORKSPACE}/deps",
+        "--offline",
+        "--db",
+        "${OWNED_WORKSPACE}/dependency.sqlite"
+      ],
+      "elapsedMs": 220.8721250000001,
+      "memory": {
+        "peakRssBytes": 45154304,
+        "method": "/usr/bin/time",
+        "scope": "command resource usage; not an aggregate of simultaneously resident descendant processes",
+        "reason": null
+      },
+      "exit": 0,
+      "stderr": "        0.21 real         0.19 user         0.02 sys\n            45154304  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                3091  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                  21  voluntary context switches\n                 126  involuntary context switches\n          3610097645  instructions retired\n           991314969  cycles elapsed\n            25936520  peak memory footprint\n",
+      "reportPath": "${OWNED_WORKSPACE}/dependency-cache.json",
+      "observed": {
+        "packagesFound": 2000,
+        "packagesQueried": 2000,
+        "advisorySource": "cache"
+      }
+    }
+  ],
+  "limitations": [
+    "one fresh CLI process per workload, including startup, parsing and report/database writes",
+    "single samples are observations, not statistically stable performance budgets",
+    "source enrichment attempts are refused and included in elapsed time",
+    "RSS is command resource usage, not aggregate process-tree resident memory",
+    "registry pulls and real advisory provider/cache content are not measured"
+  ],
+  "build": {
+    "profile": "debug",
+    "features": [
+      "default grammars",
+      "server"
+    ],
+    "workingTreeDirty": true
+  },
+  "pathNormalization": "Owned temporary paths and copied binary path replaced by placeholders; original receipts retained locally. Performance workspaces were removed after measurement."
+}

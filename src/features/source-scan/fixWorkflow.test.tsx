@@ -48,7 +48,7 @@ test("recheck retains original evidence and links covered observation using orig
   render(<SourceScanPage />);
   fireEvent.click(await screen.findByRole("button", { name: "Recheck finding" }));
   await screen.findByText(/No longer detected in the covered file/);
-  expect(api.recheckSourceRun).toHaveBeenCalledWith("s", original.projectId);
+  expect(api.recheckSourceRun).toHaveBeenCalledWith("s", original.projectId, expect.any(String));
   expect(api.compareSourceRuns).toHaveBeenCalledWith("next", "s", true);
   expect(screen.getByText("eval(input)", { selector: "pre" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Open recheck run next" })).toBeEnabled();

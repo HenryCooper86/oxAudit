@@ -80,3 +80,26 @@ test('switching groups invalidates pending copy feedback even when returning to 
   await act(async()=>finish());
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });
+
+test('a group of 10,000 advisories renders bounded rows and preserves the selected original advisory',()=>{
+  const advisories=Array.from({length:10_000},(_,index)=>({...advisory,id:`GHSA-${index}`}));
+  let selection:Vulnerability|null=null;
+  render(<UpgradeDecisions result={{...result,vulnerabilities:advisories}} onSelect={v=>{selection=v;}} onRecheck={()=>{}} disabled={false}/>);
+  const detail=screen.getByLabelText('Selected upgrade group');
+  expect(detail.querySelectorAll('li')).toHaveLength(50);
+  fireEvent.click(screen.getByRole('button',{name:'Last page of upgrade group advisories'}));
+  fireEvent.click(within(detail).getByRole('button',{name:'Review GHSA-9999'}));
+  expect(selection).toBe(advisories[9999]);
+});
+
+test('changing a saved result resets group pagination while retaining a selected group by identity',()=>{
+  const advisories=Array.from({length:120},(_,index)=>({...advisory,packageName:`leaf-${index}`}));
+  const props={onSelect:()=>{},onRecheck:()=>{},disabled:false};
+  const {rerender}=render(<UpgradeDecisions result={{...result,vulnerabilities:advisories}} {...props}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Last page of upgrade groups'}));
+  fireEvent.click(screen.getByRole('button',{name:/leaf-119@1.0.0/}));
+  expect(within(screen.getByLabelText('Selected upgrade group')).getByRole('heading',{name:'leaf-119@1.0.0'})).toBeInTheDocument();
+  rerender(<UpgradeDecisions result={{...result,vulnerabilities:[advisories[119]]}} {...props}/>);
+  expect(screen.getByRole('button',{name:/leaf-119@1.0.0/})).toHaveAttribute('aria-pressed','true');
+  expect(screen.getByRole('table').querySelectorAll('tbody tr')).toHaveLength(1);
+});

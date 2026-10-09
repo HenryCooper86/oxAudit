@@ -1,16 +1,30 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { HistoryScanPage } from "./HistoryScan";
 import type { Finding, HistoryScanResult } from "../lib/types";
 import { useAppStore } from "../lib/stores";
+import { reconcileBackendWork, useScanWorkStore } from "../features/project-home/coordinator";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 const scanHistorySecrets = vi.fn();
+const cancelScanWork = vi.fn();
+const listCanonicalRuns = vi.fn();
+const loadCanonicalProjection = vi.fn();
 vi.mock("../lib/api", () => ({
-  api: { scanHistorySecrets: (...args: unknown[]) => scanHistorySecrets(...args) },
+  api: { scanHistorySecrets: (...args: unknown[]) => scanHistorySecrets(...args),
+    cancelScanWork: (...args: unknown[]) => cancelScanWork(...args), scanWorkStatus: async () => ({ active: null, recent: [] }),
+    listCanonicalRuns: (...args: unknown[]) => listCanonicalRuns(...args), loadCanonicalProjection: (...args: unknown[]) => loadCanonicalProjection(...args) },
 }));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  useAppStore.setState({ activeProject: null, selectedProject: null, pageStatus: {} });
+  useScanWorkStore.setState({ active: null, check: null, backend: { active: null, recent: [] }, lastTargets: {}, recoveryError: null });
+  listCanonicalRuns.mockResolvedValue([]);
+  cancelScanWork.mockResolvedValue(true);
+});
 
 const finding = (overrides: Partial<Finding> = {}): Finding => ({
   id: "finding-1",
@@ -47,6 +61,7 @@ const finding = (overrides: Partial<Finding> = {}): Finding => ({
 });
 
 const result = (overrides: Partial<HistoryScanResult> = {}): HistoryScanResult => ({
+  runId: "saved-history",
   findings: [finding()],
   blobsScanned: 412,
   blobsSkipped: 3,
@@ -59,13 +74,14 @@ const result = (overrides: Partial<HistoryScanResult> = {}): HistoryScanResult =
 async function runScan(payload: HistoryScanResult, validate = false) {
   scanHistorySecrets.mockResolvedValue(payload);
   render(<HistoryScanPage />);
+  await userEvent.clear(screen.getByRole("textbox", { name: /repository folder/i }));
   await userEvent.type(screen.getByRole("textbox", { name: /repository folder/i }), "/tmp/repo");
   if (validate) {
     await userEvent.click(screen.getByRole("switch", { name: /validate live against providers/i }));
   }
   const button = screen.getByRole("button", { name: /scan history$/i });
   await userEvent.click(button);
-  await waitFor(() => expect(scanHistorySecrets).toHaveBeenCalledWith("/tmp/repo", validate));
+  await waitFor(() => expect(scanHistorySecrets).toHaveBeenCalledWith("/tmp/repo", validate, expect.any(String)));
   await waitFor(() => expect(button).not.toBeDisabled());
 }
 
@@ -123,6 +139,8 @@ test.each(["completed", "failed"])("a %s history scan cannot overwrite status af
   await userEvent.click(screen.getByRole("button", { name: /scan history$/i }));
   previous.unmount();
   expect(useAppStore.getState().pageStatus["history-scan"]).toBeUndefined();
+  const old = useScanWorkStore.getState().active!;
+  reconcileBackendWork({ active: null, recent: [{ operationId: old.operationId, kind: "history", target: "/tmp/repo", status: "completed", runId: "old-history", startedAtMs: 1, updatedAtMs: 2 }] });
   await runScan(result({ findings: [], blobsScanned: 2 }));
   const current = useAppStore.getState().pageStatus["history-scan"];
   await act(async () => {
@@ -184,4 +202,65 @@ test("a rejected finding says so without implying it is safe", async () => {
   );
   expect(await screen.findByText(/provider rejected it/i)).toBeInTheDocument();
   expect(screen.getByText(/rotate it anyway/i)).toBeInTheDocument();
+});
+
+test("saved history restores Git object evidence without starting a new scan", async () => {
+  useAppStore.setState({ activeProject: "/tmp/repo" });
+  listCanonicalRuns.mockResolvedValue([{ id: "saved-history", kind: "history", targetLabel: "/tmp/repo", state: "completed", createdAtMs: 1, updatedAtMs: 2, attempt: 1, engineIds: [], rulePackIds: [], providerSnapshotIds: [], warnings: [] }]);
+  loadCanonicalProjection.mockResolvedValue(result({ findingBlobIds: { "finding-1": "abc123gitblob" } }));
+  render(<HistoryScanPage />);
+  expect(await screen.findByText("abc123gitblob")).toBeInTheDocument();
+  expect(screen.getByText(/saved-history/)).toBeInTheDocument();
+  expect(scanHistorySecrets).not.toHaveBeenCalled();
+  expect(loadCanonicalProjection).toHaveBeenCalledWith("saved-history");
+  expect(screen.queryByText(/runs are not saved/)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Open Export Center' }));
+  expect(useAppStore.getState().exportHandoff).toEqual({ runId: 'saved-history' });
+});
+
+test("history cancellation is scoped and a delayed completed response cannot publish clean history", async () => {
+  let finish!: (value: HistoryScanResult) => void;
+  scanHistorySecrets.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  render(<HistoryScanPage />);
+  await userEvent.type(screen.getByRole("textbox", { name: /repository folder/i }), "/tmp/repo");
+  await userEvent.click(screen.getByRole("button", { name: /scan history$/i }));
+  const operationId = scanHistorySecrets.mock.calls[0][2];
+  await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+  expect(cancelScanWork).toHaveBeenCalledWith(operationId);
+  await act(async () => finish(result({ findings: [], blobsScanned: 2 })));
+  expect(screen.queryByText(/no secrets in history/)).not.toBeInTheDocument();
+  expect(useAppStore.getState().pageStatus["history-scan"]?.label).toMatch(/cancelled/i);
+});
+
+test("10,000 historical findings render a bounded page and retain selection across page changes", async () => {
+  const findings = Array.from({ length: 10_000 }, (_, index) => finding({ id: `finding-${index}`, fingerprint: `fp-${index}`, ruleId: `rule-${index}`, filePath: `src/${index.toString().padStart(5, "0")}.ts`, title: `Historical ${index}` }));
+  useAppStore.setState({ activeProject: '/tmp/repo' });
+  listCanonicalRuns.mockResolvedValue([{ id: 'saved-history', kind: 'history', targetLabel: '/tmp/repo', state: 'completed', attempt: 1, createdAtMs: 1, updatedAtMs: 2, engineIds: [], rulePackIds: [], providerSnapshotIds: [], warnings: [] }]);
+  loadCanonicalProjection.mockResolvedValue(result({ findings }));
+  const started = performance.now();
+  render(<HistoryScanPage />);
+  const list = await screen.findByRole("list", { name: "Historical secret findings" });
+  const renderMs = performance.now() - started;
+  expect(list.children).toHaveLength(50);
+  const moved = performance.now();
+  fireEvent.click(screen.getByRole("button", { name: "Last page of historical findings" }));
+  const lastPageMs = performance.now() - moved;
+  await userEvent.click(screen.getByText("rule-9999"));
+  expect(screen.getByText("Historical 9999")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "First page of historical findings" }));
+  await userEvent.click(screen.getByRole("button", { name: "Last page of historical findings" }));
+  expect(screen.getByText("rule-9999").closest("button")).toHaveAttribute("aria-current", "true");
+  console.info('result-list-measurement', JSON.stringify({ list: 'history', records: 10_000, renderedRows: 50, renderMs, lastPageMs, environment: 'jsdom' }));
+});
+
+test('history reopens the latest canonical receipt after restart without a selected project', async () => {
+  useAppStore.setState({ activeProject: null, selectedProject: null });
+  listCanonicalRuns.mockResolvedValue([{ id: 'latest-history', kind: 'history', targetLabel: '/tmp/restarted-repo', state: 'incomplete', attempt: 1, createdAtMs: 1, updatedAtMs: 2, engineIds: [], rulePackIds: [], providerSnapshotIds: [], warnings: [] }]);
+  loadCanonicalProjection.mockResolvedValue(result({ runId: 'latest-history', findings: [], state: 'incomplete', gitContext: { headBefore: 'old-head', headAfter: null, refsBefore: [], refsAfter: [], refsCompleteAfter: false, contextChanged: null } }));
+  render(<HistoryScanPage />);
+  expect(await screen.findByText('Saved run latest-history')).toBeInTheDocument();
+  expect(screen.getByRole('textbox', { name: /repository folder/i })).toHaveValue('/tmp/restarted-repo');
+  expect(screen.getByText('Git history coverage changed or is unknown')).toBeInTheDocument();
+  expect(screen.queryByText(/No secrets in history/)).not.toBeInTheDocument();
+  expect(scanHistorySecrets).not.toHaveBeenCalled();
 });

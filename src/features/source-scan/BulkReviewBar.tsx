@@ -63,7 +63,7 @@ export function BulkReviewBar(props: {
           onClick={onSelectAll}
           className="text-[11px] text-accent hover:underline"
         >
-          Select all {visible.length} shown
+          Select all {visible.length} filtered findings
         </button>
         <Button
           type="button"

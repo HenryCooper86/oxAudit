@@ -41,6 +41,8 @@ impl Default for ScanOptions {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanSummary {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage_warnings: Vec<String>,
     #[serde(default)]
     pub git_context: Option<crate::git_context::GitEvidence>,
     pub path: String,
@@ -371,7 +373,9 @@ pub struct DependencyScanResult {
 pub struct LockfileInfo {
     pub path: String,
     pub kind: String,
-    pub packages: usize,
+    pub packages: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

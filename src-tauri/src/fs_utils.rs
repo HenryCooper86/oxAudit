@@ -655,7 +655,19 @@ pub fn read_text_file(path: &Path, max_bytes: u64) -> Option<String> {
     if meta.len() > max_bytes {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
+    read_text_bounded(std::fs::File::open(path).ok()?, max_bytes)
+}
+
+fn read_text_bounded(reader: impl std::io::Read, max_bytes: u64) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > max_bytes {
+        return None;
+    }
     if is_binary(&bytes) {
         return None;
     }
@@ -712,6 +724,20 @@ pub fn display_path(root: &Path, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bounded_text_read_caps_actual_bytes_when_the_input_grows() {
+        struct GrowingInput(std::rc::Rc<std::cell::Cell<usize>>);
+        impl std::io::Read for GrowingInput {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                buffer.fill(b'a');
+                self.0.set(self.0.get() + buffer.len());
+                Ok(buffer.len())
+            }
+        }
+        let bytes_read = std::rc::Rc::new(std::cell::Cell::new(0));
+        assert!(super::read_text_bounded(GrowingInput(bytes_read.clone()), 1024).is_none());
+        assert_eq!(bytes_read.get(), 1025);
+    }
     use super::{
         collect_files, collect_source_files, collect_source_files_bounded, detect_language,
         discover_lockfiles, discover_lockfiles_bounded, read_text_file, CollectFilesOptions,

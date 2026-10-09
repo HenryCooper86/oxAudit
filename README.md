@@ -56,6 +56,9 @@ npm run pilot:smoke -- --cli ./src-tauri/target/debug/oxaudit-cli
 The guide includes desktop bundle/install commands and the first-project wizard.
 The [inert demo](examples/pilot/README.md), [pilot protocol](docs/pilot-validation.md),
 and [complete CI workflow](examples/ci/oxaudit.yml) make the first check repeatable.
+The [reliability guide](docs/project-reliability.md) explains scan ownership,
+saved image/history evidence and recovery; [quality validation](docs/quality-performance-validation.md)
+records benchmark and performance methods.
 AI is optional. Local pilot bundles do not establish native signing or
 notarization; [the QA log](docs/qa/2026-09-07-everyday-workflow.md) records observed
 artifacts and limits.

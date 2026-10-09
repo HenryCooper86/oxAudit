@@ -5,7 +5,7 @@ import { Button, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
-import { useToastStore } from "../lib/stores";
+import { useAppStore, useToastStore } from "../lib/stores";
 import type { CanonicalRun, ExportFormat, ExportPreview, ImportPreview } from "../lib/types";
 
 const FORMATS: Array<{ id: ExportFormat; label: string; description: string }> = [
@@ -22,7 +22,7 @@ const FORMATS: Array<{ id: ExportFormat; label: string; description: string }> =
 export function ExportCenterPage(): JSX.Element {
   const push = useToastStore((state) => state.push);
   const [runs, setRuns] = useState<CanonicalRun[] | null>(null);
-  const [runId, setRunId] = useState("");
+  const [runId, setRunId] = useState(() => useAppStore.getState().exportHandoff?.runId ?? "");
   const [format, setFormat] = useState<ExportFormat>("oxaudit-json");
   const [preview, setPreview] = useState<ExportPreview | null>(null);
   const [loading, setLoading] = useState(false);
@@ -33,10 +33,24 @@ export function ExportCenterPage(): JSX.Element {
   const [importError, setImportError] = useState<string | null>(null);
 
   useEffect(() => {
+    const applyHandoff = () => {
+      const handoff = useAppStore.getState().exportHandoff;
+      if (handoff) {
+        setRunId(handoff.runId);
+        useAppStore.setState({ exportHandoff: null });
+      }
+    };
+    applyHandoff();
+    return useAppStore.subscribe((state, previous) => {
+      if (state.exportHandoff !== previous.exportHandoff) applyHandoff();
+    });
+  }, []);
+
+  useEffect(() => {
     let disposed = false;
     void api.listCanonicalRuns(undefined, 100).then((loaded) => {
       if (disposed) return;
-      const completed = loaded.filter((run) => run.state === "completed");
+      const completed = loaded.filter((run) => ["completed", "incomplete", "failed", "cancelled"].includes(run.state));
       setRuns(completed);
       setRunId((current) => current || completed[0]?.id || "");
     }).catch((cause) => {
@@ -138,7 +152,7 @@ export function ExportCenterPage(): JSX.Element {
   return (
     <ToolPage
       title="Export Center"
-      description="Choose a completed run, preview exactly what leaves oxAudit, validate the format, and save it locally."
+      description="Choose saved evidence, preview exactly what leaves oxAudit, validate the format, and save it locally. Incomplete or failed receipts retain their coverage state."
     >
       <section className="rounded-sm border border-border bg-surface-secondary p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -200,9 +214,10 @@ export function ExportCenterPage(): JSX.Element {
       </section>
       <section className="rounded-sm border border-border bg-surface-secondary p-4">
         <div className="grid gap-4 min-[760px]:grid-cols-2">
-          <label className="text-[12px] text-text-secondary">Completed run
-            <Select className="mt-1 w-full" value={runId} onChange={(event) => setRunId(event.target.value)} disabled={!runs?.length}>
-              {(runs ?? []).map((run) => <option key={run.id} value={run.id}>{run.kind} · {run.targetLabel} · {new Date(run.updatedAtMs).toLocaleString()}</option>)}
+          <label className="text-[12px] text-text-secondary">Saved run
+            <Select className="mt-1 w-full" value={runId} onChange={(event) => setRunId(event.target.value)} disabled={!runs?.length && !runId}>
+              {runId && !runs?.some(run => run.id === runId) && <option value={runId}>Selected saved run · {runId}</option>}
+              {(runs ?? []).map((run) => <option key={run.id} value={run.id}>{run.kind} · {run.targetLabel} · {run.state} · {new Date(run.updatedAtMs).toLocaleString()}</option>)}
             </Select>
           </label>
           <label className="text-[12px] text-text-secondary">Format
@@ -215,7 +230,7 @@ export function ExportCenterPage(): JSX.Element {
       </section>
 
       {!runs && !error && <InlineState tone="running" title="Loading durable runs" />}
-      {runs?.length === 0 && <InlineState tone="empty" title="No completed canonical runs are available yet" description="Run a Source, Dependency, or Binary scan first." />}
+      {runs?.length === 0 && !runId && <InlineState tone="empty" title="No saved canonical runs are available yet" description="Run a Source, Dependency, Binary, Image, or History scan first." />}
       {loading && <InlineState tone="running" compact title="Generating and validating preview" />}
       {error && <InlineState tone="error" title="Export is unavailable" description={error} />}
       {preview && !loading && (

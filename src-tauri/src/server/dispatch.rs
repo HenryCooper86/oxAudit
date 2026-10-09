@@ -20,28 +20,42 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
             #[serde(rename_all = "camelCase")]
             struct Args {
                 options: crate::models::ScanOptions,
+                #[serde(default)]
+                operation_id: Option<String>,
             }
             let a: Args = from_args(&args)?;
             let hub_events = ctx.events();
             ok_ce(
-                crate::commands::scan_project_engine(
+                crate::commands::scan_source_engine_scoped(
                     &ctx.app,
                     &ctx.findings,
                     &ctx.cve,
                     &ctx.rule_packs,
-                    a.options,
+                    a.options.clone(),
+                    std::path::Path::new(&a.options.path),
+                    a.operation_id.as_deref(),
+                    None,
                     &hub_events,
                 )
                 .await,
             )
         }
         "cancel_scan" => ok_st(crate::commands::cancel_scan_inner(&ctx.app)),
+        "scan_work_status" => ok_st(ctx.app.scan_work.snapshot()),
+        "cancel_scan_work" => {
+            let id = args.get("operationId").and_then(Value::as_str).ok_or_else(|| Value::String("operationId is required".into()))?;
+            let cancelled = ctx.app.scan_work.cancel(Some(id), &[]).map_err(Value::String)?;
+            if cancelled { let _ = ctx.events().emit("work://changed", serde_json::to_value(ctx.app.scan_work.snapshot().map_err(Value::String)?).map_err(|error| Value::String(error.to_string()))?); }
+            Ok(Value::Bool(cancelled))
+        }
         "recheck_source_run" => {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase")]
             struct Args {
                 original_run_id: String,
                 project_id: String,
+                #[serde(default)]
+                operation_id: Option<String>,
             }
             let a: Args = from_args(&args)?;
             let hub_events = ctx.events();
@@ -53,6 +67,7 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                     &ctx.rule_packs,
                     &a.original_run_id,
                     &a.project_id,
+                    a.operation_id.as_deref(),
                     &hub_events,
                 )
                 .await,
@@ -173,6 +188,8 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                 offline: bool,
                 #[serde(default)]
                 advisory_db_path: Option<String>,
+                #[serde(default)]
+                operation_id: Option<String>,
             }
             let a: Args = from_args(&args)?;
             let hub_events = ctx.events();
@@ -185,14 +202,13 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                     a.path,
                     a.offline,
                     a.advisory_db_path,
+                    a.operation_id,
                 )
                 .await,
             )
         }
         "cancel_dependency_scan" => {
-            ctx.app
-                .cancel_dependency_scan
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            ctx.app.scan_work.cancel(None, &[crate::scan_work::WorkKind::Dependencies]).map_err(Value::String)?;
             Ok(Value::Null)
         }
         "find_lockfiles" => {
@@ -204,6 +220,10 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
         }
 
         // --------------------------------------------------- git history
+        "cancel_history_scan" => {
+            ctx.app.scan_work.cancel(None, &[crate::scan_work::WorkKind::History]).map_err(Value::String)?;
+            Ok(Value::Null)
+        }
         "scan_history_secrets" => {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase")]
@@ -211,13 +231,18 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                 path: String,
                 #[serde(default)]
                 validate_secrets: Option<bool>,
+                #[serde(default)]
+                operation_id: Option<String>,
             }
             let a: Args = from_args(&args)?;
             ok_st(
                 crate::commands::history::scan_history_secrets_engine(
-                    &ctx.app.http,
+                    &ctx.app,
+                    &ctx.findings,
+                    &ctx.events(),
                     a.path,
                     a.validate_secrets,
+                    a.operation_id,
                 )
                 .await,
             )
@@ -234,13 +259,15 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                 request: crate::binscan::run::BinaryScanRequest,
                 #[serde(default)]
                 use_grype: Option<bool>,
+                #[serde(default)]
+                operation_id: Option<String>,
             }
             let a: Args = from_args(&args)?;
             let scratch_dir = ctx.cache_dir.join("binscan");
-            let progress: std::sync::Arc<dyn Fn(String) + Send + Sync> = {
+            let progress: std::sync::Arc<dyn Fn(Value) + Send + Sync> = {
                 let hub_events = ctx.events();
-                std::sync::Arc::new(move |line: String| {
-                    let _ = hub_events.emit("binscan://progress", Value::from(line));
+                std::sync::Arc::new(move |payload: Value| {
+                    let _ = hub_events.emit("binscan://progress", payload);
                 })
             };
             let run_events = ctx.run_events();
@@ -257,14 +284,13 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                     progress,
                     a.request,
                     a.use_grype,
+                    a.operation_id,
                 )
                 .await,
             )
         }
         "cancel_binary_scan" => {
-            ctx.app
-                .cancel_binary_scan
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            ctx.app.scan_work.cancel(None, &[crate::scan_work::WorkKind::Binary]).map_err(Value::String)?;
             Ok(Value::Null)
         }
         "refresh_binary_database" => {
@@ -281,6 +307,8 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                     &scratch_dir,
                     &ctx.cache_dir,
                     progress,
+                    &ctx.events(),
+                    args.get("operationId").and_then(Value::as_str).map(str::to_owned),
                 )
                 .await,
             )
@@ -294,16 +322,17 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                 request: crate::commands::image::ImageScanRequest,
             }
             let a: Args = from_args(&args)?;
-            let progress: std::sync::Arc<dyn Fn(String) + Send + Sync> = {
+            let progress: std::sync::Arc<dyn Fn(Value) + Send + Sync> = {
                 let hub_events = ctx.events();
-                std::sync::Arc::new(move |line: String| {
-                    let _ = hub_events.emit("image://progress", Value::from(line));
+                std::sync::Arc::new(move |payload: Value| {
+                    let _ = hub_events.emit("image://progress", payload);
                 })
             };
             let hub_events = ctx.events();
             ok_st(
                 crate::commands::image::scan_image_engine(
                     &ctx.app,
+                    &ctx.findings,
                     Some(&ctx.cve),
                     &ctx.cache_dir,
                     progress,
@@ -314,9 +343,7 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
             )
         }
         "cancel_image_scan" => {
-            ctx.app
-                .cancel_binary_scan
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            ctx.app.scan_work.cancel(None, &[crate::scan_work::WorkKind::Image]).map_err(Value::String)?;
             Ok(Value::Null)
         }
 

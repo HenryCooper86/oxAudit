@@ -39,6 +39,7 @@
 
 use std::borrow::Cow;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::filetype::{archive_kind, ArchiveKind};
 use crate::DEFAULT_MAX_MEMBER_BYTES;
@@ -54,8 +55,8 @@ pub struct ExtractBudget {
     pub max_entries: usize,
     /// Largest single member kept, matching the per-file read cap.
     pub max_entry_bytes: u64,
-    /// Total expanded bytes across every member and level. The decompression
-    /// bomb stop.
+    /// Total expanded bytes across every member and level. Streamed layer tars
+    /// also cap actual decoded bytes, including framing and skipped content.
     pub max_total_bytes: u64,
 }
 
@@ -75,6 +76,9 @@ impl Default for ExtractBudget {
 pub struct ExtractStats {
     /// Members successfully pulled out.
     pub entries: usize,
+    /// Peak simultaneous member/wrapper Vec capacities during extraction.
+    /// Excludes input, codec/page/table allocations and buffers retained by a visitor.
+    pub peak_retained_bytes: u64,
     /// Members skipped for exceeding the per-entry cap.
     pub skipped_oversized: usize,
     /// Members or compression streams skipped because their bytes could not be read or decoded.
@@ -131,6 +135,8 @@ impl ExtractStats {
 pub struct ExtractedMember {
     pub path: String,
     pub bytes: Vec<u8>,
+    /// Container levels from this extraction root to the leaf.
+    pub depth: usize,
 }
 
 /// The outcome of opening one container.
@@ -144,13 +150,213 @@ pub struct Extracted {
 /// than an error: an unreadable archive still scans as an opaque blob, which
 /// is what the caller falls back to.
 pub fn extract(name: &str, bytes: &[u8], budget: &ExtractBudget) -> Extracted {
-    let mut out = Extracted {
-        members: Vec::new(),
-        stats: ExtractStats::default(),
-    };
+    let mut members = Vec::new();
+    let stats = extract_visit(name, bytes, budget, &mut |member| {
+        members.push(member);
+        true
+    });
+    Extracted { members, stats }
+}
+
+/// Visit each leaf as it is decoded, without retaining previously visited
+/// members. Nested containers retain their ancestors and the current member.
+/// Return false to stop; accepted findings can be kept by the caller while
+/// `stopped` records that later members were not examined. Keeping member
+/// buffers in the visitor defeats this API's retention benefit.
+pub fn extract_visit(
+    name: &str,
+    bytes: &[u8],
+    budget: &ExtractBudget,
+    visitor: &mut dyn FnMut(ExtractedMember) -> bool,
+) -> ExtractStats {
+    let mut out = Extraction::new(visitor);
     let mut total = 0_u64;
     extract_into(name, bytes, 0, budget, &mut total, &mut out);
-    out
+    out.stats
+}
+
+/// Cancellable streaming extraction.
+pub fn extract_visit_cancellable(
+    name: &str,
+    bytes: &[u8],
+    budget: &ExtractBudget,
+    cancel: &AtomicBool,
+    visitor: &mut dyn FnMut(ExtractedMember) -> bool,
+) -> ExtractStats {
+    let mut out = Extraction::new(visitor);
+    out.cancel = Some(cancel);
+    let mut total = 0_u64;
+    extract_into(name, bytes, 0, budget, &mut total, &mut out);
+    out.stats
+}
+
+/// Visit files in an OCI layer tar, optionally wrapped by a detected codec.
+/// Tar and codec output are read incrementally; skipped members and tar
+/// framing count toward the streamed-layer byte limit too. Random-access
+/// formats should use [`extract_visit_cancellable`] instead.
+pub fn extract_layer_visit(
+    name: &str,
+    reader: &mut dyn Read,
+    kind: ArchiveKind,
+    budget: &ExtractBudget,
+    cancel: &AtomicBool,
+    visitor: &mut dyn FnMut(ExtractedMember) -> bool,
+) -> ExtractStats {
+    let mut out = Extraction::new(visitor);
+    out.cancel = Some(cancel);
+    // Bound and cancel reads made by codecs, including while tar skips a
+    // member whose content exceeded the per-member cap.
+    let mut input = CancelReader { reader, cancel };
+    // Keep the same decompressed member identity as the collecting API.
+    let plain_name = if kind == ArchiveKind::Tar {
+        name.to_owned()
+    } else {
+        strip_archive_suffix(name)
+    };
+    let name = plain_name.as_str();
+    match kind {
+        ArchiveKind::Tar => drain_layer(name, &mut input, 0, budget, &mut out),
+        ArchiveKind::Gzip => drain_layer(
+            name,
+            &mut flate2::read::GzDecoder::new(input),
+            1,
+            budget,
+            &mut out,
+        ),
+        ArchiveKind::Bzip2 => drain_layer(
+            name,
+            &mut bzip2::read::BzDecoder::new(input),
+            1,
+            budget,
+            &mut out,
+        ),
+        ArchiveKind::Xz => drain_layer(
+            name,
+            &mut liblzma::read::XzDecoder::new(input),
+            1,
+            budget,
+            &mut out,
+        ),
+        ArchiveKind::Zstd => match zstd::stream::read::Decoder::new(input) {
+            Ok(mut decoder) => drain_layer(name, &mut decoder, 1, budget, &mut out),
+            Err(_) => out.stats.skipped_unreadable += 1,
+        },
+        _ => {
+            out.stats.stopped = Some("unsupported streamed layer format".into());
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        out.stats
+            .stopped
+            .get_or_insert_with(|| "scan cancelled".into());
+    }
+    out.stats
+}
+
+struct CancelReader<'a> {
+    reader: &'a mut dyn Read,
+    cancel: &'a AtomicBool,
+}
+
+impl Read for CancelReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(std::io::Error::other("scan cancelled"));
+        }
+        let len = bytes.len().min(64 * 1024);
+        self.reader.read(&mut bytes[..len])
+    }
+}
+
+struct LayerReader<'a> {
+    reader: &'a mut dyn Read,
+    remaining: u64,
+    exhausted: bool,
+}
+
+impl Read for LayerReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            if !self.exhausted {
+                let mut probe = [0; 1];
+                self.exhausted = self.reader.read(&mut probe)? > 0;
+            }
+            return Ok(0);
+        }
+        let len = bytes
+            .len()
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        let read = self.reader.read(&mut bytes[..len])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+fn drain_layer(
+    name: &str,
+    reader: &mut dyn Read,
+    depth: usize,
+    budget: &ExtractBudget,
+    out: &mut Extraction<'_>,
+) {
+    if depth >= budget.max_depth {
+        out.stats.stopped = Some(format!("nesting deeper than {}", budget.max_depth));
+        return;
+    }
+    let mut reader = LayerReader {
+        reader,
+        remaining: budget.max_total_bytes,
+        exhausted: false,
+    };
+    let mut total = 0;
+    extract_tar_reader(name, &mut reader, depth, budget, &mut total, out);
+    if reader.exhausted {
+        out.stats.stopped.get_or_insert_with(|| {
+            format!(
+                "streamed layer expanded past {} bytes (including framing and skipped content)",
+                budget.max_total_bytes
+            )
+        });
+    }
+}
+
+struct Extraction<'a> {
+    stats: ExtractStats,
+    visitor: &'a mut dyn FnMut(ExtractedMember) -> bool,
+    retained_bytes: u64,
+    visitor_stopped: bool,
+    cancel: Option<&'a AtomicBool>,
+}
+
+impl<'a> Extraction<'a> {
+    fn new(visitor: &'a mut dyn FnMut(ExtractedMember) -> bool) -> Self {
+        Self {
+            stats: ExtractStats::default(),
+            visitor,
+            retained_bytes: 0,
+            visitor_stopped: false,
+            cancel: None,
+        }
+    }
+
+    fn observe_buffer(&mut self, bytes: usize) {
+        self.stats.peak_retained_bytes = self
+            .stats
+            .peak_retained_bytes
+            .max(self.retained_bytes + bytes as u64);
+    }
+
+    fn retain(&mut self, bytes: usize) {
+        self.observe_buffer(bytes);
+        self.retained_bytes += bytes as u64;
+    }
+
+    fn release(&mut self, bytes: usize) {
+        self.retained_bytes -= bytes as u64;
+    }
 }
 
 fn extract_into(
@@ -159,7 +365,7 @@ fn extract_into(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     if depth >= budget.max_depth {
         // Only report the stop when there was something left to open.
@@ -241,11 +447,14 @@ fn dispatch_decompressed(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     if archive_kind(&plain[..plain.len().min(512)]).is_some() {
         let plain_name = strip_archive_suffix(name);
+        let retained = plain.capacity();
+        out.retain(retained);
         extract_into(&plain_name, &plain, depth + 1, budget, total, out);
+        out.release(retained);
     } else {
         let member_name = strip_archive_suffix(name);
         read_member_bytes(name, &member_name, plain.into(), depth, budget, total, out);
@@ -260,7 +469,7 @@ fn drain_squashfs(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     for node in filesystem.files() {
         let backhand::InnerNode::File(file) = &node.inner else {
@@ -298,7 +507,7 @@ fn extract_cramfs(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     const SUPERBLOCK: usize = 76;
     const FLAG_SHIFTED_ROOT: u32 = 0x0000_0400;
@@ -371,16 +580,16 @@ fn cramfs_inode_at(bytes: &[u8], offset: usize) -> Option<CramfsInode> {
 /// Walk one directory's data region: contiguous inode+name records. Regular
 /// files become members; directories recurse under the same depth budget as
 /// container nesting; everything else counts as a marker.
-struct CramfsWalk<'a> {
+struct CramfsWalk<'a, 'visitor> {
     bytes: &'a [u8],
     container: &'a str,
     budget: &'a ExtractBudget,
     total: &'a mut u64,
-    out: &'a mut Extracted,
+    out: &'a mut Extraction<'visitor>,
 }
 
 fn walk_cramfs_dir(
-    walk: &mut CramfsWalk<'_>,
+    walk: &mut CramfsWalk<'_, '_>,
     offset: usize,
     size: usize,
     prefix: &str,
@@ -443,6 +652,7 @@ fn walk_cramfs_dir(
                     budget_stop(walk.budget, walk.total, walk.out);
                     return;
                 }
+                walk.out.observe_buffer(node.size as usize);
                 if let Some(content) = cramfs_file_bytes(walk.bytes, &node, walk.budget) {
                     read_member_bytes(
                         walk.container,
@@ -546,7 +756,7 @@ fn extract_rpm(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     let Some(payload) = rpm_payload(bytes) else {
         return;
@@ -574,7 +784,10 @@ fn extract_rpm(
     let Some(cpio) = plain else {
         return;
     };
+    let retained = cpio.capacity();
+    out.retain(retained);
     extract_cpio(container, &cpio, depth, budget, total, out);
+    out.release(retained);
 }
 
 /// Skip the lead and both headers, returning the payload slice. A header is
@@ -651,7 +864,7 @@ fn extract_cpio(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     let mut offset = 0_usize;
     while let Some(entry) = cpio_entry_at(bytes, offset) {
@@ -689,16 +902,53 @@ fn extract_cpio(
 /// that fails to parse is skipped, not fatal; a blob with no embedded
 /// filesystem returns nothing and the caller scans it raw.
 pub fn extract_embedded_squashfs(name: &str, bytes: &[u8], budget: &ExtractBudget) -> Extracted {
-    let mut out = Extracted {
-        members: Vec::new(),
-        stats: ExtractStats::default(),
-    };
+    let mut members = Vec::new();
+    let stats = extract_embedded_squashfs_visit(name, bytes, budget, &mut |member| {
+        members.push(member);
+        true
+    });
+    Extracted { members, stats }
+}
+
+/// Embedded-filesystem equivalent of [`extract_visit`].
+pub fn extract_embedded_squashfs_visit(
+    name: &str,
+    bytes: &[u8],
+    budget: &ExtractBudget,
+    visitor: &mut dyn FnMut(ExtractedMember) -> bool,
+) -> ExtractStats {
+    extract_embedded_squashfs_visit_with_cancel(name, bytes, budget, None, visitor)
+}
+
+/// Embedded extraction with cancellation checked between reads and members.
+pub fn extract_embedded_squashfs_visit_cancellable(
+    name: &str,
+    bytes: &[u8],
+    budget: &ExtractBudget,
+    cancel: &AtomicBool,
+    visitor: &mut dyn FnMut(ExtractedMember) -> bool,
+) -> ExtractStats {
+    extract_embedded_squashfs_visit_with_cancel(name, bytes, budget, Some(cancel), visitor)
+}
+
+fn extract_embedded_squashfs_visit_with_cancel(
+    name: &str,
+    bytes: &[u8],
+    budget: &ExtractBudget,
+    cancel: Option<&AtomicBool>,
+    visitor: &mut dyn FnMut(ExtractedMember) -> bool,
+) -> ExtractStats {
+    let mut out = Extraction::new(visitor);
+    out.cancel = cancel;
     let mut total = 0_u64;
     let scan_end = bytes.len().min(EMBEDDED_SCAN_WINDOW);
     let mut found = 0_usize;
     let mut attempts = 0_usize;
     let mut offset = 0_usize;
     while offset + 4 <= scan_end && found < MAX_EMBEDDED {
+        if budget_stop(budget, &mut total, &mut out) {
+            break;
+        }
         let Some(next) = memchr::memchr2(b'h', b's', &bytes[offset..scan_end - 3]) else {
             break;
         };
@@ -735,7 +985,7 @@ pub fn extract_embedded_squashfs(name: &str, bytes: &[u8], budget: &ExtractBudge
         }
         offset = hit + 1;
     }
-    out
+    out.stats
 }
 
 /// Decompress a single stream up to `max_entry_bytes + 1`, so an oversized
@@ -744,17 +994,15 @@ pub fn extract_embedded_squashfs(name: &str, bytes: &[u8], budget: &ExtractBudge
 fn decompress(
     reader: &mut dyn Read,
     budget: &ExtractBudget,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) -> Option<Vec<u8>> {
-    let mut plain = Vec::new();
-    let mut limited = reader.take(budget.max_entry_bytes.saturating_add(1));
-    // A decompression error after some output is still useful output, but
-    // distinguishing the two invites half-files; treat both as unusable,
-    // because a truncated member can misreport versions.
-    if limited.read_to_end(&mut plain).is_err() {
-        out.stats.skipped_unreadable += 1;
-        return None;
-    }
+    let plain = match read_bounded(reader, budget.max_entry_bytes.saturating_add(1), out) {
+        Ok(plain) => plain,
+        Err(_) => {
+            out.stats.skipped_unreadable += 1;
+            return None;
+        }
+    };
     if plain.len() as u64 > budget.max_entry_bytes {
         out.stats.skipped_oversized += 1;
         return None;
@@ -768,11 +1016,29 @@ fn extract_tar(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive = tar::Archive::new(cursor);
+    extract_tar_reader(
+        container,
+        &mut std::io::Cursor::new(bytes),
+        depth,
+        budget,
+        total,
+        out,
+    );
+}
+
+fn extract_tar_reader(
+    container: &str,
+    reader: &mut dyn Read,
+    depth: usize,
+    budget: &ExtractBudget,
+    total: &mut u64,
+    out: &mut Extraction<'_>,
+) {
+    let mut archive = tar::Archive::new(reader);
     let Ok(entries) = archive.entries() else {
+        out.stats.skipped_unreadable += 1;
         return;
     };
     for entry in entries {
@@ -789,6 +1055,10 @@ fn extract_tar(
         if budget_stop(budget, total, out) {
             return;
         }
+        if entry.size() > budget.max_entry_bytes {
+            out.stats.skipped_oversized += 1;
+            continue;
+        }
         let Ok(path) = entry.path() else {
             continue;
         };
@@ -799,7 +1069,17 @@ fn extract_tar(
                 continue;
             }
         };
-        read_member(container, &member, &mut entry, depth, budget, total, out);
+        let expected = entry.size();
+        read_member_sized(
+            container,
+            &member,
+            &mut entry,
+            depth,
+            budget,
+            total,
+            out,
+            Some(expected),
+        );
     }
 }
 
@@ -809,7 +1089,7 @@ fn extract_zip(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
         return;
@@ -833,7 +1113,17 @@ fn extract_zip(
                 continue;
             }
         };
-        read_member(container, &member, &mut file, depth, budget, total, out);
+        let expected = file.size();
+        read_member_sized(
+            container,
+            &member,
+            &mut file,
+            depth,
+            budget,
+            total,
+            out,
+            Some(expected),
+        );
     }
 }
 
@@ -850,14 +1140,14 @@ fn extract_ar(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     const HEADER: usize = 60;
     if bytes.len() < 8 + HEADER {
         return;
     }
     let mut offset = 8; // "!<arch>\n"
-    let mut long_names: Vec<u8> = Vec::new();
+    let mut long_names: &[u8] = &[];
     while offset + HEADER <= bytes.len() {
         if budget_stop(budget, total, out) {
             return;
@@ -892,7 +1182,7 @@ fn extract_ar(
             // GNU: the long-name table.
             let start = offset + HEADER;
             let end = (start + size).min(bytes.len());
-            long_names = bytes[start..end].to_vec();
+            long_names = &bytes[start..end];
             offset = next_ar_offset(offset, HEADER, size);
             continue;
         } else if raw_name == "/" || raw_name == "debian-binary" {
@@ -902,7 +1192,7 @@ fn extract_ar(
             .strip_suffix('/')
             .and_then(|stem| stem.strip_prefix('/'))
             .and_then(|reference| reference.parse::<usize>().ok())
-            .and_then(|index| name_from_long_table(&long_names, index))
+            .and_then(|index| name_from_long_table(long_names, index))
         {
             // GNU: `/N` names the Nth entry of the long-name table.
             name
@@ -957,22 +1247,79 @@ fn read_member(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
+) {
+    read_member_sized(container, member, reader, depth, budget, total, out, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_member_sized(
+    container: &str,
+    member: &str,
+    reader: &mut dyn Read,
+    depth: usize,
+    budget: &ExtractBudget,
+    total: &mut u64,
+    out: &mut Extraction<'_>,
+    expected: Option<u64>,
 ) {
     if budget_stop(budget, total, out) {
         return;
     }
-    let mut bytes = Vec::new();
     let remaining = budget.max_total_bytes.saturating_sub(*total);
-    let limit = budget.max_entry_bytes.min(remaining);
-    let mut limited = reader.take(limit.saturating_add(1));
-    if limited.read_to_end(&mut bytes).is_err() {
-        // An unreadable member is skipped; the container's other members
-        // still count.
+    let limit = budget.max_entry_bytes.min(remaining).saturating_add(1);
+    let bytes = match read_bounded(reader, limit, out) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            out.stats.skipped_unreadable += 1;
+            return;
+        }
+    };
+    if expected.is_some_and(|size| (bytes.len() as u64) < size)
+        && bytes.len() as u64 <= budget.max_entry_bytes.min(remaining)
+    {
         out.stats.skipped_unreadable += 1;
         return;
     }
     read_member_bytes(container, member, bytes.into(), depth, budget, total, out);
+}
+
+/// Grow geometrically, but never beyond the requested cap, including the
+/// probe byte. `read_to_end` can double a nearly full capped buffer.
+fn read_bounded(
+    reader: &mut dyn Read,
+    limit: u64,
+    out: &mut Extraction<'_>,
+) -> std::io::Result<Vec<u8>> {
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 64 * 1024];
+    while bytes.len() < limit {
+        if out.cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            out.stats
+                .stopped
+                .get_or_insert_with(|| "scan cancelled".into());
+            return Err(std::io::Error::other("scan cancelled"));
+        }
+        let remaining = (limit - bytes.len()).min(chunk.len());
+        let read = match reader.read(&mut chunk[..remaining]) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => other?,
+        };
+        if read == 0 {
+            break;
+        }
+        let needed = bytes.len() + read;
+        if needed > bytes.capacity() {
+            let capacity = needed.max(bytes.capacity().saturating_mul(2)).min(limit);
+            bytes
+                .try_reserve_exact(capacity - bytes.len())
+                .map_err(std::io::Error::other)?;
+        }
+        out.observe_buffer(bytes.capacity());
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    Ok(bytes)
 }
 
 /// Budget accounting plus push-or-recurse for one member's bytes.
@@ -983,7 +1330,7 @@ fn read_member_bytes(
     depth: usize,
     budget: &ExtractBudget,
     total: &mut u64,
-    out: &mut Extracted,
+    out: &mut Extraction<'_>,
 ) {
     if budget_stop(budget, total, out) {
         return;
@@ -1002,12 +1349,24 @@ fn read_member_bytes(
     }
     *total += length;
     let leaf = !bytes.is_empty() && archive_kind(&bytes[..bytes.len().min(512)]).is_none();
+    let retained = match &bytes {
+        Cow::Owned(buffer) => buffer.capacity(),
+        Cow::Borrowed(_) if leaf => bytes.len(),
+        Cow::Borrowed(_) => 0,
+    };
+    out.retain(retained);
     if leaf {
         out.stats.entries += 1;
-        out.members.push(ExtractedMember {
+        if !(out.visitor)(ExtractedMember {
             path: format!("{container}!/{member}"),
             bytes: bytes.into_owned(),
-        });
+            depth: depth + 1,
+        }) {
+            out.visitor_stopped = true;
+            out.stats
+                .stopped
+                .get_or_insert_with(|| "member visitor stopped".into());
+        }
     } else {
         // A nested container expands in place; its own members carry the
         // combined path. An empty member is dropped — nothing to scan.
@@ -1022,18 +1381,28 @@ fn read_member_bytes(
             );
         }
     }
+    out.release(retained);
 }
 
 /// Stop before reading the next member once a budget is exhausted. Called at
 /// iteration boundaries where there is nothing half-read to discard.
-fn budget_stop(budget: &ExtractBudget, total: &mut u64, out: &mut Extracted) -> bool {
+fn budget_stop(budget: &ExtractBudget, total: &mut u64, out: &mut Extraction<'_>) -> bool {
+    if out.cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        out.stats
+            .stopped
+            .get_or_insert_with(|| "scan cancelled".into());
+        return true;
+    }
+    if out.visitor_stopped {
+        return true;
+    }
     if *total >= budget.max_total_bytes {
         out.stats
             .stopped
             .get_or_insert_with(|| format!("expanded past {} bytes", budget.max_total_bytes));
         return true;
     }
-    if out.members.len() >= budget.max_entries {
+    if out.stats.entries >= budget.max_entries {
         out.stats
             .stopped
             .get_or_insert_with(|| format!("more than {} members", budget.max_entries));
@@ -1094,6 +1463,28 @@ fn strip_archive_suffix(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_compressed_layer_paths_match_the_collecting_api() {
+        let tar = tar_with(&[("bin/busybox", busybox())]);
+        let bytes = gzip(&tar);
+        let name = "image!layer-0000.tar.gz";
+        let expected = extract(name, &bytes, &ExtractBudget::default());
+        let mut streamed_paths = Vec::new();
+        extract_layer_visit(
+            name,
+            &mut bytes.as_slice(),
+            ArchiveKind::Gzip,
+            &ExtractBudget::default(),
+            &AtomicBool::new(false),
+            &mut |member| {
+                streamed_paths.push(member.path);
+                true
+            },
+        );
+        assert_eq!(streamed_paths, paths(&expected));
+        assert_eq!(streamed_paths, ["image!layer-0000.tar!/bin/busybox"]);
+    }
 
     /// A binary member carrying the banner a real busybox has — the same
     /// fixture shape the end-to-end scan tests use.
@@ -1157,6 +1548,184 @@ mod tests {
 
     fn paths(extracted: &Extracted) -> Vec<&str> {
         extracted.members.iter().map(|m| m.path.as_str()).collect()
+    }
+
+    #[test]
+    fn discarded_oversized_zip_members_still_count_their_peak_buffer_capacity() {
+        let archive = zip_with(&[("oversized", vec![7; 1024])]);
+        let limited = ExtractBudget {
+            max_entry_bytes: 512,
+            ..budget()
+        };
+        let stats = extract_visit("firmware.zip", &archive, &limited, &mut |_| true);
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.skipped_oversized, 1);
+        assert_eq!(stats.peak_retained_bytes, 513);
+    }
+
+    #[test]
+    fn a_streamed_total_stop_never_accepts_a_partial_member() {
+        let archive = tar_with(&[("first", busybox()), ("second", busybox())]);
+        let limited = ExtractBudget {
+            max_entry_bytes: 1024,
+            max_total_bytes: 1544,
+            ..budget()
+        };
+        let mut paths = Vec::new();
+        let stats = extract_layer_visit(
+            "layer",
+            &mut archive.as_slice(),
+            ArchiveKind::Tar,
+            &limited,
+            &AtomicBool::new(false),
+            &mut |member| {
+                paths.push(member.path);
+                true
+            },
+        );
+        assert_eq!(paths, vec!["layer!/first"]);
+        assert_eq!(stats.entries, 1);
+        assert!(stats.skipped_unreadable > 0);
+        assert!(stats.stopped.is_some());
+    }
+
+    #[test]
+    fn streamed_layer_total_stop_keeps_earlier_evidence_and_bounds_skipped_bytes() {
+        let archive = tar_with(&[("bin/busybox", busybox()), ("huge.bin", vec![7; 32 * 1024])]);
+        let limited = ExtractBudget {
+            max_entry_bytes: 1024,
+            max_total_bytes: 4096,
+            ..budget()
+        };
+        let mut reader = std::io::Cursor::new(archive);
+        let mut paths = Vec::new();
+        let stats = extract_layer_visit(
+            "layer",
+            &mut reader,
+            ArchiveKind::Tar,
+            &limited,
+            &AtomicBool::new(false),
+            &mut |member| {
+                paths.push(member.path);
+                true
+            },
+        );
+        assert_eq!(paths, vec!["layer!/bin/busybox"]);
+        assert!(stats.stopped.as_deref().unwrap().contains("4096"));
+        assert!(
+            reader.position() <= 4097,
+            "skipping an oversized member must stop at the layer budget plus one probe"
+        );
+    }
+
+    #[test]
+    fn streamed_layer_scans_after_an_oversized_member_without_buffering_the_layer() {
+        let archive = tar_with(&[("huge.bin", vec![7; 32 * 1024]), ("bin/busybox", busybox())]);
+        let limited = ExtractBudget {
+            max_entry_bytes: 1024,
+            max_total_bytes: 64 * 1024,
+            ..budget()
+        };
+        for (kind, bytes) in [
+            (ArchiveKind::Tar, archive.clone()),
+            (ArchiveKind::Gzip, gzip(&archive)),
+        ] {
+            let mut paths = Vec::new();
+            let stats = extract_layer_visit(
+                "layer",
+                &mut bytes.as_slice(),
+                kind,
+                &limited,
+                &AtomicBool::new(false),
+                &mut |member| {
+                    paths.push(member.path);
+                    true
+                },
+            );
+            assert_eq!(paths, vec!["layer!/bin/busybox"]);
+            assert_eq!(stats.skipped_oversized, 1);
+            assert!(
+                stats.peak_retained_bytes <= 1025,
+                "compressed tar staging must not retain the whole layer: {stats:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cancellation_between_members_keeps_accepted_work_and_stops_decoding() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cancel = AtomicBool::new(false);
+        let archive = tar_with(&[("first", busybox()), ("second", vec![7; 128])]);
+        let mut accepted = Vec::new();
+        let stats =
+            extract_visit_cancellable("fw.tar", &archive, &budget(), &cancel, &mut |member| {
+                accepted.push(member.path);
+                cancel.store(true, Ordering::Relaxed);
+                true
+            });
+        assert_eq!(accepted, vec!["fw.tar!/first"]);
+        assert_eq!(stats.entries, 1);
+        assert!(stats.stopped.as_deref().unwrap().contains("cancelled"));
+    }
+
+    #[test]
+    fn streaming_many_members_releases_buffers_before_reading_the_next() {
+        let members: Vec<(String, Vec<u8>)> = (0..12)
+            .map(|index| (format!("bin/payload-{index}"), vec![7; 64 * 1024]))
+            .collect();
+        let borrowed: Vec<(&str, Vec<u8>)> = members
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.clone()))
+            .collect();
+        let archive = tar_with(&borrowed);
+        let mut accepted = 0;
+        let stats = extract_visit("many.tar", &archive, &budget(), &mut |member| {
+            assert_eq!(member.bytes.len(), 64 * 1024);
+            accepted += 1;
+            true
+        });
+        assert_eq!(accepted, 12);
+        assert_eq!(stats.entries, 12);
+        assert!(
+            stats.peak_retained_bytes <= 64 * 1024 + 1,
+            "the extractor must retain one leaf, not all 12: {stats:?}"
+        );
+    }
+
+    #[test]
+    fn a_streaming_stop_preserves_already_accepted_members_and_reports_coverage() {
+        let archive = tar_with(&[("first", busybox()), ("second", vec![7; 128])]);
+        let mut accepted = Vec::new();
+        let stats = extract_visit("firmware.tar", &archive, &budget(), &mut |member| {
+            accepted.push(member.path);
+            false
+        });
+        assert_eq!(accepted, vec!["firmware.tar!/first"]);
+        assert_eq!(stats.entries, 1);
+        assert!(
+            stats.stopped.is_some(),
+            "a visitor stop is incomplete coverage"
+        );
+    }
+
+    #[test]
+    fn a_nested_stream_keeps_only_ancestors_and_the_current_leaf() {
+        let inner = tar_with(&[("bin/busybox", busybox()), ("bin/other", vec![7; 128])]);
+        let outer = tar_with(&[("layer.tar", inner.clone()), ("bin/last", vec![7; 128])]);
+        let mut paths = Vec::new();
+        let stats = extract_visit("image.tar", &outer, &budget(), &mut |member| {
+            paths.push(member.path);
+            true
+        });
+        assert_eq!(
+            paths,
+            vec![
+                "image.tar!/layer.tar!/bin/busybox",
+                "image.tar!/layer.tar!/bin/other",
+                "image.tar!/bin/last"
+            ]
+        );
+        assert!(stats.peak_retained_bytes <= inner.len() as u64 + 129);
     }
 
     #[test]
@@ -1423,10 +1992,12 @@ mod tests {
             max_total_bytes: 32,
             ..budget()
         };
-        let mut out = Extracted {
-            members: Vec::new(),
-            stats: ExtractStats::default(),
+        let mut members = Vec::new();
+        let mut visitor = |member| {
+            members.push(member);
+            true
         };
+        let mut out = Extraction::new(&mut visitor);
         let mut total = 0;
         read_member(
             "fw.tar",
@@ -1442,7 +2013,7 @@ mod tests {
             33,
             "only the budget and one probe byte are read"
         );
-        assert!(out.members.is_empty());
+        assert_eq!(out.stats.entries, 0);
         assert_eq!(out.stats.stopped.as_deref(), Some("expanded past 32 bytes"));
     }
 
@@ -1624,6 +2195,7 @@ mod tests {
     fn the_note_names_the_container_and_its_limits() {
         let mut stats = ExtractStats {
             entries: 12,
+            peak_retained_bytes: 0,
             skipped_oversized: 1,
             skipped_unreadable: 0,
             skipped_markers: 4,

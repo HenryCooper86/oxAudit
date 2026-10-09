@@ -10,6 +10,8 @@ pub enum RunKind {
     Dependencies,
     Binary,
     Firmware,
+    Image,
+    History,
     Import,
     ExternalEvidence,
     Verification,

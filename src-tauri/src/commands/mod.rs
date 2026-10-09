@@ -431,6 +431,7 @@ fn data_source_statuses(service: &FindingsService) -> Result<Vec<DataSourceStatu
 }
 
 pub struct AppState {
+    pub scan_work: crate::scan_work::ScanWorkRegistry,
     pub settings: Mutex<AppSettings>,
     pub credentials: Arc<dyn crate::credentials::CredentialStore>,
     pub http: reqwest::Client,
@@ -438,10 +439,6 @@ pub struct AppState {
     /// Shared per-tool request budgets for network-backed assistant tools.
     pub tool_rate_limiter: crate::agent::rate_limit::ToolRateLimiter,
     pub osv: OsvClient,
-    pub cancel_scan: AtomicBool,
-    pub cancel_dependency_scan: AtomicBool,
-    /// Cancellation for an in-flight cve-bin-tool run.
-    pub cancel_binary_scan: Arc<AtomicBool>,
     /// run_id -> cancellation state for in-flight chat turns
     pub active_chats:
         Mutex<std::collections::HashMap<String, Arc<crate::agent::tool::RunCancellation>>>,
@@ -479,15 +476,13 @@ impl AppState {
             .build()
             .expect("failed to build HTTP client");
         Self {
+            scan_work: crate::scan_work::ScanWorkRegistry::default(),
             settings: Mutex::new(AppSettings::default()),
             credentials,
             http: http.clone(),
             ai: AiClient::new(http.clone()),
             tool_rate_limiter: crate::agent::rate_limit::ToolRateLimiter::oxaudit_defaults(),
             osv: OsvClient::new(http.clone()),
-            cancel_scan: AtomicBool::new(false),
-            cancel_dependency_scan: AtomicBool::new(false),
-            cancel_binary_scan: Arc::new(AtomicBool::new(false)),
             active_chats: Mutex::new(std::collections::HashMap::new()),
             pending_steers: Mutex::new(std::collections::HashMap::new()),
             active_project: Mutex::new(None),
@@ -746,6 +741,7 @@ pub async fn scan_project(
     cve: State<'_, CveState>,
     rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
     options: ScanOptions,
+    operation_id: Option<String>,
 ) -> Result<ScanRunDetail, CommandError> {
     struct TauriEvents(AppHandle);
     impl ScanEventSink for TauriEvents {
@@ -755,27 +751,44 @@ pub async fn scan_project(
         }
     }
 
-    scan_project_engine(
+    let project_root = PathBuf::from(&options.path);
+    scan_source_engine_scoped(
         &state,
         &findings,
         &cve,
         &rule_packs,
         options,
+        &project_root,
+        operation_id.as_deref(),
+        None,
         &TauriEvents(app),
     )
     .await
 }
 
-/// The whole source-scan command minus its Tauri wiring, so the headless
-/// server drives the identical path over its own event sink.
-pub(crate) async fn scan_project_engine(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn scan_source_engine_scoped(
     state: &AppState,
     findings: &FindingsState,
     cve: &CveState,
     rule_packs: &crate::rulepack_store::RulePacksState,
     options: ScanOptions,
+    project_root: &Path,
+    operation_id: Option<&str>,
+    cancellation: Option<Arc<AtomicBool>>,
     events: &dyn ScanEventSink,
 ) -> Result<ScanRunDetail, CommandError> {
+    let mut work = state
+        .scan_work
+        .begin_with_cancel(
+            crate::scan_work::WorkKind::Source,
+            &options.path,
+            operation_id,
+            cancellation,
+            events,
+        )
+        .map_err(CommandError::data_operation_failed)?;
+    let cancel = work.cancellation();
     let saved_scan_settings = state.settings.lock().unwrap().scan.clone();
     let effective = effective_scan_options(&options, &saved_scan_settings);
     let mut durable_options = options;
@@ -790,11 +803,13 @@ pub(crate) async fn scan_project_engine(
     // selection, and a scan that quietly skipped enabled rules would be a
     // lie. A pack whose snapshot no longer validates is skipped with its
     // reason logged — the scan proceeds with the packs that hold.
+    let mut coverage_warnings = Vec::new();
     let installed_packs = match rule_packs.store() {
         Ok(store) => {
             let resolved = store.resolve_enabled();
             for (id, reason) in &resolved.skipped {
                 tracing::warn!(pack = %id, reason = %reason, "enabled rule pack skipped");
+                coverage_warnings.push(format!("Enabled rule pack {id} was not applied: {reason}"));
             }
             resolved.packs
         }
@@ -802,6 +817,9 @@ pub(crate) async fn scan_project_engine(
         // itself must not fail over pack management.
         Err(error) => {
             tracing::warn!(reason = %error, "rule packs not applied");
+            coverage_warnings.push(format!(
+                "Installed rule packs could not be loaded; built-in rules were applied: {error}"
+            ));
             Vec::new()
         }
     };
@@ -826,10 +844,39 @@ pub(crate) async fn scan_project_engine(
     let packs =
         crate::scanners::rulepacks::AppliedRulePacks::from_sources(installed_packs, one_off_packs);
 
-    findings
+    let result = findings
         .service()?
-        .scan_with_packs(durable_options, cve, &state.cancel_scan, events, &packs)
-        .await
+        .scan_scoped_with_packs(
+            durable_options,
+            project_root,
+            cve,
+            &cancel,
+            &work,
+            &packs,
+            &coverage_warnings,
+        )
+        .await;
+    match &result {
+        Ok(run) => work.finish(
+            if run.status == crate::findings::domain::RunStatus::Completed
+                && run.persistence == crate::findings::domain::RunPersistence::Saved
+            {
+                "completed"
+            } else {
+                "incomplete"
+            },
+            Some(&run.run_id),
+        ),
+        Err(_) => work.finish(
+            if cancel.load(Ordering::SeqCst) {
+                "cancelled"
+            } else {
+                "failed"
+            },
+            None,
+        ),
+    }
+    result
 }
 
 #[derive(serde::Serialize)]
@@ -840,6 +887,7 @@ pub struct RecheckSourceResult {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn recheck_source_run(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -848,6 +896,7 @@ pub async fn recheck_source_run(
     rule_packs: State<'_, crate::rulepack_store::RulePacksState>,
     original_run_id: String,
     project_id: String,
+    operation_id: Option<String>,
 ) -> Result<RecheckSourceResult, CommandError> {
     struct RecheckEvents(AppHandle);
     impl ScanEventSink for RecheckEvents {
@@ -863,11 +912,13 @@ pub async fn recheck_source_run(
         &rule_packs,
         &original_run_id,
         &project_id,
+        operation_id.as_deref(),
         &RecheckEvents(app),
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn recheck_source_run_engine(
     state: &AppState,
     findings: &FindingsState,
@@ -875,10 +926,12 @@ pub(crate) async fn recheck_source_run_engine(
     rule_packs: &crate::rulepack_store::RulePacksState,
     original_run_id: &str,
     project_id: &str,
+    operation_id: Option<&str>,
     events: &dyn ScanEventSink,
 ) -> Result<RecheckSourceResult, CommandError> {
     let service = findings.service()?;
     let options = service.recheck_options(original_run_id, project_id)?;
+    let project = service.repository().project_context(project_id)?;
     let identity = oxaudit_domain::RunId::parse(original_run_id.to_owned())
         .map_err(|_| CommandError::not_found())?;
     let mut required_ids = service
@@ -948,9 +1001,35 @@ pub(crate) async fn recheck_source_run_engine(
     }
     let packs =
         crate::scanners::rulepacks::AppliedRulePacks::from_sources(installed_packs, one_off_packs);
+    let mut work = state
+        .scan_work
+        .begin(
+            crate::scan_work::WorkKind::Source,
+            &options.path,
+            operation_id,
+            events,
+        )
+        .map_err(CommandError::data_operation_failed)?;
+    let cancel = work.cancellation();
     let run = service
-        .scan_with_packs(options.clone(), cve, &state.cancel_scan, events, &packs)
+        .scan_scoped_with_packs(
+            options.clone(),
+            Path::new(&project.canonical_path),
+            cve,
+            &cancel,
+            &work,
+            &packs,
+            &[],
+        )
         .await?;
+    work.finish(
+        if run.persistence == crate::findings::domain::RunPersistence::Saved {
+            "completed"
+        } else {
+            "incomplete"
+        },
+        Some(&run.run_id),
+    );
     Ok(RecheckSourceResult { run, options })
 }
 
@@ -960,8 +1039,30 @@ pub fn cancel_scan(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 pub(crate) fn cancel_scan_inner(state: &AppState) -> Result<(), String> {
-    state.cancel_scan.store(true, Ordering::Relaxed);
+    state
+        .scan_work
+        .cancel(None, &[crate::scan_work::WorkKind::Source])?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn scan_work_status(
+    state: State<'_, AppState>,
+) -> Result<crate::scan_work::WorkSnapshot, String> {
+    state.scan_work.snapshot()
+}
+
+#[tauri::command]
+pub fn cancel_scan_work(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    operation_id: String,
+) -> Result<bool, String> {
+    let cancelled = state.scan_work.cancel(Some(&operation_id), &[])?;
+    if cancelled {
+        let _ = app.emit("work://changed", state.scan_work.snapshot()?);
+    }
+    Ok(cancelled)
 }
 
 pub(crate) trait FindingsServiceAccess {
@@ -1237,6 +1338,7 @@ mod source_finding_command_tests {
 
     fn empty_summary(path: &std::path::Path) -> ScanSummary {
         ScanSummary {
+            coverage_warnings: Vec::new(),
             git_context: None,
             path: path.to_string_lossy().into_owned(),
             files_scanned: 0,
@@ -1641,6 +1743,8 @@ pub(crate) fn list_canonical_runs_inner(
         Some("dependencies") => Some("dependencies"),
         Some("binary") => Some("binary"),
         Some("firmware") => Some("firmware"),
+        Some("image") => Some("image"),
+        Some("history") => Some("history"),
         Some("import") => Some("import"),
         Some("external_evidence") => Some("external_evidence"),
         Some("verification") => Some("verification"),

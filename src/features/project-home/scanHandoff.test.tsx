@@ -475,3 +475,91 @@ test('historical dependency receipt without complete inventory marks package cou
   render(<DepsScanPage/>);
   expect(await screen.findByText('(packages unknown)')).toBeInTheDocument();
 });
+
+test('saved source coverage caveats remain visible after a project handoff', async () => {
+  const { sourceResult } = await import('../../../tests/fixtures/projectHome');
+  const receipt = sourceResult('/project');
+  receipt.summary.coverageWarnings = ['Byte budget excluded 12 files', 'Traversal failed for vendor/private'];
+  vi.spyOn(api, 'loadSourceRun').mockResolvedValue(receipt);
+  useAppStore.getState().openProject('/project', 'source-scan', receipt.runId);
+  render(<SourceScanPage />);
+  expect(await screen.findByText('Byte budget excluded 12 files')).toBeInTheDocument();
+  expect(screen.getByText('Traversal failed for vendor/private')).toBeInTheDocument();
+});
+
+test('discovery distinguishes malformed lockfiles from a valid empty lockfile', async () => {
+  useAppStore.setState({ activeProject: '/project' });
+  vi.spyOn(api, 'findLockfiles').mockResolvedValue([
+    { path: '/project/package-lock.json', kind: 'npm', packages: null, parseError: 'Unexpected end of JSON' },
+    { path: '/project/empty/package-lock.json', kind: 'npm', packages: 0 },
+  ]);
+  render(<DepsScanPage />);
+  fireEvent.click(screen.getByRole('button', { name: 'Find lockfiles' }));
+  expect(await screen.findByText('Unexpected end of JSON')).toBeInTheDocument();
+  expect(screen.getByTitle('/project/package-lock.json')).toHaveTextContent('packages unknown');
+  expect(screen.getByTitle('/project/empty/package-lock.json')).toHaveTextContent('0 pkgs');
+});
+
+test('dependency launches bind the ownership operation ID', async () => {
+  const { dependencyResult } = await import('../../../tests/fixtures/projectHome');
+  useAppStore.setState({ activeProject: '/project' });
+  let finish!: (value: ReturnType<typeof dependencyResult>) => void;
+  const scan = vi.spyOn(api, 'scanDependencies').mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  render(<DepsScanPage />);
+  fireEvent.click(screen.getByRole('button', { name: 'Check dependencies' }));
+  await waitFor(() => expect(scan).toHaveBeenCalled());
+  expect(scan).toHaveBeenCalledWith('/project', false, null, useScanWorkStore.getState().active!.operationId);
+  await act(async () => finish(dependencyResult('/project')));
+});
+
+test('dependency recovery reloads newly saved results without launching work', async () => {
+  const { dependencyResult } = await import('../../../tests/fixtures/projectHome');
+  const saved = dependencyResult('/project'); saved.summary.packagesFound = 47;
+  useAppStore.setState({ activeProject: '/project' });
+  const scan = vi.spyOn(api, 'scanDependencies');
+  render(<DepsScanPage />);
+  await waitFor(() => expect(api.listCanonicalRuns).toHaveBeenCalled());
+  vi.mocked(api.listCanonicalRuns).mockResolvedValue([savedDependencyRun]);
+  vi.spyOn(api, 'loadCanonicalProjection').mockResolvedValue(saved);
+  await act(async () => useScanWorkStore.setState(state => ({ recoveryRevision: state.recoveryRevision + 1 })));
+  expect(await screen.findByText('47')).toBeInTheDocument();
+  expect(scan).not.toHaveBeenCalled();
+});
+
+test('source launch binds the native request to its exact ownership operation', async () => {
+  const { sourceResult } = await import('../../../tests/fixtures/projectHome');
+  useAppStore.setState({ activeProject: '/project' });
+  let finish!: (value: ReturnType<typeof sourceResult>) => void;
+  const scan = vi.spyOn(api, 'scanProject').mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  render(<SourceScanPage />);
+  await screen.findByText('Project ready');
+  fireEvent.click(screen.getByRole('button', { name: 'Run scan' }));
+  await waitFor(() => expect(scan).toHaveBeenCalled());
+  expect(scan).toHaveBeenCalledWith(expect.objectContaining({ path: '/project' }), useScanWorkStore.getState().active!.operationId);
+  await act(async () => finish(sourceResult('/project')));
+});
+
+test('source reloads the saved A receipt after completing A, editing B, and returning to A without a backend revision', async () => {
+  const { sourceResult } = await import('../../../tests/fixtures/projectHome');
+  const saved = sourceResult('/project-a'); saved.summary.filesScanned = 73;
+  let completed = false;
+  useAppStore.setState({ activeProject: '/project-a', selectedProject: '/project-a' });
+  vi.mocked(api.inspectSourceProject).mockImplementation(async path => ({ projectId: path, canonicalPath: path, displayName: path, policy: { status: 'missing' }, lastCompletedRunId: path === '/project-a' && completed ? saved.runId : null, lastOptions: null }));
+  const scan = vi.spyOn(api, 'scanProject').mockImplementation(async () => { completed = true; return saved; });
+  vi.spyOn(api, 'loadSourceRun').mockResolvedValue(saved);
+  vi.spyOn(api, 'scanWorkStatus').mockResolvedValue({ active: null, recent: [] });
+  render(<SourceScanPage />);
+  await screen.findByText('Project ready');
+  fireEvent.click(screen.getByRole('button', { name: 'Run scan' }));
+  expect(await screen.findByText('73')).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Run scan' })).toBeEnabled());
+  const revision = useScanWorkStore.getState().recoveryRevision;
+  fireEvent.change(screen.getByLabelText('Project folder path'), { target: { value: '/project-b' } });
+  await screen.findByText('Project ready');
+  expect(screen.queryByText('73')).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Project folder path'), { target: { value: '/project-a' } });
+  expect(await screen.findByText('73')).toBeInTheDocument();
+  expect(api.loadSourceRun).toHaveBeenCalledWith(saved.runId);
+  expect(scan).toHaveBeenCalledTimes(1);
+  expect(useScanWorkStore.getState().recoveryRevision).toBe(revision);
+});

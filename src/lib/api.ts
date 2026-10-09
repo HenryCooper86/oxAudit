@@ -49,6 +49,7 @@ import type {
   HistoryScanResult,
   LockfileInfo,
   ScanOptions,
+  ScanWorkSnapshot,
   ScanRunDetail,
   RecheckSourceResult,
   ScanRunSummary,
@@ -76,13 +77,15 @@ import type {
 } from "./types";
 
 export const api = {
-  scanProject: (options: ScanOptions) =>
-    invoke<ScanRunDetail>("scan_project", { options }),
-  recheckSourceRun: (originalRunId: string, projectId: string) =>
-    invoke<RecheckSourceResult>("recheck_source_run", { originalRunId, projectId }),
+  scanWorkStatus: () => invoke<ScanWorkSnapshot>("scan_work_status"),
+  cancelScanWork: (operationId: string) => invoke<boolean>("cancel_scan_work", { operationId }),
+  scanProject: (options: ScanOptions, operationId?: string) =>
+    invoke<ScanRunDetail>("scan_project", { options, ...(operationId ? { operationId } : {}) }),
+  recheckSourceRun: (originalRunId: string, projectId: string, operationId?: string) =>
+    invoke<RecheckSourceResult>("recheck_source_run", { originalRunId, projectId, ...(operationId ? { operationId } : {}) }),
   cancelScan: () => invoke<void>("cancel_scan"),
-  scanHistorySecrets: (path: string, validateSecrets = false) =>
-    invoke<HistoryScanResult>("scan_history_secrets", { path, validateSecrets }),
+  scanHistorySecrets: (path: string, validateSecrets = false, operationId?: string) =>
+    invoke<HistoryScanResult>("scan_history_secrets", { path, validateSecrets, ...(operationId ? { operationId } : {}) }),
   inspectSourceProject: (path: string) =>
     invoke<ProjectContext>("inspect_source_project", { path }),
   listSourceProjects: (limit = 12) =>
@@ -182,15 +185,15 @@ export const api = {
     invoke<ReviewRecord>("save_finding_review", { request }),
   /** Whether a usable cve-bin-tool is installed, and which copy we would run. */
   binaryToolStatus: () => invoke<BinaryScannersStatus>("binary_tool_status"),
-  scanBinaries: (request: BinaryScanRequest, useGrype: boolean) =>
-    invoke<BinaryScanResult>("scan_binaries", { request, useGrype }),
+  scanBinaries: (request: BinaryScanRequest, useGrype: boolean, operationId?: string) =>
+    invoke<BinaryScanResult>("scan_binaries", { request, useGrype, ...(operationId ? { operationId } : {}) }),
   cancelBinaryScan: () => invoke<void>("cancel_binary_scan"),
   /** Force `--update now`; the only escape from cve-bin-tool's stale-cache trap. */
-  refreshBinaryDatabase: () => invoke<void>("refresh_binary_database"),
+  refreshBinaryDatabase: (operationId?: string) => invoke<void>("refresh_binary_database", operationId ? { operationId } : undefined),
   openScanFinding: (root: string, relativePath: string, line: number, column: number) =>
     invoke<void>("open_scan_finding", { root, relativePath, line, column }),
-  scanDependencies: (path: string, offline = false, advisoryDbPath: string | null = null) =>
-    invoke<DependencyScanResult>("scan_dependencies", { path, offline, advisoryDbPath }),
+  scanDependencies: (path: string, offline = false, advisoryDbPath: string | null = null, operationId?: string) =>
+    invoke<DependencyScanResult>("scan_dependencies", { path, offline, advisoryDbPath, ...(operationId ? { operationId } : {}) }),
   cancelDependencyScan: () => invoke<void>("cancel_dependency_scan"),
   findLockfiles: (path: string) =>
     invoke<LockfileInfo[]>("find_lockfiles", { path }),

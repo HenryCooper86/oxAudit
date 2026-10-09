@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-10-09T08:06:50.246646+00:00",
+  "command": "npx vitest run src/lib/transport.test.ts src/features/source-scan/FindingList.test.tsx src/features/dependencies/UpgradeDecisions.test.tsx src/pages/resultPagination.test.tsx --disableConsoleIntercept",
+  "environment": {
+    "runtime": {
+      "node": "v22.22.2",
+      "arch": "arm64",
+      "platform": "darwin"
+    },
+    "packages": {
+      "react": "19.2.8",
+      "react-dom": "19.2.8",
+      "vitest": "4.1.11",
+      "jsdom": "30.0.1"
+    },
+    "os": "macOS-27.0.1-arm64-arm-64bit",
+    "kind": "component test under jsdom"
+  },
+  "measurements": [
+    {
+      "list": "source",
+      "records": 10000,
+      "renderedRows": 50,
+      "renderMs": 43.58533299999999,
+      "endMs": 34.16562499999998,
+      "environment": "jsdom"
+    },
+    {
+      "list": "dependencies",
+      "records": 10000,
+      "renderedRows": 50,
+      "renderMs": 95.72558299999997,
+      "lastPageMs": 116.78399999999999,
+      "environment": "jsdom"
+    },
+    {
+      "list": "binary",
+      "records": 10000,
+      "renderedRows": 50,
+      "renderMs": 41.73487499999999,
+      "lastPageMs": 28.025582999999983,
+      "environment": "jsdom"
+    }
+  ],
+  "verification": {
+    "focusedTests": 28,
+    "focusedFailures": 0,
+    "nodeTests": 159,
+    "nodeFailures": 0,
+    "componentTests": 269,
+    "componentFailures": 0,
+    "typecheck": "npm run check exited 0"
+  },
+  "method": [
+    "One timed sample per list from a successful focused test run; no statistical latency claim or latency threshold.",
+    "Fixtures are generated before timing. Source timing covers render and a synchronous End-key React update; dependency/binary render timing also covers saved-result promise resolution and a DOM query.",
+    "Page timings cover event dispatch and synchronous React DOM updates. Fixture API and event transport are test doubles; no network or scanning is timed.",
+    "The run uses Vitest workers alongside other workspace activity; values are observations from this environment.",
+    "Keyboard and accessibility attributes are verified by component tests; jsdom has no layout, paint or real screen reader."
+  ],
+  "renderedRecordLimits": {
+    "sourceFindings": 50,
+    "dependencyAdvisories": 50,
+    "upgradeGroups": 50,
+    "selectedUpgradeGroupAdvisories": 50,
+    "binaryComponents": 50,
+    "cvesPerVisibleBinaryComponent": 20,
+    "semanticFindings": 50,
+    "historicalFindings": 50,
+    "imageComponents": 50,
+    "imageLayers": 50,
+    "cvesPerVisibleImageComponent": 20
+  },
+  "regressionsObservedBeforeFix": [
+    "10,000 source findings rendered 10,000 option rows instead of a bounded page.",
+    "10,000 dependency advisories rendered 10,000 table rows.",
+    "10,000 binary components rendered 10,000 outer list rows.",
+    "A single binary component with 10,000 CVEs rendered 10,000 CVE chips.",
+    "A group with 10,000 dependency advisories rendered 10,000 review rows; group pagination controls were absent.",
+    "SSE retry, stream replacement and hub lag notifications produced no frontend recovery events.",
+    "Real Shift+X produced no range action; a controlled selection could leave aria-activedescendant referring to an unmounted page row."
+  ],
+  "unmeasured": [
+    "Browser paint and input-to-paint latency",
+    "Desktop/Tauri and real device performance",
+    "Peak frontend memory",
+    "Screen reader behavior",
+    "Production API transfer/JSON parsing costs"
+  ],
+  "limitations": [
+    "Pagination bounds rendered result records. The full fetched result remains in memory; filtering, dependency grouping and identity lookup still process the full result.",
+    "Variable metadata, warning text and dependency-path annotations are not covered by the record-count bound.",
+    "No external participant observations or usability acceptance are claimed."
+  ],
+  "additionalMeasurements": [
+    {
+      "measuredAt": "2026-10-09T08:53:41.624013+00:00",
+      "command": "npx vitest run src/pages/HistoryScan.test.tsx -t '10,000' --disableConsoleIntercept",
+      "measurements": [
+        {
+          "list": "history",
+          "records": 10000,
+          "renderedRows": 50,
+          "renderMs": 79.51662500000003,
+          "lastPageMs": 70.424667,
+          "environment": "jsdom"
+        }
+      ],
+      "method": "One timed jsdom sample. Fixture creation precedes timing; rendering includes mocked canonical receipt reads, React render and the DOM query. Last-page timing includes synchronous click dispatch and React DOM updates. No real scanning, network, layout or paint is measured."
+    }
+  ]
+}

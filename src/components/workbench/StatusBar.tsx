@@ -17,6 +17,7 @@ export function StatusBar(): JSX.Element {
   const page = useAppStore((state) => state.page);
   const pageStatus = useAppStore((state) => state.pageStatus[page]);
   const active = useScanWorkStore((state) => state.active);
+  const recoveryError = useScanWorkStore((state) => state.recoveryError);
   const status = active
     ? {
         label: active.cancelling ? "Cancelling…" : active.stage,
@@ -56,6 +57,7 @@ export function StatusBar(): JSX.Element {
           Cancel
         </button>
       )}
+      {recoveryError && <span title={recoveryError} className="shrink-0 text-warning">Scan status unavailable</span>}
       <span className="shrink-0">AI {aiStatusLabel}</span>
       <span className="shrink-0">oxAudit v{version}</span>
     </footer>

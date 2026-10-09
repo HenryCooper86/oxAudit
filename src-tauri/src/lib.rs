@@ -26,6 +26,7 @@ pub mod quality;
 pub mod reachability;
 mod rulepack_feed;
 mod rulepack_store;
+mod scan_work;
 mod schedule_store;
 mod secrets_validation;
 mod vex_trust;
@@ -187,6 +188,7 @@ pub fn run() {
             commands::scan_project,
             commands::recheck_source_run,
             commands::history::scan_history_secrets,
+            commands::history::cancel_history_scan,
             commands::advisories::advisory_db_status,
             commands::advisories::advisory_db_update,
             commands::advisories::default_advisory_db_path,
@@ -197,6 +199,8 @@ pub fn run() {
             commands::vex::vex_revoke_trust,
             commands::vex::vex_suggest,
             commands::cancel_scan,
+            commands::scan_work_status,
+            commands::cancel_scan_work,
             commands::open_scan_finding,
             commands::inspect_source_project,
             commands::list_source_projects,

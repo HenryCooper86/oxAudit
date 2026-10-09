@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oxaudit.dev/schemas/pilot-feedback-v1.json",
+  "title": "oxAudit participant feedback input (prepared or observed)",
+  "description": "Structural schema; tools/pilot-feedback.mjs additionally checks dates, evidence, attribution, coverage proof and derived acceptance. A valid document does not prove that a participant performed tasks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "participant", "session", "observations"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "participant": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "relationship", "consentToShare"],
+      "properties": {
+        "id": { "type": ["string", "null"] },
+        "relationship": { "enum": ["external", "internal", "maintainer", null] },
+        "consentToShare": { "type": "boolean" }
+      }
+    },
+    "session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observedAt", "os", "architecture", "appVersion", "artifactSha256", "editor"],
+      "properties": {
+        "observedAt": { "type": ["string", "null"], "format": "date-time" },
+        "os": { "type": ["string", "null"] },
+        "architecture": { "type": ["string", "null"] },
+        "appVersion": { "type": ["string", "null"] },
+        "artifactSha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "editor": { "type": ["string", "null"] }
+      }
+    },
+    "observations": {
+      "type": "array", "maxItems": 100,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["task", "outcome", "elapsedSeconds", "evidence", "notes", "runIds"],
+        "properties": {
+          "task": { "enum": ["installation", "first-actionable-finding", "verified-resolution", "malformed-dependency", "restart-export", "ci-adoption"] },
+          "outcome": { "enum": ["completed", "blocked", "not-evaluated"] },
+          "elapsedSeconds": { "type": ["number", "null"], "minimum": 0 },
+          "evidence": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 10000 } },
+          "notes": { "type": "string", "minLength": 1, "maxLength": 10000 },
+          "runIds": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 10000 } },
+          "coverageProof": {
+            "type": "object", "additionalProperties": false,
+            "required": ["state", "compatible", "coveredFile", "previousRunId", "currentRunId"],
+            "properties": {
+              "state": { "const": "completed" },
+              "compatible": { "const": true },
+              "coveredFile": { "type": "string", "minLength": 1 },
+              "previousRunId": { "type": "string", "minLength": 1 },
+              "currentRunId": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "status": { "enum": ["prepared", "observed"] },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "acceptance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["complete", "scope", "completedTasks"],
+      "properties": {
+        "complete": { "type": "boolean" },
+        "scope": { "const": "this participant's five required desktop tasks only" },
+        "completedTasks": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }
+      }
+    }
+  }
+}

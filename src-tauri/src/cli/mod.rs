@@ -396,6 +396,10 @@ struct HistoryArgs {
     /// Git repository (or any directory inside one) whose history to scan.
     path: PathBuf,
 
+    /// Save the historical Git-object run for reload and standards exports.
+    #[arg(long)]
+    db: Option<PathBuf>,
+
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
@@ -464,14 +468,16 @@ struct DepsArgs {
 
 #[derive(Args, Debug)]
 struct ImageArgs {
+    /// Save the scan receipt to this database for later reload/export.
+    #[arg(long)]
+    db: Option<PathBuf>,
     /// Saved docker/OCI image tar, OCI layout directory, firmware archive,
     /// any binary file or tree — or a registry reference
     /// (`registry.example.com/ns/repo:tag`) to pull the manifest and layers
     /// directly.
     path: PathBuf,
 
-    /// Output format. Image reports support text and json; standards
-    /// exports come from `export` over a stored run.
+    /// Output format; standards exports use the saved canonical graph.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
 
@@ -519,6 +525,8 @@ enum RunListKind {
     Source,
     Dependencies,
     Binary,
+    Image,
+    History,
     All,
 }
 
@@ -1362,13 +1370,6 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
     if args.fail_on_new != FailOn::None && args.baseline.is_none() {
         return Err(usage("--fail-on-new needs --baseline to compare against"));
     }
-    // History runs are not stored as canonical runs, so the standards exports
-    // (which read a stored run graph) have nothing to read.
-    if !matches!(args.format, OutputFormat::Text | OutputFormat::Json) {
-        return Err(usage(
-            "history supports --format text and --format json; standards exports read stored runs",
-        ));
-    }
     let previous = args
         .baseline
         .as_deref()
@@ -1379,31 +1380,28 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
     if !quiet {
         eprintln!("Scanning git history of {}", args.path.display());
     }
-    let started = std::time::Instant::now();
-    let mut outcome =
-        crate::history::scan_history_secrets_with_options(&args.path, args.validate_secrets)
-            .map_err(|error| failure(error.to_string()))?;
-    let validation_summary = if args.validate_secrets {
-        let http = build_http_client()?;
-        let raw = std::mem::take(&mut outcome.raw_secrets);
-        let summary = block_on(crate::secrets_validation::validate_raw_secrets(
-            &mut outcome.findings,
-            raw,
-            &http,
-        ));
-        if !quiet {
-            eprintln!("{}", summary.describe());
-        }
-        Some(summary)
-    } else {
-        None
+    let repository = match &args.db {
+        Some(path) => open_repository(path)?,
+        None => FindingsRepository::open_in_memory().map_err(|error| failure(error.to_string()))?,
     };
+    let service = FindingsService::new(repository);
+    let http = build_http_client()?;
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let events = StderrEvents { quiet };
+    let outcome = block_on(crate::commands::history::scan_history_workflow(
+        service.repository(),
+        &http,
+        args.path.to_string_lossy().into_owned(),
+        args.validate_secrets,
+        &cancel,
+        &events,
+    ))
+    .map_err(failure)?;
+    let validation_summary = outcome.validation.as_ref();
     if !quiet {
         eprintln!(
             "Scanned {} distinct blob(s) ({} skipped) in {} ms",
-            outcome.blobs_scanned,
-            outcome.blobs_skipped,
-            started.elapsed().as_millis()
+            outcome.blobs_scanned, outcome.blobs_skipped, outcome.duration_ms
         );
         if outcome.truncated {
             eprintln!(
@@ -1414,15 +1412,15 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
     }
 
     let rendered = match args.format {
-        OutputFormat::Text => render_history_text(&outcome, validation_summary.as_ref()),
+        OutputFormat::Text => render_history_text(&outcome, validation_summary),
         OutputFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
             "summary": {
                 "blobsScanned": outcome.blobs_scanned,
                 "blobsSkipped": outcome.blobs_skipped,
-                "durationMs": started.elapsed().as_millis(),
+                "durationMs": outcome.duration_ms,
                 "truncated": outcome.truncated,
                 "limitNote": outcome.limit_note,
-                "validation": validation_summary.as_ref().map(|summary| serde_json::json!({
+                "validation": validation_summary.map(|summary| serde_json::json!({
                     "enabled": true,
                     "checked": summary.checked,
                     "live": summary.live,
@@ -1433,13 +1431,38 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
                     "skippedNotKept": summary.skipped_not_kept,
                 })),
             },
+            "runId": outcome.run_id,
+            "state": outcome.state,
+            "target": outcome.target,
+            "gitContext": outcome.git_context,
+            "blobs": outcome.blobs,
+            "findingBlobIds": outcome.finding_blob_ids,
             "findings": outcome.findings,
         }))
         .map_err(|error| failure(error.to_string()))?,
-        // Validation above rejects every other format before any work starts.
-        _ => unreachable!("history format validated up front"),
+        other => render_stored_run(
+            &service,
+            &outcome.run_id,
+            other.as_report_format().expect("standards output format"),
+            quiet,
+        )?,
     };
     write_output(args.output.as_deref(), &rendered)?;
+
+    if !quiet {
+        if let Some(db) = &args.db {
+            eprintln!("History run {} saved to {}", outcome.run_id, db.display());
+        }
+        if let Some(summary) = validation_summary {
+            eprintln!("{}", summary.describe());
+        }
+    }
+    if outcome.state != oxaudit_domain::RunState::Completed {
+        return Err(failure(format!(
+            "History run {} ended {:?}; output contains partial historical evidence",
+            outcome.run_id, outcome.state
+        )));
+    }
 
     let comparison = previous.as_ref().map(|previous| {
         let comparison = baseline::compare(previous, &outcome.findings);
@@ -1478,7 +1501,7 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
 }
 
 fn render_history_text(
-    outcome: &crate::history::HistoryScanOutcome,
+    outcome: &crate::commands::history::HistoryScanResponse,
     validation_summary: Option<&crate::secrets_validation::ValidationSummary>,
 ) -> Vec<u8> {
     use std::collections::BTreeMap;
@@ -1676,134 +1699,68 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
 
 fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
     use std::sync::Arc;
-
-    if !matches!(args.format, OutputFormat::Text | OutputFormat::Json) {
-        return Err(usage(
-            "image reports support --format text or --format json; standards exports come from export over a stored run",
-        ));
-    }
-    let advisory_db = match &args.advisory_db {
-        Some(path) => Some(
-            crate::advisories::store::AdvisoryDb::open(path)
-                .map_err(|error| failure(format!("cannot open {}: {error}", path.display())))?,
-        ),
-        None => None,
+    let repository = match &args.db {
+        Some(path) => open_repository(path)?,
+        None => FindingsRepository::open_in_memory().map_err(|error| failure(error.to_string()))?,
     };
-
+    let service = FindingsService::new(repository);
+    let http = build_http_client()?;
+    let cve = crate::cve::CveState::new(http.clone());
+    let cache = tempfile::tempdir().map_err(|error| failure(error.to_string()))?;
     let cancel = Arc::new(AtomicBool::new(false));
     let progress: Arc<dyn Fn(String) + Send + Sync> = if quiet {
         Arc::new(|_| {})
     } else {
         Arc::new(|line| eprintln!("{line}"))
     };
-
-    let scanned = if let Some(reference) =
-        crate::binscan::registry::parse_ref(&args.path.to_string_lossy())
-    {
-        let http = build_http_client()?;
-        let image = block_on(crate::binscan::registry::fetch_image_layers(
-            &http,
-            &reference,
-            |line| progress(line),
-        ))
-        .map_err(failure)?;
-        crate::binscan::native::scan::scan_image_layers(
-            &image.display,
-            &image.layers,
-            &cancel,
-            progress.clone(),
-        )
-        .map_err(failure)?
-    } else {
-        if !args.path.exists() {
-            return Err(usage(format!("{} does not exist", args.path.display())));
-        }
-        let target = args
-            .path
-            .canonicalize()
-            .map_err(|error| usage(error.to_string()))?;
-        crate::binscan::native::scan::scan(&target, cancel.clone(), progress.clone())
-            .map_err(failure)?
-    };
-    let mut result = scanned.result;
-    let mut notes = scanned.notes;
-
-    // The local database answers the distribution half without the network;
-    // when scanning online it runs first so a reproducible offline answer
-    // wins any duplicate and the network only adds what it can.
-    if let Some(db) = &advisory_db {
-        let local = crate::binscan::native::enrich::enrich_local(db, &scanned.queries);
-        crate::binscan::native::enrich::apply(&mut result, local.found);
-        notes.extend(local.notes);
-    }
-
-    if !args.offline {
-        if !scanned.queries.is_empty() {
-            let http = build_http_client()?;
-            let cve = crate::cve::CveState::new(http);
-            let temporary_cache =
-                tempfile::tempdir().map_err(|error| failure(error.to_string()))?;
-            let enriched = block_on(crate::binscan::native::enrich::enrich(
-                &cve,
-                temporary_cache.path(),
-                None,
-                &scanned.queries,
-                cancel,
-                progress,
-            ));
-            crate::binscan::native::enrich::apply(&mut result, enriched.found);
-            notes.extend(enriched.notes);
-        }
-    } else {
-        let cpe_askable = scanned
-            .queries
-            .iter()
-            .filter(|query| {
-                crate::binscan::native::enrich::cpe_match_string(
-                    &query.vendor,
-                    &query.product,
-                    &query.version,
-                )
-                .is_some()
-            })
-            .count();
-        if cpe_askable > 0 {
-            notes.push(format!(
-                "{cpe_askable} CPE-keyed component(s) can only be answered by NVD, which needs the network; they are listed without vulnerabilities in this offline scan"
-            ));
-        }
-        if advisory_db.is_none() && !scanned.queries.is_empty() {
-            notes.push(
-                "offline image scan without --advisory-db: components are listed without vulnerabilities".into(),
-            );
-        }
-    }
-
+    let outcome = block_on(crate::commands::image::scan_image_workflow(
+        service.repository(),
+        &http,
+        Some(&cve),
+        None,
+        cache.path(),
+        progress,
+        &StderrEvents { quiet },
+        &cancel,
+        crate::commands::image::ImageScanRequest {
+            target: args.path.to_string_lossy().into_owned(),
+            advisory_db_path: args
+                .advisory_db
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            offline: args.offline,
+            operation_id: None,
+        },
+    ))
+    .map_err(failure)?;
     let rendered = match args.format {
-        OutputFormat::Json => {
-            let document = serde_json::json!({
-                "kind": "image",
-                "target": args.path.display().to_string(),
-                "summary": result.summary,
-                "components": result.components,
-                "notes": notes,
-            });
-            serde_json::to_vec_pretty(&document).map_err(|error| failure(error.to_string()))?
-        }
-        OutputFormat::Text => render_image_text(&result, &notes),
-        _ => unreachable!("validated above"),
+        OutputFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
+            "kind": "image", "runId": outcome.run_id, "target": args.path.display().to_string(),
+            "summary": outcome.result.summary, "components": outcome.result.components,
+            "notes": outcome.notes, "imageDigest": outcome.image_digest, "layers": outcome.layers,
+            "state": outcome.state, "advisoryDbPath": outcome.advisory_db_path, "localEvidence": outcome.local_evidence,
+            "offline": outcome.offline,
+        })).map_err(|error| failure(error.to_string()))?,
+        OutputFormat::Text => render_image_text(&outcome.result, &outcome.notes),
+        other => render_stored_run(&service, &outcome.run_id,
+            other.as_report_format().expect("report format"), quiet)?,
     };
     write_output(args.output.as_deref(), &rendered)?;
-    let exit = gate(
-        result
+    if let Some(path) = &args.db {
+        if !quiet {
+            eprintln!("Run {} saved to {}", outcome.run_id, path.display());
+        }
+    }
+    Ok(gate(
+        outcome
+            .result
             .components
             .iter()
             .flat_map(|component| component.vulnerabilities.iter())
             .map(|vulnerability| severity_rank(&vulnerability.severity)),
         args.fail_on,
         quiet,
-    );
-    Ok(exit)
+    ))
 }
 
 fn render_image_text(
@@ -1899,6 +1856,8 @@ fn run_runs(args: &RunsArgs) -> CliResult {
             RunListKind::Source => Some("source"),
             RunListKind::Dependencies => Some("dependencies"),
             RunListKind::Binary => Some("binary"),
+            RunListKind::Image => Some("image"),
+            RunListKind::History => Some("history"),
             RunListKind::All => None,
         };
         let runs = service
@@ -2392,6 +2351,62 @@ fn render_external(report: &crate::external::ExternalReport) -> String {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn history_cli_saves_and_reexports_git_object_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| crate::git_context::tests::git(root.path(), args);
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "history-cli@example.invalid"]);
+        git(&["config", "user.name", "History CLI fixture"]);
+        std::fs::write(
+            root.path().join("deleted.env"),
+            "AWS_ACCESS_KEY_ID=AKIAZ9X8W7U6T5S4R3Q2\n",
+        )
+        .unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "inert history fixture"]);
+        std::fs::remove_file(root.path().join("deleted.env")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-m", "delete fixture"]);
+        let output = tempfile::tempdir().unwrap();
+        let database = output.path().join("private/history.sqlite");
+        let report = output.path().join("history.json");
+        let cli = Cli::try_parse_from([
+            "oxaudit",
+            "history",
+            root.path().to_str().unwrap(),
+            "--db",
+            database.to_str().unwrap(),
+            "--format",
+            "json",
+            "--output",
+            report.to_str().unwrap(),
+        ])
+        .expect("durable history flags parse");
+        let Command::History(args) = cli.command else {
+            panic!("history command expected");
+        };
+        assert_eq!(run_history(&args, true).unwrap(), EXIT_OK);
+        let json: Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+        assert_eq!(json["state"], "completed");
+        assert_eq!(json["findings"].as_array().unwrap().len(), 1);
+        let sarif = output.path().join("history.sarif");
+        assert_eq!(
+            run_export(&ExportArgs {
+                db: database,
+                run: json["runId"].as_str().unwrap().into(),
+                format: ExportFormat::Sarif,
+                output: Some(sarif.clone()),
+            })
+            .unwrap(),
+            EXIT_OK
+        );
+        let content = std::fs::read_to_string(sarif).unwrap();
+        assert!(content.contains("git:"));
+        assert!(content.contains("!deleted.env"));
+        assert!(!content.contains("AKIAZ9X8W7U6T5S4R3Q2"));
+    }
 
     #[test]
     fn dependency_flags_expose_durable_offline_baseline_and_standards() {

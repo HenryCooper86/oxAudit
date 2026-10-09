@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "participant": {
+    "id": null,
+    "relationship": null,
+    "consentToShare": false
+  },
+  "session": {
+    "observedAt": null,
+    "os": null,
+    "architecture": null,
+    "appVersion": null,
+    "artifactSha256": null,
+    "editor": null
+  },
+  "observations": []
+}

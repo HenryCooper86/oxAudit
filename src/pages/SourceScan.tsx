@@ -1,7 +1,8 @@
 import { assessRecheck } from "../features/source-scan/recheck";
 import { ReviewChangesPanel } from "../features/source-scan/ReviewChangesPanel";
 import { useReviewChanges } from "../features/source-scan/useReviewChanges";
-import { acquireScan, cancelActiveScan, reconcileSourceRunSave, releaseScan, useScanWorkStore } from "../features/project-home/coordinator";
+import { acquireScan, cancelActiveScan, detachScan, reconcileSourceRunSave, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
+import { CoverageWarnings } from "../features/source-scan/CoverageWarnings";
 import { listen, type UnlistenFn } from "../lib/events";
 import { Clipboard, RotateCcw, Search } from "lucide-react";
 import {
@@ -111,6 +112,7 @@ export function SourceScanPage(): JSX.Element {
   const ownRuntimeUpdate = useRef(false);
   const pathEdited = useRef(false);
   const activeWork = useScanWorkStore(state => state.active);
+  const recoveryRevision = useScanWorkStore(state => state.recoveryRevision);
   const setActiveProjectStore = useCallback((value: string | null) => {
     ownRuntimeUpdate.current = true;
     publishActiveProject(value);
@@ -133,7 +135,8 @@ export function SourceScanPage(): JSX.Element {
   const [run, setRun] = useState<ScanRunDetail | null>(null);
   const [targetLoading, setTargetLoading] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
+  const [localRunning, setRunning] = useState(false);
+  const running = localRunning || (activeWork?.owner === "source" && activeWork.recovered);
   const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [targetError, setTargetError] = useState<CommandError | null>(null);
@@ -165,6 +168,8 @@ export function SourceScanPage(): JSX.Element {
   const cancellingRef = useRef(false);
   const runLoadGenerationRef = useRef(0);
   const loaderRef = useRef(new SourceProjectLoader(api));
+  const scanInvocationRef = useRef<number | null>(null);
+  const settledRevisionRef = useRef<{ path: string; revision: number } | null>(null);
 
   useEffect(() => {
     if (settings) {
@@ -201,7 +206,8 @@ export function SourceScanPage(): JSX.Element {
     const register = async () => {
       try {
         const progressUnlisten = await listen<ScanProgress>("scan://progress", (event) => {
-          if (!disposed) setProgress(event.payload);
+          const active = useScanWorkStore.getState().active;
+          if (!disposed && active && !active.terminalStatus && (!event.payload.operationId || event.payload.operationId === active.operationId)) setProgress(event.payload);
         });
         if (disposed) {
           progressUnlisten();
@@ -210,7 +216,8 @@ export function SourceScanPage(): JSX.Element {
         unlisteners.push(progressUnlisten);
 
         const doneUnlisten = await listen<ScanProgress>("scan://done", (event) => {
-          if (!disposed) {
+          const active = useScanWorkStore.getState().active;
+          if (!disposed && active && !active.terminalStatus && (!event.payload.operationId || event.payload.operationId === active.operationId)) {
             setProgress((current) => ({ ...current, ...event.payload }));
           }
         });
@@ -241,7 +248,9 @@ export function SourceScanPage(): JSX.Element {
   }, [progress?.file, running, setPageStatus]);
 
   useEffect(() => {
+    if (running && !handoffRunId) return;
     const candidate = path.trim();
+    if (settledRevisionRef.current?.path === candidate && settledRevisionRef.current.revision === recoveryRevision) return;
     if (!candidate) {
       setTargetLoading(false);
       if (!pathEdited.current) return;
@@ -256,7 +265,8 @@ export function SourceScanPage(): JSX.Element {
       setTargetLoading(true);
       setTargetError(null);
       const check = useScanWorkStore.getState().check;
-      const unsaved = check?.path === candidate && check.sourceResult?.runId === handoffRunId && check.sourceResult?.persistence.status === "notSaved" ? check.sourceResult : null;
+      const unsaved = run?.summary.path === candidate && run.persistence.status === "notSaved" && (!handoffRunId || handoffRunId === run.runId) ? run
+        : check?.path === candidate && check.sourceResult?.runId === handoffRunId && check.sourceResult?.persistence.status === "notSaved" ? check.sourceResult : null;
       void loaderRef.current
         .load(candidate, unsaved ? undefined : handoffRunId)
         .then(async (loaded) => {
@@ -289,9 +299,12 @@ export function SourceScanPage(): JSX.Element {
       disposed = true;
       window.clearTimeout(timer);
     };
-  }, [handoffRunId, loadVersion, path, push, setActiveProjectStore]);
+  }, [handoffRunId, loadVersion, path, push, recoveryRevision, running, setActiveProjectStore]);
 
-  useEffect(() => () => { loaderRef.current.invalidate(); runLoadGenerationRef.current++; }, []);
+  useEffect(() => () => {
+    loaderRef.current.invalidate(); runLoadGenerationRef.current++;
+    if (scanInvocationRef.current !== null) detachScan(scanInvocationRef.current);
+  }, []);
 
   useEffect(() => {
     setReviewError(null);
@@ -307,6 +320,7 @@ export function SourceScanPage(): JSX.Element {
   const changePath = useCallback(
     (nextPath: string) => {
       if (nextPath === path) return;
+      settledRevisionRef.current = null;
       pathEdited.current = true;
       loaderRef.current.invalidate();
       runLoadGenerationRef.current += 1;
@@ -330,6 +344,7 @@ export function SourceScanPage(): JSX.Element {
     const applyHandoff = () => {
       const handoff = useAppStore.getState().projectHandoff;
       if (handoff?.page === "source-scan") {
+        settledRevisionRef.current = null;
         runLoadGenerationRef.current += 1;
         changePath(handoff.path);
         setHandoffRunId(handoff.runId);
@@ -373,6 +388,8 @@ export function SourceScanPage(): JSX.Element {
 
     const ownership = acquireScan("source", target, "Scanning source");
     if (ownership === null) return;
+    scanInvocationRef.current = ownership;
+    setHandoffRunId(undefined);
     const runGeneration = runLoadGenerationRef.current;
     setRunning(true);
     cancellingRef.current = false;
@@ -401,9 +418,17 @@ export function SourceScanPage(): JSX.Element {
           ignoreInvalidPolicy,
           rulePackFilesInput.split(",").map((entry) => entry.trim()).filter(Boolean),
         ),
+        scanOperationId(ownership),
       );
-      if (runGeneration !== runLoadGenerationRef.current) return;
+      if (runGeneration !== runLoadGenerationRef.current || useScanWorkStore.getState().active?.id !== ownership) return;
+      if (useScanWorkStore.getState().active?.cancelling || useScanWorkStore.getState().active?.terminalStatus === "cancelled") {
+        setCancelled(true);
+        setPageStatus("source-scan", { label: "Scan cancelled", tone: "neutral" });
+        return;
+      }
       setRun(result);
+      settledRevisionRef.current = { path: target, revision: useScanWorkStore.getState().recoveryRevision };
+      scanInvocationRef.current = null;
       setSelectedFingerprint((current) =>
         current && result.findings.some((finding) => finding.fingerprint === current)
           ? current
@@ -452,7 +477,9 @@ export function SourceScanPage(): JSX.Element {
         push("error", normalized.message);
       }
     } finally {
+      if (scanInvocationRef.current === ownership) scanInvocationRef.current = null;
       releaseScan(ownership);
+      void refreshScanWork();
       setRunning(false);
       cancellingRef.current = false;
       setCancelling(false);
@@ -466,6 +493,7 @@ export function SourceScanPage(): JSX.Element {
     const generation = runLoadGenerationRef.current;
     const ownership = acquireScan("source", original.summary.path, "Rechecking finding");
     if (ownership === null) return;
+    scanInvocationRef.current = ownership;
     const current = () => generation === runLoadGenerationRef.current && useScanWorkStore.getState().active?.id === ownership;
     setRunning(true);
     setProgress({ phase: "walking" });
@@ -474,7 +502,7 @@ export function SourceScanPage(): JSX.Element {
     let newRunId: string | undefined;
     let options: ScanOptions | undefined;
     try {
-      const receipt = await api.recheckSourceRun(original.runId, original.projectId);
+      const receipt = await api.recheckSourceRun(original.runId, original.projectId, scanOperationId(ownership));
       if (!current()) return;
       const result = receipt.run;
       if (result.projectId !== original.projectId || result.summary.path !== original.summary.path) throw new Error("The recheck response belongs to a different project.");
@@ -501,7 +529,9 @@ export function SourceScanPage(): JSX.Element {
       setRecheck({ originalRunId: original.runId, fingerprint: finding.fingerprint, newRunId, options, message: normalized.code === "scanCancelled" ? "Recheck cancelled. No absence conclusion was made." : `Recheck not evaluated. ${normalized.message}` });
       setPageStatus("source-scan", { label: "Recheck not evaluated", tone: "neutral" });
     } finally {
+      if (scanInvocationRef.current === ownership) scanInvocationRef.current = null;
       releaseScan(ownership);
+      void refreshScanWork();
       setRunning(false);
       setCancelling(false);
       cancellingRef.current = false;
@@ -728,8 +758,8 @@ export function SourceScanPage(): JSX.Element {
   }, [filtered]);
 
   const toggleSelect = (fingerprint: string, extend: boolean) => {
+    const anchor = bulkAnchor.current;
     setSelection((current) => {
-      const anchor = bulkAnchor.current;
       if (extend && anchor) return selectRange(current, filtered, anchor, fingerprint);
       return toggle(current, fingerprint);
     });
@@ -871,7 +901,7 @@ export function SourceScanPage(): JSX.Element {
         <OperationError
           error={targetError}
           title="The project could not be inspected"
-          onRetry={targetError.retryable ? () => setLoadVersion((value) => value + 1) : undefined}
+          onRetry={targetError.retryable ? () => { settledRevisionRef.current = null; setLoadVersion((value) => value + 1); } : undefined}
         />
       )}
       {operationError && !running && (
@@ -911,6 +941,8 @@ export function SourceScanPage(): JSX.Element {
           />
         </div>
       )}
+
+      <CoverageWarnings warnings={run?.summary.coverageWarnings} />
 
       {run?.persistence.status === "notSaved" && (
         <InlineState

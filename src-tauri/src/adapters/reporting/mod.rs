@@ -71,6 +71,65 @@ pub struct GeneratedReport {
     pub warnings: Vec<String>,
 }
 
+fn coverage_warnings(data: &ReportData) -> Vec<String> {
+    let mut warnings = data
+        .run
+        .warnings
+        .iter()
+        .map(|warning| warning.message.clone())
+        .collect::<Vec<_>>();
+    if data.run.state != oxaudit_domain::RunState::Completed {
+        warnings.insert(0, format!("Run {} is {}; execution was not completed. Retained evidence does not establish complete coverage.", data.run.id, run_state(data)));
+    }
+    if let Some(projection) = &data.projection {
+        for pointer in ["/summary/coverageWarnings", "/notes"] {
+            if let Some(notes) = projection
+                .pointer(pointer)
+                .and_then(serde_json::Value::as_array)
+            {
+                for note in notes.iter().filter_map(serde_json::Value::as_str) {
+                    if !warnings.iter().any(|warning| warning == note) {
+                        warnings.push(note.to_owned());
+                    }
+                }
+            }
+        }
+        if let Some(note) = projection
+            .get("limitNote")
+            .and_then(serde_json::Value::as_str)
+        {
+            if !warnings.iter().any(|warning| warning == note) {
+                warnings.push(note.to_owned());
+            }
+        }
+    }
+    warnings
+}
+
+fn run_state(data: &ReportData) -> String {
+    serde_json::to_value(data.run.state)
+        .expect("run state is serializable")
+        .as_str()
+        .expect("run state is a string")
+        .to_owned()
+}
+
+fn lifecycle_text(data: &ReportData) -> String {
+    let mut text = format!("oxAudit run {}; state: {}.", data.run.id, run_state(data));
+    for warning in coverage_warnings(data) {
+        text.push_str(&format!("\n{warning}"));
+    }
+    text
+}
+
+fn lifecycle_properties(data: &ReportData) -> serde_json::Value {
+    serde_json::json!([
+        {"name": "oxaudit:runId", "value": data.run.id.as_str()},
+        {"name": "oxaudit:runState", "value": run_state(data)},
+        {"name": "oxaudit:coverageWarnings", "value": serde_json::to_string(&coverage_warnings(data)).expect("warnings are serializable")}
+    ])
+}
+
 pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedReport, String> {
     if matches!(
         format,
@@ -78,7 +137,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
     ) {
         return generate_ticket_csv(data, format);
     }
-    let mut warnings = Vec::new();
+    let mut warnings = coverage_warnings(data);
     let value = match format {
         ReportFormat::OxAuditJson => serde_json::json!({
             "schemaVersion": 1,
@@ -183,7 +242,11 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                         "rules": rules
                     } },
                     "results": results,
-                    "properties": { "oxAuditRunId": data.run.id }
+                    "invocations": [{"executionSuccessful": data.run.state == oxaudit_domain::RunState::Completed,
+                        "toolExecutionNotifications": coverage_warnings(data).iter().map(|warning| serde_json::json!({
+                            "level": "warning", "message": {"text": warning}})).collect::<Vec<_>>() }],
+                    "properties": { "oxAuditRunId": data.run.id, "oxAuditRunState": data.run.state,
+                        "oxAuditCoverageWarnings": coverage_warnings(data) }
                 }]
             })
         }
@@ -192,7 +255,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             "specVersion": "1.6",
             "serialNumber": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
             "version": 1,
-            "metadata": { "tools": { "components": [{ "type": "application", "name": "oxAudit", "version": env!("CARGO_PKG_VERSION") }] } },
+            "metadata": { "tools": { "components": [{ "type": "application", "name": "oxAudit", "version": env!("CARGO_PKG_VERSION") }] }, "properties": lifecycle_properties(data) },
             "components": data.components.iter().map(cyclonedx_component).collect::<Vec<_>>(),
             "dependencies": data
                 .components
@@ -209,6 +272,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             "dataLicense": "CC0-1.0",
             "SPDXID": "SPDXRef-DOCUMENT",
             "name": format!("oxAudit run {}", data.run.id.as_str()),
+            "documentComment": lifecycle_text(data),
             "documentNamespace": format!("https://oxaudit.local/spdx/{}", uuid::Uuid::new_v4()),
             "creationInfo": { "creators": [format!("Tool: oxAudit-{}", env!("CARGO_PKG_VERSION"))], "created": chrono::Utc::now().to_rfc3339() },
             "packages": data.components.iter().enumerate().map(|(index, component)| {
@@ -240,7 +304,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                 "author": "oxAudit local user",
                 "timestamp": chrono::Utc::now().to_rfc3339(),
                 "version": 1,
-                "tooling": format!("oxAudit {}", env!("CARGO_PKG_VERSION")),
+                "tooling": format!("oxAudit {}\n{}", env!("CARGO_PKG_VERSION"), lifecycle_text(data)),
                 "statements": statements
             })
         }
@@ -257,6 +321,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                 "specVersion": "1.6",
                 "serialNumber": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
                 "version": 1,
+                "metadata": {"properties": lifecycle_properties(data)},
                 "components": data.components.iter().map(cyclonedx_component).collect::<Vec<_>>(),
                 "vulnerabilities": vulnerabilities
             })
@@ -289,7 +354,7 @@ fn csv_cell(value: &str) -> String {
 /// to this finding when it comes back as "fixed".
 fn ticket_body(data: &ReportData, finding: &crate::models::Finding) -> String {
     format!(
-        "**{severity}** — {rule}\n\n`{path}:{line}:{column}`\n\n{description}\n\n**Recommendation:** {recommendation}\n\n_Finding fingerprint `{fingerprint}` · oxAudit run `{run}`_",
+        "**{severity}** — {rule}\n\n`{path}:{line}:{column}`\n\n{description}\n\n**Recommendation:** {recommendation}\n\n_Finding fingerprint `{fingerprint}` · oxAudit run `{run}`_\n\n{coverage}",
         severity = finding.severity,
         rule = finding.rule_id,
         path = finding.file_path,
@@ -299,6 +364,7 @@ fn ticket_body(data: &ReportData, finding: &crate::models::Finding) -> String {
         recommendation = finding.recommendation,
         fingerprint = finding.fingerprint,
         run = data.run.id.as_str(),
+        coverage = lifecycle_text(data),
     )
 }
 
@@ -353,12 +419,15 @@ fn jira_row(data: &ReportData, finding: &crate::models::Finding) -> String {
 /// exact and the row count must equal the finding count, so an importer
 /// can never silently drop rows.
 fn generate_ticket_csv(data: &ReportData, format: ReportFormat) -> Result<GeneratedReport, String> {
+    if data.run.state != oxaudit_domain::RunState::Completed {
+        return Err("Ticket CSV requires a completed run. Export retained partial evidence as oxAudit JSON or a standard report that preserves run state.".into());
+    }
     let (header, row): (&str, fn(&ReportData, &crate::models::Finding) -> String) = match format {
         ReportFormat::GithubIssuesCsv => ("title,description,labels", github_issues_row),
         ReportFormat::JiraCsv => ("Summary,Issue Type,Description,Priority,Labels", jira_row),
         _ => unreachable!("caller checked the format is a ticket CSV"),
     };
-    let mut warnings = Vec::new();
+    let mut warnings = coverage_warnings(data);
     if data.findings.is_empty() {
         warnings.push("This run has no findings to hand off; the CSV is header-only.".into());
     }
@@ -468,6 +537,113 @@ mod tests {
             run.transition(state, index as u64 + 2).unwrap();
         }
         run
+    }
+
+    #[test]
+    fn partial_standard_reports_preserve_lifecycle_and_coverage() {
+        for terminal in [RunState::Failed, RunState::Cancelled, RunState::Incomplete] {
+            let mut run = Run::queued(RunKind::History, "/fixture", 1);
+            if terminal == RunState::Cancelled {
+                run.transition(RunState::Cancelling, 2).unwrap();
+            }
+            run.transition(terminal, 3).unwrap();
+            run.warnings.push(oxaudit_domain::RunWarning {
+                code: "history_coverage".into(),
+                message: "Some blobs were not inspected.".into(),
+            });
+            let data = ReportData {
+                run,
+                artifacts: Vec::new(),
+                components: Vec::new(),
+                observations: Vec::new(),
+                findings: Vec::new(),
+                projection: None,
+            };
+            let state = serde_json::to_value(terminal).unwrap();
+            for format in [
+                ReportFormat::Sarif,
+                ReportFormat::CycloneDx,
+                ReportFormat::CycloneDxVex,
+                ReportFormat::Spdx,
+                ReportFormat::OpenVex,
+            ] {
+                let report = generate(&data, format).unwrap();
+                assert!(report
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("not completed")));
+                let value: serde_json::Value = serde_json::from_slice(&report.bytes).unwrap();
+                match format {
+                    ReportFormat::Sarif => {
+                        assert_eq!(
+                            value["runs"][0]["invocations"][0]["executionSuccessful"],
+                            false
+                        );
+                        assert_eq!(value["runs"][0]["properties"]["oxAuditRunState"], state);
+                        assert!(
+                            value["runs"][0]["invocations"][0]["toolExecutionNotifications"]
+                                .to_string()
+                                .contains("Some blobs were not inspected.")
+                        );
+                    }
+                    ReportFormat::CycloneDx | ReportFormat::CycloneDxVex => {
+                        let properties = value["metadata"]["properties"].as_array().unwrap();
+                        assert!(properties
+                            .iter()
+                            .any(|entry| entry["name"] == "oxaudit:runState"
+                                && entry["value"] == state));
+                        assert!(properties.to_vec().iter().any(|entry| entry["value"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("Some blobs were not inspected."))));
+                    }
+                    ReportFormat::Spdx => assert!(value["documentComment"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Some blobs were not inspected.")),
+                    ReportFormat::OpenVex => assert!(value["tooling"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Some blobs were not inspected.")),
+                    _ => unreachable!(),
+                }
+            }
+            for format in [ReportFormat::GithubIssuesCsv, ReportFormat::JiraCsv] {
+                assert!(
+                    generate(&data, format).is_err(),
+                    "partial empty CSV must not look clean"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn completed_reports_keep_coverage_warnings_without_marking_execution_failed() {
+        let mut run = completed_run();
+        run.warnings.push(oxaudit_domain::RunWarning {
+            code: "offline".into(),
+            message: "Advisory coverage unavailable offline.".into(),
+        });
+        let data = ReportData {
+            run,
+            artifacts: Vec::new(),
+            components: Vec::new(),
+            observations: Vec::new(),
+            findings: Vec::new(),
+            projection: None,
+        };
+        let report = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&report.bytes).unwrap();
+        assert_eq!(
+            value["runs"][0]["invocations"][0]["executionSuccessful"],
+            true
+        );
+        assert!(value["runs"][0]["properties"]["oxAuditCoverageWarnings"]
+            .to_string()
+            .contains("Advisory coverage unavailable offline."));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Advisory coverage unavailable offline.")));
     }
 
     #[test]

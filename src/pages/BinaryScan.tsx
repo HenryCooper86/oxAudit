@@ -1,11 +1,13 @@
 import { listen } from "../lib/events";
 import { Ban, Binary, Play, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type JSX } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { FolderPicker } from "../components/FolderPicker";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { Button, SectionLabel, Select, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
+import { ResultPagination } from "../components/workbench/ResultPagination";
+import { usePagination } from "../lib/pagination";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
@@ -17,8 +19,10 @@ import {
   SEVERITY_FILTERS,
   type SeverityFilter,
 } from "../lib/binaryScan";
-import type { BinaryScannersStatus, BinaryScanResult } from "../lib/types";
+import type { BinaryComponent, BinaryScannersStatus, BinaryScanResult } from "../lib/types";
 import { RunTimeline } from "../features/runs/RunTimeline";
+import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
+import { normalizeCommandError } from "../lib/commandError";
 
 
 export function BinaryScanPage(): JSX.Element {
@@ -26,15 +30,18 @@ export function BinaryScanPage(): JSX.Element {
   const clearPageStatus = useAppStore((state) => state.clearPageStatus);
   const activeProject = useAppStore((state) => state.activeProject);
   const push = useToastStore((state) => state.push);
+  const activeWork = useScanWorkStore(state => state.active);
+  const recoveryRevision = useScanWorkStore(state => state.recoveryRevision);
 
   const [toolStatus, setToolStatus] = useState<BinaryScannersStatus | null>(null);
   const [useGrype, setUseGrype] = useState(true);
   const [checkingTool, setCheckingTool] = useState(true);
-  const [path, setPath] = useState(activeProject ?? "");
+  const [path, setPath] = useState(() => useScanWorkStore.getState().lastTargets.binary ?? activeProject ?? "");
   const [severity, setSeverity] = useState<SeverityFilter>("all");
   const [offline, setOffline] = useState(false);
   const [deepAnalysis, setDeepAnalysis] = useState(false);
-  const [running, setRunning] = useState(false);
+  const [localRunning, setRunning] = useState(false);
+  const running = localRunning || activeWork?.owner === "binary";
   const [progress, setProgress] = useState<string>("");
   // Caveats that are not failures — a rate-limited or capped CVE lookup means
   // "fewer findings than exist", which looks exactly like "clean" unless said.
@@ -44,11 +51,15 @@ export function BinaryScanPage(): JSX.Element {
   const [filter, setFilter] = useState<SeverityFilter>("all");
   const mountedRef = useRef(true);
   const historyRequestRef = useRef(0);
+  const invocationRef = useRef<number | null>(null);
+  const settledRevisionRef = useRef<{ path: string; revision: number } | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      historyRequestRef.current += 1;
+      if (invocationRef.current !== null) detachScan(invocationRef.current);
       clearPageStatus("binary-scan");
     };
   }, [clearPageStatus]);
@@ -98,7 +109,7 @@ export function BinaryScanPage(): JSX.Element {
   useEffect(() => {
     const requestedPath = path.trim();
     const requestId = ++historyRequestRef.current;
-    if (!requestedPath) return;
+    if (!requestedPath || running || (settledRevisionRef.current?.path === requestedPath && settledRevisionRef.current.revision === recoveryRevision)) return;
 
     void (async () => {
       try {
@@ -116,15 +127,17 @@ export function BinaryScanPage(): JSX.Element {
         // Saved history is best-effort and never blocks a new scan.
       }
     })();
-  }, [path, setPageStatus]);
+    return () => { historyRequestRef.current += 1; };
+  }, [path, recoveryRevision, running, setPageStatus]);
 
   // cve-bin-tool's own output is the only sign of life during a first run,
   // where it downloads the CVE database before scanning anything.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void listen<string>("binscan://progress", ({ payload }) => {
-      if (!disposed) setProgress(String(payload));
+    void listen<string | { operationId: string; message: string }>("binscan://progress", ({ payload }) => {
+      const active = useScanWorkStore.getState().active;
+      if (!disposed && active?.owner === "binary" && !active.terminalStatus && (typeof payload === "string" || payload.operationId === active.operationId)) setProgress(typeof payload === "string" ? payload : payload.message);
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -138,8 +151,10 @@ export function BinaryScanPage(): JSX.Element {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void listen<string>("binscan://note", ({ payload }) => {
-      const note = String(payload);
+    void listen<string | { operationId: string; message: string }>("binscan://note", ({ payload }) => {
+      const active = useScanWorkStore.getState().active;
+      if (active?.owner !== "binary" || active.terminalStatus || (typeof payload !== "string" && payload.operationId !== active.operationId)) return;
+      const note = typeof payload === "string" ? payload : payload.message;
       // De-duplicated: one note per distinct message, however many sources
       // raised it.
       if (!disposed) setNotes((current) => (current.includes(note) ? current : [...current, note]));
@@ -164,6 +179,9 @@ export function BinaryScanPage(): JSX.Element {
 
   const run = async () => {
     if (!path.trim() || running) return;
+    const ownership = acquireScan("binary", path.trim(), "Scanning binaries");
+    if (ownership === null) return;
+    invocationRef.current = ownership;
     historyRequestRef.current += 1;
     setRunning(true);
     setError(null);
@@ -180,24 +198,35 @@ export function BinaryScanPage(): JSX.Element {
           deepAnalysis,
         },
         useGrype && (toolStatus?.grype.available ?? false),
+        scanOperationId(ownership),
       );
-      if (!mountedRef.current) return;
+      const active = useScanWorkStore.getState().active;
+      if (!mountedRef.current || active?.id !== ownership) return;
+      if (active.cancelling || active.terminalStatus === "cancelled") {
+        setPageStatus("binary-scan", { label: "Binary scan cancelled", tone: "neutral" });
+        return;
+      }
+      invocationRef.current = null;
+      settledRevisionRef.current = { path: path.trim(), revision: useScanWorkStore.getState().recoveryRevision };
       setResult(scan);
       setPageStatus("binary-scan", {
         label: `${scan.summary.vulnerabilities} CVEs in ${scan.summary.components} components`,
         tone: scan.summary.vulnerabilities > 0 ? "error" : "success",
       });
     } catch (cause) {
-      if (!mountedRef.current) return;
-      const message = String(cause);
+      if (!mountedRef.current || useScanWorkStore.getState().active?.id !== ownership) return;
+      const message = normalizeCommandError(cause).message;
       setError(message);
       if (message.includes("cancelled")) {
-        clearPageStatus("binary-scan");
+        setPageStatus("binary-scan", { label: "Binary scan cancelled", tone: "neutral" });
       } else {
         setPageStatus("binary-scan", { label: "Binary scan failed", tone: "error" });
         push("error", message);
       }
     } finally {
+      if (invocationRef.current === ownership) invocationRef.current = null;
+      releaseScan(ownership);
+      void refreshScanWork();
       if (mountedRef.current) {
         setRunning(false);
         setProgress("");
@@ -207,6 +236,7 @@ export function BinaryScanPage(): JSX.Element {
 
   const changePath = (nextPath: string) => {
     if (nextPath === path) return;
+    settledRevisionRef.current = null;
     historyRequestRef.current += 1;
     setPath(nextPath);
     setResult(null);
@@ -217,33 +247,45 @@ export function BinaryScanPage(): JSX.Element {
 
   const refreshDatabase = async () => {
     if (running) return;
+    const ownership = acquireScan("binary", path.trim() || "CVE database", "Refreshing CVE database");
+    if (ownership === null) return;
+    invocationRef.current = ownership;
+    historyRequestRef.current += 1;
     setRunning(true);
     setError(null);
     setProgress("Refreshing the CVE database — this downloads roughly a gigabyte.");
     setPageStatus("binary-scan", { label: "Refreshing CVE database", tone: "running" });
     try {
-      await api.refreshBinaryDatabase();
+      await api.refreshBinaryDatabase(scanOperationId(ownership));
+      if (!mountedRef.current || useScanWorkStore.getState().active?.id !== ownership) return;
+      if (useScanWorkStore.getState().active?.cancelling) { setPageStatus("binary-scan", { label: "Database refresh cancelled", tone: "neutral" }); return; }
       push("success", "CVE database refreshed.");
       clearPageStatus("binary-scan");
     } catch (cause) {
-      const message = String(cause);
+      if (!mountedRef.current || useScanWorkStore.getState().active?.id !== ownership) return;
+      const message = normalizeCommandError(cause).message;
       setError(message);
       setPageStatus("binary-scan", { label: "Database refresh failed", tone: "error" });
     } finally {
-      setRunning(false);
-      setProgress("");
+      if (invocationRef.current === ownership) invocationRef.current = null;
+      releaseScan(ownership);
+      void refreshScanWork();
+      if (mountedRef.current) { setRunning(false); setProgress(""); }
     }
   };
 
   const cancel = async () => {
     try {
-      await api.cancelBinaryScan();
+      await cancelActiveScan();
     } catch {
       /* the scan's own rejection remains the source of truth */
     }
   };
 
-  const components = filterComponents(result?.components ?? [], filter);
+  const components = useMemo(() => filterComponents(result?.components ?? [], filter), [result, filter]);
+  const componentPagination = usePagination(components);
+  const semanticFindings = useMemo(() => result?.semanticAnalysis?.findings ?? [], [result]);
+  const semanticPagination = usePagination(semanticFindings);
 
   const grypeReady = toolStatus?.grype.available ?? false;
   const cveBinToolReady =
@@ -352,7 +394,7 @@ export function BinaryScanPage(): JSX.Element {
       <TargetBar
         primary={
           running ? (
-            <Button type="button" onClick={() => void cancel()} variant="danger" size="md">
+            <Button type="button" onClick={() => void cancel()} disabled={activeWork?.cancelling} variant="danger" size="md">
               <Ban size={13} aria-hidden="true" />
               Cancel
             </Button>
@@ -360,7 +402,7 @@ export function BinaryScanPage(): JSX.Element {
             <Button
               type="button"
               onClick={() => void run()}
-              disabled={!path.trim()}
+              disabled={!path.trim() || Boolean(activeWork)}
               variant="primary"
               size="md"
             >
@@ -417,7 +459,7 @@ export function BinaryScanPage(): JSX.Element {
         <FolderPicker
           value={path}
           onChange={changePath}
-          disabled={running}
+          disabled={running || Boolean(activeWork)}
           allowFiles
           placeholder="Choose a binary, firmware image, archive, or folder…"
           inputLabel="Binary scan target"
@@ -520,92 +562,14 @@ export function BinaryScanPage(): JSX.Element {
               }
             />
           ) : (
-            <ul className="divide-y divide-border">
-              {components.map((component) => (
-                <li key={`${component.vendor}:${component.product}:${component.version}`} className="px-3 py-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Binary size={13} aria-hidden="true" className="shrink-0 text-text-muted" />
-                    <span className="font-mono text-[13px] font-semibold text-text-primary">
-                      {component.product}
-                    </span>
-                    <span className="font-mono text-[12px] text-text-secondary">
-                      {component.version}
-                    </span>
-                    <span className="text-[11px] text-text-muted">{component.vendor}</span>
-                    <span className="ml-auto flex items-center gap-2">
-                      {component.detectedBy.length > 0 && (
-                        <span className="hidden font-mono text-[10px] text-text-muted sm:inline">
-                          {component.detectedBy.join(" + ")}
-                        </span>
-                      )}
-                      <SeverityBadge severity={highestSeverity(component)} />
-                      <span className="font-mono text-[11px] tabular-nums text-text-muted">
-                        {component.vulnerabilities.length} CVE
-                        {component.vulnerabilities.length === 1 ? "" : "s"}
-                      </span>
-                    </span>
-                  </div>
-
-                  {component.paths.length > 0 && (
-                    <p className="selectable mt-1 truncate font-mono text-[11px] text-text-muted">
-                      {component.paths.join(" · ")}
-                    </p>
-                  )}
-
-                  <ul className="mt-2 flex flex-wrap gap-1.5">
-                    {component.vulnerabilities.map((vulnerability) => (
-                      <li
-                        key={vulnerability.cveId}
-                        title={`${vulnerability.source}${vulnerability.score !== null ? ` · CVSS ${vulnerability.score}` : ""}${vulnerability.epssProbability !== null ? ` · EPSS ${(vulnerability.epssProbability * 100).toFixed(1)}%` : ""}`}
-                        className={`inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 ${
-                          vulnerability.knownExploited
-                            ? "border-sev-critical-border bg-sev-critical-subtle"
-                            : "border-border bg-surface-primary"
-                        }`}
-                      >
-                        <SeverityBadge severity={vulnerability.severity} showLabel={false} />
-                        <span className="font-mono text-[11px] text-text-secondary">
-                          {vulnerability.cveId}
-                        </span>
-                        {vulnerability.knownExploited && (
-                          <span
-                            title={
-                              vulnerability.ransomware
-                                ? "In CISA KEV — used in ransomware campaigns"
-                                : "In CISA's Known Exploited Vulnerabilities catalog"
-                            }
-                            className="inline-flex items-center gap-0.5 rounded-full bg-sev-critical px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-white"
-                          >
-                            {vulnerability.ransomware ? "KEV · ransomware" : "KEV"}
-                          </span>
-                        )}
-                        {vulnerability.publicExploit && (
-                          <span
-                            title="Public exploit code exists for this CVE (Exploit-DB)"
-                            className="inline-flex items-center gap-0.5 rounded-full bg-sev-high px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-white"
-                          >
-                            PoC
-                          </span>
-                        )}
-                        {vulnerability.score !== null && (
-                          <span className="font-mono text-[10px] tabular-nums text-text-muted">
-                            {vulnerability.score.toFixed(1)}
-                          </span>
-                        )}
-                        {vulnerability.fixedIn && (
-                          <span
-                            title={`Fixed in ${vulnerability.fixedIn}`}
-                            className="font-mono text-[10px] text-success"
-                          >
-                            →{vulnerability.fixedIn}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </li>
+            <>
+            <ul aria-label="Binary components" className="divide-y divide-border">
+              {componentPagination.items.map(component => (
+                <BinaryComponentEntry key={`${component.vendor}:${component.product}:${component.version}`} component={component} />
               ))}
             </ul>
+            <ResultPagination pagination={componentPagination} label="binary components" onPageChange={componentPagination.setPage} />
+            </>
           )}
         </section>
       )}
@@ -620,8 +584,9 @@ export function BinaryScanPage(): JSX.Element {
           {result.semanticAnalysis.findings.length === 0 ? (
             <InlineState tone="empty" compact title="No bounded dangerous-sink calls were found" description="This does not prove their absence in stripped or statically resolved code." />
           ) : (
-            <ul className="mt-3 divide-y divide-border rounded-sm border border-border bg-surface-primary">
-              {result.semanticAnalysis.findings.map((finding) => (
+            <>
+            <ul aria-label="Semantic findings" className="mt-3 divide-y divide-border rounded-sm border border-border bg-surface-primary">
+              {semanticPagination.items.map((finding) => (
                 <li key={`${finding.ruleId}:${finding.functionAddress}`} className="px-3 py-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-mono text-[12px] text-text-primary">{finding.ruleId}</span>
@@ -631,11 +596,102 @@ export function BinaryScanPage(): JSX.Element {
                 </li>
               ))}
             </ul>
+            <ResultPagination pagination={semanticPagination} label="semantic findings" onPageChange={semanticPagination.setPage} />
+            </>
           )}
         </section>
       )}
 
       {moreScanners}
     </ToolPage>
+  );
+}
+
+function BinaryComponentEntry({ component }: { component: BinaryComponent }): JSX.Element {
+  const pagination = usePagination(component.vulnerabilities, 20);
+  return (
+    <li className="px-3 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Binary size={13} aria-hidden="true" className="shrink-0 text-text-muted" />
+        <span className="font-mono text-[13px] font-semibold text-text-primary">
+          {component.product}
+        </span>
+        <span className="font-mono text-[12px] text-text-secondary">
+          {component.version}
+        </span>
+        <span className="text-[11px] text-text-muted">{component.vendor}</span>
+        <span className="ml-auto flex items-center gap-2">
+          {component.detectedBy.length > 0 && (
+            <span className="hidden font-mono text-[10px] text-text-muted sm:inline">
+              {component.detectedBy.join(" + ")}
+            </span>
+          )}
+          <SeverityBadge severity={highestSeverity(component)} />
+          <span className="font-mono text-[11px] tabular-nums text-text-muted">
+            {component.vulnerabilities.length} CVE
+            {component.vulnerabilities.length === 1 ? "" : "s"}
+          </span>
+        </span>
+      </div>
+
+      {component.paths.length > 0 && (
+        <p className="selectable mt-1 truncate font-mono text-[11px] text-text-muted">
+          {component.paths.join(" · ")}
+        </p>
+      )}
+
+      <ul aria-label={`CVEs for ${component.product} ${component.version}`} className="mt-2 flex flex-wrap gap-1.5">
+        {pagination.items.map((vulnerability) => (
+          <li
+            key={vulnerability.cveId}
+            title={`${vulnerability.source}${vulnerability.score !== null ? ` · CVSS ${vulnerability.score}` : ""}${vulnerability.epssProbability !== null ? ` · EPSS ${(vulnerability.epssProbability * 100).toFixed(1)}%` : ""}`}
+            className={`inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 ${
+              vulnerability.knownExploited
+                ? "border-sev-critical-border bg-sev-critical-subtle"
+                : "border-border bg-surface-primary"
+            }`}
+          >
+            <SeverityBadge severity={vulnerability.severity} showLabel={false} />
+            <span className="font-mono text-[11px] text-text-secondary">
+              {vulnerability.cveId}
+            </span>
+            {vulnerability.knownExploited && (
+              <span
+                title={
+                  vulnerability.ransomware
+                    ? "In CISA KEV — used in ransomware campaigns"
+                    : "In CISA's Known Exploited Vulnerabilities catalog"
+                }
+                className="inline-flex items-center gap-0.5 rounded-full bg-sev-critical px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-white"
+              >
+                {vulnerability.ransomware ? "KEV · ransomware" : "KEV"}
+              </span>
+            )}
+            {vulnerability.publicExploit && (
+              <span
+                title="Public exploit code exists for this CVE (Exploit-DB)"
+                className="inline-flex items-center gap-0.5 rounded-full bg-sev-high px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wide text-white"
+              >
+                PoC
+              </span>
+            )}
+            {vulnerability.score !== null && (
+              <span className="font-mono text-[10px] tabular-nums text-text-muted">
+                {vulnerability.score.toFixed(1)}
+              </span>
+            )}
+            {vulnerability.fixedIn && (
+              <span
+                title={`Fixed in ${vulnerability.fixedIn}`}
+                className="font-mono text-[10px] text-success"
+              >
+                →{vulnerability.fixedIn}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+      {pagination.pageCount > 1 && <ResultPagination pagination={pagination} label={`CVEs for ${component.product} ${component.version}`} onPageChange={pagination.setPage} />}
+    </li>
   );
 }

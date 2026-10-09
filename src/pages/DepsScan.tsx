@@ -1,5 +1,5 @@
-import { acquireScan, cancelActiveScan, releaseScan, useScanWorkStore } from "../features/project-home/coordinator";
-import { useCallback, useEffect, useRef, useState, type JSX } from "react";
+import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { listen, type UnlistenFn } from "../lib/events";
 import { openUrl } from "../lib/opener";
 import { Ban, Boxes, ExternalLink, Play, Search } from "lucide-react";
@@ -8,6 +8,8 @@ import { ProgressBar } from "../components/ProgressBar";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
+import { ResultPagination } from "../components/workbench/ResultPagination";
+import { usePagination } from "../lib/pagination";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
@@ -45,6 +47,7 @@ export function DepsScanPage() {
   const publishActiveProject = useAppStore((state) => state.setActiveProject);
   const ownRuntimeUpdate = useRef(false);
   const activeWork = useScanWorkStore(state => state.active);
+  const recoveryRevision = useScanWorkStore(state => state.recoveryRevision);
   const setActiveProjectStore = useCallback((value: string | null) => {
     ownRuntimeUpdate.current = true;
     publishActiveProject(value);
@@ -56,11 +59,13 @@ export function DepsScanPage() {
   const push = useToastStore((state) => state.push);
 
   const [path, setPath] = useState(activeProject ?? useAppStore.getState().selectedProject ?? "");
-  const [running, setRunning] = useState(false);
+  const [localRunning, setRunning] = useState(false);
+  const running = localRunning || activeWork?.owner === "dependencies";
   const [discovering, setDiscovering] = useState(false);
   const [preview, setPreview] = useState<LockfilePreview[] | null>(null);
   const [historyReload, setHistoryReload] = useState(0);
   const [handoffResult, setHandoffResult] = useState<DependencyScanResult | null>(null);
+  const handoffRevisionRef = useRef(recoveryRevision);
   const [result, setResult] = useState<DependencyScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failedOperation, setFailedOperation] = useState<FailedOperation | null>(null);
@@ -88,8 +93,8 @@ export function DepsScanPage() {
   useEffect(() => {
     const requestedPath = path.trim();
     const requestId = ++historyRequestRef.current;
-    if (!requestedPath) return;
-    if (handoffResult && handoffResult.summary.path === requestedPath) {
+    if (!requestedPath || running) return;
+    if (handoffResult && handoffResult.summary.path === requestedPath && handoffRevisionRef.current === recoveryRevision) {
       setResult(handoffResult);
       setPreview(previewFromResult(handoffResult));
       return;
@@ -114,13 +119,14 @@ export function DepsScanPage() {
       }
     })();
     return () => { historyRequestRef.current += 1; };
-  }, [handoffResult, historyReload, path, setPageStatus]);
+  }, [handoffResult, historyReload, path, recoveryRevision, running, setPageStatus]);
   useEffect(() => {
     let disposed = false;
     const register = async () => {
       try {
-        const unlisten = await listen<{ phase: string; done?: number; total?: number }>("deps://progress", (event) => {
-          if (!disposed && ownsCurrentInvocation()) {
+        const unlisten = await listen<{ operationId?: string; phase: string; done?: number; total?: number }>("deps://progress", (event) => {
+          const active = useScanWorkStore.getState().active;
+          if (!disposed && ownsCurrentInvocation() && !active?.terminalStatus && (!event.payload.operationId || event.payload.operationId === active?.operationId)) {
             setPhase(event.payload.phase);
             setProgress({ done: event.payload.done ?? 0, total: event.payload.total ?? 0 });
           }
@@ -139,6 +145,9 @@ export function DepsScanPage() {
     void register();
     return () => {
       disposed = true;
+      discoveryRequestRef.current += 1;
+      historyRequestRef.current += 1;
+      if (scanInvocationRef.current) detachScan(scanInvocationRef.current.ownership);
       unlistenRef.current?.();
       unlistenRef.current = null;
     };
@@ -199,6 +208,7 @@ export function DepsScanPage() {
       const handoff = useAppStore.getState().projectHandoff;
       if (handoff?.page === "deps-scan") {
         changePath(handoff.path);
+        handoffRevisionRef.current = useScanWorkStore.getState().recoveryRevision;
         setHandoffResult(handoff.dependencyResult ?? null);
         historyRequestRef.current += 1;
         // Same-path handoffs must replace the invalidated request even when
@@ -283,11 +293,18 @@ export function DepsScanPage() {
       }
       if (useScanWorkStore.getState().active?.cancelling) return;
       const advisoryDb = useAdvisoryDb && advisoryDbPath.trim() ? advisoryDbPath.trim() : null;
-      const scanResult = await api.scanDependencies(requestedPath, offline, advisoryDb);
-      if (requestId !== discoveryRequestRef.current) return;
+      const scanResult = await api.scanDependencies(requestedPath, offline, advisoryDb, scanOperationId(ownership));
+      if (requestId !== discoveryRequestRef.current || useScanWorkStore.getState().active?.id !== ownership) return;
+      if (useScanWorkStore.getState().active?.cancelling || useScanWorkStore.getState().active?.terminalStatus === "cancelled") {
+        setPageStatus("deps-scan", { label: "Dependency check cancelled", tone: "neutral" });
+        scanInvocationRef.current = null;
+        return;
+      }
       // Terminal publication must invalidate running effects synchronously;
       // React may flush an older running render before finally commits.
       scanInvocationRef.current = null;
+      handoffRevisionRef.current = useScanWorkStore.getState().recoveryRevision;
+      setHandoffResult(scanResult);
       setResult(scanResult);
       setSelectedKey(null);
       setPreview(previewFromResult(scanResult));
@@ -326,6 +343,7 @@ export function DepsScanPage() {
         }
       }
       releaseScan(ownership);
+      void refreshScanWork();
       setRunning(false);
       setProgress(null);
       setPhase(null);
@@ -349,13 +367,13 @@ export function DepsScanPage() {
   };
 
   const vulns = result?.vulnerabilities ?? [];
-  const filteredVulns = vulns.filter((vulnerability) => {
+  const filteredVulns = useMemo(() => vulns.filter((vulnerability) => {
     const normalizedQuery = query.trim().toLowerCase();
     if (!normalizedQuery) return true;
     return `${vulnerability.id} ${vulnerability.packageName} ${vulnerability.summary} ${vulnerability.aliases.join(" ")}`
       .toLowerCase()
       .includes(normalizedQuery);
-  });
+  }), [vulns, query]);
   const selected = filteredVulns.find((v) => vulnerabilityKey(v) === selectedKey) ?? filteredVulns[0] ?? null;
   const hasExplicitSelection = selectedKey !== null && selected !== null && vulnerabilityKey(selected) === selectedKey;
   const critical = vulns.filter((vulnerability) => vulnerability.severity === "critical").length;
@@ -452,6 +470,7 @@ export function DepsScanPage() {
                     <Boxes size={11} aria-hidden="true" className="text-info" />
                     {lockfile.path.split(/[\\/]/).pop()}
                     <span className="text-text-muted">{lockfile.packages === null ? "(packages unknown)" : `(${lockfile.packages} pkgs)`}</span>
+                    {lockfile.parseError && <span className="text-warning">{lockfile.parseError}</span>}
                   </span>
                 ))}
               </div>
@@ -616,8 +635,14 @@ function VulnerabilityTable({
   selected: Vulnerability | null;
   onSelect: (key: string) => void;
 }): JSX.Element {
+  const pagination = usePagination(vulnerabilities, 50, selected ? vulnerabilities.indexOf(selected) : -1);
+  const tableRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (tableRef.current) tableRef.current.scrollTop = 0;
+  }, [pagination.page, vulnerabilities]);
   return (
-    <div className="max-h-[39rem] min-w-0 overflow-auto" aria-label="Scrollable vulnerable package table">
+    <div className="min-w-0">
+    <div ref={tableRef} className="max-h-[39rem] min-w-0 overflow-auto" aria-label="Scrollable vulnerable package table">
       <table className="min-w-[44rem] w-full table-fixed border-collapse text-left">
         <caption className="sr-only">Vulnerable packages and their advisory risk</caption>
         <thead className="border-b border-border bg-surface-secondary text-[12px] font-semibold uppercase tracking-[0.1em] text-text-muted">
@@ -630,7 +655,7 @@ function VulnerabilityTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
-          {vulnerabilities.map((vulnerability) => {
+          {pagination.items.map((vulnerability) => {
             const current = selected !== null && vulnerabilityKey(selected) === vulnerabilityKey(vulnerability);
             const select = () => onSelect(vulnerabilityKey(vulnerability));
             return (
@@ -705,6 +730,8 @@ function VulnerabilityTable({
           })}
         </tbody>
       </table>
+    </div>
+    <ResultPagination pagination={pagination} label="dependency advisories" onPageChange={pagination.setPage} />
     </div>
   );
 }

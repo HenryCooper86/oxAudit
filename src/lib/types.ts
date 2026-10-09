@@ -26,6 +26,8 @@ export type CanonicalRunKind =
   | "secrets"
   | "dependencies"
   | "binary"
+  | "image"
+  | "history"
   | "firmware"
   | "import"
   | "external_evidence"
@@ -64,14 +66,50 @@ export interface AdvisoryDbUpdateReport {
 }
 
 export interface ImageScanRequest {
+  operationId?: string;
   target: string;
   advisoryDbPath?: string | null;
   offline: boolean;
 }
 
 export interface ImageScanOutcome {
+  runId: string;
   result: BinaryScanResult;
   notes: string[];
+  imageDigest: string | null;
+  layers: Array<{ name: string; digest: string; sizeBytes: number; mediaType: string | null }>;
+  offline: boolean;
+  advisoryDbPath?: string | null;
+  localEvidence?: {
+    kind: "file" | "oci-layout" | "directory" | "unavailable";
+    complete: boolean;
+    hashByteLimit: number;
+    file?: {
+      sizeBytes: number; sizeSource: string; bytesHashed: number;
+      sha256: string | null; prefixSha256: string | null;
+      changedDuringRead: boolean | null; complete: boolean;
+    };
+    oci?: { indexSha256: string | null; indexes?: unknown[]; manifests?: unknown[] };
+    notes: string[];
+  };
+  /** Canonical terminal state when loading saved evidence. */
+  state?: CanonicalRunState;
+}
+
+export type ScanWorkKind = "source" | "dependencies" | "binary" | "image" | "history";
+export type ScanWorkStatus = "running" | "cancelling" | "completed" | "failed" | "cancelled" | "incomplete";
+export interface ScanWorkDescriptor {
+  operationId: string;
+  kind: ScanWorkKind;
+  target: string;
+  status: ScanWorkStatus;
+  runId?: string | null;
+  startedAtMs: number;
+  updatedAtMs: number;
+}
+export interface ScanWorkSnapshot {
+  active: ScanWorkDescriptor | null;
+  recent: ScanWorkDescriptor[];
 }
 
 export interface VexClaimSet {
@@ -574,6 +612,7 @@ export interface ScanOptions {
 }
 
 export interface ScanSummary {
+  coverageWarnings?: string[];
   gitContext?: GitEvidence | null;
   path: string;
   filesScanned: number;
@@ -742,6 +781,7 @@ export interface ReviewRequest {
 }
 
 export interface ScanProgress {
+  operationId?: string;
   total?: number;
   done?: number;
   phase?: "walking" | "scanning" | string;
@@ -863,7 +903,8 @@ export interface DependencyScanResult {
 export interface LockfileInfo {
   path: string;
   kind: string;
-  packages: number;
+  packages: number | null;
+  parseError?: string | null;
 }
 
 export interface CveItem {
@@ -1258,13 +1299,23 @@ export interface HistoryValidationSummary {
   skippedNotKept: number;
 }
 
-/**
- * The whole result of a git-history secret scan. Not a stored run: findings
- * describe objects in git history, not the working tree a canonical run's
- * projection is indexed against, so the response is the entire run and is
- * gone when the page is.
- */
+/** Historical evidence is indexed by Git objects, separately from the working tree. */
 export interface HistoryScanResult {
+  /** Optional only for compatibility with older command results. */
+  runId?: string;
+  state?: "completed" | "incomplete" | "cancelled" | "failed";
+  target?: string;
+  durationMs?: number;
+  gitContext?: {
+    headBefore: string | null;
+    headAfter: string | null;
+    refsBefore: Array<{ name: string; oid: string }>;
+    refsAfter: Array<{ name: string; oid: string }>;
+    refsCompleteAfter: boolean;
+    contextChanged: boolean | null;
+  };
+  blobs?: Array<{ oid: string; path: string; sizeBytes: number; contentSha256: string }>;
+  findingBlobIds?: Record<string, string>;
   findings: Finding[];
   blobsScanned: number;
   blobsSkipped: number;

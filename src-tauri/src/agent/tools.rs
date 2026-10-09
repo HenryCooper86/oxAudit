@@ -3,6 +3,7 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
+#[cfg(test)]
 use std::time::Instant;
 
 use serde::Serialize;
@@ -15,8 +16,9 @@ use super::tool::{
 };
 use crate::ai::AiStreamEvent;
 use crate::fs_utils;
+#[cfg(test)]
 use rayon::prelude::*;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const MAX_ASSISTANT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -94,9 +96,25 @@ fn collect_agent_lockfiles(
     .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 struct DependencyToolEvents;
+#[cfg(test)]
 impl crate::findings::service::ScanEventSink for DependencyToolEvents {
     fn emit(&self, _: &str, _: Value) -> Result<(), crate::findings::error::CommandError> {
+        Ok(())
+    }
+}
+
+struct ResearchScanEvents(tauri::AppHandle);
+impl crate::findings::service::ScanEventSink for ResearchScanEvents {
+    fn emit(
+        &self,
+        event: &str,
+        payload: Value,
+    ) -> Result<(), crate::findings::error::CommandError> {
+        if event == "work://changed" {
+            let _ = self.0.emit(event, payload);
+        }
         Ok(())
     }
 }
@@ -245,6 +263,7 @@ fn glob_project_files(
     }))
 }
 
+#[cfg(test)]
 fn scan_agent_code_files(
     project_root: &std::path::Path,
     root: &std::path::Path,
@@ -256,16 +275,25 @@ fn scan_agent_code_files(
 ) -> Result<Value, String> {
     let started = Instant::now();
     let collection = collect_agent_source_files(project_root, root, settings, cancel)?;
+    let config_collection =
+        collect_agent_source_files(project_root, project_root, settings, cancel)?;
+    let config = crate::scanners::config_values::ProjectConfig::from_paths(
+        config_collection
+            .files
+            .iter()
+            .map(|file| file.canonical_path.as_path()),
+    );
     let outcomes = collection
         .files
         .par_iter()
         .map(|file| {
-            crate::scanners::scan_file_with_relative_path(
+            crate::scanners::scan_file_in_project(
                 &file.canonical_path,
                 &source_identity(&file.collection_relative_path),
                 settings.max_file_size_kb,
                 scan_secrets,
                 scan_vulnerabilities,
+                &config,
             )
         })
         .collect::<Vec<_>>();
@@ -323,6 +351,39 @@ fn top_findings_json(findings: &[crate::models::Finding]) -> Vec<Value> {
         .collect()
 }
 
+#[cfg(test)]
+mod source_parity_regressions {
+    #[test]
+    fn research_source_reads_project_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("Digest.java"),
+            r#"import java.security.MessageDigest;
+class Digest {
+  byte[] hash(java.util.Properties props, byte[] data) throws Exception {
+    String algorithm = props.getProperty("digest", "SHA-512");
+    return MessageDigest.getInstance(algorithm).digest(data);
+  }
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(root.path().join("application.properties"), "digest=MD5\n").unwrap();
+        let result = super::scan_agent_source_files(
+            root.path(),
+            root.path(),
+            &crate::models::ScanSettings::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            result["vulnerabilities_found"], 1,
+            "project configuration must apply to research scans"
+        );
+    }
+}
+
+#[cfg(test)]
 fn scan_agent_source_files(
     project_root: &std::path::Path,
     root: &std::path::Path,
@@ -332,6 +393,7 @@ fn scan_agent_source_files(
     scan_agent_code_files(project_root, root, settings, "source", false, true, cancel)
 }
 
+#[cfg(test)]
 fn scan_agent_secret_files(
     project_root: &std::path::Path,
     root: &std::path::Path,
@@ -558,22 +620,23 @@ pub fn builtins() -> Vec<Tool> {
                 let st = ctx.state().ok_or("app state unavailable")?;
                 let settings = st.settings.lock().unwrap().clone();
                 let cancellation = ctx.cancellation.as_ref().map(|value| value.flag());
-
-                if scan_type == "secrets" {
-                    scan_agent_secret_files(
-                        &proj,
-                        &root,
-                        &settings.scan,
-                        cancellation.as_deref(),
-                    )
-                } else {
-                    scan_agent_source_files(
-                        &proj,
-                        &root,
-                        &settings.scan,
-                        cancellation.as_deref(),
-                    )
-                }
+                let findings = ctx.app.try_state::<crate::findings::service::FindingsState>().ok_or("findings storage unavailable")?;
+                let cve = ctx.app.try_state::<crate::cve::CveState>().ok_or("CVE client unavailable")?;
+                let packs = ctx.app.try_state::<crate::rulepack_store::RulePacksState>().ok_or("rule pack storage unavailable")?;
+                let options = crate::models::ScanOptions {
+                    path: root.to_string_lossy().into_owned(), include_git: settings.scan.include_git,
+                    follow_symlinks: settings.scan.follow_symlinks, max_file_size_kb: settings.scan.max_file_size_kb,
+                    scan_secrets: scan_type == "secrets", scan_vulnerabilities: scan_type != "secrets",
+                    extra_ignored_dirs: settings.scan.ignored_dirs, ..Default::default()
+                };
+                let result = crate::commands::scan_source_engine_scoped(&st, &findings, &cve, &packs,
+                    options, &proj, None, cancellation, &ResearchScanEvents(ctx.app.clone())).await.map_err(|error| error.to_string())?;
+                Ok(json!({"scan_type": scan_type, "run_id": result.run_id, "status": result.status,
+                    "files_scanned": result.summary.files_scanned, "files_skipped": result.summary.files_skipped,
+                    "secrets_found": result.summary.secrets_found, "vulnerabilities_found": result.summary.vulnerabilities_found,
+                    "total_findings": result.summary.total_findings, "top_findings": top_findings_json(&result.findings),
+                    "coverage_warnings": result.summary.coverage_warnings, "persistence": result.persistence,
+                    "duration_ms": result.summary.duration_ms}))
             }
         ),
         // --------------------------------------------------- run_dependency_scan
@@ -597,17 +660,23 @@ pub fn builtins() -> Vec<Tool> {
                 let settings = st.settings.lock().unwrap().scan.clone();
                 let cancellation = ctx.cancellation.as_ref().map(|value| value.flag())
                     .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+                let tool_events = ResearchScanEvents(ctx.app.clone());
+                let mut work = st.scan_work.begin_with_cancel(crate::scan_work::WorkKind::Dependencies,
+                    &root.to_string_lossy(), None, Some(cancellation.clone()), &tool_events)?;
+                let cancellation = work.cancellation();
                 let findings = ctx.app.try_state::<crate::findings::service::FindingsState>()
                     .ok_or("findings storage unavailable")?;
                 let service = findings.service().map_err(|error| error.to_string())?;
                 let cache_path = ctx.app.path().app_data_dir().map_err(|error| error.to_string())?;
                 let providers = crate::deps::service::NetworkProviders { osv: &st.osv, http: &st.http };
-                scan_agent_dependencies(crate::deps::service::ScanRequest {
+                let result = scan_agent_dependencies(crate::deps::service::ScanRequest {
                     project_root: &proj,
                     root: &root, ignored_dirs: &settings.ignored_dirs, offline: false,
                     advisory_db: None, repository: service.repository(), providers: &providers,
-                    cancel: &cancellation, events: &DependencyToolEvents, cache_path: &cache_path,
-                }).await
+                    cancel: &cancellation, events: &work, cache_path: &cache_path,
+                }).await;
+                if let Ok(result) = &result { work.finish("completed", result.get("run_id").and_then(Value::as_str)); }
+                result
             }
         ),
         // ------------------------------------------------------------ search_cve
@@ -898,8 +967,11 @@ pub fn builtins() -> Vec<Tool> {
                 let settings = st.settings.lock().unwrap().clone();
                 let nvd_api_key = crate::credentials::resolve_nvd_key(st.credentials.as_ref())
                     .map_err(|error| error.to_string())?;
-                let cancel = st.cancel_binary_scan.clone();
-                cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+                let cancellation = ctx.cancellation.as_ref().map(|value| value.flag());
+                let tool_events = ResearchScanEvents(ctx.app.clone());
+                let mut work = st.scan_work.begin_with_cancel(crate::scan_work::WorkKind::Binary,
+                    &target.to_string_lossy(), None, cancellation, &tool_events)?;
+                let cancel = work.cancellation();
 
                 let scratch_dir = ctx
                     .app
@@ -957,6 +1029,7 @@ pub fn builtins() -> Vec<Tool> {
                 )
                 .await?;
                 let result = outcome.result;
+                work.finish("completed", None);
 
                 // Return a bounded summary: a firmware image can carry hundreds
                 // of components, and the whole report would swamp the context.

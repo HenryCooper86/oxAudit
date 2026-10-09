@@ -412,7 +412,8 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
                 lockfile_infos.push(LockfileInfo {
                     path: lf.to_string_lossy().replace('\\', "/"),
                     kind: kind.into(),
-                    packages: deps.len(),
+                    packages: Some(deps.len()),
+                    parse_error: None,
                 });
                 crate::deps::lockfiles::extend_dependencies_bounded(
                     &mut all_deps,

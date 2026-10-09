@@ -353,7 +353,13 @@ impl FindingsService {
             return Err(CommandError::policy_invalid());
         }
         let mut options = self.repository.run_options(run_id)?;
-        options.path = project.canonical_path;
+        let scope = Path::new(&options.path)
+            .canonicalize()
+            .map_err(|_| CommandError::invalid_target())?;
+        if !scope.is_dir() || !scope.starts_with(Path::new(&project.canonical_path)) {
+            return Err(CommandError::invalid_target());
+        }
+        options.path = scope.to_string_lossy().into_owned();
         // The scan service revalidates current policy. A historic override must
         // never authorize ignoring a newly invalid policy during recheck.
         options.ignore_invalid_policy = false;
@@ -518,8 +524,27 @@ impl FindingsService {
         events: &E,
         packs: &crate::scanners::rulepacks::AppliedRulePacks,
     ) -> Result<ScanRunDetail, CommandError> {
+        let project_root = std::path::PathBuf::from(&options.path);
+        self.scan_scoped_with_packs(options, &project_root, cve, cancel, events, packs, &[])
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scan_scoped_with_packs<E: ScanEventSink + ?Sized>(
+        &self,
+        options: ScanOptions,
+        project_root: &Path,
+        cve: &CveState,
+        cancel: &AtomicBool,
+        events: &E,
+        packs: &crate::scanners::rulepacks::AppliedRulePacks,
+        coverage_warnings: &[String],
+    ) -> Result<ScanRunDetail, CommandError> {
         let started_instant = Instant::now();
-        let canonical = Path::new(&options.path)
+        let scan_target = Path::new(&options.path)
+            .canonicalize()
+            .map_err(|_| CommandError::invalid_target())?;
+        let canonical = project_root
             .canonicalize()
             .map_err(|_| CommandError::invalid_target())?;
         // The span covers the whole run, so every event underneath it carries
@@ -532,7 +557,7 @@ impl FindingsService {
             max_file_size_kb = options.max_file_size_kb,
             "scan starting"
         );
-        if !canonical.is_dir() {
+        if !canonical.is_dir() || !scan_target.is_dir() || !scan_target.starts_with(&canonical) {
             return Err(CommandError::invalid_target());
         }
         let canonical_path = canonical.to_string_lossy().into_owned();
@@ -594,6 +619,16 @@ impl FindingsService {
             .into_iter()
             .filter_map(|id| oxaudit_domain::RulePackId::parse(id).ok())
             .collect();
+        canonical_run
+            .warnings
+            .extend(
+                coverage_warnings
+                    .iter()
+                    .map(|message| oxaudit_domain::RunWarning {
+                        code: "source_rule_coverage".into(),
+                        message: message.clone(),
+                    }),
+            );
         let mut managed_run = Some(
             coordinator
                 .begin(canonical_run)
@@ -617,7 +652,7 @@ impl FindingsService {
 
             let _ = events.emit("scan://progress", Value::from("walking"));
             let collection = fs_utils::collect_source_files_bounded(
-                &canonical,
+                &scan_target,
                 CollectFilesOptions {
                     project_root: &canonical,
                     include_git: options.include_git,
@@ -667,61 +702,100 @@ impl FindingsService {
             let processed = AtomicUsize::new(0);
             // Read once, before the parallel walk, so every file is assessed
             // against the same view of what the project configures.
+            let config_collection = if scan_target != canonical {
+                Some(
+                    fs_utils::collect_source_files_bounded(
+                        &canonical,
+                        CollectFilesOptions {
+                            project_root: &canonical,
+                            include_git: options.include_git,
+                            follow_symlinks: options.follow_symlinks,
+                            extra_ignored: &options.extra_ignored_dirs,
+                        },
+                        fs_utils::CollectionBudget::default(),
+                        Some(cancel),
+                    )
+                    .map_err(|error| match error {
+                        fs_utils::CollectionError::Cancelled => CommandError::scan_cancelled(),
+                        other => CommandError::scan_resource_limit(other.to_string()),
+                    })?,
+                )
+            } else {
+                None
+            };
+            let config_files = config_collection.as_ref().unwrap_or(&collection);
             let project_config = scanners::config_values::ProjectConfig::from_paths(
-                collection
+                config_files
                     .files
                     .iter()
                     .map(|file| file.canonical_path.as_path()),
             );
-            let outcomes = collection
-                .files
-                .par_iter()
-                .map(|file| {
-                    if cancel.load(Ordering::Relaxed) {
-                        return None;
-                    }
-                    let relative = file
-                        .project_relative_path
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    let outcome = scanners::scan_file_in_project_with_packs(
-                        &file.canonical_path,
-                        &relative,
-                        options.max_file_size_kb.max(1),
-                        options.scan_secrets,
-                        options.scan_vulnerabilities,
-                        &project_config,
-                        packs,
+            // Workers only retain one bounded outcome each. The shared collector
+            // enforces the run limit as findings are produced, before later files run.
+            let aggregate = std::sync::Mutex::new((Vec::new(), Vec::new(), None));
+            let stopped = AtomicBool::new(false);
+            collection.files.par_iter().for_each(|file| {
+                if stopped.load(Ordering::Relaxed) {
+                    return;
+                }
+                if cancel.load(Ordering::Relaxed) {
+                    stopped.store(true, Ordering::Relaxed);
+                    return;
+                }
+                let relative = file
+                    .project_relative_path
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let outcome = scanners::scan_file_in_project_with_packs(
+                    &file.canonical_path,
+                    &relative,
+                    options.max_file_size_kb.max(1),
+                    options.scan_secrets,
+                    options.scan_vulnerabilities,
+                    &project_config,
+                    packs,
+                );
+                let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                if done % 25 == 0 || done == total {
+                    let _ = events.emit(
+                        "scan://progress",
+                        serde_json::json!({"total": total, "done": done, "phase": "scanning"}),
                     );
-                    let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if done % 25 == 0 || done == total {
-                        let _ = events.emit(
-                            "scan://progress",
-                            serde_json::json!({"total": total, "done": done, "phase": "scanning"}),
-                        );
-                    }
-                    Some((relative, outcome))
-                })
-                .collect::<Vec<_>>();
-            if cancel.load(Ordering::Relaxed) || outcomes.iter().any(Option::is_none) {
+                }
+                let mut aggregate = aggregate.lock().expect("source collector not poisoned");
+                if aggregate.2.is_some() {
+                    return;
+                }
+                let limit = outcome
+                    .limit_error
+                    .map(|error| CommandError::scan_resource_limit(error.to_string()))
+                    .or_else(|| {
+                        scanners::ensure_run_finding_budget(
+                            aggregate.0.len(),
+                            outcome.findings.len(),
+                            scanners::MAX_FINDINGS_PER_RUN,
+                        )
+                        .err()
+                        .map(|error| CommandError::scan_resource_limit(error.to_string()))
+                    });
+                if let Some(error) = limit {
+                    aggregate.2 = Some(error);
+                    stopped.store(true, Ordering::Relaxed);
+                    return;
+                }
+                aggregate.1.push((relative, outcome.covered_families));
+                aggregate.0.extend(outcome.findings);
+            });
+            if cancel.load(Ordering::Relaxed) {
                 return Err(CommandError::scan_cancelled());
             }
-
-            let mut findings = Vec::new();
-            let mut coverage_entries = Vec::new();
-            for (relative, outcome) in outcomes.into_iter().flatten() {
-                if let Some(error) = outcome.limit_error {
-                    return Err(CommandError::scan_resource_limit(error.to_string()));
-                }
-                scanners::ensure_run_finding_budget(
-                    findings.len(),
-                    outcome.findings.len(),
-                    scanners::MAX_FINDINGS_PER_RUN,
-                )
-                .map_err(|error| CommandError::scan_resource_limit(error.to_string()))?;
-                coverage_entries.push((relative, outcome.covered_families));
-                findings.extend(outcome.findings);
+            let (mut findings, mut coverage_entries, limit_error) = aggregate
+                .into_inner()
+                .expect("source collector not poisoned");
+            if let Some(error) = limit_error {
+                return Err(error);
             }
+            coverage_entries.sort_by(|a, b| a.0.cmp(&b.0));
             if cancel.load(Ordering::Relaxed) {
                 return Err(CommandError::scan_cancelled());
             }
@@ -828,12 +902,20 @@ impl FindingsService {
             sort_findings(&mut findings);
             let mut summary = summarize(
                 canonical_path.clone(),
-                collection.files.len(),
-                collection.skipped,
+                coverage_entries
+                    .iter()
+                    .filter(|(_, families)| !families.is_empty())
+                    .count(),
+                collection.skipped
+                    + coverage_entries
+                        .iter()
+                        .filter(|(_, families)| families.is_empty())
+                        .count(),
                 collection.total_bytes,
                 started_instant.elapsed().as_millis() as u64,
                 &findings,
             );
+            summary.coverage_warnings = coverage_warnings.to_vec();
             let git_after = crate::git_context::snapshot(&canonical).ok();
             if git_before.is_some() || git_after.is_some() {
                 summary.git_context = Some(crate::git_context::GitEvidence {
@@ -1093,9 +1175,7 @@ impl FindingsService {
         if active.contains(project_id) {
             return Err(CommandError::scan_already_running());
         }
-        if active.is_empty() {
-            cancel.store(false, Ordering::SeqCst);
-        }
+        let _ = cancel;
         active.insert(project_id.to_owned());
         Ok(ProjectScanGuard {
             project_id: project_id.to_owned(),
@@ -1176,7 +1256,7 @@ impl FindingsService {
     }
 
     #[cfg(test)]
-    fn fail_next_completions_for_test(&self, count: usize) {
+    pub(crate) fn fail_next_completions_for_test(&self, count: usize) {
         self.completion_failures.store(count, Ordering::SeqCst);
     }
 
@@ -1586,6 +1666,7 @@ fn summarize(
             .count()
     };
     ScanSummary {
+        coverage_warnings: Vec::new(),
         git_context: None,
         path,
         files_scanned,

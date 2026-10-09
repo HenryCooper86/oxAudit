@@ -14,6 +14,7 @@ pub async fn scan_dependencies(
     path: String,
     offline: bool,
     advisory_db_path: Option<String>,
+    operation_id: Option<String>,
 ) -> Result<DependencyScanResult, String> {
     struct Events(AppHandle);
     impl crate::findings::service::ScanEventSink for Events {
@@ -34,12 +35,14 @@ pub async fn scan_dependencies(
         path,
         offline,
         advisory_db_path,
+        operation_id,
     )
     .await
 }
 
 /// The dependency check minus its Tauri wiring — the headless server runs
 /// this same function over its own event sink and cache directory.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn scan_dependencies_engine(
     state: &AppState,
     findings: &FindingsState,
@@ -48,7 +51,15 @@ pub(crate) async fn scan_dependencies_engine(
     path: String,
     offline: bool,
     advisory_db_path: Option<String>,
+    operation_id: Option<String>,
 ) -> Result<DependencyScanResult, String> {
+    let mut work = state.scan_work.begin(
+        crate::scan_work::WorkKind::Dependencies,
+        &path,
+        operation_id.as_deref(),
+        events,
+    )?;
+    let cancel = work.cancellation();
     let root = Path::new(&path)
         .canonicalize()
         .map_err(|error| error.to_string())?;
@@ -61,14 +72,13 @@ pub(crate) async fn scan_dependencies_engine(
         ),
         None => None,
     };
-    state.cancel_dependency_scan.store(false, Ordering::SeqCst);
     let service = findings.service().map_err(|error| error.to_string())?;
     let settings = state.settings.lock().unwrap().clone();
     let providers = crate::deps::service::NetworkProviders {
         osv: &state.osv,
         http: &state.http,
     };
-    crate::deps::service::scan(crate::deps::service::ScanRequest {
+    let result = crate::deps::service::scan(crate::deps::service::ScanRequest {
         project_root: &root,
         root: &root,
         ignored_dirs: &settings.scan.ignored_dirs,
@@ -76,16 +86,22 @@ pub(crate) async fn scan_dependencies_engine(
         advisory_db: advisory_db.as_ref(),
         repository: service.repository(),
         providers: &providers,
-        cancel: &state.cancel_dependency_scan,
-        events,
+        cancel: &cancel,
+        events: &work,
         cache_path,
     })
-    .await
+    .await;
+    if let Ok(result) = &result {
+        work.finish("completed", result.summary.run_id.as_deref());
+    }
+    result
 }
 
 #[tauri::command]
 pub fn cancel_dependency_scan(state: State<'_, AppState>) {
-    state.cancel_dependency_scan.store(true, Ordering::SeqCst);
+    let _ = state
+        .scan_work
+        .cancel(None, &[crate::scan_work::WorkKind::Dependencies]);
 }
 
 #[tauri::command]
@@ -117,17 +133,18 @@ pub(crate) fn find_lockfiles_inner(
     for f in files {
         let name = f.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let kind = crate::deps::lockfiles::lockfile_kind(name);
-        let count = match crate::deps::lockfiles::parse_lockfile(&f, kind) {
-            Ok(dependencies) => dependencies.len(),
+        let (count, parse_error) = match crate::deps::lockfiles::parse_lockfile(&f, kind) {
+            Ok(dependencies) => (Some(dependencies.len()), None),
             Err(error) if crate::deps::lockfiles::is_resource_limit_error(&error) => {
                 return Err(format!("{}: {error}", f.display()));
             }
-            Err(_) => 0,
+            Err(error) => (None, Some(error)),
         };
         out.push(LockfileInfo {
             path: f.to_string_lossy().replace('\\', "/"),
             kind: kind.into(),
             packages: count,
+            parse_error,
         });
     }
     Ok(out)
@@ -208,6 +225,7 @@ pub async fn scan_binaries(
     cve: State<'_, CveState>,
     request: crate::binscan::run::BinaryScanRequest,
     use_grype: Option<bool>,
+    operation_id: Option<String>,
 ) -> Result<crate::binscan::report::BinaryScanResult, String> {
     struct TauriEvents(AppHandle);
     impl crate::findings::service::ScanEventSink for TauriEvents {
@@ -217,8 +235,8 @@ pub async fn scan_binaries(
         }
     }
     let progress_app = app.clone();
-    let progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
-        let _ = progress_app.emit("binscan://progress", Value::from(line));
+    let progress: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(move |payload| {
+        let _ = progress_app.emit("binscan://progress", payload);
     });
     let scratch_dir = app
         .path()
@@ -241,6 +259,7 @@ pub async fn scan_binaries(
         progress,
         request,
         use_grype,
+        operation_id,
     )
     .await
 }
@@ -256,10 +275,21 @@ pub(crate) async fn scan_binaries_engine(
     cache_dir: &Path,
     run_events: &dyn oxaudit_application::RunEventSink,
     events: &dyn crate::findings::service::ScanEventSink,
-    progress: Arc<dyn Fn(String) + Send + Sync>,
+    progress: Arc<dyn Fn(Value) + Send + Sync>,
     request: crate::binscan::run::BinaryScanRequest,
     use_grype: Option<bool>,
+    operation_id: Option<String>,
 ) -> Result<crate::binscan::report::BinaryScanResult, String> {
+    let mut work = state.scan_work.begin(
+        crate::scan_work::WorkKind::Binary,
+        &request.path,
+        operation_id.as_deref(),
+        events,
+    )?;
+    let active_operation_id = work.id().to_owned();
+    let progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |message| {
+        progress(json!({"operationId": active_operation_id, "message": message}))
+    });
     let target = Path::new(&request.path)
         .canonicalize()
         .map_err(|error| format!("cannot resolve the binary scan target: {error}"))?;
@@ -284,8 +314,15 @@ pub(crate) async fn scan_binaries_engine(
         .expect("managed binary run exists")
         .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
         .map_err(|error| error.to_string())?;
-    let cancel = state.cancel_binary_scan.clone();
-    cancel.store(false, Ordering::Relaxed);
+    let cancel = work.cancellation();
+    work.bind_run(
+        managed
+            .as_ref()
+            .expect("managed binary run exists")
+            .run()
+            .id
+            .as_str(),
+    );
     managed
         .as_mut()
         .expect("managed binary run exists")
@@ -315,6 +352,14 @@ pub(crate) async fn scan_binaries_engine(
             return Err(error);
         }
     };
+    if cancel.load(Ordering::SeqCst) {
+        managed
+            .take()
+            .expect("managed binary run exists")
+            .terminate(oxaudit_domain::RunState::Cancelled, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        return Err("binary scan cancelled".into());
+    }
     managed
         .as_mut()
         .expect("managed binary run exists")
@@ -524,7 +569,7 @@ pub(crate) async fn scan_binaries_engine(
             );
         let _ = events.emit(
             "binscan://scanner-failed",
-            json!({ "scanner": failure.scanner, "message": failure.message }),
+            json!({ "operationId": work.id(), "scanner": failure.scanner, "message": failure.message }),
         );
     }
 
@@ -536,7 +581,10 @@ pub(crate) async fn scan_binaries_engine(
             .as_mut()
             .expect("managed binary run exists")
             .warning("enrichment_note", note.clone());
-        let _ = events.emit("binscan://note", Value::from(note.clone()));
+        let _ = events.emit(
+            "binscan://note",
+            json!({"operationId": work.id(), "message": note}),
+        );
     }
     managed
         .as_mut()
@@ -552,12 +600,21 @@ pub(crate) async fn scan_binaries_engine(
         .repository()
         .canonical_save_projection(&run_id, "binary", 1, &outcome.result)
         .map_err(|error| error.to_string())?;
+    if cancel.load(Ordering::SeqCst) {
+        managed
+            .take()
+            .expect("managed binary run exists")
+            .terminate(oxaudit_domain::RunState::Cancelled, epoch_millis())
+            .map_err(|error| error.to_string())?;
+        return Err("binary scan cancelled".into());
+    }
     managed
-        .take()
+        .as_mut()
         .expect("managed binary run exists")
-        .complete(epoch_millis())
+        .complete_in_place(epoch_millis())
         .map_err(|error| error.to_string())?;
 
+    work.finish("completed", Some(run_id.as_str()));
     Ok(outcome.result)
 }
 
@@ -570,7 +627,15 @@ pub(crate) async fn scan_binaries_engine(
 pub async fn refresh_binary_database(
     app: AppHandle,
     state: State<'_, AppState>,
+    operation_id: Option<String>,
 ) -> Result<(), String> {
+    struct RefreshEvents(AppHandle);
+    impl ScanEventSink for RefreshEvents {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            let _ = self.0.emit(event, payload);
+            Ok(())
+        }
+    }
     let progress_app = app.clone();
     let progress: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
         let _ = progress_app.emit("binscan://progress", Value::from(line));
@@ -584,7 +649,15 @@ pub async fn refresh_binary_database(
         .path()
         .app_data_dir()
         .unwrap_or_else(|_| scratch_dir.clone());
-    refresh_binary_database_engine(&state, &scratch_dir, &cache_dir, progress).await
+    refresh_binary_database_engine(
+        &state,
+        &scratch_dir,
+        &cache_dir,
+        progress,
+        &RefreshEvents(app),
+        operation_id,
+    )
+    .await
 }
 
 pub(crate) async fn refresh_binary_database_engine(
@@ -592,14 +665,21 @@ pub(crate) async fn refresh_binary_database_engine(
     scratch_dir: &Path,
     cache_dir: &Path,
     progress: Arc<dyn Fn(String) + Send + Sync>,
+    events: &dyn ScanEventSink,
+    operation_id: Option<String>,
 ) -> Result<(), String> {
     let mut context = scan_context_dirs(state, scratch_dir, cache_dir, false)?;
     context.use_grype = false;
     // This refreshes cve-bin-tool's database. The native scanner has no
     // database, so running it here would only scan an empty probe directory.
     context.use_native = false;
-    let cancel = state.cancel_binary_scan.clone();
-    cancel.store(false, Ordering::Relaxed);
+    let mut work = state.scan_work.begin(
+        crate::scan_work::WorkKind::Binary,
+        "advisory database refresh",
+        operation_id.as_deref(),
+        events,
+    )?;
+    let cancel = work.cancellation();
 
     // cve-bin-tool always needs a target, so refresh against an empty directory:
     // the point is the `--update now` side effect, not the (empty) findings.
@@ -615,7 +695,7 @@ pub(crate) async fn refresh_binary_database_engine(
         deep_analysis: false,
     };
 
-    crate::binscan::scan::run_scan(
+    let result = crate::binscan::scan::run_scan(
         &context,
         &request,
         cancel,
@@ -624,12 +704,48 @@ pub(crate) async fn refresh_binary_database_engine(
         None,
     )
     .await
-    .map(|_| ())
+    .map(|_| ());
+    if result.is_ok() {
+        work.finish("completed", None);
+    }
+    result
 }
 
 /// Ask an in-flight binary scan to stop; the child process is killed.
 #[tauri::command]
 pub fn cancel_binary_scan(state: State<'_, AppState>) -> Result<(), String> {
-    state.cancel_binary_scan.store(true, Ordering::Relaxed);
+    state
+        .scan_work
+        .cancel(None, &[crate::scan_work::WorkKind::Binary])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_inventory_has_unknown_count_while_valid_empty_inventory_has_zero() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("package-lock.json");
+        std::fs::write(&path, "{broken json").unwrap();
+        let state = AppState::new();
+        let failed =
+            find_lockfiles_inner(&state, directory.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].packages, None);
+        assert!(failed[0]
+            .parse_error
+            .as_ref()
+            .is_some_and(|error| !error.is_empty()));
+        std::fs::write(
+            path,
+            r#"{"name":"fixture","lockfileVersion":3,"packages":{}}"#,
+        )
+        .unwrap();
+        let empty =
+            find_lockfiles_inner(&state, directory.path().to_string_lossy().into_owned()).unwrap();
+        assert_eq!(empty[0].packages, Some(0));
+        assert_eq!(empty[0].parse_error, None);
+    }
 }

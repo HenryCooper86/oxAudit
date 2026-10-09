@@ -22,12 +22,14 @@ describe("the server transport", () => {
     static CLOSED = 2;
     static instances: TestEventSource[] = [];
     readyState = 1;
+    onopen: (() => void) | null = null;
     onerror: (() => void) | null = null;
     constructor(readonly url: string) {
       super();
       TestEventSource.instances.push(this);
     }
     close() { this.readyState = TestEventSource.CLOSED; }
+    open() { this.readyState = 1; this.onopen?.(); }
     emit(name: string, payload: unknown) {
       this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(payload) }));
     }
@@ -150,5 +152,54 @@ describe("the server transport", () => {
     sources[1].emit("scan://progress", { phase: "completed" });
     expect(received).toEqual([{ phase: "completed" }]);
     release();
+  });
+
+  it("reconciles after retries but does not call the first connection a reconnect", async () => {
+    const transport = await loadTransport(true);
+    const sources = eventSources();
+    const recovery: unknown[] = [];
+    const release = transport.sseListen("transport://reconnected", ({ payload }) => recovery.push(payload));
+    sources[0].open();
+    expect(recovery).toEqual([]);
+    sources[0].readyState = 0;
+    sources[0].onerror?.();
+    sources[0].open();
+    expect(recovery).toEqual([expect.objectContaining({
+      reason: "retry", connectionId: 1, occurredAt: expect.any(String),
+    })]);
+    release();
+  });
+
+  it("reports dropped frames without requiring a subscriber to the backend hub event", async () => {
+    const transport = await loadTransport(true);
+    const sources = eventSources();
+    const recovery: unknown[] = [];
+    const release = transport.sseListen("transport://lagged", ({ payload }) => recovery.push(payload));
+    sources[0].emit("hub://lagged", { missed: 87 });
+    sources[0].emit("hub://lagged", { missed: "unknown" });
+    expect(recovery).toEqual([
+      expect.objectContaining({ connectionId: 1, occurredAt: expect.any(String), missedEvents: 87 }),
+      expect.objectContaining({ connectionId: 1, occurredAt: expect.any(String), missedEvents: null }),
+    ]);
+    release();
+  });
+
+  it("reports stream replacement after token rotation and ignores stale stream recovery", async () => {
+    const transport = await loadTransport(true);
+    const sources = eventSources();
+    const reconnected: unknown[] = [];
+    const lagged: unknown[] = [];
+    const release = transport.sseListen("transport://reconnected", ({ payload }) => reconnected.push(payload));
+    const releaseLag = transport.sseListen("transport://lagged", ({ payload }) => lagged.push(payload));
+    sources[0].open();
+    transport.setServerToken("replacement-token");
+    sources[0].open();
+    sources[0].emit("hub://lagged", { missed: 3 });
+    expect(reconnected).toEqual([]);
+    expect(lagged).toEqual([]);
+    sources[1].open();
+    expect(reconnected).toEqual([expect.objectContaining({ reason: "replacement", connectionId: 2 })]);
+    release();
+    releaseLag();
   });
 });

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "fixtureVersion": "owned-inert-v1",
+  "sourceFiles": 128,
+  "findingsPerSourceFile": 16,
+  "nativePackages": 1000,
+  "dependencyPackages": 2000,
+  "notes": "Generated text and tar inputs are read only; no scripts, package installation, containers or public services are required. Dependency advisories use a labelled synthetic empty receipt."
+}

@@ -293,6 +293,7 @@ test("a delayed A check finishes on A without replacing newer native and visible
   );
   expect(api.scanProject).toHaveBeenCalledWith(
     expect.objectContaining({ path: "/a" }),
+    expect.any(String),
   );
   expect(nativePath).toBe("/b");
   expect(useAppStore.getState().activeProject).toBe("/b");

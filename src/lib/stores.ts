@@ -17,6 +17,8 @@ export interface RecentScan {
 interface AppStore {
   page: Page;
   setPage: (p: Page) => void;
+  exportHandoff: { runId: string } | null;
+  openExport: (runId: string) => void;
   settings: AppSettings | null;
   setSettings: (s: AppSettings) => void;
   aiReadiness: AiReadiness;
@@ -73,6 +75,8 @@ function loadRecent(): RecentScan[] {
 export const useAppStore = create<AppStore>((set) => ({
   page: "dashboard",
   setPage: (page) => set({ page }),
+  exportHandoff: null,
+  openExport: (runId) => set({ page: "export-center", exportHandoff: { runId } }),
   settings: null,
   setSettings: (settings) => set({ settings }),
   aiReadiness: { status: "loading", version: 0 },

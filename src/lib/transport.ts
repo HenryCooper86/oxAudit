@@ -113,19 +113,39 @@ type Handler = (event: { payload: unknown }) => void;
 const eventListeners = new Map<string, Set<Handler>>();
 let source: EventSource | null = null;
 let sourceRefcount = 0;
+let connectionSequence = 0;
+let hasConnected = false;
+
+export interface TransportReconnectedPayload {
+  /** Identifies the current EventSource, including automatic retries. */
+  connectionId: number;
+  occurredAt: string;
+  reason: "retry" | "replacement";
+}
+
+export interface TransportLaggedPayload {
+  connectionId: number;
+  occurredAt: string;
+  /** Null when the server's count cannot be represented reliably. */
+  missedEvents: number | null;
+}
+
+function emit(event: string, payload: unknown): void {
+  for (const listener of eventListeners.get(event) ?? []) listener({ payload });
+}
+
+function parseFrame(message: Event): unknown {
+  const frame = message as MessageEvent<string>;
+  try {
+    return JSON.parse(frame.data);
+  } catch {
+    return frame.data;
+  }
+}
 
 function listenForEvent(src: EventSource, event: string): void {
   src.addEventListener(event, (message) => {
-    const frame = message as MessageEvent<string>;
-    let payload: unknown = null;
-    try {
-      payload = JSON.parse(frame.data);
-    } catch {
-      payload = frame.data;
-    }
-    for (const listener of eventListeners.get(event) ?? []) {
-      listener({ payload });
-    }
+    if (source === src) emit(event, parseFrame(message));
   });
 }
 
@@ -134,7 +154,34 @@ function ensureSource(): EventSource {
   const token = encodeURIComponent(storedToken);
   const created = new EventSource(`/api/events${token ? `?token=${token}` : ""}`);
   source = created;
-  for (const event of eventListeners.keys()) listenForEvent(created, event);
+  const connectionId = ++connectionSequence;
+  let opened = false;
+  // Recovery names are local transport events, never server subscriptions.
+  for (const event of eventListeners.keys()) {
+    if (!event.startsWith("transport://")) listenForEvent(created, event);
+  }
+  created.addEventListener("hub://lagged", (message) => {
+    if (source !== created) return;
+    const frame = parseFrame(message);
+    const missed = frame && typeof frame === "object" && "missed" in frame ? frame.missed : null;
+    emit("transport://lagged", {
+      connectionId,
+      occurredAt: new Date().toISOString(),
+      missedEvents: typeof missed === "number" && Number.isSafeInteger(missed) && missed >= 0 ? missed : null,
+    } satisfies TransportLaggedPayload);
+  });
+  created.onopen = () => {
+    if (source !== created) return;
+    if (hasConnected) {
+      emit("transport://reconnected", {
+        connectionId,
+        occurredAt: new Date().toISOString(),
+        reason: opened ? "retry" : "replacement",
+      } satisfies TransportReconnectedPayload);
+    }
+    opened = true;
+    hasConnected = true;
+  };
   created.onerror = () => {
     // EventSource retries on its own; a 401 stops it for good, so surface
     // the token gate.
@@ -155,7 +202,7 @@ export function sseListen<T>(
   if (!set) {
     set = new Set();
     eventListeners.set(event, set);
-    listenForEvent(src, event);
+    if (!event.startsWith("transport://")) listenForEvent(src, event);
   }
   const entry: Handler = (message) => handler(message as { payload: T });
   set.add(entry);

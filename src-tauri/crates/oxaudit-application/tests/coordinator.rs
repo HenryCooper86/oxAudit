@@ -18,6 +18,7 @@ struct MemoryRepository {
     artifacts: Mutex<Vec<Artifact>>,
     observations: Mutex<Vec<ObservationRecord>>,
     save_failures_remaining: AtomicUsize,
+    commit_then_error: AtomicBool,
 }
 
 impl RunRepository for MemoryRepository {
@@ -27,6 +28,10 @@ impl RunRepository for MemoryRepository {
     }
 
     fn save_run(&self, run: &Run) -> Result<(), String> {
+        if self.commit_then_error.load(Ordering::SeqCst) {
+            *self.run.lock().unwrap() = Some(run.clone());
+            return Err("write committed before response failure".into());
+        }
         if self
             .save_failures_remaining
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
@@ -74,6 +79,158 @@ impl RunRepository for MemoryRepository {
 struct MemoryEvents {
     events: Mutex<Vec<EventEnvelope>>,
     fail: AtomicBool,
+}
+
+#[test]
+fn managed_transition_failure_keeps_the_last_durable_state_recoverable() {
+    let repository = MemoryRepository::default();
+    let events = MemoryEvents::default();
+    let coordinator = RunCoordinator::new(&repository, &events);
+    let mut run = coordinator
+        .begin(Run::queued(RunKind::Image, "fixture", 1))
+        .unwrap();
+    repository
+        .save_failures_remaining
+        .store(2, Ordering::SeqCst);
+    assert!(run.transition(RunState::Discovering, 2).is_err());
+    assert_eq!(run.run().state, RunState::Queued);
+    assert_eq!(
+        repository.run.lock().unwrap().as_ref().unwrap().state,
+        RunState::Queued
+    );
+    assert!(!events.events.lock().unwrap().iter().any(|event| matches!(
+        event.event,
+        oxaudit_application::RunEvent::StageChanged {
+            state: RunState::Discovering
+        }
+    )));
+    let failed = run.terminate(RunState::Failed, 3).unwrap();
+    assert_eq!(failed.run.state, RunState::Failed);
+}
+
+#[test]
+fn failed_completion_retains_the_handle_and_never_emits_success() {
+    let repository = MemoryRepository::default();
+    let events = MemoryEvents::default();
+    let coordinator = RunCoordinator::new(&repository, &events);
+    let mut run = coordinator
+        .begin(Run::queued(RunKind::Image, "fixture", 1))
+        .unwrap();
+    for state in [
+        RunState::Discovering,
+        RunState::Detecting,
+        RunState::Normalizing,
+        RunState::Assessing,
+        RunState::Persisting,
+    ] {
+        run.transition(state, 2).unwrap();
+    }
+    repository
+        .save_failures_remaining
+        .store(2, Ordering::SeqCst);
+    assert!(run.complete_in_place(3).is_err());
+    assert_eq!(run.run().state, RunState::Persisting);
+    assert!(!events.events.lock().unwrap().iter().any(|event| matches!(
+        event.event,
+        oxaudit_application::RunEvent::RunTerminal {
+            state: RunState::Completed
+        }
+    )));
+    run.terminate(RunState::Failed, 4).unwrap();
+    assert_eq!(
+        repository.run.lock().unwrap().as_ref().unwrap().state,
+        RunState::Failed
+    );
+}
+
+#[test]
+fn abandoned_managed_run_records_failure_but_checkpoint_preserves_recovery() {
+    let repository = MemoryRepository::default();
+    let events = MemoryEvents::default();
+    {
+        let coordinator = RunCoordinator::new(&repository, &events);
+        let mut run = coordinator
+            .begin(Run::queued(RunKind::Image, "abandoned", 1))
+            .unwrap();
+        run.transition(RunState::Discovering, 2).unwrap();
+    }
+    assert_eq!(
+        repository.run.lock().unwrap().as_ref().unwrap().state,
+        RunState::Failed
+    );
+    let coordinator = RunCoordinator::new(&repository, &events);
+    let run = coordinator
+        .begin(Run::queued(RunKind::Source, "retry", 3))
+        .unwrap();
+    run.checkpoint().unwrap();
+    assert_eq!(
+        repository.run.lock().unwrap().as_ref().unwrap().state,
+        RunState::Queued
+    );
+}
+
+#[test]
+fn managed_transition_uses_committed_state_after_an_adapter_response_error() {
+    let repository = MemoryRepository::default();
+    let events = MemoryEvents::default();
+    let coordinator = RunCoordinator::new(&repository, &events);
+    let mut run = coordinator
+        .begin(Run::queued(RunKind::Image, "fixture", 1))
+        .unwrap();
+    repository.commit_then_error.store(true, Ordering::SeqCst);
+    run.transition(RunState::Discovering, 2).unwrap();
+    assert_eq!(run.run().state, RunState::Discovering);
+    assert_eq!(
+        repository.run.lock().unwrap().as_ref().unwrap().state,
+        RunState::Discovering
+    );
+    assert_eq!(
+        events
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| matches!(
+                event.event,
+                oxaudit_application::RunEvent::StageChanged {
+                    state: RunState::Discovering
+                }
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn failed_checkpoint_keeps_a_nonterminal_receipt_available_for_retry() {
+    let repository = MemoryRepository::default();
+    let events = MemoryEvents::default();
+    let coordinator = RunCoordinator::new(&repository, &events);
+    let mut run = coordinator
+        .begin(Run::queued(RunKind::Source, "retry", 1))
+        .unwrap();
+    for state in [
+        RunState::Discovering,
+        RunState::Detecting,
+        RunState::Normalizing,
+        RunState::Assessing,
+        RunState::Persisting,
+    ] {
+        run.transition(state, 2).unwrap();
+    }
+    repository
+        .save_failures_remaining
+        .store(2, Ordering::SeqCst);
+    assert!(run.checkpoint().is_err());
+    let stored = repository.run.lock().unwrap().clone().unwrap();
+    assert_eq!(stored.state, RunState::Persisting);
+    let mut completed = stored;
+    completed.transition(RunState::Completed, 3).unwrap();
+    repository.save_run(&completed).unwrap();
+    assert_eq!(
+        repository.run.lock().unwrap().as_ref().unwrap().state,
+        RunState::Completed
+    );
 }
 
 impl RunEventSink for MemoryEvents {

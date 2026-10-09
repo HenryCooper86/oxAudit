@@ -1,7 +1,8 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { ImageScanPage } from "./ImageScanPage";
+import { useScanWorkStore } from "../features/project-home/coordinator";
 
 const listen = vi.fn().mockResolvedValue(() => {});
 vi.mock("@tauri-apps/api/event", () => ({
@@ -10,20 +11,32 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const scanImage = vi.fn();
 const cancelImageScan = vi.fn();
+const cancelScanWork = vi.fn();
+const listCanonicalRuns = vi.fn();
+const loadCanonicalProjection = vi.fn();
 vi.mock("../lib/api", () => ({
   api: {
     scanImage: (...args: unknown[]) => scanImage(...args),
     cancelImageScan: (...args: unknown[]) => cancelImageScan(...args),
+    cancelScanWork: (...args: unknown[]) => cancelScanWork(...args),
+    scanWorkStatus: async () => ({ active: null, recent: [] }),
+    listCanonicalRuns: (...args: unknown[]) => listCanonicalRuns(...args),
+    loadCanonicalProjection: (...args: unknown[]) => loadCanonicalProjection(...args),
   },
 }));
 
 const toast = vi.fn();
-vi.mock("../lib/stores", () => ({
+vi.mock("../lib/stores", async importOriginal => ({
+  ...await importOriginal<typeof import("../lib/stores")>(),
   useToastStore: (selector: (state: { push: typeof toast }) => unknown) =>
     selector({ push: toast }),
 }));
 
 const outcome = {
+  runId: "saved-image",
+  imageDigest: "sha256:immutable-image",
+  layers: [{ name: "layer", digest: "sha256:immutable-layer", sizeBytes: 42, mediaType: "application/vnd.oci.image.layer.v1.tar" }],
+  offline: false,
   result: {
     target: "registry.local/app:1.0",
     summary: { components: 1, vulnerabilities: 1, critical: 1, high: 0, medium: 0, low: 0, unknown: 0 },
@@ -61,6 +74,14 @@ const outcome = {
   notes: ["offline scan: 1 CPE-keyed component(s) can only be answered by NVD"],
 };
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  useScanWorkStore.setState({ active: null, check: null, backend: { active: null, recent: [] }, lastTargets: {}, recoveryError: null });
+  listCanonicalRuns.mockResolvedValue([]);
+  cancelScanWork.mockResolvedValue(true);
+  listen.mockResolvedValue(() => {});
+});
+
 test("a registry scan renders components, vulnerabilities, and honest notes", async () => {
   scanImage.mockResolvedValue(outcome);
   render(<ImageScanPage />);
@@ -71,6 +92,7 @@ test("a registry scan renders components, vulnerabilities, and honest notes", as
     target: "registry.local/app:1.0",
     advisoryDbPath: null,
     offline: false,
+    operationId: expect.any(String),
   });
   expect(await screen.findByText("libc6")).toBeInTheDocument();
   expect(screen.getByText(/CVE-2099-2222/)).toBeInTheDocument();
@@ -90,9 +112,11 @@ test("the offline switch travels with the request and cancel is reachable while 
   await userEvent.click(screen.getByRole("switch", { name: /offline advisories/i }));
   await userEvent.click(screen.getByRole("button", { name: /^scan$/i }));
   await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
-  expect(cancelImageScan).toHaveBeenCalled();
-  expect(scanImage).toHaveBeenCalledWith({ target: "saved.tar", advisoryDbPath: null, offline: true });
-  release(outcome);
+  expect(cancelScanWork).toHaveBeenCalledWith(scanImage.mock.calls[0][0].operationId);
+  expect(cancelImageScan).not.toHaveBeenCalled();
+  expect(scanImage).toHaveBeenCalledWith({ target: "saved.tar", advisoryDbPath: null, offline: true, operationId: expect.any(String) });
+  await act(async () => release(outcome));
+  expect(toast).not.toHaveBeenCalledWith("success", expect.any(String));
 });
 
 test("pressing Enter while an image scan is running cannot start a second scan", async () => {
@@ -111,4 +135,49 @@ test("a late image event subscription is released after the page unmounts", asyn
   view.unmount();
   await act(async () => resolve(stop));
   expect(stop).toHaveBeenCalledOnce();
+});
+
+test("a saved image receipt reloads its immutable digest and layer identities", async () => {
+  listCanonicalRuns.mockResolvedValue([{ id: "saved-image", kind: "image", targetLabel: "registry.local/app:1.0", state: "completed", updatedAtMs: 2, createdAtMs: 1, attempt: 1, engineIds: [], rulePackIds: [], providerSnapshotIds: [], warnings: [] }]);
+  loadCanonicalProjection.mockResolvedValue(outcome);
+  render(<ImageScanPage />);
+  expect(await screen.findByText("sha256:immutable-image")).toBeInTheDocument();
+  expect(screen.getByText("sha256:immutable-layer")).toBeInTheDocument();
+  expect(screen.getByLabelText("Image target")).toHaveValue("registry.local/app:1.0");
+  expect(loadCanonicalProjection).toHaveBeenCalledWith("saved-image");
+  expect(scanImage).not.toHaveBeenCalled();
+  expect(screen.queryByText(/not persisted as canonical runs/)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Open Export Center' }));
+  const { useAppStore } = await import('../lib/stores');
+  expect(useAppStore.getState().exportHandoff).toEqual({ runId: 'saved-image' });
+});
+
+test("a recovered image operation blocks another launch and cancels only that operation", async () => {
+  const { reconcileBackendWork } = await import("../features/project-home/coordinator");
+  reconcileBackendWork({ active: { operationId: "recovered-image", kind: "image", target: "registry.local/busy:1", status: "running", runId: null, startedAtMs: 1, updatedAtMs: 2 }, recent: [] });
+  render(<ImageScanPage />);
+  expect(screen.getByRole("button", { name: /^scan$/i })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+  expect(cancelScanWork).toHaveBeenCalledWith("recovered-image");
+  await waitFor(() => expect(scanImage).not.toHaveBeenCalled());
+});
+
+test('a failed saved image receipt cannot report successful zero-vulnerability coverage', async () => {
+  listCanonicalRuns.mockResolvedValue([{ id: 'failed-image', kind: 'image', targetLabel: 'registry.local/app:1.0', state: 'failed', attempt: 1, createdAtMs: 1, updatedAtMs: 2, engineIds: [], rulePackIds: [], providerSnapshotIds: [], warnings: ['Registry request failed'] }]);
+  loadCanonicalProjection.mockResolvedValue({ ...outcome, runId: 'failed-image', result: { ...outcome.result, components: [], summary: { ...outcome.result.summary, components: 0, vulnerabilities: 0 } }, notes: ['Registry request failed'] });
+  const { useAppStore } = await import('../lib/stores');
+  render(<ImageScanPage />);
+  expect(await screen.findByText(/Latest saved attempt: failed/)).toBeInTheDocument();
+  expect(useAppStore.getState().pageStatus['image-scan']?.tone).not.toBe('success');
+  expect(useAppStore.getState().pageStatus['image-scan']?.label).toMatch(/failed/);
+});
+
+test('saved local image identity is labeled as a pre-scan snapshot and incomplete hashes remain explicit', async () => {
+  listCanonicalRuns.mockResolvedValue([{ id: 'saved-image', kind: 'image', targetLabel: 'saved.tar', state: 'incomplete', attempt: 1, createdAtMs: 1, updatedAtMs: 2, engineIds: [], rulePackIds: [], providerSnapshotIds: [], warnings: [] }]);
+  loadCanonicalProjection.mockResolvedValue({ ...outcome, localEvidence: { kind: 'file', complete: false, hashByteLimit: 64, file: { sizeBytes: 128, sizeSource: 'metadata', bytesHashed: 64, sha256: null, prefixSha256: 'sha256:prefix-only', changedDuringRead: null, complete: false }, notes: ['Hash byte budget reached'] } });
+  render(<ImageScanPage />);
+  expect(await screen.findByText('sha256:prefix-only')).toBeInTheDocument();
+  expect(screen.getByText(/Pre-scan identity snapshot/)).toHaveTextContent(/does not bind the bytes read later by the scan/);
+  expect(screen.getByText(/Local identity capture is incomplete/)).toBeInTheDocument();
+  expect(screen.getByText(/Prefix SHA-256/)).toHaveTextContent('64 bytes');
 });

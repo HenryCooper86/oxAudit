@@ -17,6 +17,10 @@
     "test:watch": "vitest",
     "audit:dependencies": "npm audit --audit-level=high",
     "pilot:smoke": "node tools/pilot-smoke.mjs",
+    "benchmark:external:record": "node tools/record-quality-benchmark.mjs",
+    "benchmark:quality:compare": "node tools/compare-quality-benchmark.mjs",
+    "benchmark:performance": "node tools/cli-performance.mjs",
+    "pilot:feedback": "node tools/pilot-feedback.mjs",
     "test:ci-shell": "tsx --test tests/ci/*.test.ts"
   },
   "dependencies": {

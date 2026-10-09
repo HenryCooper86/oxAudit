@@ -34,6 +34,221 @@ impl ScanEventSink for RecordingEvents {
 
 struct FailingEvents;
 
+#[tokio::test]
+async fn scoped_source_applies_rule_packs_and_project_exclusions() {
+    use oxaudit_domain::{CreationMethod, Provenance, RulePackId, Severity};
+    use oxaudit_scanners::{
+        CompiledRulePack, FixtureExpectation, RuleDefinition, RuleEngine, RulePack,
+        RulePackMetadata, RuleScope,
+    };
+    let provenance = |hash: String| Provenance {
+        authors: vec!["Fixture author".into()],
+        source: "owned test fixture".into(),
+        license: "Apache-2.0".into(),
+        creation_method: CreationMethod::Authored,
+        content_sha256: hash,
+    };
+    let fixture = |id: &str| FixtureExpectation {
+        id: id.into(),
+        path: format!("{id}.txt"),
+        sha256: "a".repeat(64),
+        expected_values: Vec::new(),
+    };
+    let rules = vec![RuleDefinition {
+        id: "source.marker".into(),
+        version: "1".into(),
+        title: "Scoped marker".into(),
+        description: "An owned marker rule".into(),
+        recommendation: "Review marker".into(),
+        engine: RuleEngine::SourceRegex,
+        severity: Severity::High,
+        scope: RuleScope {
+            languages: vec!["javascript".into()],
+            platforms: Vec::new(),
+            architectures: Vec::new(),
+            file_extensions: Vec::new(),
+        },
+        pattern: "dangerousMarker".into(),
+        classifications: Vec::new(),
+        provenance: provenance("b".repeat(64)),
+        positive_fixtures: vec![fixture("positive")],
+        negative_fixtures: vec![fixture("negative")],
+    }];
+    let hash = RulePack::computed_content_sha256(&rules).unwrap();
+    let compiled = CompiledRulePack::compile(RulePack {
+        pack: RulePackMetadata {
+            schema_version: 1,
+            id: RulePackId::parse("rulepack.scoped").unwrap(),
+            name: "Scoped fixtures".into(),
+            version: "1.0.0".into(),
+            minimum_oxaudit_version: "0.1.0".into(),
+            content_sha256: hash.clone(),
+            provenance: provenance(hash),
+        },
+        rules,
+    })
+    .unwrap();
+    let packs =
+        crate::scanners::rulepacks::AppliedRulePacks::from_compiled(vec![Arc::new(compiled)]);
+    let root = tempfile::tempdir().unwrap();
+    let scope = root.path().join("src");
+    std::fs::create_dir_all(scope.join("ignored")).unwrap();
+    std::fs::write(scope.join("app.js"), "dangerousMarker(input);\n").unwrap();
+    std::fs::write(scope.join("ignored/app.js"), "dangerousMarker(input);\n").unwrap();
+    let service = FindingsService::new(
+        crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+    );
+    let result = service
+        .scan_scoped_with_packs(
+            ScanOptions {
+                path: scope.to_string_lossy().into_owned(),
+                scan_secrets: false,
+                extra_ignored_dirs: vec!["ignored".into()],
+                ..ScanOptions::default()
+            },
+            root.path(),
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+            &packs,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.findings.len(), 1);
+    assert_eq!(result.findings[0].rule_id, "rulepack.scoped/source.marker");
+    assert_eq!(result.findings[0].file_path, "src/app.js");
+    let identity = oxaudit_domain::RunId::parse(result.run_id).unwrap();
+    assert_eq!(
+        service
+            .repository()
+            .canonical_load_run(&identity)
+            .unwrap()
+            .unwrap()
+            .rule_pack_ids,
+        vec![RulePackId::parse("rulepack.scoped").unwrap()]
+    );
+}
+
+#[tokio::test]
+async fn source_summary_counts_only_files_with_detector_coverage() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("app.js"), "const value = 1;\n").unwrap();
+    std::fs::write(
+        directory.path().join("binary.js"),
+        b"\0unreadable as source\0",
+    )
+    .unwrap();
+    let service = FindingsService::new(
+        crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+    );
+    let run = service
+        .scan(
+            ScanOptions {
+                path: directory.path().to_string_lossy().into_owned(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            },
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.summary.files_scanned, 1);
+    assert_eq!(run.summary.files_skipped, 1);
+    assert_eq!(run.summary.total_findings, 0);
+}
+
+#[tokio::test]
+async fn scoped_source_inherits_root_configuration_policy_and_saved_coverage() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("project");
+    let scope = root.join("src");
+    std::fs::create_dir_all(&scope).unwrap();
+    std::fs::create_dir(root.join(".oxaudit")).unwrap();
+    std::fs::write(root.join("application.properties"), "digest=MD5\n").unwrap();
+    std::fs::write(
+        scope.join("Digest.java"),
+        r#"import java.security.MessageDigest;
+class Digest { byte[] hash(java.util.Properties props, byte[] data) throws Exception {
+String algorithm = props.getProperty("digest", "SHA-512");
+return MessageDigest.getInstance(algorithm).digest(data); } }"#,
+    )
+    .unwrap();
+    std::fs::write(scope.join("app.js"), "eval(input);\n").unwrap();
+    std::fs::write(root.join("outside.js"), "eval(input);\n").unwrap();
+    std::fs::write(root.join(".oxaudit/policy.json"), r#"{"version":1,"entries":[{"kind":"suppression","ruleId":"js-eval","pathPattern":"src/app.js","state":"suppressed","reason":"scoped fixture"}]}"#).unwrap();
+    let db = directory.path().join("private/scoped.sqlite");
+    let service =
+        FindingsService::new(crate::findings::repository::FindingsRepository::open(&db).unwrap());
+    let warnings = vec!["Enabled rule pack fixture was not applied: missing snapshot".to_owned()];
+    let run = service
+        .scan_scoped_with_packs(
+            ScanOptions {
+                path: scope.to_string_lossy().into_owned(),
+                scan_secrets: false,
+                ..ScanOptions::default()
+            },
+            &root,
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+            &crate::scanners::rulepacks::AppliedRulePacks::empty(),
+            &warnings,
+        )
+        .await
+        .unwrap();
+    assert!(run
+        .findings
+        .iter()
+        .any(|finding| finding.rule_id == "java-configured-weak-hash"));
+    assert!(run
+        .findings
+        .iter()
+        .all(|finding| finding.file_path.starts_with("src/")));
+    let js = run
+        .findings
+        .iter()
+        .find(|finding| finding.rule_id == "js-eval")
+        .unwrap();
+    assert_eq!(
+        js.review.as_ref().unwrap().state,
+        crate::findings::domain::ReviewState::Suppressed
+    );
+    assert_eq!(run.summary.coverage_warnings, warnings);
+    let context = service.inspect_project(&root).unwrap();
+    assert_eq!(context.project_id, run.project_id);
+    assert_eq!(
+        std::path::PathBuf::from(
+            service
+                .recheck_options(&run.run_id, &run.project_id)
+                .unwrap()
+                .path
+        ),
+        scope.canonicalize().unwrap()
+    );
+    drop(service);
+    let service =
+        FindingsService::new(crate::findings::repository::FindingsRepository::open(&db).unwrap());
+    assert_eq!(
+        service
+            .load_run(&run.run_id)
+            .unwrap()
+            .summary
+            .coverage_warnings,
+        warnings
+    );
+    let coverage = service
+        .repository()
+        .run_coverage(&run.run_id)
+        .unwrap()
+        .unwrap();
+    assert!(!serde_json::to_string(&coverage)
+        .unwrap()
+        .contains("outside.js"));
+}
+
 impl ScanEventSink for FailingEvents {
     fn emit(
         &self,
@@ -1533,7 +1748,7 @@ async fn post_maintenance_reload_failure_is_pending_and_retry_keeps_token() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cancellation_is_reset_only_when_the_service_was_idle() {
+async fn cancelled_tokens_are_never_reset_by_a_later_service_call() {
     let directory = tempfile::tempdir().unwrap();
     let first_project = directory.path().join("first");
     let second_project = directory.path().join("second");
@@ -1547,7 +1762,7 @@ async fn cancellation_is_reset_only_when_the_service_was_idle() {
     let cve = Arc::new(cached_cve_state());
     let events = Arc::new(RecordingEvents::default());
     let cancel = Arc::new(AtomicBool::new(true));
-    service
+    let pre_cancelled = service
         .scan(
             ScanOptions {
                 path: first_project.to_string_lossy().into_owned(),
@@ -1559,8 +1774,14 @@ async fn cancellation_is_reset_only_when_the_service_was_idle() {
             &*events,
         )
         .await
-        .unwrap();
+        .unwrap_err();
+    assert_eq!(
+        pre_cancelled.code,
+        crate::findings::error::ErrorCode::ScanCancelled
+    );
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
 
+    let cancel = Arc::new(AtomicBool::new(false));
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let first_path = first_project

@@ -15,6 +15,7 @@ import {
 } from "./lib/settingsRequests";
 import { useAppStore } from "./lib/stores";
 import { Dashboard } from "./pages/Dashboard";
+import { useScanWorkRecovery } from "./features/project-home/scanWorkRecovery";
 import type { Page as PageName } from "./lib/workbench";
 
 const SourceScanPage = lazy(() =>
@@ -134,6 +135,7 @@ export default function App() {
   const setSettings = useAppStore((s) => s.setSettings);
   const setAiReadiness = useAppStore((s) => s.setAiReadiness);
   const setSettingsLoadError = useAppStore((s) => s.setSettingsLoadError);
+  useScanWorkRecovery(!serverAuthRequired);
 
   useEffect(() => {
     if (serverMode) return onUnauthorized(() => setServerAuthRequired(true));

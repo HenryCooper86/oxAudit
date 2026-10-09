@@ -17,6 +17,7 @@ pub struct ManagedRun<'a> {
     persistence_attempts: usize,
     event_delivery_failures: usize,
     observations: Vec<ObservationRecord>,
+    checkpointed: bool,
 }
 
 impl<'a> ManagedRun<'a> {
@@ -35,6 +36,7 @@ impl<'a> ManagedRun<'a> {
             persistence_attempts,
             event_delivery_failures: 0,
             observations: Vec::new(),
+            checkpointed: false,
         };
         managed.publish(RunEvent::RunStarted);
         Ok(managed)
@@ -45,14 +47,37 @@ impl<'a> ManagedRun<'a> {
     }
 
     pub fn transition(&mut self, state: RunState, now_ms: u64) -> Result<(), ApplicationError> {
-        self.run.transition(state, now_ms)?;
-        self.persist_run()?;
+        let mut candidate = self.run.clone();
+        candidate.transition(state, now_ms)?;
+        if let Err(error) = persist(self.persistence_attempts, || {
+            self.repository.save_run(&candidate)
+        }) {
+            // Some adapters can commit successfully before reporting an error.
+            // Durable truth decides whether recovery may replace this stage.
+            if self
+                .repository
+                .load_run(&candidate.id)
+                .ok()
+                .flatten()
+                .as_ref()
+                != Some(&candidate)
+            {
+                return Err(error);
+            }
+        }
+        self.run = candidate;
         let event = if state.is_terminal() {
             RunEvent::RunTerminal { state }
         } else {
             RunEvent::StageChanged { state }
         };
+        let warnings_before = self.run.warnings.len();
         self.publish(event);
+        if self.run.warnings.len() != warnings_before {
+            // Event delivery is advisory. Retain its warning when storage is
+            // available without reporting failure after a committed transition.
+            let _ = self.persist_run();
+        }
         Ok(())
     }
 
@@ -113,9 +138,13 @@ impl<'a> ManagedRun<'a> {
     }
 
     pub fn complete(mut self, now_ms: u64) -> Result<RunOutcome, ApplicationError> {
-        self.transition(RunState::Completed, now_ms)?;
-        self.persist_run()?;
+        self.complete_in_place(now_ms)?;
         Ok(self.outcome())
+    }
+
+    /// Complete while retaining the handle if the durable write fails.
+    pub fn complete_in_place(&mut self, now_ms: u64) -> Result<(), ApplicationError> {
+        self.transition(RunState::Completed, now_ms)
     }
 
     pub fn terminate(
@@ -127,12 +156,12 @@ impl<'a> ManagedRun<'a> {
             self.transition(RunState::Cancelling, now_ms)?;
         }
         self.transition(state, now_ms)?;
-        self.persist_run()?;
         Ok(self.outcome())
     }
 
     /// Persist current non-terminal state for an existing retry/recovery path.
-    pub fn checkpoint(self) -> Result<RunOutcome, ApplicationError> {
+    pub fn checkpoint(mut self) -> Result<RunOutcome, ApplicationError> {
+        self.checkpointed = true;
         self.persist_run()?;
         Ok(self.outcome())
     }
@@ -154,12 +183,36 @@ impl<'a> ManagedRun<'a> {
         }
     }
 
-    fn outcome(self) -> RunOutcome {
+    fn outcome(mut self) -> RunOutcome {
         RunOutcome {
-            run: self.run,
-            observations: self.observations,
+            run: self.run.clone(),
+            observations: std::mem::take(&mut self.observations),
             event_delivery_failures: self.event_delivery_failures,
         }
+    }
+}
+
+impl Drop for ManagedRun<'_> {
+    fn drop(&mut self) {
+        if self.checkpointed || self.run.state.is_terminal() {
+            return;
+        }
+        let terminal = if self.run.state == RunState::Cancelling {
+            RunState::Cancelled
+        } else {
+            RunState::Failed
+        };
+        self.warning(
+            "run_abandoned",
+            "The scan stopped before a terminal receipt was recorded.",
+        );
+        let _ = self.transition(
+            terminal,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        );
     }
 }
 
