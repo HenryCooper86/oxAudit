@@ -100,21 +100,34 @@ fn parse_lockfile_with_limit(
             return Ok(dependencies);
         }
     }
+    if name == "go.mod" {
+        return super::go_inventory::parse(&content, &lockfile);
+    }
+    if name == "go.sum" {
+        if !path.with_file_name("go.mod").is_file() {
+            return Err(
+                "go.sum is checksum history, not an installed inventory; supply the sibling go.mod"
+                    .into(),
+            );
+        }
+        super::go_inventory::validate_sums(&content)?;
+        return Ok(Vec::new());
+    }
+    if name == "Gemfile.lock" {
+        return parse_gemfile_lock(&content, &lockfile);
+    }
     let deps = match name {
         "package-lock.json" => parse_package_lock(&content)?,
         "yarn.lock" => parse_yarn_lock(&content)?,
         "pnpm-lock.yaml" => parse_pnpm_lock(&content)?,
         "Cargo.lock" => parse_cargo_lock(&content)?,
-        "go.sum" => parse_go_sum(&content)?,
         "Pipfile.lock" => parse_pipfile_lock(&content)?,
-        "Gemfile.lock" => parse_gemfile_lock(&content)?,
         "composer.lock" => parse_composer_lock(&content)?,
         "pom.xml" => parse_pom_xml(&content)?,
         "requirements.txt" => parse_requirements(&content)?,
         "gradle.lockfile" => parse_gradle_lockfile(&content)?,
         "packages.lock.json" => parse_packages_lock_json(&content)?,
         "poetry.lock" => parse_poetry_lock(&content)?,
-        "go.mod" => parse_go_mod(&content)?,
         "bun.lock" => parse_bun_lock(&content)?,
         "mix.lock" => parse_mix_lock(&content)?,
         "pubspec.lock" => parse_pubspec_lock(&content)?,
@@ -383,80 +396,6 @@ fn parse_cargo_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-fn parse_go_sum(content: &str) -> Result<Vec<(String, String)>, String> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 2 {
-            continue;
-        }
-        let version = parts[1];
-        // skip /go.mod pseudo entries
-        if version.ends_with("/go.mod") {
-            continue;
-        }
-        let version = version.trim_start_matches("v");
-        out.push((parts[0].to_string(), version.to_string()));
-    }
-    if out.is_empty() {
-        return Err("no packages found in go.sum".into());
-    }
-    Ok(out)
-}
-
-/// `go.mod`: single-line `require` directives plus `require ( … )` blocks.
-/// `replace`, `exclude`, and `retract` name versions too, but they are build
-/// instructions, not the resolved inventory — the tool that resolves them is
-/// `go`, and its output lands in `go.sum`, which is parsed on its own.
-fn parse_go_mod(content: &str) -> Result<Vec<(String, String)>, String> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut in_require_block = false;
-    for line in content.lines() {
-        let line = line.trim();
-        let (line, _) = line.split_once("//").unwrap_or((line, ""));
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("require (") {
-            let _ = rest;
-            in_require_block = true;
-            continue;
-        }
-        if in_require_block && line == ")" {
-            in_require_block = false;
-            continue;
-        }
-        let require_line = if in_require_block {
-            Some(line)
-        } else {
-            line.strip_prefix("require ").map(str::trim)
-        };
-        let Some(require_line) = require_line else {
-            continue;
-        };
-        let mut parts = require_line.split_whitespace();
-        let (Some(name), Some(version)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        if !version.starts_with('v') {
-            continue;
-        }
-        out.push((
-            name.to_string(),
-            version.trim_start_matches('v').to_string(),
-        ));
-    }
-    if out.is_empty() {
-        return Err("no required modules found in go.mod".into());
-    }
-    Ok(out)
-}
-
 /// Bun's JSONC package map is keyed by installation location (including
 /// aliases). The first tuple element carries the resolved package identity.
 fn parse_bun_lock(content: &str) -> Result<Vec<(String, String)>, String> {
@@ -661,36 +600,82 @@ fn parse_pipfile_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-fn parse_gemfile_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+fn parse_gemfile_lock(content: &str, lockfile: &str) -> Result<Vec<Dependency>, String> {
+    static VERSION: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"^[0-9]+(?:\.[0-9A-Za-z]+)*$").unwrap());
+    static NAME: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"^[A-Za-z0-9_.-]+$").unwrap());
     let mut out = Vec::new();
-    let mut in_gem_section = false;
-    for line in content.lines() {
+    let mut source = None;
+    let mut in_specs = false;
+    let mut saw_specs = false;
+    for (index, line) in content.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
         if !line.starts_with(' ') && !line.starts_with('\t') {
-            // top-level section header
-            in_gem_section =
-                trimmed == "GEM" || trimmed.starts_with("GIT") || trimmed.starts_with("PATH");
+            source = match trimmed {
+                "GEM" => Some("registry"),
+                "GIT" => Some("git"),
+                "PATH" => Some("local"),
+                _ => None,
+            };
+            in_specs = false;
             continue;
         }
-        if !in_gem_section {
+        let Some(source) = source else {
+            continue;
+        };
+        if line == "  specs:" {
+            in_specs = true;
+            saw_specs = true;
             continue;
         }
-        // indented "    name (version)"
-        if let Some(open) = trimmed.find('(') {
-            if trimmed.ends_with(')') {
-                let name = trimmed[..open].trim();
-                let version = &trimmed[open + 1..trimmed.len() - 1];
-                if !name.is_empty() && !version.is_empty() {
-                    out.push((name.to_string(), version.to_string()));
-                }
-            }
+        if !in_specs {
+            continue;
         }
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if indent == 6 {
+            continue;
+        } // Nested gem requirements, never resolved versions.
+        let invalid = || format!("invalid Gemfile.lock specification on line {}", index + 1);
+        if indent != 4 {
+            return Err(invalid());
+        }
+        let (name, version) = trimmed.split_once(" (").ok_or_else(invalid)?;
+        let version = version.strip_suffix(')').ok_or_else(invalid)?;
+        let (version, platform) = version
+            .split_once('-')
+            .map_or((version, None), |(v, p)| (v, Some(p)));
+        if !NAME.is_match(name) || !VERSION.is_match(version) || platform == Some("") {
+            return Err(invalid());
+        }
+        let mut warnings = Vec::new();
+        if source != "registry" {
+            warnings.push(format!("{name} is from a {source} source; its declared gem version does not prove a RubyGems release. Registry advisory lookup is skipped; review its source code."));
+        }
+        if let Some(platform) = platform {
+            warnings.push(format!("Ruby platform variant: {platform}; the lockfile may include platforms other than the current installation."));
+        }
+        out.push(Dependency {
+            ecosystem: "RubyGems".into(),
+            name: name.into(),
+            version: version.into(),
+            lockfile: lockfile.into(),
+            license: None,
+            occurrence: crate::models::DependencyOccurrence {
+                source: Some(source.into()),
+                platform: platform.map(str::to_string),
+                local_workspace: source == "local",
+                status: "unavailable".into(),
+                warnings,
+                ..Default::default()
+            },
+        });
     }
-    if out.is_empty() {
-        return Err("no gems found in Gemfile.lock".into());
+    if !saw_specs {
+        return Err("no specification section found in Gemfile.lock".into());
     }
     Ok(out)
 }
@@ -1838,6 +1823,179 @@ example==1.0+local \
     }
 
     #[test]
+    fn ruby_inventory_ignores_nested_constraints_and_normalizes_platform_versions() {
+        assert_eq!(parse("Gemfile.lock", "GEM\n  remote: https://rubygems.org/\n  specs:\n    rack (2.2.8)\n    rack-protection (3.0.6)\n      rack (~> 2.2, >= 2.2.4)\n    nokogiri (1.16.0-x86_64-linux)\n\nPLATFORMS\n  x86_64-linux\n\nDEPENDENCIES\n  rack-protection\n"),
+            [("rack".into(), "2.2.8".into()), ("rack-protection".into(), "3.0.6".into()), ("nokogiri".into(), "1.16.0".into())]);
+    }
+
+    #[test]
+    fn ruby_inventory_rejects_malformed_specification_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("Gemfile.lock");
+        for row in ["    broken", "    broken (>= 1.0)", "    broken ()"] {
+            std::fs::write(&path, format!("GEM\n  specs:\n    rack (2.2.8)\n{row}\n")).unwrap();
+            assert!(parse_lockfile(&path, "bundler").is_err(), "{row}");
+        }
+    }
+
+    #[test]
+    fn go_inventory_applies_replacements_without_promoting_checksum_history() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("go.mod"), "module example.com/app\nrequire example.com/original v1.0.0\nreplace example.com/original => example.com/fork v1.2.0\n").unwrap();
+        std::fs::write(
+            root.path().join("go.sum"),
+            "example.com/original v0.1.0 h1:old\nexample.com/fork v1.2.0 h1:new\n",
+        )
+        .unwrap();
+        let deps = parse_lockfile(&root.path().join("go.mod"), "gomod").unwrap();
+        assert_eq!(
+            deps.iter()
+                .map(|d| (d.name.as_str(), d.version.as_str()))
+                .collect::<Vec<_>>(),
+            [("example.com/fork", "1.2.0")]
+        );
+        assert!(parse_lockfile(&root.path().join("go.sum"), "go")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn go_inventory_rejects_standalone_checksums_and_malformed_directives() {
+        let root = tempfile::tempdir().unwrap();
+        let sum = root.path().join("go.sum");
+        std::fs::write(&sum, "example.com/old v0.1.0 h1:old\n").unwrap();
+        assert!(parse_lockfile(&sum, "go").is_err());
+        let path = root.path().join("go.mod");
+        for body in [
+            "require broken",
+            "require example.com/a latest",
+            "require (\nexample.com/a v1.0.0",
+            "replace example.com/a =>",
+            "require example.com/a v1.0.0\nexclude example.com/a v1.0.0",
+        ] {
+            std::fs::write(&path, format!("module example.com/app\n{body}\n")).unwrap();
+            assert!(parse_lockfile(&path, "gomod").is_err(), "{body}");
+        }
+    }
+
+    #[test]
+    fn go_replacements_are_version_scoped_and_local_sources_are_unqueryable() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("go.mod");
+        std::fs::write(
+            &path,
+            r#"module example.com/app
+require (
+ example.com/a v1.0.0
+ example.com/b v2.0.0+incompatible
+ example.com/c v0.0.0-20260101000000-abcdefabcdef
+)
+replace (
+ example.com/a v0.9.0 => example.com/unused v8.0.0
+ example.com/a => example.com/fallback v1.1.0
+ example.com/a v1.0.0 => example.com/exact v1.2.0
+ example.com/b => `../local//with spaces`
+)
+"#,
+        )
+        .unwrap();
+        let deps = parse_lockfile(&path, "gomod").unwrap();
+        assert_eq!(deps[0].name, "example.com/exact");
+        assert_eq!(deps[0].version, "1.2.0");
+        assert!(deps[1].occurrence.local_workspace);
+        assert!(deps[1].version.is_empty());
+        assert!(!crate::deps::osv::is_queryable_dependency(&deps[1]));
+        assert_eq!(deps[2].version, "0.0.0-20260101000000-abcdefabcdef");
+        assert!(deps[1]
+            .occurrence
+            .warnings
+            .iter()
+            .any(|s| s.contains("../local//with spaces")));
+    }
+
+    #[test]
+    fn go_inventory_accepts_local_dot_paths_empty_blocks_and_go_string_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("go.mod");
+        for target in [".", "..", r#""../\x61""#, r#""../\141""#, r#""../\u0061""#] {
+            std::fs::write(&path, format!("module example.com/app\ngo 1.22\nrequire example.com/a v1.0.0\nreplace example.com/a => {target}\n")).unwrap();
+            let deps = parse_lockfile(&path, "gomod").unwrap();
+            assert!(deps[0].version.is_empty(), "{target}");
+            assert!(deps[0].occurrence.local_workspace, "{target}");
+        }
+        assert!(parse(
+            "go.mod",
+            "module example.com/app\nrequire ()\nreplace ()\nexclude ()\n"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn go_inventory_rejects_invalid_prereleases_and_language_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("go.mod");
+        for body in [
+            "require example.com/a v1.2.3-..",
+            "require example.com/a v1.2.3-01",
+            "require example.com/a v1.2.3-a..b",
+            "go garbage",
+            "go 1.22 trailing",
+        ] {
+            std::fs::write(&path, format!("module example.com/app\n{body}\n")).unwrap();
+            assert!(parse_lockfile(&path, "gomod").is_err(), "{body}");
+        }
+    }
+
+    #[test]
+    fn go_inventory_handles_metadata_and_escaped_utf8_paths_without_guessing() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("go.mod");
+        std::fs::write(
+            &path,
+            r#"module example.com/app
+go 1.26rc1
+toolchain default
+godebug panicnil=1
+tool example.com/tool/cmd
+ignore ./generated
+retract [v0.1.0, v0.2.0]
+require example.com/a v1.0.0-rc.1
+replace example.com/a=>"../\xC3\xA9\U00000061"
+"#,
+        )
+        .unwrap();
+        let deps = parse_lockfile(&path, "gomod").unwrap();
+        assert!(deps[0]
+            .occurrence
+            .warnings
+            .iter()
+            .any(|s| s.contains("../éa")));
+        for target in [
+            r#""../\q""#,
+            r#""../\777""#,
+            r#""../\uD800""#,
+            r#""../\xF""#,
+        ] {
+            std::fs::write(&path, format!("module example.com/app\nrequire example.com/a v1.0.0\nreplace example.com/a=>{target}\n")).unwrap();
+            assert!(parse_lockfile(&path, "gomod").is_err(), "{target}");
+        }
+    }
+
+    #[test]
+    fn ruby_source_and_platform_evidence_survive_without_registry_claims() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("Gemfile.lock");
+        std::fs::write(&path, "GIT\n  remote: https://example.com/project.git\n  revision: abcdef\n  specs:\n    private-gem (1.2.0)\nPATH\n  remote: ../local\n  specs:\n    local-gem (2.0.0)\nGEM\n  specs:\n    nokogiri (1.16.0-x86_64-linux)\n").unwrap();
+        let deps = parse_lockfile(&path, "bundler").unwrap();
+        assert_eq!(deps.len(), 3);
+        assert_eq!(deps[0].occurrence.source.as_deref(), Some("git"));
+        assert_eq!(deps[1].occurrence.source.as_deref(), Some("local"));
+        assert_eq!(deps[2].occurrence.platform.as_deref(), Some("x86_64-linux"));
+        assert_eq!(crate::deps::osv::queryable_dependencies(&deps).count(), 1);
+        assert!(deps[..2].iter().all(|d| !d.occurrence.warnings.is_empty()));
+    }
+
+    #[test]
     fn go_mod_yields_requires_from_lines_and_blocks() {
         let deps = parse(
             "go.mod",
@@ -1854,12 +2012,13 @@ example==1.0+local \
     }
 
     #[test]
-    fn go_mod_without_requires_is_an_error() {
+    fn go_mod_without_requires_is_a_valid_empty_inventory() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("go.mod");
         std::fs::write(&path, "module example.com/m\n").unwrap();
-        let error = parse_lockfile(&path, super::lockfile_kind("go.mod")).unwrap_err();
-        assert!(error.contains("no required modules"), "{error}");
+        assert!(parse_lockfile(&path, super::lockfile_kind("go.mod"))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

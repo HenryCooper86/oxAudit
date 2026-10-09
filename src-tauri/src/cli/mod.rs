@@ -1594,6 +1594,7 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
     };
     let result = block_on(crate::deps::service::scan(
         crate::deps::service::ScanRequest {
+            project_root: &root,
             root: &root,
             ignored_dirs: &args.ignore_dirs,
             offline: args.offline,
@@ -1632,6 +1633,9 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
                 bytes.extend_from_slice(format!("warning: {warning}\n").as_bytes());
             }
             for note in &result.summary.advisory_notes {
+                bytes.extend_from_slice(format!("warning: {note}\n").as_bytes());
+            }
+            for note in &result.summary.inventory_notes {
                 bytes.extend_from_slice(format!("warning: {note}\n").as_bytes());
             }
             bytes

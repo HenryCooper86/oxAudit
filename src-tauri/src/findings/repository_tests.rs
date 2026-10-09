@@ -382,7 +382,7 @@ fn creates_current_schema() {
             row.get(0)
         })
         .expect("query migration version");
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
 }
 
 #[test]
@@ -505,6 +505,42 @@ fn provider_snapshot_identity_is_immutable_and_idempotent() {
             .payload,
         snapshot.payload
     );
+}
+
+#[test]
+fn covering_snapshot_selection_is_provider_scoped_and_has_a_stable_cursor() {
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let key = "npm\0a\u{0}1.0.0".to_string();
+    for (id, provider_id, keys) in [
+        ("provider_a", "osv-query", serde_json::json!([key, "extra"])),
+        ("provider_b", "osv-query", serde_json::json!([key])),
+        ("provider_wrong", "other", serde_json::json!([key])),
+        ("provider_malformed", "osv-query", serde_json::json!(key)),
+    ] {
+        repo.provider_save_snapshot(&ProviderSnapshotRecord {
+            id: id.into(),
+            provider_id: provider_id.into(),
+            fetched_at_ms: 42,
+            content_sha256: "fixture".into(),
+            payload: serde_json::json!({"queryKeys": keys}),
+        })
+        .unwrap();
+    }
+    let keys = vec![key];
+    let first = repo
+        .provider_covering_snapshot("osv-query", &keys, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.id, "provider_b");
+    let next = repo
+        .provider_covering_snapshot("osv-query", &keys, Some((first.fetched_at_ms, &first.id)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.id, "provider_a");
+    assert!(repo
+        .provider_covering_snapshot("osv-query", &keys, Some((next.fetched_at_ms, &next.id)))
+        .unwrap()
+        .is_none());
 }
 
 #[test]

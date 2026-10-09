@@ -1,9 +1,11 @@
 # Dependency scanning reliability
 
-The desktop, CLI, and server dependency workflow uses `deps/service.rs` for
+The desktop, CLI, server, and research-tool dependency workflow uses `deps/service.rs` for
 inventory, provider coverage, cancellation, durable run state, and offline
 receipts. This refinement covers Bun inventory parsing and the shared OSV
 client, plus provider cancellation and source-index efficiency in that workflow.
+Research scans also persist canonical runs and immutable full-detail receipts.
+Their compact response includes the run id, advisory coverage and inventory notes.
 
 ## Inventory and package identity
 
@@ -19,6 +21,41 @@ from Bun's npm advisory queries. Their code needs source or binary analysis.
 Bun tuple shapes follow the [published format](https://bun.com/reference/bun/BunLockFile/packages),
 and JSONC handling follows the [text lockfile description](https://bun.com/blog/bun-lock-text-lockfile).
 
+Canonical npm relationships resolve every chain step by lockfile, ecosystem,
+package identity and installation path. Multiple versions and identical paths
+in different workspaces therefore link to their own evidenced components.
+Missing or conflicting installation evidence produces no guessed edge.
+
+Bundler inventories contain only four-space specification rows inside source
+`specs:` sections. Nested dependency constraints are excluded. Ruby platform
+suffixes are retained in occurrence evidence and separated from the registry
+version. Git and local gems keep their declared version and source kind, but
+receive no registry advisory or license lookup and no registry purl. They remain
+distinct from registry components with the same name and version. These source
+and platform limits are visible in the scan's inventory notes, including empty
+advisory results. See the official [Bundler lockfile explanation](https://guides.rubygems.org/using_bundler_in_applications/#gemfilelock).
+
+Go inventory comes from `go.mod` requirements, with version-specific and global
+replacements applied. Remote replacements use the replacement module coordinates;
+local replacements retain an unversioned source component and a warning. A
+required version excluded by the manifest fails parsing because static scanning
+cannot establish its replacement selection. Valid dependency-free manifests
+produce an empty inventory. Malformed requirements, replacements, checksum rows
+and unterminated blocks fail instead of silently dropping packages.
+
+`go.sum` validates checksum row shape but contributes no installed components.
+It requires a discovered sibling `go.mod`; standalone checksum history fails
+with a coverage error. Go permits unused historical versions in
+[checksum files](https://go.dev/ref/mod#go-sum-files), and a replacement may use
+different module contents ([replace directives](https://go.dev/ref/mod#go-mod-file-replace)).
+Static requirements are not a resolved transitive or workspace build list.
+Every Go scan reports this limitation in `inventoryNotes`; complete advisory
+coverage describes the queried declarations only. No package manager or project
+dependency code is executed to infer a build list.
+CLI text reports print these inventory notes as well. Dependency baselines
+accept explicitly local, unversioned Go replacements while still rejecting
+registry dependencies whose versions are missing.
+
 ## Complete, bounded advisory queries
 
 Both version-specific queries and package searches follow OSV pagination,
@@ -32,6 +69,15 @@ count. Repeated tokens, failed later requests, truncated bodies, and exceeded
 limits return errors instead of partial results. The shared workflow writes a
 complete offline receipt only after page traversal and full-detail resolution
 have succeeded. Existing receipt integrity and package-membership checks apply.
+
+Offline selection searches receipts that cover every requested package and
+version, newest first. Unrelated receipts are filtered in SQLite, with an index
+on provider and freshness; one candidate payload is loaded at a time. Every
+selected receipt passes content-hash, schema, count, membership and package
+identity checks. Invalid covering candidates are discarded with a visible note
+when an older valid receipt succeeds. The selected receipt's original timestamp
+and identity are retained. Missing complete coverage fails, and validation stops
+after 64 invalid covering candidates with an explicit resource-limit error.
 
 Limits are 32 MiB of decompressed JSON per response, 64 pages per package query,
 4 KiB per pagination token, 10,000 unique advisories per package, and 100,000

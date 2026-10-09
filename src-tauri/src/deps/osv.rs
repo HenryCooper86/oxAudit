@@ -13,6 +13,10 @@ const MAX_BATCH_MATCHES: usize = 100_000;
 /// is never recorded as queried unless it was eligible for the request.
 pub fn is_queryable_dependency(dependency: &Dependency) -> bool {
     dependency.ecosystem != "unknown"
+        && !matches!(
+            dependency.occurrence.source.as_deref(),
+            Some("git" | "local")
+        )
         && !dependency.name.trim().is_empty()
         && !dependency.version.trim().is_empty()
 }

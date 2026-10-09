@@ -762,6 +762,8 @@ export interface DependencyPath {
   chain: DependencyStep[];
 }
 export interface DependencyOccurrence {
+  source?: string;
+  platform?: string;
   localWorkspace?: boolean;
   installPath: string | null;
   status: string;
@@ -829,6 +831,7 @@ export interface Vulnerability {
 }
 
 export interface DepScanSummary {
+  inventoryNotes?: string[];
   runId?: string | null;
   advisoryFetchedAtMs?: number | null;
   advisorySource?: string;
@@ -845,7 +848,7 @@ export interface DepScanSummary {
   packagesQueried: number;
   /** Older saved runs did not record whether every package had advisory coverage. */
   advisoryCoverage?: "complete" | "unknown";
-  /** Present when a local advisory database answered: honest limits hit while matching (undetermined comparisons, skipped GIT ranges). */
+  /** Local matching limits or invalid offline receipts discarded before selecting valid evidence. */
   advisoryNotes?: string[];
   vulnerabilitiesFound: number;
   durationMs: number;

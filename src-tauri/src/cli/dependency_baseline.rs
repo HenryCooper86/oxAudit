@@ -80,6 +80,9 @@ pub fn load(path: &Path) -> Result<Baseline, String> {
     }
     let mut inventory = BTreeSet::new();
     for dependency in report.dependencies {
+        let local_go = dependency.ecosystem == "Go"
+            && dependency.occurrence.local_workspace
+            && dependency.occurrence.source.as_deref() == Some("local");
         if [
             &dependency.ecosystem,
             &dependency.name,
@@ -88,6 +91,7 @@ pub fn load(path: &Path) -> Result<Baseline, String> {
         .iter()
         .any(|s| s.trim().is_empty())
             || (dependency.version.trim().is_empty()
+                && !local_go
                 && !(dependency.ecosystem == "npm"
                     && dependency.occurrence.local_workspace
                     && dependency
@@ -191,6 +195,23 @@ mod tests {
             let value = serde_json::json!({"schemaVersion":1,"kind":"dependencies","summary":{"advisoryCoverage":"complete","packagesFound":1,"packagesQueried":0,"vulnerabilitiesFound":0},"dependencies":deps,"vulnerabilities":[]});
             assert!(read(&value).is_ok());
         }
+    }
+
+    #[test]
+    fn local_go_replacement_baselines_round_trip_without_inventing_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let lockfile = root.path().join("go.mod");
+        std::fs::write(
+            &lockfile,
+            "module example.com/app\nrequire example.com/a v1.0.0\nreplace example.com/a => .\n",
+        )
+        .unwrap();
+        let deps = crate::deps::lockfiles::parse_lockfile(&lockfile, "gomod").unwrap();
+        let mut value = serde_json::json!({"schemaVersion":1,"kind":"dependencies",
+          "summary":{"advisoryCoverage":"complete","packagesFound":1,"packagesQueried":0,"vulnerabilitiesFound":0},"dependencies":deps,"vulnerabilities":[]});
+        assert!(read(&value).is_ok());
+        value["dependencies"][0]["occurrence"]["source"] = "registry".into();
+        assert!(read(&value).is_err());
     }
     #[test]
     fn complete_dependency_baseline_is_accepted() {

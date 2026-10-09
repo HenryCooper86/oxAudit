@@ -232,6 +232,7 @@ pub fn parse_packages(root: &Value) -> Result<Vec<Dependency>, String> {
                 status: "unresolved".into(),
                 paths: Vec::new(),
                 warnings: Vec::new(),
+                ..Default::default()
             },
         });
     }

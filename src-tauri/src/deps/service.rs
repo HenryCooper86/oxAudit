@@ -120,6 +120,8 @@ impl DependencyProviders for NetworkProviders<'_> {
 }
 
 pub struct ScanRequest<'a> {
+    /// Authorization boundary for discovery, including an approved subdirectory scan.
+    pub project_root: &'a Path,
     pub root: &'a Path,
     pub ignored_dirs: &'a [String],
     pub offline: bool,
@@ -256,6 +258,57 @@ fn load_complete_osv_receipt(
         .collect())
 }
 
+struct CachedReceipt {
+    snapshot: crate::findings::repository::ProviderSnapshotRecord,
+    results: AdvisoryResults,
+    notes: Vec<String>,
+}
+
+fn load_cached_receipt(
+    repository: &FindingsRepository,
+    query_keys: &[String],
+    cancel: &AtomicBool,
+) -> Result<CachedReceipt, String> {
+    const MAX_CANDIDATES: usize = 64;
+    let mut before: Option<(u64, String)> = None;
+    let mut first_error = None;
+    for discarded in 0..MAX_CANDIDATES {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("dependency scan cancelled".into());
+        }
+        let snapshot = repository
+            .provider_covering_snapshot(
+                "osv-query",
+                query_keys,
+                before.as_ref().map(|(time, id)| (*time, id.as_str())),
+            )
+            .map_err(|error| error.to_string())?;
+        let Some(snapshot) = snapshot else {
+            return Err(first_error.unwrap_or_else(|| "incomplete advisory coverage: no cached OSV query snapshot covers every selected package".into()));
+        };
+        let validated = validate_snapshot_hash(&snapshot)
+            .and_then(|()| load_complete_osv_receipt(&snapshot.payload, query_keys));
+        match validated {
+            Ok(results) => {
+                return Ok(CachedReceipt {
+                    snapshot,
+                    results,
+                    notes: if discarded == 0 {
+                        Vec::new()
+                    } else {
+                        vec![format!("Offline cache discarded {discarded} invalid covering receipt(s); the selected older receipt passed integrity and complete-coverage checks.")]
+                    },
+                })
+            }
+            Err(error) => {
+                first_error.get_or_insert(error);
+                before = Some((snapshot.fetched_at_ms, snapshot.id));
+            }
+        }
+    }
+    Err(format!("resource limit: offline cache validation exceeded {MAX_CANDIDATES} invalid covering receipts; refresh online"))
+}
+
 pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, String> {
     let started = Instant::now();
     let path = request.root.to_string_lossy().into_owned();
@@ -265,6 +318,13 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
     }
 
     let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+    let canonical_project = request
+        .project_root
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !canonical_root.starts_with(&canonical_project) {
+        return Err("dependency scan path is outside the authorized project".into());
+    }
     let canonical_repository =
         crate::adapters::persistence::CanonicalSqliteRepository::new(request.repository);
     let canonical_events = crate::presentation::CanonicalRunEvents::new(request.events);
@@ -287,7 +347,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
             .map_err(|error| error.to_string())?;
         let lockfiles = fs_utils::discover_lockfiles_bounded(
-            root,
+            request.project_root,
             root,
             request.ignored_dirs,
             crate::deps::lockfiles::MAX_LOCKFILES,
@@ -317,6 +377,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             .map_err(|error| error.to_string())?;
 
         let mut all_deps = Vec::new();
+        let mut inventory_notes = std::collections::BTreeSet::new();
         let mut lockfile_infos = Vec::new();
         let mut parse_errors: Vec<String> = Vec::new();
 
@@ -332,8 +393,22 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         }
         let name = lf.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let kind = crate::deps::lockfiles::lockfile_kind(name);
+        if name == "go.sum" && !lockfiles.contains(&lf.with_file_name("go.mod")) {
+            parse_errors.push(format!("{}: go.sum requires a discovered sibling go.mod; checksums cannot establish an installed inventory", lf.display()));
+            continue;
+        }
+        if name == "go.mod" {
+            inventory_notes.insert(format!("{}: {}", lf.display(), crate::deps::go_inventory::SCOPE_NOTE));
+        }
         match crate::deps::lockfiles::parse_lockfile(lf, kind) {
             Ok(deps) => {
+                for dep in &deps {
+                    for warning in &dep.occurrence.warnings {
+                        if dep.ecosystem == "RubyGems" || dep.occurrence.source.as_deref() == Some("local") {
+                            inventory_notes.insert(format!("{}: {warning}", lf.display()));
+                        }
+                    }
+                }
                 lockfile_infos.push(LockfileInfo {
                     path: lf.to_string_lossy().replace('\\', "/"),
                     kind: kind.into(),
@@ -362,7 +437,9 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         }
         crate::deps::ensure_complete_lockfile_coverage(&parse_errors)?;
         let mut deps = all_deps;
-        let query_deps = crate::deps::lockfiles::dedupe_dependencies(deps.clone());
+        let query_deps = crate::deps::lockfiles::dedupe_dependencies(
+            crate::deps::osv::queryable_dependencies(&deps).cloned().collect()
+        );
         let packages_queried = crate::deps::osv::queryable_dependencies(&query_deps).count();
         // License enrichment: online-only, best-effort, bounded. A
         // lockfile-declared license (npm) is already present and is never
@@ -450,18 +527,10 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         } else if request.offline {
             advisory_source = "cache";
             let _ = request.events.emit("deps://progress", serde_json::json!({ "phase": "loading-cache", "done": 0, "total": 1 }));
-            match request.repository
-                .provider_latest_snapshot("osv-query")
-                .map_err(|error| error.to_string())?
-            {
-                Some(snapshot) => {
-                    validate_snapshot_hash(&snapshot)?;
-                    advisory_fetched_at_ms = Some(snapshot.fetched_at_ms);
-                    let results = load_complete_osv_receipt(&snapshot.payload, &query_keys)?;
-                    (results, Some(snapshot.id))
-                }
-                None => return Err("incomplete advisory coverage: no cached OSV query snapshot is available".into()),
-            }
+            let receipt = load_cached_receipt(request.repository, &query_keys, request.cancel)?;
+            advisory_fetched_at_ms = Some(receipt.snapshot.fetched_at_ms);
+            advisory_notes = receipt.notes;
+            (receipt.results, Some(receipt.snapshot.id))
         } else {
             let _ = request.events.emit("deps://progress", serde_json::json!({ "phase": "querying-osv", "done": 0, "total": 1 }));
             let results = await_provider(request.cancel, request.providers.query_full(&query_deps)).await?
@@ -506,6 +575,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
 
         let mut vulnerabilities = Vec::new();
         for dep in &deps {
+        if !crate::deps::osv::is_queryable_dependency(dep) { continue; }
         let key = crate::deps::osv::dependency_query_key(dep);
         if let Some(vulns) = vuln_map.get(&key) {
             for mut v in vulns.clone() {
@@ -606,6 +676,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
 
         let result = DependencyScanResult {
         summary: crate::models::DepScanSummary {
+            inventory_notes: inventory_notes.into_iter().collect(),
             path: path.clone(),
             run_id: Some(run_id.to_string()),
             advisory_fetched_at_ms,

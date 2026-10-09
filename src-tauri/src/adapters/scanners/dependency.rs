@@ -10,14 +10,6 @@ use sha2::{Digest, Sha256};
 
 use crate::models::{Dependency, Vulnerability};
 
-fn from_version(dependencies: &[Dependency], ecosystem: &str, name: &str) -> String {
-    dependencies
-        .iter()
-        .find(|dep| dep.ecosystem == ecosystem && dep.name == name)
-        .map(|dep| dep.version.clone())
-        .unwrap_or_default()
-}
-
 pub fn dependency_graph(
     run_id: &RunId,
     dependencies: &[Dependency],
@@ -27,6 +19,7 @@ pub fn dependency_graph(
 ) -> Result<(Vec<Component>, Vec<ObservationRecord>), String> {
     let mut components: BTreeMap<ComponentId, Component> = BTreeMap::new();
     let mut component_ids = BTreeMap::new();
+    let mut installation_ids = BTreeMap::new();
     let mut observations = Vec::new();
     for dependency in dependencies {
         let artifact = artifacts
@@ -37,15 +30,34 @@ pub fn dependency_graph(
             &dependency.ecosystem,
             &dependency.name,
             &dependency.version,
+            dependency,
         )?;
-        component_ids.insert(
-            (
+        if crate::deps::osv::is_queryable_dependency(dependency) {
+            component_ids.insert(
+                (
+                    dependency.ecosystem.clone(),
+                    dependency.name.clone(),
+                    dependency.version.clone(),
+                ),
+                component_id.clone(),
+            );
+        }
+        if let Some(install_path) = &dependency.occurrence.install_path {
+            let key = (
+                normalize_path(&dependency.lockfile),
                 dependency.ecosystem.clone(),
                 dependency.name.clone(),
-                dependency.version.clone(),
-            ),
-            component_id.clone(),
-        );
+                normalize_path(install_path),
+            );
+            installation_ids
+                .entry(key)
+                .and_modify(|existing: &mut Option<ComponentId>| {
+                    if existing.as_ref() != Some(&component_id) {
+                        *existing = None; // Conflicting installation evidence cannot prove an edge.
+                    }
+                })
+                .or_insert_with(|| Some(component_id.clone()));
+        }
         let component = Component {
             depends_on: Vec::new(),
             license: dependency.license.clone(),
@@ -54,7 +66,7 @@ pub fn dependency_graph(
             version: (!dependency.version.is_empty()).then(|| dependency.version.clone()),
             supplier: None,
             ecosystem: Some(dependency.ecosystem.clone()),
-            purl: (!dependency.version.is_empty()).then(|| {
+            purl: crate::deps::osv::is_queryable_dependency(dependency).then(|| {
                 format!(
                     "pkg/{}/{}@{}",
                     dependency.ecosystem.to_ascii_lowercase(),
@@ -118,17 +130,19 @@ pub fn dependency_graph(
             for path in &dependency.occurrence.paths {
                 for pair in path.chain.windows(2) {
                     let (from, to) = (&pair[0], &pair[1]);
-                    let from_id = component_ids.get(&(
+                    let from_id = installation_ids.get(&(
+                        normalize_path(&dependency.lockfile),
                         dependency.ecosystem.clone(),
                         from.package_name.clone(),
-                        from_version(dependencies, &dependency.ecosystem, &from.package_name),
+                        normalize_path(&from.install_path),
                     ));
-                    let to_id = component_ids.get(&(
+                    let to_id = installation_ids.get(&(
+                        normalize_path(&dependency.lockfile),
                         dependency.ecosystem.clone(),
                         to.package_name.clone(),
-                        from_version(dependencies, &dependency.ecosystem, &to.package_name),
+                        normalize_path(&to.install_path),
                     ));
-                    let (Some(from_id), Some(to_id)) = (from_id, to_id) else {
+                    let (Some(Some(from_id)), Some(Some(to_id))) = (from_id, to_id) else {
                         continue;
                     };
                     let to_ref = to_id.as_str().to_string();
@@ -226,10 +240,24 @@ fn component_id(
     ecosystem: &str,
     name: &str,
     version: &str,
+    dependency: &Dependency,
 ) -> Result<ComponentId, String> {
+    let mut identity = format!("{}\0{}\0{}\0{}", run_id, ecosystem, name, version);
+    if matches!(
+        dependency.occurrence.source.as_deref(),
+        Some("git" | "local")
+    ) {
+        // A declared non-registry version does not identify a registry release,
+        // or prove equal source code across different lockfiles.
+        identity.push_str(&format!(
+            "\0{}\0{}",
+            dependency.occurrence.source.as_deref().unwrap(),
+            normalize_path(&dependency.lockfile)
+        ));
+    }
     ComponentId::parse(format!(
         "component_{:x}",
-        Sha256::digest(format!("{}\0{}\0{}\0{}", run_id, ecosystem, name, version).as_bytes())
+        Sha256::digest(identity.as_bytes())
     ))
     .map_err(|error| error.to_string())
 }
@@ -266,6 +294,7 @@ mod tests {
                     chain,
                 }],
                 warnings: Vec::new(),
+                ..Default::default()
             },
             ecosystem: "npm".into(),
             name: name.into(),

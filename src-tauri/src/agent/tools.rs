@@ -15,11 +15,14 @@ use super::tool::{
 };
 use crate::ai::AiStreamEvent;
 use crate::fs_utils;
-use crate::models::Vulnerability;
 use rayon::prelude::*;
 use tauri::Manager;
 
 const MAX_ASSISTANT_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+#[cfg(test)]
+#[path = "dependency_tool_tests.rs"]
+mod dependency_tool_tests;
 
 #[cfg(test)]
 fn collect_agent_files(
@@ -74,6 +77,7 @@ fn source_identity(path: &std::path::Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+#[cfg(test)]
 fn collect_agent_lockfiles(
     project_root: &std::path::Path,
     root: &std::path::Path,
@@ -88,6 +92,47 @@ fn collect_agent_lockfiles(
         cancel,
     )
     .map_err(|error| error.to_string())
+}
+
+struct DependencyToolEvents;
+impl crate::findings::service::ScanEventSink for DependencyToolEvents {
+    fn emit(&self, _: &str, _: Value) -> Result<(), crate::findings::error::CommandError> {
+        Ok(())
+    }
+}
+
+async fn scan_agent_dependencies(
+    request: crate::deps::service::ScanRequest<'_>,
+) -> Result<Value, String> {
+    let mut result = crate::deps::service::scan(request).await?;
+    result.vulnerabilities.sort_by(|a, b| {
+        b.cvss_score
+            .unwrap_or(0.0)
+            .total_cmp(&a.cvss_score.unwrap_or(0.0))
+    });
+    let top: Vec<Value> = result
+        .vulnerabilities
+        .iter()
+        .take(20)
+        .map(|v| {
+            json!({
+                "id":v.id, "package":v.package_name, "installed":v.installed_version,
+                "severity":v.severity, "cvss":v.cvss_score, "fixed":v.fixed_versions,
+                "summary":truncate(&v.summary, 160),
+            })
+        })
+        .collect();
+    Ok(
+        json!({"scan_type":"dependencies", "run_id":result.summary.run_id,
+        "lockfiles":result.summary.lockfiles_found.len(), "packages_queried":result.summary.packages_queried,
+        "parse_errors":[], "vulnerabilities_found":result.summary.vulnerabilities_found,
+        "advisory_coverage":result.summary.advisory_coverage,
+        "advisory_source":result.summary.advisory_source,
+        "advisory_fetched_at_ms":result.summary.advisory_fetched_at_ms,
+        "inventory_notes":result.summary.inventory_notes, "advisory_notes":result.summary.advisory_notes,
+        "enrichment":result.summary.enrichment,
+        "top_vulnerabilities":top, "duration_ms":result.summary.duration_ms}),
+    )
 }
 
 struct GrepQuery<'a> {
@@ -548,80 +593,21 @@ pub fn builtins() -> Vec<Tool> {
                     Some(p) => resolve_collection_root(&proj, &p)?,
                     None => proj.clone(),
                 };
-                let started = Instant::now();
                 let st = ctx.state().ok_or("app state unavailable")?;
-                let scan_settings = st.settings.lock().unwrap().scan.clone();
-                let cancellation = ctx.cancellation.as_ref().map(|value| value.flag());
-                let lockfiles = collect_agent_lockfiles(
-                    &proj,
-                    &root,
-                    &scan_settings,
-                    cancellation.as_deref(),
-                )?;
-                let mut deps = Vec::new();
-                let mut parse_errors = Vec::new();
-                for lockfile in &lockfiles {
-                    if cancellation
-                        .as_ref()
-                        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
-                    {
-                        return Err("dependency scan cancelled".into());
-                    }
-                    let name = lockfile.file_name().and_then(|value| value.to_str()).unwrap_or("");
-                    let kind = crate::deps::lockfiles::lockfile_kind(name);
-                    match crate::deps::lockfiles::parse_lockfile(lockfile, kind) {
-                        Ok(parsed) => crate::deps::lockfiles::extend_dependencies_bounded(
-                            &mut deps,
-                            parsed,
-                            crate::deps::lockfiles::MAX_DEPENDENCIES,
-                        )?,
-                        Err(error)
-                            if crate::deps::lockfiles::is_resource_limit_error(&error) =>
-                        {
-                            return Err(format!("{}: {error}", lockfile.display()));
-                        }
-                        Err(error) => parse_errors.push(format!("{}: {error}", lockfile.display())),
-                    }
-                }
-                let deps = crate::deps::lockfiles::dedupe_dependencies(deps);
-                let state = ctx.state().ok_or("app state unavailable")?;
-                let vuln_map = state.osv.query_batch(&deps).await?;
-                let mut vulns: Vec<Vulnerability> = Vec::new();
-                for dep in &deps {
-                    let key = format!("{}\u{0}{}\u{0}{}", dep.ecosystem, dep.name, dep.version);
-                    if let Some(matches) = vuln_map.get(&key) {
-                        vulns.extend(matches.clone());
-                    }
-                }
-                vulns.sort_by(|left, right| {
-                    right
-                        .cvss_score
-                        .unwrap_or(0.0)
-                        .partial_cmp(&left.cvss_score.unwrap_or(0.0))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                let top: Vec<Value> = vulns
-                    .iter()
-                    .take(20)
-                    .map(|vulnerability| json!({
-                        "id": vulnerability.id,
-                        "package": vulnerability.package_name,
-                        "installed": vulnerability.installed_version,
-                        "severity": vulnerability.severity,
-                        "cvss": vulnerability.cvss_score,
-                        "fixed": vulnerability.fixed_versions,
-                        "summary": truncate(&vulnerability.summary, 160),
-                    }))
-                    .collect();
-                Ok(json!({
-                    "scan_type": "dependencies",
-                    "lockfiles": lockfiles.len(),
-                    "packages_queried": deps.len(),
-                    "parse_errors": parse_errors,
-                    "vulnerabilities_found": vulns.len(),
-                    "top_vulnerabilities": top,
-                    "duration_ms": started.elapsed().as_millis() as u64,
-                }))
+                let settings = st.settings.lock().unwrap().scan.clone();
+                let cancellation = ctx.cancellation.as_ref().map(|value| value.flag())
+                    .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+                let findings = ctx.app.try_state::<crate::findings::service::FindingsState>()
+                    .ok_or("findings storage unavailable")?;
+                let service = findings.service().map_err(|error| error.to_string())?;
+                let cache_path = ctx.app.path().app_data_dir().map_err(|error| error.to_string())?;
+                let providers = crate::deps::service::NetworkProviders { osv: &st.osv, http: &st.http };
+                scan_agent_dependencies(crate::deps::service::ScanRequest {
+                    project_root: &proj,
+                    root: &root, ignored_dirs: &settings.ignored_dirs, offline: false,
+                    advisory_db: None, repository: service.repository(), providers: &providers,
+                    cancel: &cancellation, events: &DependencyToolEvents, cache_path: &cache_path,
+                }).await
             }
         ),
         // ------------------------------------------------------------ search_cve

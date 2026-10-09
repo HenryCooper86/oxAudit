@@ -4,6 +4,10 @@ import { UpgradeDecisions } from './UpgradeDecisions';
 import type { DependencyScanResult, Vulnerability } from '../../lib/types';
 const advisory: Vulnerability={id:'GHSA-one',ecosystem:'npm',packageName:'leaf',installedVersion:'1.0.0',lockfile:'/repo/package-lock.json',summary:'original advisory',details:'complete detail',aliases:[],severity:'high',cvssScore:8,epss:null,epssPercentile:null,knownExploited:false,ransomware:false,publicExploit:false,directUsage:{referenced:null,referencedFiles:0,exampleFile:null},fixedVersions:['1.0.1'],affectedRange:null,references:[],published:null,modified:null};
 const result:DependencyScanResult={summary:{path:'/repo',lockfilesFound:['/repo/package-lock.json'],packagesFound:1,packagesQueried:1,vulnerabilitiesFound:1,durationMs:0},dependencies:[],vulnerabilities:[advisory]};
+test('static inventory limits remain visible when the advisory list is empty',()=>{
+  render(<UpgradeDecisions result={{...result,vulnerabilities:[],summary:{...result.summary,inventoryNotes:['Go static files do not establish the selected build list.']}}} onSelect={()=>{}} onRecheck={()=>{}} disabled={false}/>);
+  expect(screen.getByText('Go static files do not establish the selected build list.')).toBeInTheDocument();
+});
 test('historical evidence is explicitly unknown, original advisories remain selectable, and recheck is accessible',()=>{
   let selected: Vulnerability|null=null;let rechecked=false;
   render(<UpgradeDecisions result={result} onSelect={v=>{selected=v;}} onRecheck={()=>{rechecked=true;}} disabled={false}/>);

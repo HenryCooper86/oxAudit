@@ -209,7 +209,7 @@ pub async fn fetch_with_base_overrides(
     let mut wanted: Vec<(String, String, String)> = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for dependency in deps.iter() {
-        if dependency.license.is_some() {
+        if dependency.license.is_some() || !crate::deps::osv::is_queryable_dependency(dependency) {
             continue;
         }
         if registry_url(
@@ -233,13 +233,14 @@ pub async fn fetch_with_base_overrides(
     for dependency in deps.iter() {
         if dependency.license.is_some() {
             summary.already_known += 1;
-        } else if registry_url(
-            &dependency.ecosystem,
-            &dependency.name,
-            &dependency.version,
-            "",
-        )
-        .is_none()
+        } else if !crate::deps::osv::is_queryable_dependency(dependency)
+            || registry_url(
+                &dependency.ecosystem,
+                &dependency.name,
+                &dependency.version,
+                "",
+            )
+            .is_none()
         {
             summary.skipped_no_source += 1;
         }
@@ -306,7 +307,7 @@ pub async fn fetch_with_base_overrides(
     // placeholder above documents that the exact-version preference is
     // applied inside parse for the p2 shape we control.
     for dependency in deps.iter_mut() {
-        if dependency.license.is_some() {
+        if dependency.license.is_some() || !crate::deps::osv::is_queryable_dependency(dependency) {
             continue;
         }
         if let Some(Some(license)) =
@@ -421,6 +422,32 @@ mod tests {
             registry_url("Maven", "org.apache.commons:commons-lang3", "3.14.0", MAVEN_BASE).as_deref(),
             Some("https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.pom")
         );
+    }
+
+    #[tokio::test]
+    async fn non_registry_sources_neither_query_nor_inherit_registry_licenses() {
+        let mut git = dependency("RubyGems", "example", "1.0.0");
+        git.occurrence.source = Some("git".into());
+        let mut local = git.clone();
+        local.occurrence.source = Some("local".into());
+        let mut deps = vec![git, local];
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let summary = fetch_with_base_overrides(
+            &mut deps,
+            &client,
+            &HashMap::from([("RubyGems".into(), "http://127.0.0.1:9".into())]),
+        )
+        .await;
+        assert_eq!(
+            summary.failed, 0,
+            "non-registry sources must never contact a registry"
+        );
+        assert_eq!(summary.skipped_no_source, 2);
+        assert!(deps.iter().all(|dep| dep.license.is_none()));
     }
 
     #[tokio::test]

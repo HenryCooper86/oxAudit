@@ -29,6 +29,7 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
         <button type="button" className={control} disabled={disabled} onClick={onRecheck}>Recheck dependencies</button>
       </div>
       <p>Advisory source: {result.summary.advisorySource ?? 'unknown'} · checked {timestamp(result.summary.advisoryFetchedAtMs)} · coverage {result.summary.advisoryCoverage ?? 'unknown'}.</p>
+      {result.summary.inventoryNotes?.map((note,index)=><p className="text-warning" key={`inventory-note-${index}:${note}`}>{note}</p>)}
       {result.summary.advisorySource==='cache' ? <p className="text-warning">Cached advisory evidence has not been refreshed for this check; newer advisories or fixes may exist.</p> : null}
       {result.summary.advisorySource==='local-db' ? <p className="text-warning">Advisory evidence comes from the local database built {timestamp(result.summary.advisoryFetchedAtMs)}; refresh it from the Advisory Database page for newer advisories.</p> : null}
       {result.summary.advisoryNotes?.map((note,index)=><p className="text-warning" key={`advisory-note-${index}:${note}`}>{note}</p>)}

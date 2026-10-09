@@ -184,6 +184,162 @@ fn project(root: &Path) {
 }
 
 #[tokio::test]
+async fn dependency_edges_resolve_installations_within_their_own_lockfile() {
+    use crate::adapters::reporting::{generate, ReportData, ReportFormat};
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("package-lock.json"),
+        r#"{
+      "lockfileVersion":3,"packages":{
+        "":{"dependencies":{"a":"1.0.0","b":"1.0.0"}},
+        "node_modules/a":{"version":"1.0.0","dependencies":{"shared":"1.0.0"}},
+        "node_modules/b":{"version":"1.0.0","dependencies":{"shared":"2.0.0"}},
+        "node_modules/b/node_modules/shared":{"version":"2.0.0"},
+        "node_modules/shared":{"version":"1.0.0"}
+      }}"#,
+    )
+    .unwrap();
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("package-lock.json"),
+        r#"{
+      "lockfileVersion":3,"packages":{
+        "":{"dependencies":{"a":"9.0.0"}},
+        "node_modules/a":{"version":"9.0.0","dependencies":{"shared":"3.0.0"}},
+        "node_modules/shared":{"version":"3.0.0"}
+      }}"#,
+    )
+    .unwrap();
+    let repository = FindingsRepository::open(directory.path().join("data/runs.sqlite")).unwrap();
+    let provider = Provider {
+        expected_queries: 6,
+        ..provider()
+    };
+    let result = execute(
+        directory.path(),
+        &repository,
+        &provider,
+        false,
+        &AtomicBool::new(false),
+        &events(),
+    )
+    .await
+    .unwrap();
+    let run_id = oxaudit_domain::RunId::parse(result.summary.run_id.unwrap()).unwrap();
+    let (artifacts, components, observations) =
+        repository.canonical_load_report_graph(&run_id).unwrap();
+    for (name, version, target_version) in [
+        ("a", "1.0.0", "1.0.0"),
+        ("b", "1.0.0", "2.0.0"),
+        ("a", "9.0.0", "3.0.0"),
+    ] {
+        let from = components
+            .iter()
+            .find(|c| c.name == name && c.version.as_deref() == Some(version))
+            .unwrap();
+        let target = components
+            .iter()
+            .find(|c| c.name == "shared" && c.version.as_deref() == Some(target_version))
+            .unwrap();
+        assert_eq!(from.depends_on, [target.id.to_string()], "{name}@{version}");
+    }
+    let data = ReportData {
+        run: repository.canonical_load_run(&run_id).unwrap().unwrap(),
+        artifacts,
+        components,
+        observations,
+        findings: vec![],
+        projection: repository.canonical_load_projection(&run_id).unwrap(),
+    };
+    let bom: serde_json::Value =
+        serde_json::from_slice(&generate(&data, ReportFormat::CycloneDx).unwrap().bytes).unwrap();
+    let exported = bom["dependencies"].as_array().unwrap();
+    for component in data.components.iter().filter(|c| !c.depends_on.is_empty()) {
+        let edge = exported
+            .iter()
+            .find(|edge| edge["ref"] == component.id.as_str())
+            .unwrap();
+        assert_eq!(edge["dependsOn"], serde_json::json!(component.depends_on));
+    }
+}
+
+#[tokio::test]
+async fn go_scan_excludes_history_and_persists_static_inventory_limits() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("go.mod"), "module example.com/app\nrequire example.com/original v1.0.0\nreplace example.com/original => example.com/fork v1.2.0\n").unwrap();
+    std::fs::write(
+        directory.path().join("go.sum"),
+        "example.com/original v0.1.0 h1:old\nexample.com/fork v1.2.0 h1:new\n",
+    )
+    .unwrap();
+    let repository = FindingsRepository::open(directory.path().join("data/runs.sqlite")).unwrap();
+    let result = execute(
+        directory.path(),
+        &repository,
+        &provider(),
+        false,
+        &AtomicBool::new(false),
+        &events(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.summary.packages_found, 1);
+    assert_eq!(result.summary.packages_queried, 1);
+    assert!(result
+        .summary
+        .inventory_notes
+        .iter()
+        .any(|s| s.contains("selected transitive/workspace build list")));
+    let run = oxaudit_domain::RunId::parse(result.summary.run_id.unwrap()).unwrap();
+    let (_, components, _) = repository.canonical_load_report_graph(&run).unwrap();
+    assert_eq!(components.len(), 1);
+    assert_eq!(components[0].name, "example.com/fork");
+    assert_eq!(components[0].version.as_deref(), Some("1.2.0"));
+    assert!(repository
+        .canonical_load_projection(&run)
+        .unwrap()
+        .unwrap()
+        .to_string()
+        .contains("checksum"));
+}
+
+#[tokio::test]
+async fn non_registry_gems_do_not_shadow_or_receive_registry_advisories() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("Gemfile.lock"),
+        "GIT\n  specs:\n    example (1.0.0)\nGEM\n  specs:\n    example (1.0.0)\n",
+    )
+    .unwrap();
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let result = execute(
+        directory.path(),
+        &repo,
+        &provider(),
+        false,
+        &AtomicBool::new(false),
+        &events(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.summary.packages_queried, 1);
+    assert_eq!(result.vulnerabilities.len(), 1);
+    assert_eq!(
+        result.vulnerabilities[0].occurrence.source.as_deref(),
+        Some("registry")
+    );
+    let run = oxaudit_domain::RunId::parse(result.summary.run_id.unwrap()).unwrap();
+    let (_, components, _) = repo.canonical_load_report_graph(&run).unwrap();
+    assert_eq!(
+        components.len(),
+        2,
+        "git and registry origins are distinct components"
+    );
+    assert_eq!(components.iter().filter(|c| c.purl.is_some()).count(), 1);
+}
+
+#[tokio::test]
 async fn cancellation_interrupts_pending_license_advisory_and_enrichment_providers() {
     struct PendingProvider<'a> {
         stage: &'static str,
@@ -283,6 +439,7 @@ async fn execute(
     events: &Events,
 ) -> Result<DependencyScanResult, String> {
     scan(ScanRequest {
+        project_root: root,
         root,
         repository: repo,
         providers: provider,
@@ -632,6 +789,177 @@ async fn offline_detects_tampered_receipt_hash() {
     .unwrap_err()
     .contains("integrity"));
 }
+
+fn save_receipt(
+    repository: &FindingsRepository,
+    id: &str,
+    fetched: u64,
+    keys: Vec<String>,
+    corrupt: Option<&str>,
+) {
+    use sha2::Digest;
+    let mut payload = complete_osv_receipt_payload(keys, &AdvisoryResults::new()).unwrap();
+    if corrupt == Some("schema") {
+        payload["schemaVersion"] = 1.into();
+    }
+    if corrupt == Some("count") {
+        payload["recordCount"] = 99.into();
+    }
+    let hash = if corrupt == Some("hash") {
+        "wrong".into()
+    } else {
+        format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&payload).unwrap())
+        )
+    };
+    repository
+        .provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {
+            id: format!("provider_{id}"),
+            provider_id: "osv-query".into(),
+            fetched_at_ms: fetched,
+            content_sha256: hash,
+            payload,
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn offline_receipts_select_freshest_coverage_across_projects_and_versions() {
+    let directory = tempfile::tempdir().unwrap();
+    project(directory.path());
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let key = "npm\0example\u{0}1.0.0".to_string();
+    save_receipt(&repo, "a_old", 10, vec![key.clone()], None);
+    save_receipt(&repo, "a_new", 15, vec![key.clone()], None);
+    // More unrelated receipts than the candidate budget must not hide A.
+    for i in 0..100 {
+        save_receipt(
+            &repo,
+            &format!("b_{i}"),
+            20 + i,
+            vec!["npm\0other\u{0}1.0.0".into()],
+            None,
+        );
+    }
+    let result = execute(
+        directory.path(),
+        &repo,
+        &provider(),
+        true,
+        &AtomicBool::new(false),
+        &events(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.summary.advisory_fetched_at_ms, Some(15));
+    let run_id = oxaudit_domain::RunId::parse(result.summary.run_id.unwrap()).unwrap();
+    let run = repo.canonical_load_run(&run_id).unwrap().unwrap();
+    assert!(run
+        .provider_snapshot_ids
+        .iter()
+        .any(|id| id.as_str() == "provider_a_new"));
+    std::fs::write(
+        directory.path().join("package-lock.json"),
+        r#"{"packages":{"node_modules/example":{"version":"2.0.0"}}}"#,
+    )
+    .unwrap();
+    assert!(execute(
+        directory.path(),
+        &repo,
+        &provider(),
+        true,
+        &AtomicBool::new(false),
+        &events()
+    )
+    .await
+    .is_err());
+    save_receipt(
+        &repo,
+        "a_v2",
+        150,
+        vec!["npm\0example\u{0}2.0.0".into()],
+        None,
+    );
+    save_receipt(&repo, "a_v1_newer", 200, vec![key], None);
+    let result = execute(
+        directory.path(),
+        &repo,
+        &provider(),
+        true,
+        &AtomicBool::new(false),
+        &events(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.summary.advisory_fetched_at_ms, Some(150));
+}
+
+#[tokio::test]
+async fn offline_receipts_skip_invalid_covering_candidates_with_visible_notes() {
+    for corruption in ["hash", "schema", "count"] {
+        let directory = tempfile::tempdir().unwrap();
+        project(directory.path());
+        let repo = FindingsRepository::open_in_memory().unwrap();
+        let key = "npm\0example\u{0}1.0.0".to_string();
+        save_receipt(&repo, "valid", 10, vec![key.clone()], None);
+        save_receipt(&repo, "corrupt", 20, vec![key], Some(corruption));
+        let result = execute(
+            directory.path(),
+            &repo,
+            &provider(),
+            true,
+            &AtomicBool::new(false),
+            &events(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.summary.advisory_fetched_at_ms, Some(10));
+        assert!(result
+            .summary
+            .advisory_notes
+            .iter()
+            .any(|note| note.contains("discarded") && note.contains("invalid")));
+    }
+}
+
+#[tokio::test]
+async fn offline_receipt_validation_budget_is_explicit_and_never_looks_clean() {
+    let directory = tempfile::tempdir().unwrap();
+    project(directory.path());
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let key = "npm\0example\u{0}1.0.0".to_string();
+    save_receipt(&repo, "old_valid", 1, vec![key.clone()], None);
+    for i in 0..64 {
+        save_receipt(
+            &repo,
+            &format!("invalid_{i}"),
+            10 + i,
+            vec![key.clone()],
+            Some("hash"),
+        );
+    }
+    let error = execute(
+        directory.path(),
+        &repo,
+        &provider(),
+        true,
+        &AtomicBool::new(false),
+        &events(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.contains("resource limit") && error.contains("64"),
+        "{error}"
+    );
+    let runs = repo.canonical_list_runs(Some("dependencies"), 10).unwrap();
+    assert_eq!(runs[0].state, oxaudit_domain::RunState::Failed);
+    assert!(repo
+        .canonical_load_projection(&runs[0].id)
+        .unwrap()
+        .is_none());
+}
 #[tokio::test]
 async fn dependency_standards_link_advisory_only_to_affected_component_and_lockfile() {
     use crate::adapters::reporting::{generate, ReportData, ReportFormat};
@@ -941,6 +1269,7 @@ async fn local_advisory_db_answers_offline_with_the_same_finding_shape() {
     let db = advisory_db_with(vec![("GHSA-fixture".to_string(), "example".to_string())]);
     let provider = provider();
     let result = scan(ScanRequest {
+        project_root: root,
         root,
         repository: &repo,
         providers: &provider,
@@ -977,6 +1306,7 @@ async fn local_advisory_db_requires_full_ecosystem_coverage() {
     let db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
     db.finish_update(&["PyPI".to_string()], 1, 1).unwrap();
     let error = scan(ScanRequest {
+        project_root: root,
         root,
         repository: &repo,
         providers: &provider(),
@@ -1014,6 +1344,7 @@ async fn local_advisory_db_surfaces_undetermined_notes() {
     db.finish_update(&["npm".to_string()], 1, 1).unwrap();
 
     let result = scan(ScanRequest {
+        project_root: root,
         root,
         repository: &repo,
         providers: &provider(),

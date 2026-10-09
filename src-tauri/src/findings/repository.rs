@@ -229,6 +229,11 @@ CREATE TABLE IF NOT EXISTS trust_grants (
 );
 "#;
 
+const MIGRATION_V7: &str = r#"
+CREATE INDEX provider_snapshots_freshness_idx
+ON provider_snapshots(provider_id, fetched_at_ms DESC, id DESC);
+"#;
+
 const RETENTION_MAINTENANCE_WARNING: &str =
     "Run saved, but old scan history could not be cleaned up.";
 
@@ -1104,6 +1109,67 @@ impl FindingsRepository {
                    FROM provider_snapshots WHERE provider_id = ?1
                    ORDER BY fetched_at_ms DESC, id DESC LIMIT 1"#,
                 [provider_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        row.map(
+            |(id, provider_id, fetched_at_ms, content_sha256, payload)| {
+                Ok(ProviderSnapshotRecord {
+                    id,
+                    provider_id,
+                    fetched_at_ms: u64::try_from(fetched_at_ms).map_err(persistence_error)?,
+                    content_sha256,
+                    payload: serde_json::from_str(&payload).map_err(persistence_error)?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    /// Return one covering candidate at a time. Unrelated histories are filtered
+    /// in SQLite, so they cannot consume the validation budget or fill memory.
+    /// Membership is only a selection hint: callers must validate the hash and
+    /// complete receipt contract before treating a candidate as evidence.
+    pub(crate) fn provider_covering_snapshot(
+        &self,
+        provider_id: &str,
+        query_keys: &[String],
+        before: Option<(u64, &str)>,
+    ) -> Result<Option<ProviderSnapshotRecord>, CommandError> {
+        let keys = to_json(&query_keys)?;
+        let before_time = before
+            .map(|(time, _)| i64::try_from(time))
+            .transpose()
+            .map_err(persistence_error)?;
+        let before_id = before.map(|(_, id)| id);
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let row = connection
+            .query_row(
+                r#"SELECT id, provider_id, fetched_at_ms, content_sha256, payload_json
+               FROM provider_snapshots
+               WHERE provider_id = ?1
+                 AND (?3 IS NULL OR fetched_at_ms < ?3 OR (fetched_at_ms = ?3 AND id < ?4))
+                 AND NOT EXISTS (
+                   SELECT value FROM json_each(?2)
+                   EXCEPT
+                   SELECT value FROM json_each(
+                     CASE WHEN json_valid(payload_json) THEN
+                       CASE WHEN json_type(payload_json, '$.queryKeys') = 'array'
+                         THEN json_extract(payload_json, '$.queryKeys') ELSE '[]' END
+                       ELSE '[]' END
+                   ) WHERE type = 'text'
+                 )
+               ORDER BY fetched_at_ms DESC, id DESC LIMIT 1"#,
+                params![provider_id, keys, before_time, before_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -3972,6 +4038,16 @@ fn migrate(connection: &mut Connection, migration_v1: &str) -> Result<(), Comman
         .map_err(persistence_error)?;
     if !version_six_applied {
         apply_migration(connection, 6, MIGRATION_V6)?;
+    }
+    let version_seven_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 7)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(persistence_error)?;
+    if !version_seven_applied {
+        apply_migration(connection, 7, MIGRATION_V7)?;
     }
     Ok(())
 }

@@ -175,6 +175,12 @@ pub struct ScanResult {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencyOccurrence {
+    /// Origin kind when the lockfile distinguishes registry, git and local code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Ruby platform suffix, separated from the registry version used for queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     #[serde(default)]
     pub local_workspace: bool,
     pub install_path: Option<String>,
@@ -185,6 +191,8 @@ pub struct DependencyOccurrence {
 impl Default for DependencyOccurrence {
     fn default() -> Self {
         Self {
+            source: None,
+            platform: None,
             local_workspace: false,
             install_path: None,
             status: "unknown".into(),
@@ -326,6 +334,9 @@ impl Default for EnrichmentStatus {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DepScanSummary {
+    /// Limits of the static inventory, distinct from complete advisory responses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inventory_notes: Vec<String>,
     #[serde(default)]
     pub run_id: Option<String>,
     #[serde(default)]
@@ -340,8 +351,7 @@ pub struct DepScanSummary {
     pub packages_queried: usize,
     #[serde(default)]
     pub advisory_coverage: AdvisoryCoverage,
-    /// Honest limits hit while answering advisories from a local database
-    /// (undetermined comparisons, skipped GIT ranges); empty for online runs.
+    /// Honest local matching limits or discarded invalid offline receipts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisory_notes: Vec<String>,
     pub vulnerabilities_found: usize,

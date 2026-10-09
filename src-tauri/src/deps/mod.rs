@@ -1,3 +1,4 @@
+mod go_inventory;
 pub mod lockfiles;
 pub mod osv;
 pub mod relationships;

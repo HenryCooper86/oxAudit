@@ -69,6 +69,7 @@ pub(crate) async fn scan_dependencies_engine(
         http: &state.http,
     };
     crate::deps::service::scan(crate::deps::service::ScanRequest {
+        project_root: &root,
         root: &root,
         ignored_dirs: &settings.scan.ignored_dirs,
         offline,
