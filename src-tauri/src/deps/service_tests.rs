@@ -182,6 +182,98 @@ fn project(root: &Path) {
     )
     .unwrap();
 }
+
+#[tokio::test]
+async fn cancellation_interrupts_pending_license_advisory_and_enrichment_providers() {
+    struct PendingProvider<'a> {
+        stage: &'static str,
+        cancel: &'a AtomicBool,
+    }
+    impl DependencyProviders for PendingProvider<'_> {
+        fn licenses<'a>(
+            &'a self,
+            _: &'a mut [Dependency],
+        ) -> PortFuture<'a, crate::licenses::LicenseFetchSummary> {
+            Box::pin(async move {
+                if self.stage == "licenses" {
+                    self.cancel.store(true, Ordering::SeqCst);
+                    std::future::pending().await
+                } else {
+                    Default::default()
+                }
+            })
+        }
+        fn query_full<'a>(
+            &'a self,
+            dependencies: &'a [Dependency],
+        ) -> PortFuture<'a, Result<AdvisoryResults, String>> {
+            Box::pin(async move {
+                if self.stage == "advisories" {
+                    self.cancel.store(true, Ordering::SeqCst);
+                    std::future::pending().await
+                } else {
+                    Ok(AdvisoryResults::from([(
+                        crate::deps::osv::dependency_query_key(&dependencies[0]),
+                        vec![full_vulnerability()],
+                    )]))
+                }
+            })
+        }
+        fn enrich<'a>(
+            &'a self,
+            _: &'a mut [Vulnerability],
+            _: &'a [String],
+            _: &'a Path,
+        ) -> PortFuture<'a, EnrichmentStatus> {
+            Box::pin(async move {
+                self.cancel.store(true, Ordering::SeqCst);
+                std::future::pending().await
+            })
+        }
+    }
+    for stage in ["licenses", "advisories", "enrichment"] {
+        let directory = tempfile::tempdir().unwrap();
+        project(directory.path());
+        let repository =
+            FindingsRepository::open(directory.path().join("data/runs.sqlite")).unwrap();
+        let cancel = AtomicBool::new(false);
+        let provider = PendingProvider {
+            stage,
+            cancel: &cancel,
+        };
+        let events = events();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            execute(
+                directory.path(),
+                &repository,
+                &provider,
+                false,
+                &cancel,
+                &events,
+            ),
+        )
+        .await
+        .expect("cancellation must not wait for a stalled provider");
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert_eq!(
+            repository.canonical_list_runs(None, 10).unwrap()[0].state,
+            oxaudit_domain::RunState::Cancelled
+        );
+        assert!(!events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "deps://done"));
+        if stage != "enrichment" {
+            assert!(repository
+                .provider_latest_snapshot("osv-query")
+                .unwrap()
+                .is_none());
+        }
+    }
+}
 async fn execute(
     root: &Path,
     repo: &FindingsRepository,

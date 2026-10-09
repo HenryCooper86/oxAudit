@@ -12,6 +12,29 @@ use std::time::Instant;
 
 pub type AdvisoryResults = std::collections::HashMap<String, Vec<Vulnerability>>;
 
+/// Dropping the provider future stops pending HTTP work without waiting for its
+/// timeout. The final check also handles cancellation during a ready response.
+async fn await_provider<F: std::future::Future>(
+    cancel: &AtomicBool,
+    future: F,
+) -> Result<F::Output, String> {
+    tokio::select! {
+        biased;
+        _ = async {
+            while !cancel.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        } => Err("dependency scan cancelled".into()),
+        output = future => {
+            if cancel.load(Ordering::SeqCst) {
+                Err("dependency scan cancelled".into())
+            } else {
+                Ok(output)
+            }
+        }
+    }
+}
+
 /// Full-detail lookup is mandatory; enrichment is optional and reports its uncertainty.
 pub trait DependencyProviders: Send + Sync {
     fn query_full<'a>(
@@ -346,15 +369,11 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         // overwritten. Notes join the enrichment warnings — they are
         // optional-source honesty, not advisory coverage.
         let mut license_notes = Vec::new();
-        if !request.offline {
-            let license_summary = request.providers.licenses(&mut deps).await;
+        if !request.offline && !deps.is_empty() {
+            let license_summary = await_provider(request.cancel, request.providers.licenses(&mut deps)).await?;
             license_notes = license_summary.notes;
         }
 
-        // Direct-usage reachability: one index over the project's own source,
-        // asked about every vulnerable package later. Purely local, so it runs
-        // regardless of the offline flag.
-        let usage_index = crate::reachability::UsageIndex::for_project(root, request.ignored_dirs);
         managed
             .as_mut()
             .expect("managed dependency run exists")
@@ -445,7 +464,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             }
         } else {
             let _ = request.events.emit("deps://progress", serde_json::json!({ "phase": "querying-osv", "done": 0, "total": 1 }));
-            let results = request.providers.query_full(&query_deps).await
+            let results = await_provider(request.cancel, request.providers.query_full(&query_deps)).await?
                 .map_err(|error| format!("incomplete advisory coverage: {error}"))?;
             if request.cancel.load(Ordering::SeqCst) {
                 return Err("dependency scan cancelled".into());
@@ -500,12 +519,13 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         // network sources answered. Advisories that name affected functions
         // (RustSec) additionally learn which of them this project
         // references — literal path match, docs/reachability-scoping.md.
-        for vulnerability in &mut vulnerabilities {
-            vulnerability.direct_usage =
-                usage_index.lookup(&vulnerability.ecosystem, &vulnerability.package_name);
-            if !vulnerability.affected_functions.is_empty() {
-                vulnerability.referenced_functions = usage_index
-                    .referenced_functions(&vulnerability.affected_functions);
+        if !vulnerabilities.is_empty() {
+            let usage_index = crate::reachability::UsageIndex::for_project(root, request.ignored_dirs);
+            for vulnerability in &mut vulnerabilities {
+                vulnerability.direct_usage = usage_index.lookup(&vulnerability.ecosystem, &vulnerability.package_name);
+                if !vulnerability.affected_functions.is_empty() {
+                    vulnerability.referenced_functions = usage_index.referenced_functions(&vulnerability.affected_functions);
+                }
             }
         }
     // Exploitation signal: rank these CVEs by CISA KEV and EPSS, the same way
@@ -526,7 +546,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             EnrichmentStatus { status: "unavailable".into(), warnings: vec!["Optional exploitation sources were not refreshed in offline mode; absent signals are unknown.".into()], ..Default::default() }
         } else {
             let _ = request.events.emit("deps://progress", serde_json::json!({"phase":"exploitation-signal","done":0,"total":1}));
-            request.providers.enrich(&mut vulnerabilities, &cve_ids, request.cache_path).await
+            await_provider(request.cancel, request.providers.enrich(&mut vulnerabilities, &cve_ids, request.cache_path)).await?
         };
         if request.cancel.load(Ordering::SeqCst) {
             return Err("dependency scan cancelled".into());

@@ -457,33 +457,106 @@ fn parse_go_mod(content: &str) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-/// `bun.lock` (the text form Bun ≥1.1 writes): keys are `name@version`, with
-/// scoped packages spelled `@scope/name@version`, so the version is after the
-/// LAST `@`. Workspace, `file:`, and `link:` entries name no registry version
-/// and are skipped.
+/// Bun's JSONC package map is keyed by installation location (including
+/// aliases). The first tuple element carries the resolved package identity.
 fn parse_bun_lock(content: &str) -> Result<Vec<(String, String)>, String> {
-    let root: serde_json::Value =
-        serde_json::from_str(content).map_err(|error| format!("invalid bun.lock: {error}"))?;
+    let root = parse_bun_jsonc(content)?;
     let packages = root
         .get("packages")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| "bun.lock has no packages object".to_string())?;
     let mut out = Vec::new();
-    for key in packages.keys() {
-        let Some(at) = key.rfind('@') else { continue };
-        let (name, version) = (&key[..at], &key[at + 1..]);
+    for (key, entry) in packages {
+        let invalid =
+            || format!("invalid bun.lock package {key}: expected a resolved name@version tuple");
+        let resolution = entry
+            .as_array()
+            .and_then(|tuple| tuple.first())
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let start = usize::from(resolution.starts_with('@'));
+        let at = resolution[start..].find('@').ok_or_else(invalid)? + start;
+        let (name, version) = (&resolution[..at], &resolution[at + 1..]);
         if name.is_empty() || version.is_empty() {
+            return Err(invalid());
+        }
+        // Local, git and tarball resolutions have no registry version to query.
+        if version.contains(':') || version.contains('/') || version.starts_with("git+") {
             continue;
         }
-        if version.contains(':') || version == "workspace" {
-            continue;
+        if !version.starts_with(|c: char| c.is_ascii_digit()) {
+            return Err(invalid());
         }
         out.push((name.to_string(), version.to_string()));
     }
-    if out.is_empty() {
-        return Err("no packages found in bun.lock".into());
-    }
     Ok(out)
+}
+
+/// Normalize only JSONC comments and trailing commas, outside quoted strings.
+/// Replacing bytes with whitespace preserves locations for serde diagnostics.
+fn parse_bun_jsonc(content: &str) -> Result<serde_json::Value, String> {
+    let mut bytes = content.as_bytes().to_vec();
+    let mut quoted = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if quoted => i += 2,
+            b'"' => {
+                quoted = !quoted;
+                i += 1;
+            }
+            b'/' if !quoted && bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && !matches!(bytes[i], b'\r' | b'\n') {
+                    bytes[i] = b' ';
+                    i += 1;
+                }
+            }
+            b'/' if !quoted && bytes.get(i + 1) == Some(&b'*') => {
+                bytes[i..i + 2].fill(b' ');
+                i += 2;
+                while i + 1 < bytes.len() && &bytes[i..i + 2] != b"*/" {
+                    if !matches!(bytes[i], b'\r' | b'\n') {
+                        bytes[i] = b' ';
+                    }
+                    i += 1;
+                }
+                if i + 1 >= bytes.len() {
+                    return Err("invalid bun.lock: unterminated comment".into());
+                }
+                bytes[i..i + 2].fill(b' ');
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+    quoted = false;
+    i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if quoted => i += 2,
+            b'"' => {
+                quoted = !quoted;
+                i += 1;
+            }
+            b',' if !quoted => {
+                let next = bytes[i + 1..]
+                    .iter()
+                    .find(|byte| !byte.is_ascii_whitespace());
+                let previous = bytes[..i]
+                    .iter()
+                    .rev()
+                    .find(|byte| !byte.is_ascii_whitespace());
+                if matches!(next, Some(b'}' | b']'))
+                    && !matches!(previous, None | Some(b'{' | b'[' | b','))
+                {
+                    bytes[i] = b' ';
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    serde_json::from_slice(&bytes).map_err(|error| format!("invalid bun.lock: {error}"))
 }
 
 /// `mix.lock`: an Erlang map of `"name" => {:hex, :name, "version", …}`.
@@ -1790,18 +1863,73 @@ example==1.0+local \
     }
 
     #[test]
-    fn bun_lock_keys_split_on_the_last_at() {
+    fn bun_lock_uses_resolved_tuple_identity_for_aliases_and_nested_packages() {
         let deps = parse(
             "bun.lock",
-            r#"{"lockfileVersion":1,"packages":{"left-pad@1.3.0":{},"@scope/pkg@2.0.0":{},"local@workspace":{},"file-pkg@file:../pkg":{}}}"#,
+            r#"{"lockfileVersion":1,"packages":{
+                "alias": ["@scope/pkg@2.0.0", "", {}, "sha512-test"],
+                "left-pad": ["left-pad@1.3.0", "", {}, "sha512-test"],
+                "parent/left-pad": ["left-pad@1.1.0", "", {}, "sha512-test"],
+                "local": ["local@workspace:packages/local"],
+                "file-pkg": ["file-pkg@file:../pkg", {}],
+                "git-pkg": ["git-pkg@github:owner/repo#abc", {}, "owner-repo-abc"]
+            }}"#,
         );
         assert_eq!(
             deps,
             vec![
                 ("@scope/pkg".to_string(), "2.0.0".to_string()),
                 ("left-pad".to_string(), "1.3.0".to_string()),
+                ("left-pad".to_string(), "1.1.0".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn bun_lock_accepts_jsonc_without_rewriting_strings() {
+        let deps = parse(
+            "bun.lock",
+            r#"{
+            // Generated by Bun
+            "lockfileVersion": 1,
+            "packages": {
+                "example": ["example@1.2.3", "https://registry.npmjs.org/example", {
+                    "note": "escaped quote: \" // /* ,} ,] λ",
+                }, "sha512-test", /* comment after comma */],
+            },
+        }"#,
+        );
+        assert_eq!(deps, vec![("example".into(), "1.2.3".into())]);
+    }
+
+    #[test]
+    fn bun_lock_empty_and_local_only_inventories_are_valid() {
+        for content in [
+            r#"{"lockfileVersion":1,"packages":{}}"#,
+            r#"{"lockfileVersion":1,"packages":{"local":["local@workspace:pkg"]}}"#,
+        ] {
+            assert!(parse("bun.lock", content).is_empty());
+        }
+    }
+
+    #[test]
+    fn bun_lock_rejects_malformed_entries_instead_of_partial_inventory() {
+        for entry in ["{}", "[]", "[5]", r#"["no-version"]"#, r#"["pkg@"]"#] {
+            let content = format!(
+                r#"{{"packages":{{"valid":["valid@1.0.0","",{{}},"hash"],"bad@2.0.0":{entry}}}}}"#
+            );
+            assert!(
+                super::parse_bun_lock(&content).is_err(),
+                "accepted {content}"
+            );
+        }
+        assert!(super::parse_bun_lock("{ /* unterminated").is_err());
+        for content in [r#"{"packages":{,}}"#, r#"{"packages":{},,"workspaces":{}}"#] {
+            assert!(
+                super::parse_bun_lock(content).is_err(),
+                "accepted {content}"
+            );
+        }
     }
 
     #[test]

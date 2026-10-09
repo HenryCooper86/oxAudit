@@ -1,8 +1,12 @@
 use crate::models::{Dependency, Vulnerability};
 use serde_json::Value;
-use std::error::Error;
+use std::collections::{HashMap, HashSet};
 
 const OSV_BASE: &str = "https://api.osv.dev/v1";
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_QUERY_PAGES: usize = 64;
+const MAX_PACKAGE_ADVISORIES: usize = 10_000;
+const MAX_BATCH_MATCHES: usize = 100_000;
 
 /// OSV requires all three package coordinates. Keep this predicate shared by
 /// request construction, progress accounting, and cache receipts so a package
@@ -73,56 +77,96 @@ fn ensure_advisory_records_complete(
     ))
 }
 
-/// The OSV batch endpoint must answer once for every submitted query. A short
-/// response would otherwise omit packages, and a long response used to index
-/// past the submitted chunk. Pagination is not implemented here, so a token is
-/// an incomplete coverage error rather than an apparently clean partial page.
+struct AdvisoryPage<'a> {
+    vulns: &'a [Value],
+    next_token: Option<&'a str>,
+}
+
+fn decode_advisory_page(response: &Value) -> Result<AdvisoryPage<'_>, String> {
+    let object = response.as_object().ok_or_else(|| {
+        "OSV result must be an object; advisory coverage is incomplete".to_string()
+    })?;
+    let next_token = object
+        .get("next_page_token")
+        .map(|token| {
+            token.as_str().ok_or_else(|| {
+                "OSV pagination token must be a string; advisory coverage is incomplete".to_string()
+            })
+        })
+        .transpose()?
+        .filter(|token| !token.is_empty());
+    if next_token.is_some_and(|token| token.len() > 4096) {
+        return Err("resource limit: OSV pagination token exceeds 4096 bytes; advisory coverage is incomplete".into());
+    }
+    let vulns = object
+        .get("vulns")
+        .map(|vulns| {
+            vulns.as_array().map(Vec::as_slice).ok_or_else(|| {
+                "OSV vulns must be an array; advisory coverage is incomplete".to_string()
+            })
+        })
+        .transpose()?
+        .unwrap_or(&[]);
+    for vuln in vulns {
+        if vuln
+            .get("id")
+            .and_then(Value::as_str)
+            .map_or(true, |id| id.trim().is_empty())
+        {
+            return Err(
+                "OSV advisory requires a nonempty string id; advisory coverage is incomplete"
+                    .into(),
+            );
+        }
+    }
+    Ok(AdvisoryPage { vulns, next_token })
+}
+
+/// Result order corresponds exactly to query order, including on later pages.
+/// Tokens are validated here and followed before coverage is complete.
 pub(super) fn decode_batch_results(
     response: &Value,
     expected_count: usize,
-) -> Result<Vec<Value>, String> {
+) -> Result<&[Value], String> {
     let results = response
         .get("results")
         .and_then(Value::as_array)
         .ok_or_else(|| "OSV batch response is missing its results array".to_string())?;
     if results.len() != expected_count {
-        return Err(format!(
-            "OSV batch response returned {} results for {expected_count} queries; advisory coverage is incomplete",
-            results.len()
-        ));
+        return Err(format!("OSV batch response returned {} results for {expected_count} queries; advisory coverage is incomplete", results.len()));
     }
     for result in results {
-        let result = result.as_object().ok_or_else(|| {
-            "OSV batch result must be an object; advisory coverage is incomplete".to_string()
-        })?;
-        if let Some(token) = result.get("next_page_token") {
-            let token = token.as_str().ok_or_else(|| {
-                "OSV batch pagination token must be a string; advisory coverage is incomplete"
-                    .to_string()
-            })?;
-            if !token.is_empty() {
-                return Err(
-                    "OSV batch response is paginated; advisory coverage is incomplete".into(),
-                );
-            }
-        }
-        if let Some(vulns) = result.get("vulns") {
-            let vulns = vulns.as_array().ok_or_else(|| {
-                "OSV batch vulns must be an array; advisory coverage is incomplete".to_string()
-            })?;
-            for vuln in vulns {
-                if !vuln.is_object()
-                    || vuln
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map_or(true, |id| id.trim().is_empty())
-                {
-                    return Err("OSV batch advisory requires a nonempty string id; advisory coverage is incomplete".into());
-                }
-            }
-        }
+        decode_advisory_page(result)?;
     }
-    Ok(results.clone())
+    Ok(results)
+}
+
+/// Enforce the same decompressed body limit with or without Content-Length.
+async fn read_osv_json(mut response: reqwest::Response) -> Result<Value, String> {
+    if !response.status().is_success() {
+        return Err(format!("OSV returned {}", response.status()));
+    }
+    let limit_error = || {
+        format!("resource limit: OSV response exceeds {MAX_RESPONSE_BYTES} bytes; advisory coverage is incomplete")
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(limit_error());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("OSV response read failed: {error}"))?
+    {
+        if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
+            return Err(limit_error());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|error| format!("OSV response parse failed: {error}"))
 }
 
 pub struct OsvClient {
@@ -148,37 +192,10 @@ impl OsvClient {
             "package": { "ecosystem": ecosystem, "name": name },
             "version": version
         });
-        let resp = self
-            .http
-            .post(format!("{OSV_BASE}/query"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "OSV transport error");
-                let mut cur: Option<&dyn std::error::Error> = e.source();
-                while let Some(c) = cur {
-                    tracing::warn!(cause = %c, "OSV transport error cause");
-                    cur = c.source();
-                }
-                format!("OSV request failed: {e}")
-            })?;
-        if !resp.status().is_success() {
-            return Err(format!("OSV returned {}", resp.status()));
-        }
-        let json: Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("OSV response parse failed: {e}"))?;
-        Ok(parse_vulns(
-            json.get("vulns")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default(),
-            ecosystem,
-            name,
-            version,
-        ))
+        let records = self
+            .query_records_at(&format!("{OSV_BASE}/query"), body)
+            .await?;
+        Ok(parse_vulns(records, ecosystem, name, version))
     }
 
     /// Batch query OSV (up to 1000 per request). Returns a map keyed by
@@ -192,48 +209,79 @@ impl OsvClient {
         &self,
         deps: &[Dependency],
     ) -> Result<std::collections::HashMap<String, Vec<Vulnerability>>, String> {
+        self.query_batch_at(deps, &format!("{OSV_BASE}/querybatch"))
+            .await
+    }
+
+    async fn query_batch_at(
+        &self,
+        deps: &[Dependency],
+        url: &str,
+    ) -> Result<std::collections::HashMap<String, Vec<Vulnerability>>, String> {
         let queryable: Vec<&Dependency> = queryable_dependencies(deps).collect();
         validate_query_count(queryable.len())?;
-        let mut out = std::collections::HashMap::new();
-        if queryable.is_empty() {
-            return Ok(out);
-        }
-
+        let mut out: HashMap<String, Vec<Vulnerability>> = HashMap::new();
+        let mut total_matches = 0;
         for chunk in queryable.chunks(1000) {
-            let queries: Vec<Value> = chunk
-                .iter()
-                .map(|d| {
-                    serde_json::json!({
-                        "package": { "ecosystem": d.ecosystem, "name": d.name },
-                        "version": d.version
+            let mut pending: Vec<(usize, Option<String>)> =
+                (0..chunk.len()).map(|index| (index, None)).collect();
+            let mut seen_tokens = vec![HashSet::new(); chunk.len()];
+            let mut seen_ids = vec![HashSet::new(); chunk.len()];
+            for _ in 0..MAX_QUERY_PAGES {
+                let queries: Vec<Value> = pending
+                    .iter()
+                    .map(|(index, token)| {
+                        let dep = chunk[*index];
+                        let mut query = serde_json::json!({
+                            "package": { "ecosystem": dep.ecosystem, "name": dep.name },
+                            "version": dep.version
+                        });
+                        if let Some(token) = token {
+                            query["page_token"] = serde_json::json!(token);
+                        }
+                        query
                     })
-                })
-                .collect();
-            let resp = self
-                .http
-                .post(format!("{OSV_BASE}/querybatch"))
-                .json(&serde_json::json!({ "queries": queries }))
-                .send()
-                .await
-                .map_err(|e| format!("OSV batch request failed: {e}"))?;
-            if !resp.status().is_success() {
-                return Err(format!("OSV returned {}", resp.status()));
-            }
-            let json: Value = resp
-                .json()
-                .await
-                .map_err(|e| format!("OSV batch response parse failed: {e}"))?;
-            let results = decode_batch_results(&json, chunk.len())?;
-            for (i, res) in results.iter().enumerate() {
-                let dep = chunk[i];
-                if let Some(vulns) = res.get("vulns").and_then(|v| v.as_array()) {
-                    let parsed =
-                        parse_vulns(vulns.clone(), &dep.ecosystem, &dep.name, &dep.version);
-                    if !parsed.is_empty() {
-                        let key = dependency_query_key(dep);
-                        out.insert(key, parsed);
+                    .collect();
+                let response = self
+                    .post_json(url, &serde_json::json!({"queries": queries}))
+                    .await?;
+                let results = decode_batch_results(&response, pending.len())?;
+                let mut next_pending = Vec::new();
+                for ((index, _), result) in pending.iter().zip(results) {
+                    let dep = chunk[*index];
+                    let page = decode_advisory_page(result)?;
+                    let mut unique = Vec::new();
+                    for record in page.vulns {
+                        let id = record["id"].as_str().expect("validated advisory id");
+                        if seen_ids[*index].insert(id.to_owned()) {
+                            total_matches += 1;
+                            if seen_ids[*index].len() > MAX_PACKAGE_ADVISORIES
+                                || total_matches > MAX_BATCH_MATCHES
+                            {
+                                return Err("resource limit: OSV advisory match count exceeded; advisory coverage is incomplete".into());
+                            }
+                            unique.push(record.clone());
+                        }
+                    }
+                    if !unique.is_empty() {
+                        out.entry(dependency_query_key(dep))
+                            .or_default()
+                            .extend(parse_vulns(unique, &dep.ecosystem, &dep.name, &dep.version));
+                    }
+                    if let Some(token) = page.next_token {
+                        if !seen_tokens[*index].insert(token.to_owned()) {
+                            return Err("OSV returned a repeated pagination token; advisory coverage is incomplete".into());
+                        }
+                        next_pending.push((*index, Some(token.to_owned())));
                     }
                 }
+                pending = next_pending;
+                if pending.is_empty() {
+                    break;
+                }
+            }
+            if !pending.is_empty() {
+                return Err(format!("resource limit: OSV query exceeds {MAX_QUERY_PAGES} pages; advisory coverage is incomplete"));
             }
         }
         Ok(out)
@@ -332,10 +380,7 @@ impl OsvClient {
         if !resp.status().is_success() {
             return Err(format!("OSV returned {}", resp.status()));
         }
-        resp.json()
-            .await
-            .map(Some)
-            .map_err(|e| format!("parse failed: {e}"))
+        read_osv_json(resp).await.map(Some)
     }
 
     /// Search all known vulnerabilities for a package (no version).
@@ -346,25 +391,51 @@ impl OsvClient {
         let body = serde_json::json!({
             "package": { "ecosystem": ecosystem, "name": name }
         });
-        let resp = self
+        self.query_records_at(&format!("{OSV_BASE}/query"), body)
+            .await
+    }
+
+    async fn query_records_at(&self, url: &str, mut body: Value) -> Result<Vec<Value>, String> {
+        let mut out = Vec::new();
+        let mut seen_ids = HashSet::new();
+        let mut seen_tokens = HashSet::new();
+        for _ in 0..MAX_QUERY_PAGES {
+            let response = self.post_json(url, &body).await?;
+            let page = decode_advisory_page(&response)?;
+            for record in page.vulns {
+                let id = record["id"].as_str().expect("validated advisory id");
+                if seen_ids.insert(id.to_owned()) {
+                    if seen_ids.len() > MAX_PACKAGE_ADVISORIES {
+                        return Err("resource limit: OSV package advisory count exceeded; advisory coverage is incomplete".into());
+                    }
+                    out.push(record.clone());
+                }
+            }
+            match page.next_token {
+                None => return Ok(out),
+                Some(token) => {
+                    if !seen_tokens.insert(token.to_owned()) {
+                        return Err("OSV returned a repeated pagination token; advisory coverage is incomplete".into());
+                    }
+                    body["page_token"] = serde_json::json!(token);
+                }
+            }
+        }
+        Err(format!("resource limit: OSV query exceeds {MAX_QUERY_PAGES} pages; advisory coverage is incomplete"))
+    }
+
+    async fn post_json(&self, url: &str, body: &Value) -> Result<Value, String> {
+        let response = self
             .http
-            .post(format!("{OSV_BASE}/query"))
-            .json(&body)
+            .post(url)
+            .json(body)
             .send()
             .await
-            .map_err(|e| format!("OSV request failed: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("OSV returned {}", resp.status()));
-        }
-        let json: Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("OSV response parse failed: {e}"))?;
-        Ok(json
-            .get("vulns")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default())
+            .map_err(|error| {
+                tracing::warn!(%error, "OSV transport error");
+                format!("OSV request failed: {error}")
+            })?;
+        read_osv_json(response).await
     }
 }
 
@@ -834,14 +905,13 @@ mod tests {
     }
 
     #[test]
-    fn batch_response_with_a_next_page_token_is_not_complete() {
+    fn batch_page_preserves_its_next_token_for_the_pagination_loop() {
         let response = serde_json::json!({
             "results": [{ "next_page_token": "more-results" }],
         });
 
-        let error = decode_batch_results(&response, 1).expect_err("pagination is unsupported");
-
-        assert!(error.contains("paginated"), "{error}");
+        let results = decode_batch_results(&response, 1).expect("valid page");
+        assert_eq!(results[0]["next_page_token"], "more-results");
     }
 
     #[test]
@@ -913,35 +983,22 @@ mod tests {
 
     #[test]
     fn parses_real_osv_record() {
-        // captured live response for lodash@4.17.15 (see /tmp/osv_lodash.json)
-        let raw = match std::fs::read_to_string("/tmp/osv_lodash.json") {
-            Ok(s) => s,
-            Err(_) => {
-                eprintln!("skipping: /tmp/osv_lodash.json not present");
-                return;
-            }
-        };
-        let json: Value = serde_json::from_str(&raw).unwrap();
+        // Committed provider fixture: this test always runs offline.
+        let json: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/osv_lodash.json")).unwrap();
         let vulns = parse_vulns(
             json["vulns"].as_array().unwrap().clone(),
             "npm",
             "lodash",
             "4.17.15",
         );
-        assert!(!vulns.is_empty());
-        let with_sev = vulns
-            .iter()
-            .filter(|v| v.severity.is_some() || v.cvss_score.is_some())
-            .count();
-        assert!(with_sev > 0, "expected severity data in OSV records");
-        assert!(
-            vulns.iter().any(|v| !v.fixed_versions.is_empty()),
-            "expected fixed versions derivable from ranges"
-        );
-        // every record must carry a summary or details
-        for v in &vulns {
-            assert!(v.summary.len() + v.details.len() > 0);
-        }
+        assert_eq!(vulns.len(), 1);
+        assert_eq!(vulns[0].id, "GHSA-35jh-r3h4-6jhm");
+        assert_eq!(vulns[0].severity.as_deref(), Some("high"));
+        assert_eq!(vulns[0].cvss_score, Some(7.2));
+        assert_eq!(vulns[0].fixed_versions, ["4.17.21"]);
+        assert!(vulns[0].aliases.iter().any(|id| id == "CVE-2021-23337"));
+        assert!(!vulns[0].details.is_empty());
     }
 
     #[test]
@@ -983,3 +1040,7 @@ mod tests {
         assert!(result[0].affected_functions.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "osv_http_tests.rs"]
+mod http_tests;
