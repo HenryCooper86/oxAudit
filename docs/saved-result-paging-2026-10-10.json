@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "measuredAt": "2026-10-10T03:13:06.193763+00:00",
+  "buildProfile": "debug, default grammars and server feature",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "serverSha256": "5b40e87e2f3fe38c8db14617c3269f77aa322da78e350db413f4e0a526129a13",
+  "cliSha256": "4826dea1001760df5a8f2bc9fc89d6c26679d3bb7b3d73856438b6a295247add",
+  "sourceRunId": "d1958240-cd78-4612-85fc-8573638704dd",
+  "imageRunId": "run_07cee3e8-5edb-4361-bab4-612531771736",
+  "populations": {
+    "sourceFiles": 100,
+    "plantedEvalCallsPerFile": 100,
+    "sourceFindings": 10000,
+    "imageComponents": 1000
+  },
+  "measurements": [
+    {
+      "id": "sourceMetadata",
+      "command": "load_source_run_metadata",
+      "query": null,
+      "responseBytes": 663,
+      "elapsedMs": 383.48,
+      "rows": 0,
+      "total": null,
+      "filteredTotal": null
+    },
+    {
+      "id": "sourceDeepPage",
+      "command": "load_source_run_page",
+      "query": {
+        "offset": 9950,
+        "limit": 50,
+        "sort": "file"
+      },
+      "responseBytes": 79434,
+      "elapsedMs": 706.798,
+      "rows": 50,
+      "total": 10000,
+      "filteredTotal": 10000
+    },
+    {
+      "id": "sourceFilteredPage",
+      "command": "load_source_run_page",
+      "query": {
+        "limit": 50,
+        "search": "handler-099"
+      },
+      "responseBytes": 79348,
+      "elapsedMs": 494.826,
+      "rows": 50,
+      "total": 10000,
+      "filteredTotal": 100
+    },
+    {
+      "id": "sourceComplete",
+      "command": "load_source_run",
+      "query": null,
+      "responseBytes": 15827976,
+      "elapsedMs": 1683.656,
+      "rows": 10000,
+      "total": null,
+      "filteredTotal": null
+    },
+    {
+      "id": "imageMetadata",
+      "command": "load_canonical_projection_metadata",
+      "query": null,
+      "responseBytes": 1341,
+      "elapsedMs": 1.542,
+      "rows": 0,
+      "total": null,
+      "filteredTotal": null
+    },
+    {
+      "id": "imageDeepPage",
+      "command": "load_canonical_projection_page",
+      "query": {
+        "offset": 950,
+        "limit": 50
+      },
+      "responseBytes": 7484,
+      "elapsedMs": 2.62,
+      "rows": 50,
+      "total": 1000,
+      "filteredTotal": 1000
+    },
+    {
+      "id": "imageComplete",
+      "command": "load_canonical_projection",
+      "query": null,
+      "responseBytes": 149123,
+      "elapsedMs": 18.327,
+      "rows": 1000,
+      "total": null,
+      "filteredTotal": null
+    }
+  ],
+  "limitations": [
+    "Single loopback HTTP measurements include response transfer; no browser memory or process-tree RSS measurement.",
+    "SQL counts and policy identities still scale with project history.",
+    "Selected component rows retain complete nested CVEs; row cap is not a byte cap.",
+    "Legacy normalization reads one full canonical projection at a time.",
+    "Source enrichment was refused through a child-only loopback proxy URL; no advisory accuracy claim."
+  ]
+}

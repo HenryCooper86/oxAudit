@@ -3009,3 +3009,73 @@ async fn recheck_comparison_rejects_policy_invalidated_after_scanning() {
         .compare_recheck_runs(&current.run_id, &original.run_id)
         .is_err());
 }
+
+#[tokio::test]
+async fn paged_source_reads_keep_metadata_separate_and_reconcile_live_policy_reviews() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("app.js"), "eval(input);\n").unwrap();
+    let service = FindingsService::new(super::FindingsRepository::open_in_memory().unwrap());
+    let saved = service
+        .scan(
+            ScanOptions {
+                path: project.to_string_lossy().into_owned(),
+                scan_secrets: false,
+                ..Default::default()
+            },
+            &cached_cve_state(),
+            &AtomicBool::new(false),
+            &RecordingEvents::default(),
+        )
+        .await
+        .unwrap();
+    let metadata = service.load_run_metadata(&saved.run_id).unwrap();
+    assert_eq!(metadata.run_id, saved.run_id);
+    assert!(serde_json::to_value(&metadata)
+        .unwrap()
+        .get("findings")
+        .is_none());
+    let initial = service
+        .load_run_page(&saved.run_id, &Default::default())
+        .unwrap();
+    assert_eq!(initial.page.total, saved.findings.len());
+    assert_eq!(initial.view_counts.open, initial.page.total);
+    write_valid_policy(&project, "paged authority");
+    let page = service
+        .load_run_page(&saved.run_id, &Default::default())
+        .unwrap();
+    assert_eq!(page.page.items.len(), saved.findings.len());
+    let full = service.load_run(&saved.run_id).unwrap();
+    assert_eq!(
+        serde_json::to_value(&page.page.items).unwrap(),
+        serde_json::to_value(&full.findings).unwrap()
+    );
+    assert!(page
+        .page
+        .items
+        .iter()
+        .any(|finding| finding.review.as_ref().is_some_and(
+            |review| review.origin == crate::findings::domain::ReviewOrigin::ProjectPolicy
+        )));
+    std::fs::write(project.join(".oxaudit/policy.json"), "invalid").unwrap();
+    let invalid = service
+        .load_run_page(&saved.run_id, &Default::default())
+        .unwrap();
+    assert!(invalid.page.items.iter().all(|finding| finding
+        .review
+        .as_ref()
+        .map_or(true, |review| review.origin
+            != crate::findings::domain::ReviewOrigin::ProjectPolicy)));
+    let required = crate::findings::domain::SourceFindingsQuery {
+        require_valid_policy: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        service
+            .load_run_page(&saved.run_id, &required)
+            .unwrap_err()
+            .code,
+        crate::findings::error::ErrorCode::PolicyInvalid
+    );
+}

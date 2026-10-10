@@ -603,7 +603,7 @@ fn build_project_policy_projection(
     project_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<ReviewRecord>, CommandError> {
-    let observations = repository.latest_project_observations(project_id)?;
+    let observations = repository.latest_policy_observations(project_id)?;
     let observed_identities = observations
         .iter()
         .map(|observation| {

@@ -86,6 +86,16 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
     <div
       className={`grid h-full overflow-hidden bg-surface-primary transition-[grid-template-columns] duration-200 motion-reduce:transition-none max-[900px]:grid-cols-1 ${compactNavigation ? "grid-cols-[52px_minmax(0,1fr)]" : "grid-cols-[240px_minmax(0,1fr)]"}`}
     >
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-sm focus:bg-surface-primary focus:px-4 focus:py-2 focus:text-text-primary"
+        onClick={(event) => {
+          event.preventDefault();
+          document.getElementById("main-content")?.focus();
+        }}
+      >
+        Skip to workspace
+      </a>
       <Sidebar
         open={navigationOpen}
         onClose={closeNavigation}
@@ -94,10 +104,10 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
       />
       <section
         inert={navigationOpen}
-        className="grid min-w-0 grid-rows-[52px_minmax(0,1fr)_28px] overflow-hidden"
+        className="grid min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[52px_minmax(0,1fr)_28px] overflow-hidden"
       >
         <WorkbenchHeader onOpenNavigation={() => setNavigationOpen(true)} />
-        <main id="main-content" className="min-h-0 overflow-y-auto">
+        <main id="main-content" tabIndex={-1} className="min-h-0 min-w-0 overflow-y-auto">
           {children}
         </main>
         <StatusBar />

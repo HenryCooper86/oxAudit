@@ -10,10 +10,11 @@ const VIEWS: Array<{ value: ResultView; label: string }> = [
 
 export function ResultViewTabs(props: {
   value: ResultView;
+  loading?: boolean;
   counts: Record<ResultView, number>;
   onChange(view: ResultView): void;
 }): JSX.Element {
-  const { value, counts, onChange } = props;
+  const { value, counts, onChange, loading } = props;
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const moveFocus = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -30,7 +31,7 @@ export function ResultViewTabs(props: {
   };
 
   return (
-    <div role="tablist" aria-label="Finding views" className="flex min-w-0 items-center gap-1 overflow-x-auto border-b border-border px-3 pt-2">
+    <div role="tablist" aria-label="Finding views" className="flex min-w-0 flex-wrap items-center gap-1 border-b border-border px-3 pt-2">
       {VIEWS.map((view, index) => {
         const selected = value === view.value;
         return (
@@ -39,6 +40,7 @@ export function ResultViewTabs(props: {
             id={`source-results-tab-${view.value}`}
             type="button"
             role="tab"
+            aria-label={`${view.label} ${loading ? "loading" : counts[view.value]}`}
             aria-selected={selected}
             aria-controls="source-results-panel"
             tabIndex={selected ? 0 : -1}
@@ -51,7 +53,7 @@ export function ResultViewTabs(props: {
           >
             {view.label}
             <span className={`min-w-5 rounded-full px-1.5 py-0.5 text-center font-mono text-[10px] ${selected ? "bg-accent-subtle text-accent" : "bg-surface-tertiary text-text-muted"}`}>
-              {counts[view.value]}
+              {loading ? "…" : counts[view.value]}
             </span>
           </button>
         );

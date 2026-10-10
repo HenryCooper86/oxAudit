@@ -1,3 +1,4 @@
+import { phaseProgress } from "../features/runs/nativeProgress";
 import { assessRecheck } from "../features/source-scan/recheck";
 import { ReviewChangesPanel } from "../features/source-scan/ReviewChangesPanel";
 import { useReviewChanges } from "../features/source-scan/useReviewChanges";
@@ -16,6 +17,8 @@ import {
 import { FindingDetail } from "../components/FindingDetail";
 import { Button, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
+import { useServerPage } from "../lib/serverPagination";
+import { ServerPageState } from "../components/workbench/ServerPageState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { ToolPage } from "../components/workbench/ToolPage";
@@ -71,6 +74,10 @@ import type {
   ScanOptions,
   RecheckSourceResult,
   Severity,
+  SourceFindingsQuery,
+  SourceFindingsPage,
+  SourceRunMetadata,
+  ResultPageQuery,
 } from "../lib/types";
 
 const SEVERITIES: Array<Severity | "all"> = [
@@ -133,6 +140,10 @@ export function SourceScanPage(): JSX.Element {
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [runs, setRuns] = useState<ScanRunSummary[]>([]);
   const [run, setRun] = useState<ScanRunDetail | null>(null);
+  const [pagedRun, setPagedRun] = useState(false);
+  const [pageRevision, setPageRevision] = useState(0);
+  const [copyingJson, setCopyingJson] = useState(false);
+  const restoreMetadata = (metadata: SourceRunMetadata) => { setRun({ ...metadata, findings: [] }); setPagedRun(true); setPageRevision(value => value + 1); };
   const [targetLoading, setTargetLoading] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
   const [localRunning, setRunning] = useState(false);
@@ -207,7 +218,8 @@ export function SourceScanPage(): JSX.Element {
       try {
         const progressUnlisten = await listen<ScanProgress>("scan://progress", (event) => {
           const active = useScanWorkStore.getState().active;
-          if (!disposed && active && !active.terminalStatus && (!event.payload.operationId || event.payload.operationId === active.operationId)) setProgress(event.payload);
+          const parsed = phaseProgress(event.payload, ["walking", "scanning", "exploitation-signal"]);
+          if (!disposed && parsed && active?.owner === "source" && !active.terminalStatus && parsed.operationId === active.operationId) setProgress(parsed as ScanProgress);
         });
         if (disposed) {
           progressUnlisten();
@@ -217,8 +229,9 @@ export function SourceScanPage(): JSX.Element {
 
         const doneUnlisten = await listen<ScanProgress>("scan://done", (event) => {
           const active = useScanWorkStore.getState().active;
-          if (!disposed && active && !active.terminalStatus && (!event.payload.operationId || event.payload.operationId === active.operationId)) {
-            setProgress((current) => ({ ...current, ...event.payload }));
+          const parsed = phaseProgress(event.payload, ["walking", "scanning", "exploitation-signal"]);
+          if (!disposed && parsed && active?.owner === "source" && !active.terminalStatus && parsed.operationId === active.operationId) {
+            setProgress(parsed as ScanProgress);
           }
         });
         if (disposed) {
@@ -273,7 +286,9 @@ export function SourceScanPage(): JSX.Element {
           if (disposed || !loaded) return;
           setProject(loaded.context);
           setRuns(loaded.runs);
-          setRun(unsaved ?? loaded.run);
+          if (unsaved) { setRun(unsaved); setPagedRun(false); }
+          else if (loaded.run) restoreMetadata(loaded.run);
+          else { setRun(null); setPagedRun(false); }
           setScanOptions((current) =>
             hydrateSourceScanOptionsFromProject(current, loaded.context.lastOptions),
           );
@@ -397,7 +412,7 @@ export function SourceScanPage(): JSX.Element {
     setOperationError(null);
     setOperationRetry(null);
     setCancelled(false);
-    setProgress({ phase: "walking" });
+    setProgress(null);
     try {
       const runtime = await resolveRuntimeProject(target, api.setActiveProject);
       setActiveProjectStore(runtime.runtimePath);
@@ -427,6 +442,7 @@ export function SourceScanPage(): JSX.Element {
         return;
       }
       setRun(result);
+      setPagedRun(false);
       settledRevisionRef.current = { path: target, revision: useScanWorkStore.getState().recoveryRevision };
       scanInvocationRef.current = null;
       setSelectedFingerprint((current) =>
@@ -489,14 +505,14 @@ export function SourceScanPage(): JSX.Element {
 
   const recheckFinding = async (finding: Finding) => {
     if (!run || !project || run.status !== "completed" || run.persistence.status !== "saved" || project.policy.status === "invalid" || finding.observationRunId !== run.runId || running || retryingSave || savingReview || unsavedRecheck) return;
-    const original = run;
+    const original = pagedRun ? { ...run, findings: [finding] } : run;
     const generation = runLoadGenerationRef.current;
     const ownership = acquireScan("source", original.summary.path, "Rechecking finding");
     if (ownership === null) return;
     scanInvocationRef.current = ownership;
     const current = () => generation === runLoadGenerationRef.current && useScanWorkStore.getState().active?.id === ownership;
     setRunning(true);
-    setProgress({ phase: "walking" });
+    setProgress(null);
     setSelectedFingerprint(finding.fingerprint);
     setRecheck({ originalRunId: original.runId, fingerprint: finding.fingerprint, message: "Rechecking with the original saved scan options…" });
     let newRunId: string | undefined;
@@ -605,17 +621,15 @@ export function SourceScanPage(): JSX.Element {
     if (runId === run?.runId) return;
     const generation = ++runLoadGenerationRef.current;
     setLoadingRunId(runId);
+    setSelectedFingerprint(null);
     setOperationError(null);
     setOperationRetry(null);
     try {
-      const loaded = await api.loadSourceRun(runId);
+      const loaded = await api.loadSourceRunMetadata(runId);
+      if (project && loaded.projectId !== project.projectId) throw new Error("Saved source run belongs to a different project.");
       if (generation !== runLoadGenerationRef.current) return;
-      setRun(loaded);
-      setSelectedFingerprint((current) =>
-        current && loaded.findings.some((finding) => finding.fingerprint === current)
-          ? current
-          : null,
-      );
+      restoreMetadata(loaded);
+      setSelectedFingerprint(null);
     } catch (error) {
       if (generation === runLoadGenerationRef.current) {
         const normalized = normalizeCommandError(error);
@@ -644,6 +658,7 @@ export function SourceScanPage(): JSX.Element {
       reconcileSourceRunSave(requestedPath, saved);
       if (generation !== runLoadGenerationRef.current) return;
       setRun(saved);
+      setPagedRun(false);
       push("success", "The scan run was saved to project history.");
       try {
         await refreshMetadata(saved.projectId, generation);
@@ -662,16 +677,18 @@ export function SourceScanPage(): JSX.Element {
 
   const saveReview = async (request: ReviewRequest) => {
     if (!run || savingReview) return;
+    const requestedRunId = run.runId, generation = runLoadGenerationRef.current;
     setSavingReview(true);
     setReviewError(null);
     setOperationError(null);
     setOperationRetry(null);
     try {
       await api.saveFindingReview(request);
+      if (generation !== runLoadGenerationRef.current) return;
       push("success", "Review saved.");
-      let refreshed: ScanRunDetail;
+      let refreshed: SourceRunMetadata;
       try {
-        refreshed = await api.loadSourceRun(run.runId);
+        refreshed = await api.loadSourceRunMetadata(run.runId);
       } catch (error) {
         const normalized = normalizeCommandError(error);
         setOperationError({
@@ -685,7 +702,8 @@ export function SourceScanPage(): JSX.Element {
         return;
       }
 
-      setRun(refreshed);
+      if (generation !== runLoadGenerationRef.current || refreshed.runId !== requestedRunId) return;
+      restoreMetadata(refreshed);
       setSelectedFingerprint(request.fingerprint);
       setReviewAnnouncement("Review saved and finding views refreshed.");
       try {
@@ -705,12 +723,15 @@ export function SourceScanPage(): JSX.Element {
   // surfaces as a toast.
   const resetReview = async (request: ReviewRequest) => {
     if (!run || savingReview) return;
+    const requestedRunId = run.runId, generation = runLoadGenerationRef.current;
     setSavingReview(true);
     setReviewError(null);
     try {
       await api.deleteFindingReview(request);
-      const refreshed = await api.loadSourceRun(run.runId);
-      setRun(refreshed);
+      if (generation !== runLoadGenerationRef.current) return;
+      const refreshed = await api.loadSourceRunMetadata(run.runId);
+      if (generation !== runLoadGenerationRef.current || refreshed.runId !== requestedRunId) return;
+      restoreMetadata(refreshed);
       setSelectedFingerprint(request.fingerprint);
       setReviewAnnouncement("Review reset and finding views refreshed.");
       push("success", "The decision was reset to candidate; it stays in the review history.");
@@ -728,10 +749,14 @@ export function SourceScanPage(): JSX.Element {
     }
   };
 
-  const reviewChanges = useReviewChanges(project?.canonicalPath ?? "", run);
+  const reviewChanges = useReviewChanges(project?.canonicalPath ?? "", run, pagedRun);
+  const pageQuery: SourceFindingsQuery = { ...query, newOnly: Boolean(query.newOnly && reviewChanges.hasBaseline), baselineRunId: reviewChanges.baseline === "automatic" ? null : reviewChanges.baseline, filePaths: reviewChanges.filePaths };
+  const loadFindingsPage = useCallback((id: string, value: ResultPageQuery) => api.loadSourceRunPage(id, value as SourceFindingsQuery), []);
+  const savedFindings = useServerPage<Finding, SourceFindingsPage>(pagedRun ? run?.runId ?? null : null, pageQuery, loadFindingsPage, run?.summary.totalFindings ?? 0, pageRevision);
   const findings = reviewChanges.findings;
-  const counts = useMemo(() => countViews(findings), [findings]);
-  const filtered = useMemo(
+  const localCounts = useMemo(() => countViews(findings), [findings]);
+  const counts = pagedRun ? savedFindings.data?.viewCounts ?? { open: 0, otherScopes: 0, closed: 0, resolved: 0 } : localCounts;
+  const localFiltered = useMemo(
     () =>
       sortFindings(
         filterFindings(findings, { ...query, newOnly: query.newOnly && reviewChanges.hasBaseline }),
@@ -739,6 +764,9 @@ export function SourceScanPage(): JSX.Element {
       ),
     [findings, query, reviewChanges.hasBaseline],
   );
+  const filtered = loadingRunId ? [] : pagedRun ? savedFindings.items : localFiltered;
+  const findingsTotal = pagedRun ? savedFindings.data?.total ?? run?.summary.totalFindings ?? 0 : reviewChanges.allFindings.length;
+  const filteredTotal = pagedRun ? savedFindings.total : filtered.length;
   const effectiveSelection = nextSelection(filtered, selectedFingerprint);
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [bulkSaving, setBulkSaving] = useState(false);
@@ -768,10 +796,12 @@ export function SourceScanPage(): JSX.Element {
 
   const applyBulkReview = async (requests: ReviewRequest[]) => {
     if (!run || bulkSaving) return;
+    const requestedRunId = run.runId, generation = runLoadGenerationRef.current;
     setBulkSaving(true);
     setBulkFailures(0);
     try {
       const outcome = await api.saveFindingReviews(requests);
+      if (generation !== runLoadGenerationRef.current) return;
       setBulkFailures(outcome.failures.length);
       // The selection is cleared only on a clean run. After a partial one the
       // reviewer keeps their selection so they can see what they acted on.
@@ -785,8 +815,9 @@ export function SourceScanPage(): JSX.Element {
           `${outcome.recorded.length} recorded, ${outcome.failures.length} not applied.`,
         );
       }
-      const refreshed = await api.loadSourceRun(run.runId);
-      setRun(refreshed);
+      const refreshed = await api.loadSourceRunMetadata(run.runId);
+      if (generation !== runLoadGenerationRef.current || refreshed.runId !== requestedRunId) return;
+      restoreMetadata(refreshed);
       setReviewAnnouncement(`${outcome.recorded.length} reviews recorded.`);
     } catch (error) {
       setReviewError(normalizeCommandError(error));
@@ -798,7 +829,7 @@ export function SourceScanPage(): JSX.Element {
     filtered.find((finding) => finding.fingerprint === effectiveSelection) ?? null;
   const hasExplicitSelection =
     selectedFingerprint !== null && selectedFingerprint === effectiveSelection;
-  const languages = useMemo(() => {
+  const localLanguages = useMemo(() => {
     const values = new Set<string>();
     for (const finding of findings) {
       if (finding.language) values.add(finding.language);
@@ -806,25 +837,31 @@ export function SourceScanPage(): JSX.Element {
     return Array.from(values).sort();
   }, [findings]);
 
+  const languages = pagedRun ? savedFindings.data?.languages ?? [] : localLanguages;
+
   const copyJson = async () => {
     if (!run) return;
-    const report = {
-      tool: "oxAudit",
-      exportedAt: new Date().toISOString(),
-      projectId: run.projectId,
-      runId: run.runId,
-      baselineRunId: run.baselineRunId,
-      status: run.status,
-      summary: run.summary,
-      findings: sanitizeExport(run.findings),
-    };
+    const requestedRun = run;
+    setCopyingJson(true);
     try {
+      const complete = pagedRun ? await api.loadSourceRun(requestedRun.runId) : requestedRun;
+      if (complete.runId !== requestedRun.runId || complete.projectId !== requestedRun.projectId) throw new Error("Complete report belongs to a different run.");
+      const report = {
+        tool: "oxAudit",
+        exportedAt: new Date().toISOString(),
+        projectId: run.projectId,
+        runId: run.runId,
+        baselineRunId: run.baselineRunId,
+        status: run.status,
+        summary: run.summary,
+        findings: sanitizeExport(complete.findings),
+      };
       if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
       await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
       push("success", "Redacted scan report copied to clipboard.");
     } catch {
-      push("error", "Clipboard unavailable.");
-    }
+      push("error", "The complete report could not be copied.");
+    } finally { setCopyingJson(false); }
   };
 
   const copyFinding = async (finding: Finding) => {
@@ -868,7 +905,7 @@ export function SourceScanPage(): JSX.Element {
         options={scanOptions}
         running={running}
         blocked={Boolean(activeWork)}
-        cancelling={cancelling}
+        cancelling={cancelling || Boolean(activeWork?.owner === "source" && activeWork.cancelling)}
         dropping={false}
         progress={progress}
         onPathChange={changePath}
@@ -878,11 +915,20 @@ export function SourceScanPage(): JSX.Element {
         onRun={(ignoreInvalidPolicy) => void runScan(ignoreInvalidPolicy)}
         onCancel={() => void cancel()}
       />
-      {project && <ReviewChangesPanel review={reviewChanges} run={run} runs={runs} newOnly={Boolean(query.newOnly)} onNewOnly={newOnly => setQuery(current => ({ ...current, newOnly }))} />}
+      {project && <ReviewChangesPanel paged={pagedRun} review={pagedRun ? { ...reviewChanges, counts: savedFindings.data?.diffCounts ?? reviewChanges.counts, comparisonLoading: savedFindings.loading, comparisonError: savedFindings.error, hasBaseline: reviewChanges.hasBaseline && !savedFindings.error } : reviewChanges} run={run} runs={runs} newOnly={Boolean(query.newOnly)} onNewOnly={newOnly => setQuery(current => ({ ...current, newOnly }))} />}
       <RunTimeline
-        active={!running && run?.status === "completed" ? "completed" : !running && run?.status === "incomplete" ? "incomplete" : !running ? "discovering" : progress?.phase === "walking" ? "discovering" : progress?.phase === "scanning" ? "detecting" : "persisting"}
+        kind="source"
         running={running}
         hasCompletedResult={run?.status === "completed"}
+        title="Scanning source"
+        progress={progress?.phase ? {
+          operationId: progress.operationId,
+          phase: progress.phase,
+          label: progress.phase === "walking" ? "Walking the project folder" : progress.phase === "scanning" ? "Scanning files" : progress.phase === "exploitation-signal" ? "Checking exploitation signals" : progress.phase,
+          done: progress.done, total: progress.total,
+          unit: progress.phase === "scanning" ? "files" : undefined,
+          detail: progress.file,
+        } : null}
       />
 
       {!scanOptions.resolved && (
@@ -945,7 +991,7 @@ export function SourceScanPage(): JSX.Element {
       {run && <EvidenceSummary label="Source" evidence={sourceEvidence(run)} running={running} cancelling={cancelling}
         operation={cancelled ? "Latest operation cancelled" : operationError && operationRetry?.kind === "scan" ? "Latest operation failed" : null}>
         <p>Target: <span className="break-all font-mono">{run.summary.path}</span></p>
-        <p>Analysis tiers on recorded findings: {run.findings.filter(finding => finding.analysis === "syntax").length} syntax · {run.findings.filter(finding => finding.analysis === "text").length} text. These counts describe findings, not coverage of every file.</p>
+        {!pagedRun && <p>Analysis tiers on recorded findings: {run.findings.filter(finding => finding.analysis === "syntax").length} syntax · {run.findings.filter(finding => finding.analysis === "text").length} text. These counts describe findings, not coverage of every file.</p>}
         {run.baselineRunId && <p>Baseline run: <span className="break-all font-mono">{run.baselineRunId}</span></p>}
       </EvidenceSummary>}
 
@@ -976,18 +1022,19 @@ export function SourceScanPage(): JSX.Element {
           <p className="mt-2">Original evidence is retained. Recheck is a scan observation and does not change the review decision.</p>
         </section>
       )}
-      {run && reviewChanges.allFindings.length > 0 && (
+      {run && findingsTotal > 0 && (
         <section aria-label="Source scan results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <ResultViewTabs
             value={query.view}
             counts={counts}
+            loading={pagedRun && savedFindings.loading}
             onChange={(view) => {
               setQuery((current) => ({ ...current, view }));
               setSelectedFingerprint(null);
             }}
           />
           <ResultsToolbar
-            countLabel={`${filtered.length} in this view · ${reviewChanges.allFindings.length} total`}
+            countLabel={pagedRun && savedFindings.loading ? `Loading this view · ${findingsTotal} total` : pagedRun && savedFindings.error ? `This view is unavailable · ${findingsTotal} total` : `${filteredTotal} in this view · ${findingsTotal} total`}
             filters={
               <>
                 <Select aria-label="Finding category" value={query.category} onChange={(event) => setQuery((current) => ({ ...current, category: event.target.value as ResultsQuery["category"] }))} variant="compact">
@@ -1020,15 +1067,16 @@ export function SourceScanPage(): JSX.Element {
               </label>
             }
             actions={
-              <Button type="button" onClick={() => void copyJson()} variant="outline" size="md">
+              <Button type="button" onClick={() => void copyJson()} disabled={copyingJson} variant="outline" size="md">
                 <Clipboard size={13} aria-hidden="true" />
-                Copy JSON
+                {copyingJson ? "Loading complete report…" : "Copy JSON"}
               </Button>
             }
           />
 
+          {pagedRun && <ServerPageState page={savedFindings} />}
           <div id="source-results-panel" role="tabpanel" aria-labelledby={`source-results-tab-${query.view}`}>
-            {filtered.length > 0 ? (
+            {filtered.length > 0 || pagedRun && (savedFindings.loading || savedFindings.error || loadingRunId) ? (
               <SplitWorkspace
                 panelId="source-findings"
                 listLabel="Findings"
@@ -1039,6 +1087,7 @@ export function SourceScanPage(): JSX.Element {
                   <>
                     <FindingList
                       findings={filtered}
+                      serverPagination={pagedRun ? savedFindings : undefined}
                       selectedFingerprint={effectiveSelection}
                       onSelect={setSelectedFingerprint}
                       selection={selection}
@@ -1075,7 +1124,7 @@ export function SourceScanPage(): JSX.Element {
                   />
                 ) : <InlineState tone="empty" title="Select a finding" compact />}
               />
-            ) : (
+            ) : pagedRun && (savedFindings.loading || savedFindings.error) ? null : (
               <InlineState
                 tone="empty"
                 title="No findings match this view and its filters"
@@ -1087,12 +1136,12 @@ export function SourceScanPage(): JSX.Element {
         </section>
       )}
 
-      {run && reviewChanges.allFindings.length === 0 && (
+      {run && findingsTotal === 0 && (
         <InlineState
           tone="empty"
           title="No findings detected"
           description={`No findings were detected in ${run.summary.filesScanned} scanned files; ${run.summary.filesSkipped} files were skipped. This does not establish that unscanned files are safe.`}
-          action={<Button type="button" onClick={() => void copyJson()} variant="outline" size="md"><Clipboard size={13} aria-hidden="true" />Copy JSON</Button>}
+          action={<Button type="button" onClick={() => void copyJson()} disabled={copyingJson} variant="outline" size="md"><Clipboard size={13} aria-hidden="true" />Copy JSON</Button>}
         />
       )}
 

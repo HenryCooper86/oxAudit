@@ -1,80 +1,108 @@
 # Release checklist
 
-Everything engineering can do without a decision from the repository owner is
-done. This file records exactly what remains, who owns it, and the procedure
-to run once answered — so the first release is a short afternoon, not a
-project.
+Last reviewed **2026-10-10** against GitHub repository/release metadata and
+the release workflow on `main`. Repository visibility is resolved: oxAudit
+is public, and its first release is already published. The next release
+needs a new version and a reviewed artifact set.
 
-## Owner decisions — two answered 2026-09-26
+## Observed release state
 
-1. **Repository visibility — STILL OPEN, the only remaining blocker.**
-   GitHub release assets on a private repository cannot be downloaded by
-   consumers, so every distribution path (Action, installer, brew) requires
-   either making this repository public or creating a separate public
-   distribution repository that mirrors the release assets. A one-way door;
-   only the owner can open it.
-2. **Signing scheme — ANSWERED: minisign on top of keyless cosign. DONE.**
-   Both ship in the release workflow: keyless Sigstore signatures (verifiable
-   with `cosign verify-blob`, no key custody) and detached minisign
-   signatures verifiable fully offline against `minisign.pub` committed at
-   the repository root. The keypair was generated on the owner's machine and
-   lives at `~/.oxaudit/release-keys/` (private key never committed); the
-   private key is stored as the `MINISIGN_PRIVATE_KEY` repository secret. It
-   is unencrypted so CI can sign non-interactively — its confidentiality is
-   the secret store's; rotate the keypair if the secret is ever exposed
-   (regenerate, push the new `minisign.pub`, re-sign the next release).
-3. **macOS/Windows signing credentials — ANSWERED: no developer accounts
-   exist yet. DONE: CLI + Linux-first releases.** The desktop bundle job is
-   skipped unless the repository variable `DESKTOP_BUNDLES=true` is set;
-   when it is, the fail-closed native-signing gate inside that job enforces
-   the six `APPLE_*` and `WINDOWS_CERTIFICATE*` secrets before any bundle
-   can publish. First releases therefore contain every `oxaudit-cli` binary,
-   the Linux desktop artifacts, and both SBOMs — and say so in their notes.
-   When the accounts exist: set the secrets, set `DESKTOP_BUNDLES=true`,
-   and the next tag ships notarized/Authenticode-signed desktop bundles.
+- [The repository](https://github.com/HenryCooper86/oxAudit) is public.
+- [Published v0.1.0](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.1.0)
+  (release ID `397101533`) was published on **2026-09-26 at 05:26:54 UTC**
+  and is returned by GitHub's latest-release endpoint.
+- A separate [draft named oxAudit v0.1.0](https://github.com/HenryCooper86/oxAudit/releases/tag/untagged-08a29b9a10217b961a24)
+  (release ID `397102898`) also references tag `v0.1.0`. It has nine assets
+  and no cosign bundle or minisign attachments. The published release has
+  twenty assets. **Owner review remains:** determine why this duplicate
+  draft exists and whether to retain or remove it. It is not evidence that
+  the published release is incomplete; do not publish it as another v0.1.0
+  without reviewing its origin and artifacts.
 
-## What already exists
+The published v0.1.0 asset inventory is:
 
-- Tag-driven release workflow: three-platform bundles + CLI, SBOMs,
-  SHA256SUMS.txt, SLSA build-provenance attestations, **keyless cosign
-  signatures** for `SHA256SUMS.txt` and every `oxaudit-cli-*` binary, draft
-  release gated on a human reviewing the artifact list.
-- Multi-architecture container image (`ghcr.io/henrycooper86/oxaudit`,
-  linux/amd64 + linux/arm64): built natively per architecture, merged into
-  one index, cosign-signed; the pinned digest ships as `oxaudit-container.txt`
-  and in the release notes.
-- `action/action.yml`: composite GitHub Action — downloads a pinned release,
-  verifies it against `SHA256SUMS.txt`, runs the scan. Ready for
-  `uses: HenryCooper86/oxAudit/action@<tag>` the moment the repo (or the
-  distro mirror) is public.
-- `scripts/install.sh`: platform-detecting curl|sh installer with checksum
-  verification before anything executes.
+| Artifact | Published files |
+| --- | --- |
+| Linux x86_64 CLI | `oxaudit-cli-linux-x86_64` |
+| macOS universal CLI | `oxaudit-cli-macos-universal` |
+| Windows x86_64 CLI | `oxaudit-cli-windows-x86_64.exe` |
+| Linux x86_64 desktop | AppImage, `.deb`, `.rpm` |
+| SBOMs | `oxaudit-rust.cdx.json`, `oxaudit-npm.cdx.json` |
+| Checksums | `SHA256SUMS.txt` |
+| Signature attachments | `.bundle` and `.minisig` for each CLI and the checksum list; `.bundle.minisig` files for the CLI bundles |
 
-## The procedure, once visibility is answered
+There is no Linux aarch64 CLI, macOS/Windows desktop installer, or
+`oxaudit-container.txt` in this published asset list. This inventory checks
+availability; downloaded checksums, signatures, attestations, and anonymous
+container pulls were not independently verified during this maintenance
+review.
 
-1. Make the repository public **or** create the public distribution repo and
-   point `OXAUDIT_REPO` (installer) and the Action's `repo` input at it.
-2. Decide the version (`0.1.0` — the manifests already agree).
-3. Push the tag: `git tag v0.1.0 && git push origin v0.1.0`.
-4. Review the draft release the workflow creates: artifact list (CLI +
-   Linux + SBOMs), signing posture (cosign bundles, minisig files), notes.
-   Publish it.
-5. Exercise the distribution paths from a clean machine: `action/action.yml`
-   against a sample repo, `scripts/install.sh`, `minisign -Vm` and
-   `cosign verify-blob` and `gh attestation verify` on a downloaded binary.
-6. One-time, after the first release that runs the container jobs: flip the
-   ghcr.io package to public (GitHub → Packages → oxaudit → Package
-   settings → Danger Zone → Change visibility). Packages pushed via
-   `GITHUB_TOKEN` start private even on public repos, and a private package
-   breaks anonymous `docker pull`. Then verify `docker pull
-   ghcr.io/henrycooper86/oxaudit:latest` without credentials.
-7. (Optional, public repo) submit the brew tap and mark the Action as
-   marketplace-ready.
+## What the current workflow is configured to build
 
-### Already done (2026-09-26)
+The [release workflow](../.github/workflows/release.yml) verifies versions,
+frontend and Rust checks before building. A real tag release is configured
+to produce Linux x86_64 desktop artifacts; Linux x86_64/aarch64, macOS
+universal, and Windows x86_64 CLIs; both SBOMs; checksums; build-provenance
+attestations; keyless cosign bundles; and minisign signatures. It creates a
+draft release for human review.
 
-- `MINISIGN_PRIVATE_KEY` secret set; `minisign.pub` committed.
-- Desktop-bundle job gated behind `DESKTOP_BUNDLES` (off), signing gate
-  armed inside it.
-- Release notes template documents both signature schemes and states that
-  desktop bundles are deliberately absent.
+The workflow also builds native linux/amd64 and linux/arm64 container images,
+merges and cosign-signs their index, and stages its pinned reference as
+`oxaudit-container.txt`. These are workflow capabilities, not additional
+published v0.1.0 assets. Confirm the reference and anonymous pull at the next
+release that includes the container jobs. GitHub's Container registry
+[starts new packages as private](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pushing-container-images),
+so repository visibility alone does not prove package availability.
+
+macOS/Windows desktop bundles require `DESKTOP_BUNDLES=true`; no repository
+variables were returned at this review. The previous owner decision
+(2026-09-26) was CLI + Linux-first distribution. Before enabling native
+desktop bundles, configure the six `APPLE_*` and two
+`WINDOWS_CERTIFICATE*` secrets required by
+[`tools/require-release-signing.mjs`](../tools/require-release-signing.mjs)
+and validate notarization/Authenticode signing. The workflow fails closed
+when required native signing values are missing. Review the generated notes
+as well: their desktop-availability paragraph currently assumes these
+bundles are absent.
+
+The committed `minisign.pub` is the offline verification key, and CI reads
+`MINISIGN_PRIVATE_KEY` from repository secrets. Keep the private key out of
+the repository; if it is exposed, rotate the keypair and document the new
+verification key before the next release.
+
+## Next release procedure
+
+1. Choose a new, unpublished version. Update `src-tauri/Cargo.toml` and
+   `package.json` together and run `node tools/check-versions.mjs`.
+   **Do not recreate or move the published `v0.1.0` tag.**
+2. Run the checks required by the release workflow and review a manual
+   `dry_run=true` build. Confirm platform coverage and expected file names,
+   especially the new Linux aarch64 CLI. A dry run skips container publishing;
+   verify that reference after the real tag run.
+3. Confirm the intended desktop signing posture and secret configuration.
+   Keep `DESKTOP_BUNDLES` off until signed native bundles and accurate notes
+   have been validated.
+4. Tag the reviewed commit with the new `v<version>` tag and push that tag.
+   Wait for all required build, signing, attestation, and container jobs.
+5. Review the resulting draft by release ID: CLI/Linux/SBOM inventory,
+   checksum coverage, cosign/minisign attachments, provenance, container
+   digest, and accurate platform notes. Publish only the reviewed new
+   release. Review the old duplicate v0.1.0 draft separately.
+6. Exercise the pinned release from a clean machine: the composite Action
+   against a sample repository, the installer, `minisign -Vm`,
+   `cosign verify-blob` with the expected workflow identity/issuer, and
+   `gh attestation verify` on a downloaded binary. Confirm a container pull
+   by the released digest without credentials; the owner can make the
+   package public if needed after reviewing its package settings.
+7. Record the tested version, platform, checks, and remaining limitations.
+   Brew tap and Action Marketplace publication remain optional owner work.
+
+## Current distribution limits
+
+[`action/action.yml`](../action/action.yml) selects Linux x64, macOS x64/ARM64,
+and Windows x64 binaries and verifies their release checksums.
+[`scripts/install.sh`](../scripts/install.sh) selects Linux x86_64/aarch64
+and macOS x86_64/ARM64. Its Linux aarch64 path needs a later published
+release containing `oxaudit-cli-linux-aarch64`; v0.1.0 does not provide that
+asset. Pin a release that actually supplies the requested platform when
+validating distribution.

@@ -1,3 +1,4 @@
+import { progressMessage } from "../features/runs/nativeProgress";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "../lib/events";
 import { CircleX, ScanSearch } from "lucide-react";
@@ -8,10 +9,16 @@ import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan
 import { readSavedScanReceipt } from "../features/runs/savedScanReceipt";
 import { EvidenceSummary, imageEvidence } from "../features/runs/EvidenceSummary";
 import { ResultPagination } from "../components/workbench/ResultPagination";
+import { useCanonicalPage } from "../lib/serverPagination";
+import { ServerPageState } from "../components/workbench/ServerPageState";
 import { usePagination } from "../lib/pagination";
 import { normalizeCommandError } from "../lib/commandError";
-import { Button, SectionLabel, Switch } from "../components/ui";
+import { Button, Switch } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
+import { TargetBar } from "../components/workbench/TargetBar";
+import { TargetInput } from "../components/workbench/TargetInput";
+import { RunTimeline } from "../features/runs/RunTimeline";
+import { InlineState } from "../components/workbench/InlineState";
 
 export function ImageScanPage() {
   const push = useToastStore((s) => s.push);
@@ -26,10 +33,13 @@ export function ImageScanPage() {
   const [localBusy, setBusy] = useState(false);
   const busy = localBusy || activeWork?.owner === "image";
   const [progress, setProgress] = useState<string[]>([]);
+  const [progressOperationId, setProgressOperationId] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<ImageScanOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState<CanonicalRun | null>(null);
   const [receipt, setReceipt] = useState<CanonicalRun | null>(null);
+  const [layerTotal, setLayerTotal] = useState(0);
+  const [componentTotal, setComponentTotal] = useState(0);
   const mounted = useRef(true);
   const scanInFlight = useRef<number | null>(null);
   const receiptRequest = useRef(0);
@@ -56,6 +66,8 @@ export function ImageScanPage() {
       if (saved.data) {
         setOutcome(saved.data);
         setReceipt(saved.receipt);
+        setLayerTotal(saved.sections.layers ?? 0);
+        setComponentTotal(saved.sections.components ?? 0);
         if (!target.trim()) setTarget(saved.target);
         setPageStatus("image-scan", { label: `Saved image results · ${saved.data.state} · ${saved.data.result.summary.vulnerabilities} vulnerabilities`, tone: saved.data.state === "completed" ? "success" : "neutral" });
       }
@@ -71,8 +83,10 @@ export function ImageScanPage() {
     void listen<string | { operationId: string; message?: string; line?: string }>("image://progress", (event) => {
       const active = useScanWorkStore.getState().active;
       if (disposed || active?.owner !== "image" || active.terminalStatus) return;
-      if (typeof event.payload !== "string" && event.payload.operationId !== active.operationId) return;
-      const message = typeof event.payload === "string" ? event.payload : event.payload.message ?? event.payload.line ?? "";
+      const parsed = progressMessage(event.payload);
+      if (!parsed || (parsed.operationId ? parsed.operationId !== active.operationId : scanInFlight.current !== active.id)) return;
+      const message = parsed.message;
+      setProgressOperationId(active.operationId);
       setProgress((lines) => [...lines.slice(-199), message]);
     }).then((unlisten) => {
       if (disposed) unlisten();
@@ -129,9 +143,13 @@ export function ImageScanPage() {
 
   const summary = outcome?.result.summary;
   const components = useMemo(() => outcome?.result.components ?? [], [outcome]);
-  const pagination = usePagination(components);
+  const localPagination = usePagination(components);
+  const savedComponents = useCanonicalPage<BinaryComponent>(receipt?.id ?? null, "components", {}, componentTotal);
+  const pagination = receipt ? savedComponents : localPagination;
   const layers = useMemo(() => outcome?.layers ?? [], [outcome]);
-  const layerPagination = usePagination(layers);
+  const localLayerPagination = usePagination(layers);
+  const savedLayers = useCanonicalPage<ImageScanOutcome["layers"][number]>(receipt?.id ?? null, "layers", {}, layerTotal);
+  const layerPagination = receipt ? savedLayers : localLayerPagination;
 
   return (
     <ToolPage
@@ -139,65 +157,48 @@ export function ImageScanPage() {
       description="Scan a container image — a saved tar, an OCI layout, or a registry reference pulled directly — with the built-in scanner, including the OS package database inside it."
     >
       <div className="space-y-4">
-        <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px]">
-          <SectionLabel>Target</SectionLabel>
-          <input
-            aria-label="Image target"
-            className="mt-2 w-full rounded-sm border border-border bg-surface px-2 py-1 text-[13px] text-text-primary"
-            placeholder="registry-1.docker.io/library/nginx:1.25, a saved image tar, an OCI layout directory, a firmware archive"
-            value={target}
-            disabled={busy}
-            onChange={(event) => { targetEdited.current = true; receiptRequest.current += 1; setTarget(event.target.value); setOutcome(null); setReceipt(null); setAttempt(null); setError(null); }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void scan();
-            }}
+        <TargetBar primary={<>
+          <Button disabled={Boolean(activeWork) || busy || !target.trim()} onClick={() => void scan()} variant="primary">
+            <ScanSearch size={13} aria-hidden="true" />Scan
+          </Button>
+          {busy && <Button variant="danger" disabled={activeWork?.cancelling} onClick={() => void cancelActiveScan()}>
+            <CircleX size={13} aria-hidden="true" />{activeWork?.cancelling ? "Cancelling…" : "Cancel"}
+          </Button>}
+        </>} secondary={<div className="flex min-w-0 flex-wrap items-start gap-3">
+          <TargetInput
+            label="Advisory database (optional)" inputLabel="Advisory database path"
+            value={advisoryDbPath} onChange={setAdvisoryDbPath} disabled={busy}
+            pickers={["file"]} pickerLabels={{ file: "Choose database…" }}
+            placeholder="advisories.sqlite3"
+            hint="Used for local advisory matching. Build a database on the Advisory Database page."
           />
-          <label className="mt-3 flex items-center gap-2 text-[12px] text-text-secondary">
-            Advisory database (optional — offline advisory matching)
-            <input
-              aria-label="Advisory database path"
-              className="min-w-[260px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
-              placeholder="advisories.sqlite3 (built on the Advisory Database page)"
-              value={advisoryDbPath}
-              disabled={busy}
-              onChange={(event) => setAdvisoryDbPath(event.target.value)}
-            />
-          </label>
-          <label className="mt-3 flex items-center gap-2 text-[12px] text-text-secondary">
-            <Switch checked={offline} onChange={setOffline} disabled={busy} label="Offline advisories" />
-            Offline advisories — answer distro packages only from the advisory database
-          </label>
-          <div className="mt-3 flex gap-2">
-            <Button disabled={Boolean(activeWork) || busy || !target.trim()} onClick={scan}>
-              <ScanSearch size={13} aria-hidden />
-              Scan
-            </Button>
-            {busy && (
-              <Button variant="outline" disabled={activeWork?.cancelling} onClick={() => void cancelActiveScan()}>
-                <CircleX size={13} aria-hidden />
-                Cancel
-              </Button>
-            )}
-          </div>
-        </section>
+          <Switch checked={offline} onChange={setOffline} disabled={busy} label="Offline advisories" />
+        </div>}>
+          <TargetInput
+            label="Image target" inputLabel="Image target" value={target}
+            disabled={busy || Boolean(activeWork)}
+            pickers={["file", "folder"]}
+            pickerLabels={{ file: "Choose image file…", folder: "Choose OCI folder…" }}
+            placeholder="registry.example.com/team/app:tag or a saved image path"
+            hint="Supports a saved image tar, OCI layout folder, firmware archive, or a full registry reference. Type registry.example.com/team/app:tag or a digest reference. Choose Scan when ready."
+            onChange={value => { targetEdited.current = true; receiptRequest.current += 1; setTarget(value); setOutcome(null); setReceipt(null); setAttempt(null); setProgress([]); setError(null); }}
+          />
+        </TargetBar>
+
+        <RunTimeline kind="image" running={busy} hasCompletedResult={Boolean(outcome)}
+          title="Scanning image" detail={progress[progress.length - 1]} logs={progress} detailsOperationId={progressOperationId} />
 
         {error && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-warning">{error}</section>
+          <InlineState tone={error.toLowerCase().includes("cancelled") ? "unavailable" : "error"} title={error.toLowerCase().includes("cancelled") ? "Image scan cancelled" : "Image scan unavailable"} description={error}
+            action={!busy && !error.toLowerCase().includes("cancelled") ? <Button variant="outline" onClick={() => void scan()} disabled={Boolean(activeWork) || !target.trim()}>Retry scan</Button> : undefined} />
         )}
         {attempt && !outcome && attempt.state !== "completed" && (
           <p role="status" className="text-[12px] text-warning">Latest saved attempt: {attempt.state}. Saved evidence could not be loaded.</p>
         )}
 
-        {progress.length > 0 && !outcome && (
-          <details className="rounded-sm border border-border bg-surface-secondary p-4">
-            <summary className="cursor-pointer text-[12px] text-text-muted">Progress log</summary>
-            <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-text-secondary">
-              {progress.join("\n")}
-            </pre>
-          </details>
-        )}
 
-        {outcome && <EvidenceSummary label="Image" evidence={imageEvidence(outcome, receipt)} running={busy} cancelling={activeWork?.cancelling} attempt={attempt}
+
+        {outcome && <EvidenceSummary label="Image" evidence={imageEvidence(outcome, receipt, receipt ? layerTotal : undefined)} running={busy} cancelling={activeWork?.cancelling} attempt={attempt}
           operation={error ? error.toLowerCase().includes("cancelled") ? "Latest operation cancelled" : "Latest operation failed or evidence unavailable" : null}
           action={<Button type="button" variant="outline" size="sm" onClick={() => openExport(outcome.runId)}>Open Export Center</Button>}>
               <p>Target: <span className="break-all font-mono">{outcome.result.target}</span></p>
@@ -208,13 +209,13 @@ export function ImageScanPage() {
                 {outcome.localEvidence.file?.prefixSha256 && <p>Prefix SHA-256: <span className="break-all font-mono">{outcome.localEvidence.file.prefixSha256}</span> · {outcome.localEvidence.file.bytesHashed.toLocaleString()} bytes hashed</p>}
                 {outcome.localEvidence.oci?.indexSha256 && <p>OCI index SHA-256: <span className="break-all font-mono">{outcome.localEvidence.oci.indexSha256}</span></p>}
               </div>}
-            {layers.length > 0 && <>
+            {layerPagination.total > 0 && <>
+              {receipt && <ServerPageState page={savedLayers} />}
               <ul aria-label="Saved image layers" className="divide-y divide-border px-4 text-[11px] text-text-muted">
                 {layerPagination.items.map(layer => <li key={layer.digest} className="py-2"><span className="font-mono break-all">{layer.digest}</span> · {layer.sizeBytes.toLocaleString()} bytes · {layer.mediaType ?? "Media type unknown"}</li>)}
               </ul>
               {layerPagination.pageCount > 1 && <ResultPagination pagination={layerPagination} label="image layers" onPageChange={layerPagination.setPage} />}
             </>}
-            {progress.length > 0 && <pre className="max-h-32 overflow-auto whitespace-pre-wrap font-mono">{progress.join("\n")}</pre>}
         </EvidenceSummary>}
 
         {outcome && summary && (
@@ -228,6 +229,7 @@ export function ImageScanPage() {
                   .map(([name, count]) => `${count} ${name}`)
                   .join(", ")})`}
             </div>
+            {receipt && <ServerPageState page={savedComponents} />}
             <ul aria-label="Image components" className="divide-y divide-border">
               {pagination.items.map((component) => (
                 <ImageComponentRow key={`${component.vendor}:${component.product}@${component.version}`} component={component} />

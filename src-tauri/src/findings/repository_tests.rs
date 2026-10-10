@@ -17,6 +17,29 @@ use crate::models::{Finding, ScanOptions, ScanSummary};
 
 use super::*;
 
+#[test]
+fn paged_storage_schema_has_cascading_projection_rows_and_source_metadata() {
+    let repository = FindingsRepository::open_in_memory().unwrap();
+    let connection = repository.connection.lock().unwrap();
+    for table in [
+        "canonical_projection_metadata",
+        "canonical_projection_items",
+        "source_finding_index",
+    ] {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists, "missing bounded result storage: {table}");
+    }
+}
+
+#[path = "paged_repository_tests.rs"]
+mod paged_tests;
+
 #[cfg(unix)]
 fn mode(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
@@ -383,7 +406,7 @@ fn creates_current_schema() {
             row.get(0)
         })
         .expect("query migration version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 #[test]

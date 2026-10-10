@@ -565,6 +565,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_page_requests_default_omitted_and_null_queries() {
+        let (ctx, _directory) = test_context();
+        let repository = ctx.findings.service().unwrap().repository();
+        let run = oxaudit_domain::Run::queued(oxaudit_domain::RunKind::Dependencies, "/saved", 1);
+        repository.canonical_create_run(&run).unwrap();
+        let dependencies = (0..60)
+            .map(|i| serde_json::json!({"name": format!("dependency-{i}")}))
+            .collect::<Vec<_>>();
+        repository
+            .canonical_save_projection(
+                &run.id,
+                "dependencies",
+                1,
+                &serde_json::json!({
+                    "summary": {}, "dependencies": dependencies, "vulnerabilities": []
+                }),
+            )
+            .unwrap();
+        for args in [
+            serde_json::json!({"runId": run.id, "section": "dependencies"}),
+            serde_json::json!({"runId": run.id, "section": "dependencies", "query": null}),
+        ] {
+            let page = dispatch::dispatch(&ctx, "load_canonical_projection_page", args)
+                .await
+                .unwrap();
+            assert_eq!(page["limit"], 50);
+            assert_eq!(page["offset"], 0);
+            assert_eq!(page["total"], 60);
+            assert_eq!(page["items"].as_array().unwrap().len(), 50);
+            assert_eq!(page["items"][0]["name"], "dependency-0");
+            assert_eq!(page["items"][49]["name"], "dependency-49");
+        }
+    }
+
+    #[tokio::test]
+    async fn source_page_requests_default_omitted_and_null_queries_before_repository_lookup() {
+        let (ctx, _directory) = test_context();
+        for args in [
+            serde_json::json!({"runId": "missing"}),
+            serde_json::json!({"runId": "missing", "query": null}),
+        ] {
+            let error = dispatch::dispatch(&ctx, "load_source_run_page", args)
+                .await
+                .unwrap_err();
+            assert_eq!(error["code"], "notFound");
+        }
+    }
+
+    #[tokio::test]
     async fn the_default_advisory_path_lands_in_the_server_data_dir() {
         let (ctx, _dir) = test_context();
         let path = dispatch::dispatch(&ctx, "default_advisory_db_path", serde_json::json!({}))

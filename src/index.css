@@ -73,6 +73,7 @@
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
   --border-focus: rgba(255, 255, 255, 0.15);
+  --control-border: #7d776f;
 
   /* Elevation (aliased to Tailwind's shadow-* below) */
   --elevation-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
@@ -87,7 +88,7 @@
   /* Severity scale — oxAudit's own axis, shaped like the semantic triplets
      above. Five distinguishable steps plus an unknown fallback; the scanner
      UI depends on these reading apart at badge size. */
-  --sev-critical: #e5484d;
+  --sev-critical: #f16b70;
   --sev-critical-subtle: rgba(229, 72, 77, 0.1);
   --sev-critical-border: rgba(229, 72, 77, 0.28);
   --sev-high: #f0883e;
@@ -102,7 +103,7 @@
   --sev-info: #60a5fa;
   --sev-info-subtle: rgba(96, 165, 250, 0.1);
   --sev-info-border: rgba(96, 165, 250, 0.28);
-  --sev-unknown: #8a8680;
+  --sev-unknown: #99958f;
   --sev-unknown-subtle: rgba(255, 255, 255, 0.04);
   --sev-unknown-border: rgba(255, 255, 255, 0.12);
 
@@ -122,29 +123,30 @@
   --text-secondary: #6b6560;
   --text-muted: #6f6964;
 
-  --accent: #9a7c2a;
-  --accent-hover: #7e6420;
+  --accent: #7b601e;
+  --accent-hover: #654d16;
   --accent-subtle: rgba(154, 124, 42, 0.08);
   --accent-glow: rgba(154, 124, 42, 0.12);
   --accent-contrast: #ffffff;
 
-  --success: #3a9d6b;
+  --success: #21693e;
   --success-subtle: rgba(58, 157, 107, 0.08);
   --success-border: rgba(58, 157, 107, 0.2);
-  --error: #c0392b;
+  --error: #b02d20;
   --error-subtle: rgba(192, 57, 43, 0.07);
   --error-border: rgba(192, 57, 43, 0.2);
-  --warning: #c0880a;
+  --warning: #855d05;
   --warning-subtle: rgba(192, 136, 10, 0.1);
   --warning-border: rgba(192, 136, 10, 0.25);
   --warning-contrast: #1a1917;
-  --info: #2563eb;
+  --info: #1f55c6;
   --info-subtle: rgba(37, 99, 235, 0.08);
   --info-border: rgba(37, 99, 235, 0.2);
 
   --border: rgba(0, 0, 0, 0.09);
   --border-strong: rgba(0, 0, 0, 0.16);
   --border-focus: rgba(0, 0, 0, 0.18);
+  --control-border: #817a71;
 
   --elevation-sm: 0 1px 3px rgba(0, 0, 0, 0.07);
   --elevation-md: 0 4px 16px rgba(0, 0, 0, 0.09);
@@ -154,22 +156,22 @@
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.2);
 
 
-  --sev-critical: #c0392b;
+  --sev-critical: #b02d20;
   --sev-critical-subtle: rgba(192, 57, 43, 0.08);
   --sev-critical-border: rgba(192, 57, 43, 0.24);
-  --sev-high: #b4530a;
+  --sev-high: #984307;
   --sev-high-subtle: rgba(180, 83, 10, 0.08);
   --sev-high-border: rgba(180, 83, 10, 0.24);
-  --sev-medium: #a67c0a;
+  --sev-medium: #805b07;
   --sev-medium-subtle: rgba(166, 124, 10, 0.08);
   --sev-medium-border: rgba(166, 124, 10, 0.24);
-  --sev-low: #8a7320;
+  --sev-low: #75610d;
   --sev-low-subtle: rgba(138, 115, 32, 0.08);
   --sev-low-border: rgba(138, 115, 32, 0.24);
-  --sev-info: #2563eb;
+  --sev-info: #1f55c6;
   --sev-info-subtle: rgba(37, 99, 235, 0.08);
   --sev-info-border: rgba(37, 99, 235, 0.24);
-  --sev-unknown: #6b6560;
+  --sev-unknown: #605a55;
   --sev-unknown-subtle: rgba(0, 0, 0, 0.04);
   --sev-unknown-border: rgba(0, 0, 0, 0.12);
 
@@ -292,6 +294,13 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   user-select: none;
+}
+
+/* Keep editable fields visible without strengthening decorative panel borders. */
+input:not(:disabled):not([type="checkbox"]):not([type="radio"]),
+select:not(:disabled),
+textarea:not(:disabled) {
+  border-color: var(--control-border);
 }
 
 :where(button, a, input, select, textarea, [tabindex]):focus-visible {

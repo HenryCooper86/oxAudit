@@ -2,6 +2,7 @@ import { FileCode2, KeyRound } from "lucide-react";
 import { useEffect, useRef, type JSX, type KeyboardEvent } from "react";
 import { SeverityBadge } from "../../components/SeverityBadge";
 import { ResultPagination } from "../../components/workbench/ResultPagination";
+import type { Pagination } from "../../lib/pagination";
 import { usePagination } from "../../lib/pagination";
 import type { DiffStatus, Finding, FindingScope, ReviewState } from "../../lib/types";
 import { isSelected, type Selection } from "./selectionModel";
@@ -59,6 +60,7 @@ function safePreview(finding: Finding): string {
  */
 export function FindingList(props: {
   findings: Finding[];
+  serverPagination?: Pagination & { setPage(page: number): void };
   selectedFingerprint: string | null;
   onSelect(fingerprint: string): void;
   /** Omitted when the caller does not support bulk actions. */
@@ -69,7 +71,8 @@ export function FindingList(props: {
   const listRef = useRef<HTMLDivElement>(null);
   const bulkEnabled = Boolean(selection && onToggleSelect);
   const activeIndex = findings.findIndex(finding => finding.fingerprint === selectedFingerprint);
-  const pagination = usePagination(findings, 50, activeIndex);
+  const localPagination = usePagination(findings, 50, activeIndex);
+  const pagination = props.serverPagination ? { ...props.serverPagination, items: findings } : localPagination;
 
   // Keep the focused row visible when the keyboard moves past the viewport.
   useEffect(() => {
@@ -142,7 +145,7 @@ export function FindingList(props: {
         ref={listRef}
         role="listbox"
         aria-label="Findings"
-        aria-activedescendant={activeIndex >= pagination.start && activeIndex < pagination.end ? `finding-${selectedFingerprint}` : undefined}
+        aria-activedescendant={activeIndex >= 0 && (Boolean(props.serverPagination) || (activeIndex >= pagination.start && activeIndex < pagination.end)) ? `finding-${selectedFingerprint}` : undefined}
         aria-multiselectable={bulkEnabled || undefined}
         tabIndex={0}
         onKeyDown={onKeyDown}
@@ -158,7 +161,7 @@ export function FindingList(props: {
               id={`finding-${finding.fingerprint}`}
               role="option"
               aria-posinset={pagination.start + index + 1}
-              aria-setsize={findings.length}
+              aria-setsize={pagination.total}
               aria-selected={active}
               data-active={active}
               className={`flex w-full items-start gap-2 border-l-2 px-3 py-3 text-left transition-colors ${
@@ -221,7 +224,7 @@ export function FindingList(props: {
       </div>
     <ResultPagination pagination={pagination} label="findings" onPageChange={page => {
       pagination.setPage(page);
-      const first = findings[page * pagination.pageSize];
+      const first = props.serverPagination ? undefined : findings[page * pagination.pageSize];
       if (first) onSelect(first.fingerprint);
     }} />
     </>

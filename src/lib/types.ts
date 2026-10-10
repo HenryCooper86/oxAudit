@@ -716,6 +716,54 @@ export interface ScanRunDetail {
   maintenanceWarning: string | null;
 }
 
+/** Saved context only; loadSourceRun remains the complete export/recheck contract. */
+export type SourceRunMetadata = Omit<ScanRunDetail, "findings">;
+
+export interface ResultPageQuery {
+  offset?: number;
+  limit?: number;
+  search?: string;
+  severity?: Severity | "unknown" | "all" | null;
+  minimumSeverity?: Severity | "unknown" | "all" | null;
+  sort?: "original" | "severity" | "file" | "rule";
+}
+
+export interface ResultPage<T> {
+  items: T[];
+  offset: number;
+  limit: number;
+  filteredTotal: number;
+  total: number;
+  related?: { blobs: NonNullable<HistoryScanResult["blobs"]>; findingBlobIds: Record<string, string> };
+}
+
+export interface SourceFindingsQuery extends ResultPageQuery {
+  view?: "all" | "open" | "otherScopes" | "closed" | "resolved";
+  newOnly?: boolean;
+  category?: "all" | "secret" | "vulnerability";
+  scope?: "all" | FindingScope;
+  language?: string;
+  baselineRunId?: string | null;
+  filePaths?: string[] | null;
+  requireValidPolicy?: boolean;
+}
+
+export interface SourceFindingsPage extends ResultPage<Finding> {
+  viewCounts: Record<"open" | "otherScopes" | "closed" | "resolved", number>;
+  diffCounts: Record<DiffStatus, number>;
+  languages: string[];
+}
+
+export type CanonicalProjectionSection = "dependencies" | "vulnerabilities" | "components" | "semanticFindings" | "layers" | "findings" | "blobs";
+
+/** List arrays in projection are empty placeholders; sections supplies authoritative totals. */
+export interface CanonicalProjectionMetadata<T> {
+  kind: "pagedProjection";
+  projectionKind: string;
+  projection: T;
+  sections: Partial<Record<CanonicalProjectionSection, number>>;
+}
+
 export interface RecheckSourceResult {
   run: ScanRunDetail;
   options: ScanOptions;

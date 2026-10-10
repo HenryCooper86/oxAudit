@@ -1,0 +1,274 @@
+{
+  "status": "passed",
+  "cli": "/private<verified-debug-cli>",
+  "temporaryDirectory": "<pilot-workspace>",
+  "retained": true,
+  "sourceRunIds": [
+    "3a3ca2a7-1178-46db-b3e3-f7eba6234f0e",
+    "4ffc2529-dba0-4c28-9648-145eae75ef70",
+    "4fcd9d81-74ae-441b-ab20-2f69241f0f4f",
+    "e458edee-b533-44b9-9bde-4b56efa255a3"
+  ],
+  "correctedEvidence": "no longer observed (coverage unverified)",
+  "optionalEnrichment": "unavailable; requests refused without supplying provider data",
+  "refusedRequests": [
+    {
+      "method": "CONNECT",
+      "target": "www.cisa.gov:443"
+    },
+    {
+      "method": "CONNECT",
+      "target": "www.cisa.gov:443"
+    },
+    {
+      "method": "CONNECT",
+      "target": "www.cisa.gov:443"
+    }
+  ],
+  "commands": [
+    {
+      "label": "source finding",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "scan",
+        "<pilot-workspace>/project",
+        "--db",
+        "<pilot-workspace>/source-1.sqlite",
+        "--format",
+        "json",
+        "--output",
+        "<pilot-workspace>/baseline.json",
+        "--fail-on",
+        "high"
+      ],
+      "exit": 1,
+      "stderr": "Scanning <pilot-workspace>/project\n  walking\u2026\n  scanned 0/1 files\n  scanned 1/1 files\n  exploitation-signal\u2026\nScanned 1 files (0 skipped) in 608 ms\nRun 3a3ca2a7-1178-46db-b3e3-f7eba6234f0e saved to <pilot-workspace>/source-1.sqlite\nFailing: 1 finding(s) at or above high\n"
+    },
+    {
+      "label": "source finding history",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "runs",
+        "--kind",
+        "source",
+        "--db",
+        "<pilot-workspace>/source-1.sqlite",
+        "--limit",
+        "1",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "label": "SARIF export",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "export",
+        "--db",
+        "<pilot-workspace>/source-1.sqlite",
+        "--run",
+        "3a3ca2a7-1178-46db-b3e3-f7eba6234f0e",
+        "--format",
+        "sarif",
+        "--output",
+        "<pilot-workspace>/source.sarif"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "label": "unchanged baseline gate",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "scan",
+        "<pilot-workspace>/project",
+        "--db",
+        "<pilot-workspace>/source-2.sqlite",
+        "--format",
+        "json",
+        "--output",
+        "<pilot-workspace>/unchanged.json",
+        "--baseline",
+        "<pilot-workspace>/baseline.json",
+        "--fail-on-new",
+        "high"
+      ],
+      "exit": 0,
+      "stderr": "Scanning <pilot-workspace>/project\n  walking\u2026\n  scanned 0/1 files\n  scanned 1/1 files\n  exploitation-signal\u2026\nScanned 1 files (0 skipped) in 578 ms\nRun 4ffc2529-dba0-4c28-9648-145eae75ef70 saved to <pilot-workspace>/source-2.sqlite\nAgainst <pilot-workspace>/baseline.json: 0 new, 1 pre-existing, 0 no longer observed (coverage unverified)\n"
+    },
+    {
+      "label": "unchanged baseline gate history",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "runs",
+        "--kind",
+        "source",
+        "--db",
+        "<pilot-workspace>/source-2.sqlite",
+        "--limit",
+        "1",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "label": "corrected source",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "scan",
+        "<pilot-workspace>/project",
+        "--db",
+        "<pilot-workspace>/source-3.sqlite",
+        "--format",
+        "json",
+        "--output",
+        "<pilot-workspace>/corrected.json",
+        "--baseline",
+        "<pilot-workspace>/baseline.json",
+        "--fail-on-new",
+        "high"
+      ],
+      "exit": 0,
+      "stderr": "Scanning <pilot-workspace>/project\n  walking\u2026\n  scanned 0/1 files\n  scanned 1/1 files\nScanned 1 files (0 skipped) in 564 ms\nRun 4fcd9d81-74ae-441b-ab20-2f69241f0f4f saved to <pilot-workspace>/source-3.sqlite\nAgainst <pilot-workspace>/baseline.json: 0 new, 0 pre-existing, 1 no longer observed (coverage unverified)\n"
+    },
+    {
+      "label": "corrected source history",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "runs",
+        "--kind",
+        "source",
+        "--db",
+        "<pilot-workspace>/source-3.sqlite",
+        "--limit",
+        "1",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "label": "introduced source gate",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "scan",
+        "<pilot-workspace>/project",
+        "--db",
+        "<pilot-workspace>/source-4.sqlite",
+        "--format",
+        "json",
+        "--output",
+        "<pilot-workspace>/introduced.json",
+        "--baseline",
+        "<pilot-workspace>/corrected.json",
+        "--fail-on-new",
+        "high"
+      ],
+      "exit": 1,
+      "stderr": "Scanning <pilot-workspace>/project\n  walking\u2026\n  scanned 0/1 files\n  scanned 1/1 files\n  exploitation-signal\u2026\nScanned 1 files (0 skipped) in 587 ms\nRun e458edee-b533-44b9-9bde-4b56efa255a3 saved to <pilot-workspace>/source-4.sqlite\nAgainst <pilot-workspace>/corrected.json: 1 new, 0 pre-existing, 0 no longer observed (coverage unverified)\nFailing: 1 finding(s) at or above high\n"
+    },
+    {
+      "label": "introduced source gate history",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "runs",
+        "--kind",
+        "source",
+        "--db",
+        "<pilot-workspace>/source-4.sqlite",
+        "--limit",
+        "1",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "label": "malformed dependency coverage",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "deps",
+        "<pilot-workspace>/malformed",
+        "--offline",
+        "--db",
+        "<pilot-workspace>/runs.sqlite",
+        "--format",
+        "json",
+        "--output",
+        "<pilot-workspace>/malformed.json"
+      ],
+      "exit": 3,
+      "stderr": "oxaudit: incomplete dependency coverage: 1 lockfile(s) failed to parse: /private<pilot-workspace>/malformed/package-lock.json: invalid package-lock.json: EOF while parsing a value at line 2 column 0. Fix or exclude the failed lockfiles before checking advisories.\n"
+    },
+    {
+      "label": "durable source history",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "runs",
+        "--kind",
+        "source",
+        "--db",
+        "<pilot-workspace>/source-1.sqlite",
+        "--limit",
+        "20",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "label": "durable source history",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "runs",
+        "--kind",
+        "source",
+        "--db",
+        "<pilot-workspace>/source-2.sqlite",
+        "--limit",
+        "20",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "label": "durable source history",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "runs",
+        "--kind",
+        "source",
+        "--db",
+        "<pilot-workspace>/source-3.sqlite",
+        "--limit",
+        "20",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": ""
+    },
+    {
+      "label": "durable source history",
+      "argv": [
+        "/private<verified-debug-cli>",
+        "runs",
+        "--kind",
+        "source",
+        "--db",
+        "<pilot-workspace>/source-4.sqlite",
+        "--limit",
+        "20",
+        "--json"
+      ],
+      "exit": 0,
+      "stderr": ""
+    }
+  ],
+  "cliSha256": "4826dea1001760df5a8f2bc9fc89d6c26679d3bb7b3d73856438b6a295247add",
+  "toolCommit": "888be317e5bfe8da56f118009990245fc7ce86d8",
+  "toolWorkingTreeDirty": true,
+  "validationKind": "maintainer automated CLI smoke; no external participant evidence"
+}

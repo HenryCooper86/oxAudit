@@ -1,3 +1,4 @@
+import { installPagingFixtures } from "../../../tests/fixtures/pagedResults";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
@@ -17,6 +18,7 @@ const original = { ...sourceResult(), findings: [finding] };
 const options = { path: original.summary.path, includeGit: true, followSymlinks: false, maxFileSizeKb: 73, scanSecrets: false, scanVulnerabilities: true, extraIgnoredDirs: ["original"], ignoreInvalidPolicy: false, extraRulePackFiles: [] };
 const receipt: RecheckSourceResult = { run: { ...sourceResult(), runId: "next" }, options };
 beforeEach(() => {
+  installPagingFixtures(api);
   useAppStore.setState({ activeProject: original.summary.path, selectedProject: null, projectHandoff: null, settings: projectSettings, settingsLoadError: false });
   useScanWorkStore.setState({ active: null, check: null });
   vi.mocked(invoke).mockResolvedValue(undefined);
@@ -88,7 +90,7 @@ test("new-run navigation uses durable history and clears the recheck selection v
   fireEvent.click(await screen.findByRole("button", { name: "Recheck finding" }));
   fireEvent.click(await screen.findByRole("button", { name: "Open recheck run next" }));
   await screen.findByText(/No findings were detected in 1 scanned files/);
-  expect(api.loadSourceRun).toHaveBeenCalledWith("next");
+  expect(api.loadSourceRunMetadata).toHaveBeenCalledWith("next");
   expect(screen.queryByLabelText("Finding recheck outcome")).not.toBeInTheDocument();
 });
 
@@ -186,4 +188,41 @@ test("unsaved recheck remains recoverable after a failed history load keeps its 
   await waitFor(() => expect(save).toHaveBeenCalledWith("recheck-retry"));
   await screen.findByText(/No longer detected in the covered file/);
   expect(compare).toHaveBeenCalledWith("next", "s", true);
+});
+
+test('saved source restore pages global results and explicitly copies every finding with secrets redacted', async () => {
+  const findings = Array.from({ length: 120 }, (_, index) => ({ ...finding, id: `row-${index}`, fingerprint: `fp-${index}`, filePath: `src/${String(index).padStart(3, '0')}.js`, title: `Finding ${index}`, ruleName: `Rule ${index}`, language: index === 119 ? 'python' : 'javascript', category: index === 119 ? 'secret' as const : 'vulnerability' as const, matchText: index === 119 ? 'credential-never-copy' : 'eval(input)', context: index === 119 ? 'private-secret-context' : '' }));
+  const complete = { ...original, findings, summary: { ...original.summary, totalFindings: 120 } };
+  const full = vi.mocked(api.loadSourceRun).mockResolvedValue(complete);
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  render(<SourceScanPage />);
+  const list = await screen.findByRole('listbox', { name: 'Findings' });
+  await waitFor(() => expect(list.querySelectorAll('[role="option"]')).toHaveLength(50));
+  expect(screen.queryByText('No findings detected')).not.toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Open 120' })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: 'python' })).toBeInTheDocument();
+  expect(full).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Last page of findings' }));
+  await screen.findByText('Rule 119');
+  expect(list.querySelectorAll('[role="option"]')).toHaveLength(20);
+  expect(api.loadSourceRunPage).toHaveBeenLastCalledWith('s', expect.objectContaining({ offset: 100, limit: 50, view: 'open' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Copy JSON' }));
+  await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+  const exported = JSON.parse(writeText.mock.calls[0][0]);
+  expect(exported.runId).toBe('s');
+  expect(exported.findings).toHaveLength(120);
+  expect(exported.findings[119]).toMatchObject({ matchText: '[REDACTED]', context: '[REDACTED]' });
+  expect(writeText.mock.calls[0][0]).not.toContain('credential-never-copy');
+  expect(full).toHaveBeenCalledOnce();
+});
+
+test('a pending source filter shows the global receipt total without inventing its filtered count', async () => {
+  vi.mocked(api.loadSourceRun).mockResolvedValue({ ...original, summary: { ...original.summary, totalFindings: 120 } });
+  vi.mocked(api.loadSourceRunPage).mockReturnValue(new Promise(() => {}));
+  render(<SourceScanPage />);
+  expect(await screen.findByText('Loading this view · 120 total')).toBeInTheDocument();
+  expect(screen.queryByText('120 in this view · 120 total')).not.toBeInTheDocument();
+  expect(screen.queryByText('No findings detected')).not.toBeInTheDocument();
+  expect(screen.queryByText('No findings match this view and its filters')).not.toBeInTheDocument();
 });

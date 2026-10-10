@@ -1,20 +1,20 @@
 import { LatestRequestQueue } from "../../lib/latestRequest";
 import type {
   ProjectContext,
-  ScanRunDetail,
+  SourceRunMetadata,
   ScanRunSummary,
 } from "../../lib/types";
 
 export interface SourceProjectLoad {
   context: ProjectContext;
-  run: ScanRunDetail | null;
+  run: SourceRunMetadata | null;
   runs: ScanRunSummary[];
 }
 
 export interface SourceProjectApi {
   inspectSourceProject(path: string): Promise<ProjectContext>;
   listSourceRuns(projectId: string, limit?: number): Promise<ScanRunSummary[]>;
-  loadSourceRun(runId: string): Promise<ScanRunDetail>;
+  loadSourceRunMetadata(runId: string): Promise<SourceRunMetadata>;
 }
 
 export class SourceProjectLoader {
@@ -30,9 +30,9 @@ export class SourceProjectLoader {
     const [runs, run] = await Promise.all([
       this.api.listSourceRuns(context.projectId, 50),
       runId
-        ? this.api.loadSourceRun(runId)
+        ? this.api.loadSourceRunMetadata(runId)
         : context.lastCompletedRunId
-          ? this.api.loadSourceRun(context.lastCompletedRunId).catch(() => null)
+          ? this.api.loadSourceRunMetadata(context.lastCompletedRunId).catch(() => null)
           : Promise.resolve(null),
     ]);
     if (!this.requests.isCurrent(token)) return null;

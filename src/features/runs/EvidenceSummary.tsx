@@ -46,26 +46,26 @@ export function dependencyEvidence(result: DependencyScanResult, receipt?: Canon
   };
 }
 
-export function binaryEvidence(result: BinaryScanResult, receipt?: CanonicalRun | null, notes: string[] = [], offline?: boolean): Evidence {
+export function binaryEvidence(result: BinaryScanResult, receipt?: CanonicalRun | null, notes: string[] = [], offline?: boolean, semanticTotal?: number): Evidence {
   const semantic = result.semanticAnalysis;
   return {
     receipt: canonicalReceipt(receipt, undefined, "completed"),
-    findings: `${count(result.summary.vulnerabilities, "CVE")} recorded${semantic ? ` · ${count(semantic.findings.length, "semantic candidate")}` : ""}`,
+    findings: `${count(result.summary.vulnerabilities, "CVE")} recorded${semantic ? ` · ${count(semanticTotal ?? semantic.findings.length, "semantic candidate")}` : ""}`,
     coverage: `${count(result.summary.components, "component")} identified · ${result.scanners.join(" + ") || "Scanners unknown"} · Advisory coverage unknown${offline === true ? " · Offline database" : ""}`,
     caveats: warnings(canonicalWarnings(receipt), notes, semantic?.limitations, [
       ...(result.summary.vulnerabilities === 0 ? ["Zero CVEs does not establish a safe binary; advisory completeness is unproven."] : []),
       ...(semantic?.unresolvedEdges ? [`${count(semantic.unresolvedEdges, "call edge")} unresolved; deep analysis cannot establish complete call coverage.`] : []),
     ]),
     limitations: ["Scanner recognition and advisory completeness are not recorded."],
-    nextAction: notes.length || canonicalWarnings(receipt).length ? "Resolve scanner or advisory limits and rerun; review recorded candidates." : result.summary.vulnerabilities > 0 || semantic?.findings.length ? "Review CVE matches and semantic candidate evidence before deciding what to fix." : "Check scanner recognition and advisory availability before relying on this empty result.",
+    nextAction: notes.length || canonicalWarnings(receipt).length ? "Resolve scanner or advisory limits and rerun; review recorded candidates." : result.summary.vulnerabilities > 0 || (semanticTotal ?? semantic?.findings.length) ? "Review CVE matches and semantic candidate evidence before deciding what to fix." : "Check scanner recognition and advisory availability before relying on this empty result.",
   };
 }
 
-export function imageEvidence(outcome: ImageScanOutcome, receipt?: CanonicalRun | null): Evidence {
+export function imageEvidence(outcome: ImageScanOutcome, receipt?: CanonicalRun | null, layerTotal?: number): Evidence {
   return {
     receipt: canonicalReceipt(receipt, outcome.runId, outcome.state ?? "completed"),
     findings: `${count(outcome.result.summary.vulnerabilities, "vulnerability", "vulnerabilities")} recorded`,
-    coverage: `${count(outcome.result.summary.components, "component")} identified · ${count(outcome.layers.length, "layer")} recorded · ${outcome.offline ? "Offline advisories" : "Online advisories permitted"} · Advisory coverage unknown`,
+    coverage: `${count(outcome.result.summary.components, "component")} identified · ${count(layerTotal ?? outcome.layers.length, "layer")} recorded · ${outcome.offline ? "Offline advisories" : "Online advisories permitted"} · Advisory coverage unknown`,
     caveats: warnings(outcome.notes, outcome.localEvidence?.notes, canonicalWarnings(receipt), [
       ...(outcome.result.summary.vulnerabilities === 0 ? ["Zero vulnerabilities does not establish a clean image; advisory completeness is unproven."] : []),
       ...(outcome.state && outcome.state !== "completed" ? [`Coverage is unproven for this ${outcome.state} receipt. Zero recorded vulnerabilities does not establish a clean image.`] : []),
@@ -78,12 +78,12 @@ export function imageEvidence(outcome: ImageScanOutcome, receipt?: CanonicalRun 
   };
 }
 
-export function historyEvidence(result: HistoryScanResult, receipt?: CanonicalRun | null): Evidence {
+export function historyEvidence(result: HistoryScanResult, receipt?: CanonicalRun | null, findingTotal = result.findings.length): Evidence {
   const partial = result.truncated || Boolean(result.state && result.state !== "completed");
   const contextUnknown = !result.gitContext || result.gitContext.contextChanged !== false || !result.gitContext.refsCompleteAfter;
   return {
     receipt: canonicalReceipt(receipt, result.runId, result.state),
-    findings: `${count(result.findings.length, "finding")} recorded`,
+    findings: `${count(findingTotal, "finding")} recorded`,
     coverage: `${count(result.blobsScanned, "blob")} scanned · ${result.blobsSkipped.toLocaleString()} skipped · ref-reachable history only`,
     caveats: warnings(canonicalWarnings(receipt), result.limitNote ? [result.limitNote] : [], [
       ...(partial ? ["The findings are partial; absence of historical secrets is unproven."] : []),
@@ -91,7 +91,7 @@ export function historyEvidence(result: HistoryScanResult, receipt?: CanonicalRu
       ...(contextUnknown ? [result.gitContext?.contextChanged === true ? "Git refs changed during the scan; complete current history coverage is unproven." : "Git history coverage changed or is unknown: the final Git ref snapshot is unavailable or unknown."] : []),
     ]),
     limitations: ["Dangling Git objects are not enumerated. No findings is not proof no credential was ever typed.", ...(!result.validation ? ["Live provider validation was not recorded for this run."] : [])],
-    nextAction: result.findings.length > 0 ? "Review historical evidence and rotate exposed credentials; deletion does not close a leak." : partial || result.blobsSkipped || contextUnknown ? "Rerun after resolving history coverage limits before relying on this empty result." : "Check the recorded Git scope before relying on this empty result.",
+    nextAction: findingTotal > 0 ? "Review historical evidence and rotate exposed credentials; deletion does not close a leak." : partial || result.blobsSkipped || contextUnknown ? "Rerun after resolving history coverage limits before relying on this empty result." : "Check the recorded Git scope before relying on this empty result.",
   };
 }
 

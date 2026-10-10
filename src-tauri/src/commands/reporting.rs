@@ -703,3 +703,51 @@ pub(crate) fn load_canonical_projection_inner(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "run result projection was not found".into())
 }
+
+#[tauri::command]
+pub fn load_canonical_projection_metadata(
+    findings: State<'_, FindingsState>,
+    run_id: String,
+) -> Result<crate::findings::domain::CanonicalProjectionMetadata, String> {
+    load_canonical_projection_metadata_inner(&findings, run_id)
+}
+
+pub(crate) fn load_canonical_projection_metadata_inner(
+    findings: &FindingsState,
+    run_id: String,
+) -> Result<crate::findings::domain::CanonicalProjectionMetadata, String> {
+    let run_id =
+        oxaudit_domain::RunId::parse(run_id).map_err(|_| "invalid run identity".to_string())?;
+    findings
+        .service()
+        .map_err(|error| error.to_string())?
+        .repository()
+        .canonical_projection_metadata(&run_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn load_canonical_projection_page(
+    findings: State<'_, FindingsState>,
+    run_id: String,
+    section: String,
+    query: Option<crate::findings::domain::ResultPageQuery>,
+) -> Result<crate::findings::domain::ResultPage<Value>, String> {
+    load_canonical_projection_page_inner(&findings, run_id, section, query.unwrap_or_default())
+}
+
+pub(crate) fn load_canonical_projection_page_inner(
+    findings: &FindingsState,
+    run_id: String,
+    section: String,
+    query: crate::findings::domain::ResultPageQuery,
+) -> Result<crate::findings::domain::ResultPage<Value>, String> {
+    let run_id =
+        oxaudit_domain::RunId::parse(run_id).map_err(|_| "invalid run identity".to_string())?;
+    findings
+        .service()
+        .map_err(|error| error.to_string())?
+        .repository()
+        .canonical_projection_page(&run_id, &section, &query)
+        .map_err(|error| error.to_string())
+}

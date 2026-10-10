@@ -1,3 +1,4 @@
+import { canonicalMetadata, canonicalPage, sourceMetadata, sourcePage } from "../../tests/fixtures/pagedResults";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -33,13 +34,17 @@ beforeEach(() => {
   source = sourceResult(target);
   useAppStore.setState({ activeProject: target, selectedProject: null, projectHandoff: null, exportHandoff: null, pageStatus: {}, settings: projectSettings, settingsLoadError: false });
   useScanWorkStore.setState({ active: null, check: null, backend: { active: null, recent: [] }, lastTargets: {}, recoveryError: null });
-  vi.mocked(invoke).mockImplementation(async command => {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
       case "list_canonical_runs": return runs;
       case "load_canonical_projection": return projection;
+      case "load_canonical_projection_metadata": return canonicalMetadata(projection);
+      case "load_canonical_projection_page": { const a = args as any; return canonicalPage(projection, a.section, a.query); }
       case "inspect_source_project": return { ...projectContext(target), lastCompletedRunId: source.runId };
       case "list_source_projects": case "list_source_runs": return [];
       case "load_source_run": return source;
+      case "load_source_run_metadata": return sourceMetadata(source);
+      case "load_source_run_page": return sourcePage(source, (args as any).query);
       case "set_active_project": return undefined;
       case "inspect_source_git": throw new Error("No Git context");
       case "scan_work_status": return { active: null, recent: [] };
@@ -222,13 +227,13 @@ test.each(["binary", "dependencies"] as const)("%s evidence retains the latest f
 });
 
 // An incomplete retained source receipt must not mark every lifecycle stage complete.
-test("source lifecycle identifies an incomplete receipt without a completed operation claim", async () => {
+test("an idle incomplete source receipt retains its status without implying live progress or completion", async () => {
   source.status = "incomplete";
   render(<SourceScanPage />);
-  await screen.findByRole("region", { name: "Source evidence summary" });
-  const lifecycle = screen.getByRole("region", { name: "Durable run lifecycle" });
-  expect(within(lifecycle).getByText("Incomplete")).toBeInTheDocument();
-  expect(within(lifecycle).queryByText("Complete")).not.toBeInTheDocument();
+  const receipt = await screen.findByRole("region", { name: "Source evidence summary" });
+  expect(receipt).toHaveTextContent(/incomplete/i);
+  expect(screen.queryByRole("region", { name: "Scan progress" })).not.toBeInTheDocument();
+  expect(receipt).not.toHaveTextContent("Operation completed");
 });
 
 // A replacement must not relabel an incomplete prior receipt as a completed result.
@@ -242,7 +247,7 @@ test("a running source replacement does not call the prior incomplete receipt co
   await waitFor(() => expect(screen.getByRole("button", { name: "Run scan" })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: "Run scan" }));
   await waitFor(() => expect(finish).toBeDefined());
-  const lifecycle = screen.getByRole("region", { name: "Durable run lifecycle" });
+  const lifecycle = screen.getByRole("region", { name: "Scan progress" });
   expect(lifecycle).not.toHaveTextContent("A previous completed result remains available");
   expect(screen.getByRole("region", { name: "Source evidence summary" })).toHaveTextContent("Previous evidence is shown");
   await act(async () => finish(sourceResult(target)));

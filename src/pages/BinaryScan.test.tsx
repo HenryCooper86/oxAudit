@@ -1,3 +1,4 @@
+import { installPagingFixtures } from "../../tests/fixtures/pagedResults";
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { api } from '../lib/api';
@@ -17,6 +18,7 @@ const tools: BinaryScannersStatus = {
 };
 const result: BinaryScanResult = { target: '/project', components: [], summary: { components: 0, vulnerabilities: 0, critical: 0, high: 0, medium: 0, low: 0, unknown: 0 }, databaseLastUpdated: null, durationMs: 1, scanners: ['native'] };
 beforeEach(() => {
+  installPagingFixtures(api);
   vi.clearAllMocks(); handlers.clear();
   useAppStore.setState({ activeProject: '/project', pageStatus: {} });
   useScanWorkStore.setState({ active: null, check: null, backend: { active: null, recent: [] }, lastTargets: {}, recoveryError: null });
@@ -55,6 +57,20 @@ test('global recovered ownership blocks another binary launch', async () => {
   expect(screen.getByRole('button', { name: 'Run scan' })).toBeEnabled();
 });
 
+test('binary target selection has explicit file and folder controls and unknown progress does not name an unused scanner', async () => {
+  const scan = vi.spyOn(api, 'scanBinaries').mockReturnValue(new Promise(() => {}));
+  render(<BinaryScanPage />);
+  fireEvent.change(await screen.findByLabelText('Binary scan target'), { target: { value: '/candidate.bin' } });
+  fireEvent.keyDown(screen.getByLabelText('Binary scan target'), { key: 'Enter' });
+  expect(scan).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'Choose file…' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Choose folder…' })).toBeEnabled();
+  fireEvent.click(await screen.findByRole('button', { name: 'Run scan' }));
+  const progress = await screen.findByRole('region', { name: 'Scan progress' });
+  expect(progress).toHaveTextContent(/waiting for.*progress/i);
+  expect(screen.queryByText('cve-bin-tool is running')).not.toBeInTheDocument();
+});
+
 test('binary recovery reloads a saved run after terminal work arrives', async () => {
   const scan = vi.spyOn(api, 'scanBinaries');
   render(<BinaryScanPage />);
@@ -71,7 +87,7 @@ test('binary reloads the saved A receipt after completing A, editing B, and retu
   const saved = { ...result, target: '/project-a', summary: { ...result.summary, components: 29 } };
   useAppStore.setState({ activeProject: '/project-a' });
   const scan = vi.spyOn(api, 'scanBinaries').mockResolvedValue(saved);
-  const projection = vi.spyOn(api, 'loadCanonicalProjection').mockResolvedValue(saved);
+  vi.spyOn(api, 'loadCanonicalProjection').mockResolvedValue(saved);
   render(<BinaryScanPage />);
   fireEvent.click(await screen.findByRole('button', { name: 'Run scan' }));
   expect(await screen.findByText('29 components · 0 CVEs')).toBeInTheDocument();
@@ -83,7 +99,7 @@ test('binary reloads the saved A receipt after completing A, editing B, and retu
   expect(screen.queryByText('29 components · 0 CVEs')).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('Binary scan target'), { target: { value: '/project-a' } });
   expect(await screen.findByText('29 components · 0 CVEs')).toBeInTheDocument();
-  expect(projection).toHaveBeenCalledWith('saved-binary-a');
+  expect(api.loadCanonicalProjectionMetadata).toHaveBeenCalledWith('saved-binary-a');
   expect(scan).toHaveBeenCalledTimes(1);
   expect(useScanWorkStore.getState().recoveryRevision).toBe(revision);
 });

@@ -125,6 +125,141 @@ pub struct ScanRunDetail {
     pub maintenance_warning: Option<String>,
 }
 
+/// Saved run context without a findings collection. Never a partial full report.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRunMetadata {
+    pub project_id: String,
+    pub run_id: String,
+    pub baseline_run_id: Option<String>,
+    pub status: RunStatus,
+    pub persistence: RunPersistence,
+    pub policy: PolicyStatus,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub summary: crate::models::ScanSummary,
+    pub maintenance_warning: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ResultPageQuery {
+    pub offset: u32,
+    pub limit: u32,
+    pub search: String,
+    pub severity: Option<String>,
+    pub minimum_severity: Option<String>,
+    pub sort: String,
+}
+
+impl Default for ResultPageQuery {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            limit: 50,
+            search: String::new(),
+            severity: None,
+            minimum_severity: None,
+            sort: "original".into(),
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultPage<T> {
+    pub items: Vec<T>,
+    pub offset: u32,
+    pub limit: u32,
+    pub filtered_total: usize,
+    pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SourceFindingsQuery {
+    #[serde(flatten, deserialize_with = "deserialize_source_page")]
+    pub page: ResultPageQuery,
+    pub view: String,
+    pub new_only: bool,
+    pub category: String,
+    pub scope: String,
+    pub language: String,
+    pub baseline_run_id: Option<String>,
+    pub file_paths: Option<Vec<String>>,
+    pub require_valid_policy: bool,
+}
+
+fn deserialize_source_page<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ResultPageQuery, D::Error> {
+    let mut fields = serde_json::Value::deserialize(deserializer)?;
+    if let Some(object) = fields.as_object_mut() {
+        object
+            .entry("sort")
+            .or_insert_with(|| serde_json::Value::String("severity".into()));
+    }
+    serde_json::from_value(fields).map_err(serde::de::Error::custom)
+}
+
+impl Default for SourceFindingsQuery {
+    fn default() -> Self {
+        Self {
+            page: ResultPageQuery {
+                sort: "severity".into(),
+                ..Default::default()
+            },
+            view: "all".into(),
+            new_only: false,
+            category: "all".into(),
+            scope: "all".into(),
+            language: "all".into(),
+            baseline_run_id: None,
+            file_paths: None,
+            require_valid_policy: false,
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingViewCounts {
+    pub open: usize,
+    pub other_scopes: usize,
+    pub closed: usize,
+    pub resolved: usize,
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingDiffCounts {
+    pub new: usize,
+    pub unchanged: usize,
+    pub resolved: usize,
+    pub not_evaluated: usize,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceFindingsPage {
+    #[serde(flatten)]
+    pub page: ResultPage<crate::models::Finding>,
+    pub view_counts: FindingViewCounts,
+    pub diff_counts: FindingDiffCounts,
+    pub languages: Vec<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalProjectionMetadata {
+    pub kind: &'static str,
+    pub projection_kind: String,
+    pub projection: serde_json::Value,
+    pub sections: std::collections::BTreeMap<String, usize>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectContext {
@@ -246,5 +381,18 @@ mod tests {
             .unwrap(),
             serde_json::json!({"status": "notSaved", "retryToken": "retry-1"}),
         );
+    }
+
+    #[test]
+    fn paged_queries_keep_source_and_canonical_default_sort_contracts() {
+        let canonical: ResultPageQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(canonical.sort, "original");
+        let source: SourceFindingsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(source.page.sort, "severity");
+        let source: SourceFindingsQuery =
+            serde_json::from_value(serde_json::json!({"sort":"original","limit":20})).unwrap();
+        assert_eq!(source.page.sort, "original");
+        assert_eq!(source.page.limit, 20);
+        assert_eq!(source.view, "all");
     }
 }

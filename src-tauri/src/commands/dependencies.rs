@@ -6,6 +6,72 @@
 
 use super::*;
 
+#[cfg(test)]
+mod owned_progress_tests {
+    use super::*;
+    struct Capture(Mutex<Vec<Value>>);
+    impl ScanEventSink for Capture {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            if event == "run://event" {
+                self.0.lock().unwrap().push(payload);
+            }
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn binary_lifecycle_progress_carries_its_operation_and_saved_run_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("inert.bin");
+        std::fs::write(&target, b"owned inert data without any package signature").unwrap();
+        let state = AppState::new();
+        state.settings.lock().unwrap().binary_scanner_path = Some(
+            root.path()
+                .join("absent-scanner")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let repository = crate::findings::repository::FindingsRepository::open_in_memory().unwrap();
+        let findings = FindingsState::available(FindingsService::new(repository));
+        let events = Capture(Mutex::new(Vec::new()));
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let result = scan_binaries_engine(
+            &state,
+            &findings,
+            None,
+            &root.path().join("scratch"),
+            &root.path().join("cache"),
+            &events,
+            Arc::new(|_| {}),
+            crate::binscan::run::BinaryScanRequest {
+                path: target.to_string_lossy().into_owned(),
+                offline: true,
+                ..Default::default()
+            },
+            Some(false),
+            Some(operation_id.clone()),
+        )
+        .await
+        .unwrap();
+        let captured = events.0.lock().unwrap();
+        assert!(
+            !captured.is_empty(),
+            "the shared event transport must receive binary lifecycle progress"
+        );
+        let receipt = state.scan_work.snapshot().unwrap().recent[0]
+            .run_id
+            .clone()
+            .unwrap();
+        assert!(!result.scanners.is_empty());
+        assert!(captured
+            .iter()
+            .all(|event| event["operationId"] == operation_id && event["runId"] == receipt));
+        assert_eq!(captured.last().unwrap()["event"]["state"], "completed");
+        assert!(captured
+            .iter()
+            .any(|event| event["event"]["state"] == "detecting"));
+    }
+}
+
 #[tauri::command]
 pub async fn scan_dependencies(
     app: AppHandle,
@@ -247,14 +313,12 @@ pub async fn scan_binaries(
         .path()
         .app_data_dir()
         .unwrap_or_else(|_| scratch_dir.clone());
-    let run_events = crate::presentation::TauriRunEvents::new(app.clone());
     scan_binaries_engine(
         &state,
         &findings,
         Some(&cve),
         &scratch_dir,
         &cache_dir,
-        &run_events,
         &TauriEvents(app),
         progress,
         request,
@@ -273,7 +337,6 @@ pub(crate) async fn scan_binaries_engine(
     cve: Option<&CveState>,
     scratch_dir: &Path,
     cache_dir: &Path,
-    run_events: &dyn oxaudit_application::RunEventSink,
     events: &dyn crate::findings::service::ScanEventSink,
     progress: Arc<dyn Fn(Value) + Send + Sync>,
     request: crate::binscan::run::BinaryScanRequest,
@@ -297,9 +360,9 @@ pub(crate) async fn scan_binaries_engine(
     let service = findings.service().map_err(|error| error.to_string())?;
     let canonical_repository =
         crate::adapters::persistence::CanonicalSqliteRepository::new(service.repository());
-    let canonical_events = run_events;
+    let canonical_events = crate::presentation::CanonicalRunEvents::new(&work);
     let coordinator =
-        oxaudit_application::RunCoordinator::new(&canonical_repository, canonical_events);
+        oxaudit_application::RunCoordinator::new(&canonical_repository, &canonical_events);
     let mut managed = Some(
         coordinator
             .begin(oxaudit_domain::Run::queued(
@@ -614,6 +677,7 @@ pub(crate) async fn scan_binaries_engine(
         .complete_in_place(epoch_millis())
         .map_err(|error| error.to_string())?;
 
+    drop(managed);
     work.finish("completed", Some(run_id.as_str()));
     Ok(outcome.result)
 }

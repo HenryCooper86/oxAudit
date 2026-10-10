@@ -338,6 +338,53 @@ impl FindingsService {
         Ok(loaded)
     }
 
+    pub fn load_run_metadata(
+        &self,
+        run_id: &str,
+    ) -> Result<super::domain::SourceRunMetadata, CommandError> {
+        let initial = self.repository.source_run_metadata(run_id)?;
+        let project = self.repository.project_context(&initial.project_id)?;
+        self.run_test_policy_projection_seam(&project.canonical_path);
+        let (policy, mut metadata) = authoritative_project_policy_projection(
+            &self.repository,
+            &initial.project_id,
+            Utc::now(),
+            || Ok(()),
+            |repository| repository.source_run_metadata(run_id),
+        )?;
+        metadata.policy = policy;
+        Ok(metadata)
+    }
+
+    pub fn load_run_page(
+        &self,
+        run_id: &str,
+        query: &super::domain::SourceFindingsQuery,
+    ) -> Result<super::domain::SourceFindingsPage, CommandError> {
+        let initial = self.repository.source_run_metadata(run_id)?;
+        let project = self.repository.project_context(&initial.project_id)?;
+        self.run_test_policy_projection_seam(&project.canonical_path);
+        // The authoritative closure runs under the same policy lock as the complete loader.
+        let (policy, page) = authoritative_project_policy_projection(
+            &self.repository,
+            &initial.project_id,
+            Utc::now(),
+            || Ok(()),
+            |repository| {
+                let current = load_policy(Path::new(&project.canonical_path))?;
+                let valid = !matches!(current.status(), PolicyStatus::Invalid { .. });
+                if query.require_valid_policy && !valid {
+                    return Err(CommandError::policy_invalid());
+                }
+                repository.source_run_page(run_id, query, valid, Utc::now())
+            },
+        )?;
+        if query.require_valid_policy && matches!(policy, PolicyStatus::Invalid { .. }) {
+            return Err(CommandError::policy_invalid());
+        }
+        Ok(page)
+    }
+
     pub fn recheck_options(
         &self,
         run_id: &str,

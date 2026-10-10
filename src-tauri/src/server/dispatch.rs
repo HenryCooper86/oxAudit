@@ -111,6 +111,17 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
             let a = id_args(&args)?;
             ok_ce(crate::commands::load_source_run_inner(&ctx.findings, &a.id))
         }
+        "load_source_run_metadata" => {
+            let a = id_args(&args)?;
+            ok_ce(crate::commands::load_source_run_metadata_inner(&ctx.findings, &a.id))
+        }
+        "load_source_run_page" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args { run_id: String, query: Option<crate::findings::domain::SourceFindingsQuery> }
+            let a: Args = from_args(&args)?;
+            ok_ce(crate::commands::load_source_run_page_inner(&ctx.findings, &a.run_id, a.query.unwrap_or_default()))
+        }
         "compare_source_runs" => {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase")]
@@ -270,7 +281,6 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                     let _ = hub_events.emit("binscan://progress", payload);
                 })
             };
-            let run_events = ctx.run_events();
             let hub_events = ctx.events();
             ok_st(
                 crate::commands::dependencies::scan_binaries_engine(
@@ -279,7 +289,6 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                     Some(&ctx.cve),
                     &scratch_dir,
                     &ctx.cache_dir,
-                    &run_events,
                     &hub_events,
                     progress,
                     a.request,
@@ -370,6 +379,17 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                 &ctx.findings,
                 a.id,
             ))
+        }
+        "load_canonical_projection_metadata" => {
+            let a = id_args(&args)?;
+            ok_st(crate::commands::reporting::load_canonical_projection_metadata_inner(&ctx.findings, a.id))
+        }
+        "load_canonical_projection_page" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args { run_id: String, section: String, query: Option<crate::findings::domain::ResultPageQuery> }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::reporting::load_canonical_projection_page_inner(&ctx.findings, a.run_id, a.section, a.query.unwrap_or_default()))
         }
         "load_inventory" => {
             let a = id_args(&args)?;

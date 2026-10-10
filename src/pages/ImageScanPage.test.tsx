@@ -1,3 +1,4 @@
+import { canonicalMetadata, canonicalPage } from "../../tests/fixtures/pagedResults";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -14,6 +15,8 @@ const cancelImageScan = vi.fn();
 const cancelScanWork = vi.fn();
 const listCanonicalRuns = vi.fn();
 const loadCanonicalProjection = vi.fn();
+const loadCanonicalProjectionMetadata = vi.fn();
+const loadCanonicalProjectionPage = vi.fn();
 vi.mock("../lib/api", () => ({
   api: {
     scanImage: (...args: unknown[]) => scanImage(...args),
@@ -22,6 +25,8 @@ vi.mock("../lib/api", () => ({
     scanWorkStatus: async () => ({ active: null, recent: [] }),
     listCanonicalRuns: (...args: unknown[]) => listCanonicalRuns(...args),
     loadCanonicalProjection: (...args: unknown[]) => loadCanonicalProjection(...args),
+    loadCanonicalProjectionMetadata: (...args: unknown[]) => loadCanonicalProjectionMetadata(...args),
+    loadCanonicalProjectionPage: (...args: unknown[]) => loadCanonicalProjectionPage(...args),
   },
 }));
 
@@ -76,6 +81,8 @@ const outcome = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  loadCanonicalProjectionMetadata.mockImplementation(async id => canonicalMetadata(await loadCanonicalProjection.getMockImplementation()?.(id)));
+  loadCanonicalProjectionPage.mockImplementation(async (id, section, query) => canonicalPage(await loadCanonicalProjection.getMockImplementation()?.(id), section, query));
   useScanWorkStore.setState({ active: null, check: null, backend: { active: null, recent: [] }, lastTargets: {}, recoveryError: null });
   listCanonicalRuns.mockResolvedValue([]);
   cancelScanWork.mockResolvedValue(true);
@@ -119,22 +126,27 @@ test("the offline switch travels with the request and cancel is reachable while 
   expect(toast).not.toHaveBeenCalledWith("success", expect.any(String));
 });
 
-test("pressing Enter while an image scan is running cannot start a second scan", async () => {
+test("editing, choosing, or pressing Enter on an image target requires the explicit Scan action", async () => {
   scanImage.mockClear();
   scanImage.mockReturnValue(new Promise(() => {}));
   render(<ImageScanPage />);
   await userEvent.type(screen.getByLabelText("Image target"), "saved.tar{enter}{enter}");
+  expect(scanImage).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Choose image file…" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Choose OCI folder…" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: /^scan$/i }));
   expect(scanImage).toHaveBeenCalledTimes(1);
 });
 
-test("a late image event subscription is released after the page unmounts", async () => {
-  let resolve!: (stop: () => void) => void;
-  listen.mockReturnValue(new Promise((done) => { resolve = done; }));
-  const stop = vi.fn();
+test("late image event subscriptions are each released after the page unmounts", async () => {
+  const pending: Array<(stop: () => void) => void> = [];
+  listen.mockImplementation(() => new Promise(done => { pending.push(done); }));
   const view = render(<ImageScanPage />);
   view.unmount();
-  await act(async () => resolve(stop));
-  expect(stop).toHaveBeenCalledOnce();
+  const stops = pending.map(() => vi.fn());
+  await act(async () => pending.forEach((resolve, index) => resolve(stops[index])));
+  expect(stops).toHaveLength(2);
+  for (const stop of stops) expect(stop).toHaveBeenCalledOnce();
 });
 
 test("a saved image receipt reloads its immutable digest and layer identities", async () => {
@@ -142,9 +154,10 @@ test("a saved image receipt reloads its immutable digest and layer identities", 
   loadCanonicalProjection.mockResolvedValue(outcome);
   render(<ImageScanPage />);
   expect(await screen.findByText("sha256:immutable-image")).toBeInTheDocument();
-  expect(screen.getByText("sha256:immutable-layer")).toBeInTheDocument();
+  expect(await screen.findByText("sha256:immutable-layer")).toBeInTheDocument();
   expect(screen.getByLabelText("Image target")).toHaveValue("registry.local/app:1.0");
-  expect(loadCanonicalProjection).toHaveBeenCalledWith("saved-image");
+  expect(loadCanonicalProjection).not.toHaveBeenCalled();
+  expect(loadCanonicalProjectionMetadata).toHaveBeenCalledWith("saved-image");
   expect(scanImage).not.toHaveBeenCalled();
   expect(screen.queryByText(/not persisted as canonical runs/)).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: 'Open Export Center' }));

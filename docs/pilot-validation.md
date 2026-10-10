@@ -84,6 +84,24 @@ incomplete scan as clean.
    the main baseline commit/run, PR target commit/run, tool pin, artifact paths,
    and the real job outcomes. Local syntax checks alone are not GitHub execution.
 
+## Target, progress and saved-result follow-up
+
+Use these checks alongside the desktop tasks for the experience refinements.
+Record each actual result and evidence in the participant's notes; an automated
+or maintainer check does not count as an external participant observation.
+
+| Flow | What to observe |
+| --- | --- |
+| Target setup | On Source, Dependencies and History choose a folder; on Binary choose a file and then a folder; on Image choose an archive or OCI folder, then type a registry reference. Cancel a picker and confirm the prior target remains. Press Enter in the target input and confirm scanning starts only through the explicit scan action. |
+| Server target setup | Use a path on the server's filesystem. Confirm the instructions explain this and no local native picker is offered. |
+| Progress and cancellation | Start an inert scan and cancel it. Record observed stages/counters, the resulting attempt state and whether older saved evidence remains distinguishable. An unavailable progress count is not an estimated percentage. |
+| Large saved results | Reopen a saved receipt with more than 50 rows, move to another page, change a filter and inspect a detail. Check that the total refers to the whole filtered set and the rows belong to the selected receipt. |
+| Complete output | Export the saved receipt. For Source, copy JSON and verify secrets are redacted and the output includes the complete result set. For saved Dependencies, explicitly load complete upgrade decisions before reviewing recommendations. |
+| Keyboard and reflow | Use Tab, Enter/Space and Escape; try Skip to workspace and narrow navigation. Check both themes, browser zoom and a narrow viewport for clipped controls, focus loss or unreadable text. Record any assistive technology and version actually used. |
+
+No participant results are prefilled. The prepared JSON form remains empty;
+keep real notes and artifacts only where the participant has consented to share.
+
 ## Empty feedback form
 
 Leave blank until an engineer actually performs the tasks. Do not infer success

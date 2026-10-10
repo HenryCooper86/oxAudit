@@ -1,12 +1,15 @@
+import { progressMessage } from "../features/runs/nativeProgress";
 import { listen } from "../lib/events";
 import { Ban, Binary, Play, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
-import { FolderPicker } from "../components/FolderPicker";
+import { TargetInput } from "../components/workbench/TargetInput";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { Button, SectionLabel, Select, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { ResultPagination } from "../components/workbench/ResultPagination";
+import { useCanonicalPage } from "../lib/serverPagination";
+import { ServerPageState } from "../components/workbench/ServerPageState";
 import { usePagination } from "../lib/pagination";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
@@ -44,6 +47,7 @@ export function BinaryScanPage(): JSX.Element {
   const [localRunning, setRunning] = useState(false);
   const running = localRunning || activeWork?.owner === "binary";
   const [progress, setProgress] = useState<string>("");
+  const [progressOperationId, setProgressOperationId] = useState<string | null>(null);
   // Caveats that are not failures — a rate-limited or capped CVE lookup means
   // "fewer findings than exist", which looks exactly like "clean" unless said.
   const [notes, setNotes] = useState<string[]>([]);
@@ -51,6 +55,7 @@ export function BinaryScanPage(): JSX.Element {
   const [resultNotes, setResultNotes] = useState<string[]>([]);
   const [result, setResult] = useState<BinaryScanResult | null>(null);
   const [receipt, setReceipt] = useState<CanonicalRun | null>(null);
+  const [sectionTotals, setSectionTotals] = useState({ components: 0, semanticFindings: 0 });
   const [attempt, setAttempt] = useState<CanonicalRun | null>(null);
   const [resultOffline, setResultOffline] = useState<boolean | undefined>();
   const [operationState, setOperationState] = useState<string | null>(null);
@@ -123,10 +128,12 @@ export function BinaryScanPage(): JSX.Element {
         const runs = await api.listCanonicalRuns("binary");
         const saved = latestCompletedRun(runs, "binary", requestedPath);
         if (!saved || requestId !== historyRequestRef.current) return;
-        const restored = await api.loadCanonicalProjection<BinaryScanResult>(saved.id);
+        const metadata = await api.loadCanonicalProjectionMetadata<BinaryScanResult>(saved.id);
+        const restored = metadata.projection;
         if (requestId !== historyRequestRef.current || !mountedRef.current) return;
         setResult(restored);
         setReceipt(saved);
+        setSectionTotals({ components: metadata.sections.components ?? 0, semanticFindings: metadata.sections.semanticFindings ?? 0 });
         setAttempt(runs.filter(run => run.kind === "binary" && normalizedTarget(run.targetLabel) === normalizedTarget(requestedPath)).sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id))[0] ?? null);
         setResultOffline(undefined);
         setResultNotes([]);
@@ -148,7 +155,11 @@ export function BinaryScanPage(): JSX.Element {
     let unlisten: (() => void) | null = null;
     void listen<string | { operationId: string; message: string }>("binscan://progress", ({ payload }) => {
       const active = useScanWorkStore.getState().active;
-      if (!disposed && active?.owner === "binary" && !active.terminalStatus && (typeof payload === "string" || payload.operationId === active.operationId)) setProgress(typeof payload === "string" ? payload : payload.message);
+      const parsed = progressMessage(payload);
+      if (!disposed && parsed && active?.owner === "binary" && !active.terminalStatus && (parsed.operationId === active.operationId || (!parsed.operationId && invocationRef.current === active.id))) {
+        setProgressOperationId(active.operationId);
+        setProgress(parsed.message);
+      }
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -164,8 +175,9 @@ export function BinaryScanPage(): JSX.Element {
     let unlisten: (() => void) | null = null;
     void listen<string | { operationId: string; message: string }>("binscan://note", ({ payload }) => {
       const active = useScanWorkStore.getState().active;
-      if (active?.owner !== "binary" || active.terminalStatus || (typeof payload !== "string" && payload.operationId !== active.operationId)) return;
-      const note = typeof payload === "string" ? payload : payload.message;
+      const parsed = progressMessage(payload);
+      if (!parsed || active?.owner !== "binary" || active.terminalStatus || (parsed.operationId ? parsed.operationId !== active.operationId : invocationRef.current !== active.id)) return;
+      const note = parsed.message;
       // De-duplicated: one note per distinct message, however many sources
       // raised it.
       if (!disposed && !notesRef.current.includes(note)) {
@@ -281,6 +293,7 @@ export function BinaryScanPage(): JSX.Element {
     historyRequestRef.current += 1;
     setRunning(true);
     setError(null);
+    setProgressOperationId(scanOperationId(ownership) ?? null);
     setProgress("Refreshing the CVE database — this downloads roughly a gigabyte.");
     setPageStatus("binary-scan", { label: "Refreshing CVE database", tone: "running" });
     try {
@@ -311,9 +324,13 @@ export function BinaryScanPage(): JSX.Element {
   };
 
   const components = useMemo(() => filterComponents(result?.components ?? [], filter), [result, filter]);
-  const componentPagination = usePagination(components);
+  const localComponentPagination = usePagination(components);
+  const savedComponents = useCanonicalPage<BinaryComponent>(receipt?.id ?? null, "components", { minimumSeverity: filter }, sectionTotals.components);
+  const componentPagination = receipt ? savedComponents : localComponentPagination;
   const semanticFindings = useMemo(() => result?.semanticAnalysis?.findings ?? [], [result]);
-  const semanticPagination = usePagination(semanticFindings);
+  const localSemanticPagination = usePagination(semanticFindings);
+  const savedSemantic = useCanonicalPage<NonNullable<BinaryScanResult["semanticAnalysis"]>["findings"][number]>(receipt?.id ?? null, "semanticFindings", {}, sectionTotals.semanticFindings);
+  const semanticPagination = receipt ? savedSemantic : localSemanticPagination;
 
   const grypeReady = toolStatus?.grype.available ?? false;
   const cveBinToolReady =
@@ -460,7 +477,7 @@ export function BinaryScanPage(): JSX.Element {
               checked={offline}
               onChange={setOffline}
               disabled={running}
-              label="Offline (use the downloaded database only)"
+              label="Offline (skip network lookups and updates)"
             />
             <Switch
               checked={deepAnalysis}
@@ -481,42 +498,33 @@ export function BinaryScanPage(): JSX.Element {
           </div>
         }
       >
-        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-          Target file or folder
-        </label>
-        <FolderPicker
+        <TargetInput
+          label="Target file or folder"
           value={path}
           onChange={changePath}
           disabled={running || Boolean(activeWork)}
-          allowFiles
+          pickers={["file", "folder"]}
+          hint="Supports a binary, firmware image, archive, or folder. Choose Run scan when ready."
           placeholder="Choose a binary, firmware image, archive, or folder…"
           inputLabel="Binary scan target"
         />
       </TargetBar>
 
       <RunTimeline
-        active={!running && result ? "completed" : !running ? "discovering" : progress.toLowerCase().includes("enrich") ? "enriching" : "detecting"}
+        kind="binary"
         running={running}
         hasCompletedResult={Boolean(result)}
+        title="Scanning binary target"
+        detail={progress || undefined}
+        detailsOperationId={progressOperationId}
       />
 
-      {result && <EvidenceSummary label="Binary" evidence={binaryEvidence(result, receipt, resultNotes, resultOffline)} running={running} cancelling={activeWork?.cancelling} attempt={attempt} operation={operationState} operationWarnings={running || operationState ? notes : undefined}>
+      {result && <EvidenceSummary label="Binary" evidence={binaryEvidence(result, receipt, resultNotes, resultOffline, receipt ? sectionTotals.semanticFindings : undefined)} running={running} cancelling={activeWork?.cancelling} attempt={attempt} operation={operationState} operationWarnings={running || operationState ? notes : undefined}>
         <p>Target: <span className="break-all font-mono">{result.target}</span></p>
         <p>Database updated: {result.databaseLastUpdated ?? "Unknown"}. Advisory mode: {resultOffline == null ? "Not recorded for this saved result" : resultOffline ? "Offline" : "Online permitted"}.</p>
         {result.semanticAnalysis && <p>Deep analysis: {result.semanticAnalysis.functionsAnalyzed.toLocaleString()} functions analyzed · {result.semanticAnalysis.callEdges.toLocaleString()} call edges · {result.semanticAnalysis.architecture}</p>}
-        {progress && <pre className="max-h-32 overflow-auto whitespace-pre-wrap font-mono">{progress}</pre>}
       </EvidenceSummary>}
 
-      {running && (
-        <InlineState
-          tone="running"
-          title="cve-bin-tool is running"
-          description={
-            progress ||
-            "Starting up. A first run downloads the CVE database before scanning, which can take several minutes."
-          }
-        />
-      )}
 
       {notes.length > 0 && !running && !result && (
         <div className="rounded-sm border border-warning-subtle bg-warning-subtle px-4 py-3">
@@ -581,7 +589,8 @@ export function BinaryScanPage(): JSX.Element {
             }
           />
 
-          {components.length === 0 ? (
+          {receipt && <ServerPageState page={savedComponents} />}
+          {componentPagination.total === 0 && !savedComponents.loading && !savedComponents.error ? (
             <InlineState
               tone="empty"
               compact
@@ -616,7 +625,8 @@ export function BinaryScanPage(): JSX.Element {
             {result.semanticAnalysis.architecture} · {result.semanticAnalysis.functionsAnalyzed.toLocaleString()} functions · {result.semanticAnalysis.callEdges.toLocaleString()} relocation call edges · {result.semanticAnalysis.unresolvedEdges.toLocaleString()} unresolved
           </p>
           <p className="mt-2 text-[11px] leading-relaxed text-text-muted">{result.semanticAnalysis.limitations.join(" ")}</p>
-          {result.semanticAnalysis.findings.length === 0 ? (
+          {receipt && <ServerPageState page={savedSemantic} />}
+          {semanticPagination.total === 0 && !savedSemantic.loading && !savedSemantic.error ? (
             <InlineState tone="empty" compact title="No bounded dangerous-sink calls were found" description="This does not prove their absence in stripped or statically resolved code." />
           ) : (
             <>

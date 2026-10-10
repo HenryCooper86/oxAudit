@@ -301,6 +301,11 @@ impl WorkLease<'_> {
 
 impl ScanEventSink for WorkLease<'_> {
     fn emit(&self, event: &str, mut payload: Value) -> Result<(), CommandError> {
+        if event == "scan://progress" {
+            if let Some(phase) = payload.as_str() {
+                payload = serde_json::json!({ "phase": phase });
+            }
+        }
         if event == "run://event" {
             if let Some(id) = payload.get("runId").and_then(Value::as_str) {
                 self.bind_run(id);
@@ -333,6 +338,47 @@ impl Drop for WorkLease<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Default)]
+    struct Captured(Mutex<Vec<(String, Value)>>);
+    impl ScanEventSink for Captured {
+        fn emit(&self, event: &str, payload: Value) -> Result<(), CommandError> {
+            self.0.lock().unwrap().push((event.into(), payload));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn legacy_source_phase_progress_is_owned_and_preserves_phase_and_counters() {
+        let registry = ScanWorkRegistry::default();
+        let events = Captured::default();
+        let work = registry
+            .begin(WorkKind::Source, "owned", None, &events)
+            .unwrap();
+        work.emit("scan://progress", Value::from("walking"))
+            .unwrap();
+        work.emit(
+            "scan://progress",
+            serde_json::json!({"phase":"scanning", "done":3, "total":8, "file":"src/example.rs"}),
+        )
+        .unwrap();
+        let values: Vec<Value> = events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(event, _)| event == "scan://progress")
+            .map(|(_, payload)| payload.clone())
+            .collect();
+        assert_eq!(values[0]["phase"], "walking");
+        assert_eq!(values[0]["operationId"], work.id());
+        assert_eq!(values[1]["operationId"], work.id());
+        assert_eq!(
+            (values[1]["done"].as_u64(), values[1]["total"].as_u64()),
+            (Some(3), Some(8))
+        );
+        assert_eq!(values[1]["file"], "src/example.rs");
+    }
+
     struct Quiet;
     impl ScanEventSink for Quiet {
         fn emit(&self, _: &str, _: Value) -> Result<(), CommandError> {

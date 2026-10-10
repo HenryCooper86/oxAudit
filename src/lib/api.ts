@@ -51,6 +51,13 @@ import type {
   ScanOptions,
   ScanWorkSnapshot,
   ScanRunDetail,
+  SourceRunMetadata,
+  SourceFindingsQuery,
+  SourceFindingsPage,
+  ResultPageQuery,
+  ResultPage,
+  CanonicalProjectionMetadata,
+  CanonicalProjectionSection,
   RecheckSourceResult,
   ScanRunSummary,
   ProjectContext,
@@ -98,6 +105,10 @@ export const api = {
     invoke<GitContext>("inspect_source_git", { path, baseReference }),
   loadSourceRun: (runId: string) =>
     invoke<ScanRunDetail>("load_source_run", { runId }),
+  loadSourceRunMetadata: (runId: string) =>
+    invoke<SourceRunMetadata>("load_source_run_metadata", { runId }),
+  loadSourceRunPage: (runId: string, query: SourceFindingsQuery = {}) =>
+    invoke<SourceFindingsPage>("load_source_run_page", { runId, query }),
   retrySourceRunSave: (retryToken: string) =>
     invoke<ScanRunDetail>("retry_source_run_save", { retryToken }),
   listCanonicalRuns: (kind?: CanonicalRunKind, limit = 50) =>
@@ -107,6 +118,10 @@ export const api = {
     }),
   loadCanonicalProjection: <T>(runId: string) =>
     invoke<T>("load_canonical_projection", { runId }),
+  loadCanonicalProjectionMetadata: <T>(runId: string) =>
+    invoke<CanonicalProjectionMetadata<T>>("load_canonical_projection_metadata", { runId }),
+  loadCanonicalProjectionPage: <T>(runId: string, section: CanonicalProjectionSection, query: ResultPageQuery = {}) =>
+    invoke<ResultPage<T>>("load_canonical_projection_page", { runId, section, query }),
   ruleLibraryStatus: () =>
     invoke<RuleLibraryPackStatus[]>("rule_library_status"),
   validateRulePack: (path: string) =>

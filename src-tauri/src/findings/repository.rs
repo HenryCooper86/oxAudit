@@ -28,6 +28,9 @@ use crate::{
     },
 };
 
+#[path = "paged_repository.rs"]
+mod paging;
+
 const MIGRATION_V1: &str = r#"
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
@@ -886,8 +889,9 @@ impl FindingsRepository {
         }
         let schema_version_i64 = i64::from(schema_version);
         let payload = to_json(payload)?;
-        let connection = self.connection.lock().map_err(persistence_error)?;
-        let existing = connection
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+        let existing = transaction
             .query_row(
                 r#"SELECT projection_kind, schema_version, payload_json
                    FROM canonical_projections WHERE run_id = ?1"#,
@@ -909,7 +913,7 @@ impl FindingsRepository {
                 Err(CommandError::persistence_unavailable())
             };
         }
-        connection
+        transaction
             .execute(
                 r#"INSERT INTO canonical_projections(
                      run_id, projection_kind, schema_version, payload_json
@@ -922,7 +926,8 @@ impl FindingsRepository {
                 ],
             )
             .map_err(persistence_error)?;
-        Ok(())
+        paging::save_projection_index(&transaction, run_id.as_str(), projection_kind, &payload)?;
+        transaction.commit().map_err(persistence_error)
     }
 
     pub(crate) fn canonical_load_projection(
@@ -1549,6 +1554,7 @@ impl FindingsRepository {
                     ],
                 )
                 .map_err(persistence_error)?;
+            paging::save_source_index(&transaction, finding, &detail.run_id)?;
         }
 
         let inserted_fingerprints = {
@@ -4070,6 +4076,7 @@ fn migrate(connection: &mut Connection, migration_v1: &str) -> Result<(), Comman
     if !version_seven_applied {
         apply_migration(connection, 7, MIGRATION_V7)?;
     }
+    paging::migrate_paged_storage(connection)?;
     Ok(())
 }
 

@@ -1,3 +1,4 @@
+import { canonicalMetadata, canonicalPage } from "../../tests/fixtures/pagedResults";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -6,24 +7,46 @@ import type { Finding, HistoryScanResult } from "../lib/types";
 import { useAppStore } from "../lib/stores";
 import { reconcileBackendWork, useScanWorkStore } from "../features/project-home/coordinator";
 
+const events = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
+vi.mock("../lib/events", () => ({ listen: async (name: string, callback: (event: { payload: unknown }) => void) => { events.set(name, callback); return () => events.delete(name); } }));
+
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 const scanHistorySecrets = vi.fn();
 const cancelScanWork = vi.fn();
 const listCanonicalRuns = vi.fn();
 const loadCanonicalProjection = vi.fn();
+const loadCanonicalProjectionMetadata = vi.fn();
+const loadCanonicalProjectionPage = vi.fn();
 vi.mock("../lib/api", () => ({
   api: { scanHistorySecrets: (...args: unknown[]) => scanHistorySecrets(...args),
     cancelScanWork: (...args: unknown[]) => cancelScanWork(...args), scanWorkStatus: async () => ({ active: null, recent: [] }),
-    listCanonicalRuns: (...args: unknown[]) => listCanonicalRuns(...args), loadCanonicalProjection: (...args: unknown[]) => loadCanonicalProjection(...args) },
+    listCanonicalRuns: (...args: unknown[]) => listCanonicalRuns(...args), loadCanonicalProjection: (...args: unknown[]) => loadCanonicalProjection(...args), loadCanonicalProjectionMetadata: (...args: unknown[]) => loadCanonicalProjectionMetadata(...args), loadCanonicalProjectionPage: (...args: unknown[]) => loadCanonicalProjectionPage(...args) },
 }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  loadCanonicalProjectionMetadata.mockImplementation(async id => canonicalMetadata(await loadCanonicalProjection.getMockImplementation()?.(id)));
+  loadCanonicalProjectionPage.mockImplementation(async (id, section, query) => canonicalPage(await loadCanonicalProjection.getMockImplementation()?.(id), section, query));
+  events.clear();
   useAppStore.setState({ activeProject: null, selectedProject: null, pageStatus: {} });
   useScanWorkStore.setState({ active: null, check: null, backend: { active: null, recent: [] }, lastTargets: {}, recoveryError: null });
   listCanonicalRuns.mockResolvedValue([]);
   cancelScanWork.mockResolvedValue(true);
+});
+
+test("history shows actual lifecycle stages without requiring a progress log", async () => {
+  scanHistorySecrets.mockReturnValue(new Promise(() => {}));
+  render(<HistoryScanPage />);
+  await userEvent.type(screen.getByRole("textbox", { name: /repository folder/i }), "/tmp/repo{enter}");
+  expect(scanHistorySecrets).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: /scan history$/i }));
+  const operationId = scanHistorySecrets.mock.calls[0][2];
+  const progress = screen.getByRole("region", { name: "Scan progress" });
+  expect(within(progress).getByText(/waiting for.*progress/i)).toBeInTheDocument();
+  await act(async () => events.get("run://event")?.({ payload: { schemaVersion: 1, operationId, runId: "history-current", sequence: 3, occurredAtMs: 2, event: { kind: "stage_changed", state: "detecting" } } }));
+  expect(within(progress).getByRole("status")).toHaveTextContent("Detecting findings");
+  expect(progress).not.toHaveTextContent(/%|ETA|blobs scanned/);
 });
 
 const finding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -212,7 +235,8 @@ test("saved history restores Git object evidence without starting a new scan", a
   expect(await screen.findByText("abc123gitblob")).toBeInTheDocument();
   expect(screen.getByText(/saved-history/)).toBeInTheDocument();
   expect(scanHistorySecrets).not.toHaveBeenCalled();
-  expect(loadCanonicalProjection).toHaveBeenCalledWith("saved-history");
+  expect(loadCanonicalProjection).not.toHaveBeenCalled();
+  expect(loadCanonicalProjectionMetadata).toHaveBeenCalledWith("saved-history");
   expect(screen.queryByText(/runs are not saved/)).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: 'Open Export Center' }));
   expect(useAppStore.getState().exportHandoff).toEqual({ runId: 'saved-history' });
@@ -241,15 +265,15 @@ test("10,000 historical findings render a bounded page and retain selection acro
   render(<HistoryScanPage />);
   const list = await screen.findByRole("list", { name: "Historical secret findings" });
   const renderMs = performance.now() - started;
-  expect(list.children).toHaveLength(50);
+  await waitFor(() => expect(list.children).toHaveLength(50));
   const moved = performance.now();
   fireEvent.click(screen.getByRole("button", { name: "Last page of historical findings" }));
   const lastPageMs = performance.now() - moved;
-  await userEvent.click(screen.getByText("rule-9999"));
-  expect(screen.getByText("Historical 9999")).toBeInTheDocument();
+  await userEvent.click(await screen.findByText("rule-9999"));
+  expect(await screen.findByText("Historical 9999")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "First page of historical findings" }));
   await userEvent.click(screen.getByRole("button", { name: "Last page of historical findings" }));
-  expect(screen.getByText("rule-9999").closest("button")).toHaveAttribute("aria-current", "true");
+  expect((await screen.findByText("rule-9999")).closest("button")).toHaveAttribute("aria-current", "true");
   console.info('result-list-measurement', JSON.stringify({ list: 'history', records: 10_000, renderedRows: 50, renderMs, lastPageMs, environment: 'jsdom' }));
 });
 
@@ -266,4 +290,20 @@ test('history reopens the latest canonical receipt after restart without a selec
   expect(within(evidence).getByText(/Git history coverage changed or is unknown/)).toBeVisible();
   expect(screen.queryByText(/No secrets in history/)).not.toBeInTheDocument();
   expect(scanHistorySecrets).not.toHaveBeenCalled();
+});
+
+test('same saved history receipt retains the selected detail when a newer failed attempt arrives', async () => {
+  useAppStore.setState({ activeProject: '/tmp/repo' });
+  const saved = { id: 'saved-history', kind: 'history' as const, targetLabel: '/tmp/repo', state: 'completed' as const, attempt: 1, createdAtMs: 1, updatedAtMs: 2, engineIds: [], rulePackIds: [], providerSnapshotIds: [], warnings: [] };
+  listCanonicalRuns.mockResolvedValue([saved]);
+  loadCanonicalProjection.mockResolvedValue(result({ findings: [finding(), finding({ id: 'second', fingerprint: 'second', ruleId: 'second-rule', title: 'Selected second finding' })] }));
+  render(<HistoryScanPage />);
+  await userEvent.click(await screen.findByText('second-rule'));
+  expect(screen.getByText('Selected second finding')).toBeInTheDocument();
+  listCanonicalRuns.mockResolvedValue([{ ...saved, id: 'new-failure', state: 'failed', updatedAtMs: 3 }, saved]);
+  await act(async () => reconcileBackendWork({ active: null, recent: [{ operationId: 'failed-history', kind: 'history', target: '/tmp/repo', status: 'failed', runId: 'new-failure', startedAtMs: 2, updatedAtMs: 3 }] }));
+  await screen.findByText('Latest attempt failed');
+  expect(screen.getByText('Selected second finding')).toBeInTheDocument();
+  expect(screen.getByText('second-rule').closest('button')).toHaveAttribute('aria-current', 'true');
+  expect(loadCanonicalProjection).not.toHaveBeenCalled();
 });

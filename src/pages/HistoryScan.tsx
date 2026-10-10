@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { Ban, Clipboard, History, Play } from "lucide-react";
-import { FolderPicker } from "../components/FolderPicker";
+import { TargetInput } from "../components/workbench/TargetInput";
+import { RunTimeline } from "../features/runs/RunTimeline";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
@@ -15,6 +16,8 @@ import type { CanonicalRun, Finding, HistoryScanResult, Severity } from "../lib/
 import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
 import { readSavedScanReceipt } from "../features/runs/savedScanReceipt";
 import { EvidenceSummary, historyEvidence } from "../features/runs/EvidenceSummary";
+import { useCanonicalPage } from "../lib/serverPagination";
+import { ServerPageState } from "../components/workbench/ServerPageState";
 import { usePagination } from "../lib/pagination";
 import { normalizeCommandError } from "../lib/commandError";
 
@@ -57,6 +60,7 @@ export function HistoryScanPage(): JSX.Element {
   const pathEdited = useRef(false);
   const [attempt, setAttempt] = useState<CanonicalRun | null>(null);
   const [receipt, setReceipt] = useState<CanonicalRun | null>(null);
+  const [findingTotal, setFindingTotal] = useState(0);
   const [operationState, setOperationState] = useState<string | null>(null);
 
   useEffect(() => {
@@ -81,10 +85,11 @@ export function HistoryScanPage(): JSX.Element {
       if (saved.data) {
         setResult(saved.data);
         setReceipt(saved.receipt);
+        setFindingTotal(saved.sections.findings ?? 0);
         setOperationState(null);
         if (!path.trim()) setPath(saved.target);
-        setSelectedFingerprint(current => saved.data!.findings.some(finding => finding.fingerprint === current) ? current : null);
-        setPageStatus("history-scan", { label: `Saved history results · ${saved.data.findings.length} findings · ${saved.data.state ?? "state unknown"}`, tone: saved.data.state === "completed" ? "success" : "neutral" });
+        if (receipt?.id !== saved.receipt?.id) setSelectedFingerprint(null);
+        setPageStatus("history-scan", { label: `Saved history results · ${saved.sections.findings ?? 0} findings · ${saved.data.state ?? "state unknown"}`, tone: saved.data.state === "completed" ? "success" : "neutral" });
       }
     }).catch(cause => {
       if (mounted.current && generation === receiptRequest.current) setError(`Saved history evidence could not be loaded: ${String(cause)}`);
@@ -153,8 +158,13 @@ export function HistoryScanPage(): JSX.Element {
       })
       .sort((a, b) => severityOrder(a) - severityOrder(b) || a.filePath.localeCompare(b.filePath) || a.line - b.line);
   }, [findings, severity, search]);
-  const selected = filtered.find((finding) => finding.fingerprint === selectedFingerprint) ?? filtered[0] ?? null;
-  const pagination = usePagination(filtered, 50, selected ? filtered.indexOf(selected) : -1);
+  const localSelected = filtered.find((finding) => finding.fingerprint === selectedFingerprint) ?? filtered[0] ?? null;
+  const localPagination = usePagination(filtered, 50, localSelected ? filtered.indexOf(localSelected) : -1);
+  const savedFindings = useCanonicalPage<Finding>(receipt?.id ?? null, "findings", { severity, search, sort: "severity" }, findingTotal);
+  const pagination = receipt ? savedFindings : localPagination;
+  const selected = receipt ? savedFindings.items.find(finding => finding.fingerprint === selectedFingerprint) ?? savedFindings.items[0] ?? null : localSelected;
+  const total = receipt ? findingTotal : findings.length;
+  const blobIds = receipt ? savedFindings.data?.related?.findingBlobIds : result?.findingBlobIds;
   const partial = Boolean(result?.truncated || (result?.state && result.state !== "completed"));
 
   const copyFinding = async (finding: Finding) => {
@@ -184,7 +194,7 @@ export function HistoryScanPage(): JSX.Element {
             </>
           }
         >
-          <FolderPicker value={path} onChange={value => { pathEdited.current = true; receiptRequest.current += 1; setPath(value); setResult(null); setReceipt(null); setAttempt(null); setOperationState(null); setSelectedFingerprint(null); setError(null); }} disabled={running} inputLabel="Repository folder" placeholder="Choose a repository…" />
+          <TargetInput label="Repository folder" pickers={["folder"]} hint="Supports an existing Git repository folder. Choose Scan history when ready." value={path} onChange={value => { pathEdited.current = true; receiptRequest.current += 1; setPath(value); setResult(null); setReceipt(null); setAttempt(null); setOperationState(null); setSelectedFingerprint(null); setError(null); }} disabled={running || Boolean(activeWork)} inputLabel="Repository folder" placeholder="Choose a repository…" />
         </TargetBar>
 
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -197,7 +207,7 @@ export function HistoryScanPage(): JSX.Element {
         </div>
 
         {attempt && !result && attempt.state !== "completed" && <InlineState tone="unavailable" title={`Latest saved history attempt: ${attempt.state}`} description={attempt.id} />}
-        {result && <EvidenceSummary label="History" evidence={historyEvidence(result, receipt)} running={running} cancelling={activeWork?.cancelling} attempt={attempt}
+        {result && <EvidenceSummary label="History" evidence={historyEvidence(result, receipt, total)} running={running} cancelling={activeWork?.cancelling} attempt={attempt}
           operation={error ? error.toLowerCase().includes("cancelled") ? "Latest operation cancelled" : "Latest operation failed or evidence unavailable" : operationState}
           action={result.runId ? <Button type="button" variant="outline" size="sm" onClick={() => openExport(result.runId!)}>Open Export Center</Button> : undefined}>
           <p>Target: <span className="break-all font-mono">{result.target ?? path}</span></p>
@@ -222,13 +232,7 @@ export function HistoryScanPage(): JSX.Element {
           );
         })()}
 
-        {running && (
-          <InlineState
-            tone="running"
-            title="Reading git history"
-            description={`Scanning ${activeWork?.path ?? path}. Every distinct blob is read through bounded, read-only plumbing. Large repositories can take up to the two-minute budget.`}
-          />
-        )}
+        <RunTimeline kind="history" running={running} hasCompletedResult={Boolean(result && !partial)} title="Scanning Git history" detail={activeWork?.path ?? path} />
 
         {error && (
           <InlineState
@@ -251,7 +255,7 @@ export function HistoryScanPage(): JSX.Element {
           />
         )}
 
-        {result && !partial && findings.length === 0 && !running && (
+        {result && !partial && total === 0 && !running && (
           <InlineState
             tone="empty"
             title={`No findings recorded — ${result.blobsScanned} blob${result.blobsScanned === 1 ? "" : "s"} scanned`}
@@ -259,10 +263,10 @@ export function HistoryScanPage(): JSX.Element {
           />
         )}
 
-        {result && findings.length > 0 && (
+        {result && total > 0 && (
           <section aria-label="History scan results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
             <ResultsToolbar
-              countLabel={`${filtered.length} shown · ${findings.length} historical ${findings.length === 1 ? "secret" : "secrets"}`}
+              countLabel={receipt && savedFindings.loading ? `Loading this view · ${total} historical secrets` : receipt && savedFindings.error ? `This view is unavailable · ${total} historical secrets` : `${pagination.total} shown · ${total} historical ${total === 1 ? "secret" : "secrets"}`}
               filters={
                 <Select
                   aria-label="Finding severity"
@@ -289,6 +293,7 @@ export function HistoryScanPage(): JSX.Element {
                 </label>
               }
             />
+            {receipt && <ServerPageState page={savedFindings} />}
             <div role="tabpanel">
               <SplitWorkspace
                 panelId="history-findings"
@@ -364,7 +369,7 @@ export function HistoryScanPage(): JSX.Element {
                         <p className="mt-1 break-all font-mono text-[12px]">
                           {selected.filePath}:{selected.line}:{selected.column}
                         </p>
-                        {result.findingBlobIds?.[selected.id] && <p className="mt-1 break-all font-mono text-[12px]">Git blob: <span>{result.findingBlobIds[selected.id]}</span></p>}
+                        {blobIds?.[selected.id] && <p className="mt-1 break-all font-mono text-[12px]">Git blob: <span>{blobIds?.[selected.id]}</span></p>}
                         <p className="mt-1 text-[12px] text-text-muted">
                           The file may no longer exist; the path and position describe the object in history, not your working tree.
                         </p>

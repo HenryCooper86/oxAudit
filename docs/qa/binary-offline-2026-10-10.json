@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "measuredAt": "2026-10-10T03:14:14.813363+00:00",
+  "serverSha256": "5b40e87e2f3fe38c8db14617c3269f77aa322da78e350db413f4e0a526129a13",
+  "validationKind": "maintainer browser run of owned inert archive; native scan completed with optional scanner unavailable",
+  "canonicalRun": {
+    "id": "run_f3130a99-3cda-4cdc-a835-89bd83a3158a",
+    "kind": "binary",
+    "targetLabel": "/private/tmp/oxaudit-experience-20261010/packages.tar",
+    "state": "completed",
+    "attempt": 1,
+    "createdAtMs": 1791601956829,
+    "updatedAtMs": 1791601957519,
+    "engineIds": [],
+    "rulePackIds": [],
+    "providerSnapshotIds": [],
+    "warnings": [
+      {
+        "code": "scanner_failed",
+        "message": "cve-bin-tool: cve-bin-tool wrote no report (exit exit status: 125):\ndocker: Error response from daemon: No such image: oxaudit/cve-bin-tool:3.4\nRun 'docker run --help' for more information"
+      },
+      {
+        "code": "enrichment_note",
+        "message": "packages.tar: extracted 2 member(s) in memory"
+      },
+      {
+        "code": "enrichment_note",
+        "message": "Offline native binary scan skips online advisory and exploitation lookups; no local advisory database is configured, so components are inventory evidence and absence of vulnerabilities does not establish a clean result."
+      }
+    ]
+  },
+  "savedMetadata": {
+    "kind": "pagedProjection",
+    "projection": {
+      "components": [],
+      "databaseLastUpdated": null,
+      "durationMs": 287,
+      "scanners": [
+        "oxaudit"
+      ],
+      "summary": {
+        "components": 1000,
+        "critical": 0,
+        "high": 0,
+        "low": 0,
+        "medium": 0,
+        "unknown": 0,
+        "vulnerabilities": 0
+      },
+      "target": "/private/tmp/oxaudit-experience-20261010/packages.tar"
+    },
+    "projectionKind": "binary",
+    "sections": {
+      "components": 1000
+    }
+  },
+  "limitations": [
+    "Grype was disabled in this browser check; its offline child environment and cached finding behavior are covered by the executable fixture test.",
+    "Docker scanner image was absent; offline pull prevention returned a stated optional scanner failure and retained native inventory.",
+    "Zero native advisory requests are established by the dedicated client network-trap regression; this browser check is not an operating-system network sandbox."
+  ]
+}

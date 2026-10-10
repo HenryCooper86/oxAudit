@@ -75,6 +75,7 @@ pub async fn run_scan(
         on_progress("starting oxAudit native scanner".into());
         match run_native(
             &target,
+            request.offline,
             &context.cache_dir,
             context.nvd_api_key.as_ref().map(|key| key.as_str()),
             cancel.clone(),
@@ -128,8 +129,12 @@ pub async fn run_scan(
 
     if context.use_grype {
         on_progress("starting grype".into());
+        if request.offline {
+            notes.push("Offline grype scan uses its cached advisory database without network updates or age validation; advisory coverage may be incomplete or stale.".into());
+        }
         match run_grype(
             context,
+            request,
             &target,
             cancel.clone(),
             timeout,
@@ -177,6 +182,7 @@ pub async fn run_scan(
 /// unreachable would be the wrong trade.
 async fn run_native(
     target: &Path,
+    offline: bool,
     cache_dir: &Path,
     nvd_api_key: Option<&str>,
     cancel: Arc<AtomicBool>,
@@ -188,6 +194,13 @@ async fn run_native(
     let scanned = native::scan(target, cancel.clone(), on_progress.clone())?;
     let mut result = scanned.result;
     let mut notes = scanned.notes;
+
+    if offline {
+        if !scanned.queries.is_empty() {
+            notes.push("Offline native binary scan skips online advisory and exploitation lookups; no local advisory database is configured, so components are inventory evidence and absence of vulnerabilities does not establish a clean result.".into());
+        }
+        return Ok((result, notes));
+    }
 
     let Some(cve) = cve else {
         if !scanned.queries.is_empty() {
@@ -321,6 +334,7 @@ fn read_report_limited(path: &Path, max_bytes: usize) -> Result<Option<String>, 
 
 async fn run_grype(
     context: &ScanContext,
+    request: &BinaryScanRequest,
     target: &Path,
     cancel: Arc<AtomicBool>,
     timeout: Duration,
@@ -337,7 +351,22 @@ async fn run_grype(
     let prepared = super::runtime::PreparedCommand {
         program,
         args: grype::build_args(target),
-        environment: Vec::new(),
+        environment: if request.offline {
+            // Grype's documented configuration overrides also take precedence
+            // over a user's configured refresh and Maven network lookup policy.
+            [
+                "GRYPE_DB_AUTO_UPDATE",
+                "GRYPE_CHECK_FOR_APP_UPDATE",
+                "GRYPE_DB_REQUIRE_UPDATE_CHECK",
+                "GRYPE_DB_VALIDATE_AGE",
+                "GRYPE_EXTERNAL_SOURCES_ENABLE",
+            ]
+            .into_iter()
+            .map(|name| (name.to_string(), zeroize::Zeroizing::new("false".into())))
+            .collect()
+        } else {
+            Vec::new()
+        },
         path_rewrite: None,
     };
 
@@ -362,7 +391,183 @@ async fn run_grype(
 
 #[cfg(test)]
 mod tests {
-    use super::read_report_limited;
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    fn native_context(directory: &Path) -> ScanContext {
+        ScanContext {
+            runtime: Runtime::Native,
+            cve_bin_tool_path: None,
+            grype_path: None,
+            nvd_api_key: None,
+            scratch_dir: directory.join("scratch"),
+            cache_dir: directory.join("cache"),
+            use_cve_bin_tool: false,
+            use_grype: false,
+            use_native: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_native_orchestration_retains_inventory_without_contacting_available_clients() {
+        use std::io::Write;
+        use tokio::io::AsyncWriteExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let mut jar =
+            zip::ZipWriter::new(std::fs::File::create(target.join("library.jar")).unwrap());
+        jar.start_file(
+            "META-INF/maven/org.example/library/pom.properties",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        jar.write_all(b"groupId=org.example\nartifactId=library\nversion=1.2.3\n")
+            .unwrap();
+        jar.finish().unwrap();
+        let mut binary = vec![0_u8; 64];
+        binary.extend_from_slice(b"libcurl/8.7.1\0");
+        std::fs::write(target.join("libcurl.so"), binary).unwrap();
+
+        // Trap this client's attempted HTTPS connections locally. No process
+        // environment changes or real advisory service requests are involved.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let network_calls = Arc::new(AtomicUsize::new(0));
+        let calls = network_calls.clone();
+        let trap = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                calls.fetch_add(1, Ordering::SeqCst);
+                let _ = socket.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+            }
+        });
+        let http = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{address}")).unwrap())
+            .timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        let cve = crate::cve::CveState::new(http);
+        let context = native_context(directory.path());
+        let progress = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = progress.clone();
+        let on_progress: Arc<dyn Fn(String) + Send + Sync> =
+            Arc::new(move |line| captured.lock().unwrap().push(line));
+        let mut request = BinaryScanRequest {
+            path: target.to_string_lossy().into_owned(),
+            offline: true,
+            ..Default::default()
+        };
+        let outcome = run_scan(
+            &context,
+            &request,
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(5),
+            on_progress.clone(),
+            Some(&cve),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.result.summary.components, 2);
+        assert!(outcome
+            .result
+            .components
+            .iter()
+            .any(|component| component.product == "org.example:library"
+                && component.version == "1.2.3"));
+        assert!(outcome
+            .result
+            .components
+            .iter()
+            .any(|component| component.product == "libcurl" && component.version == "8.7.1"));
+        assert_eq!(
+            network_calls.load(Ordering::SeqCst),
+            0,
+            "offline must not reach OSV, NVD, or exploitation feeds"
+        );
+        assert!(!progress
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.starts_with("OSV ") || line.starts_with("NVD ")));
+        assert!(outcome.notes.iter().any(|note| note.contains("Offline")
+            && note.contains("advisory")
+            && note.contains("clean")));
+
+        // Prove the trap and fixture exercise enrichment when online.
+        request.offline = false;
+        let online = run_scan(
+            &context,
+            &request,
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(5),
+            on_progress,
+            Some(&cve),
+        )
+        .await
+        .unwrap();
+        assert_eq!(online.result.summary.components, 2);
+        assert!(network_calls.load(Ordering::SeqCst) >= 2);
+        let lines = progress.lock().unwrap();
+        assert!(lines.iter().any(|line| line.starts_with("OSV ")));
+        assert!(lines.iter().any(|line| line.starts_with("NVD ")));
+        trap.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn offline_grype_orchestration_disables_refresh_and_retains_cached_advisories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let scanner = directory.path().join("grype-fixture");
+        std::fs::write(&scanner, r#"#!/bin/sh
+for value in "$GRYPE_DB_AUTO_UPDATE" "$GRYPE_CHECK_FOR_APP_UPDATE" "$GRYPE_DB_REQUIRE_UPDATE_CHECK" "$GRYPE_DB_VALIDATE_AGE" "$GRYPE_EXTERNAL_SOURCES_ENABLE"; do
+  if [ "$value" != false ]; then echo 'offline network/age policy missing' >&2; exit 1; fi
+done
+printf '%s\n' '{"matches":[{"vulnerability":{"id":"CVE-2099-0001","severity":"High"},"artifact":{"name":"cached-library","version":"1.0","locations":[{"path":"/library"}]}}],"descriptor":{"db":{"built":"2026-01-01T00:00:00Z"}}}'
+"#).unwrap();
+        std::fs::set_permissions(&scanner, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut context = native_context(directory.path());
+        context.use_native = false;
+        context.use_grype = true;
+        context.grype_path = Some(scanner.to_string_lossy().into_owned());
+        let request = BinaryScanRequest {
+            path: target.to_string_lossy().into_owned(),
+            offline: true,
+            update: Some("now".into()),
+            ..Default::default()
+        };
+        let outcome = run_scan(
+            &context,
+            &request,
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(5),
+            Arc::new(|_| {}),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(outcome.failures.is_empty());
+        assert_eq!(outcome.result.summary.components, 1);
+        assert_eq!(outcome.result.summary.high, 1);
+        assert_eq!(
+            outcome.result.components[0].vulnerabilities[0].cve_id,
+            "CVE-2099-0001"
+        );
+        assert_eq!(
+            outcome.result.database_last_updated.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|note| note.contains("grype") && note.contains("cached") && note.contains("age")));
+    }
 
     #[test]
     fn oversized_on_disk_reports_are_rejected_before_parsing() {

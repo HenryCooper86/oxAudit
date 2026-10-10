@@ -1,7 +1,6 @@
 import { Ban, Clock3, FolderClock, Play } from "lucide-react";
 import { useCallback, useState, type JSX } from "react";
-import { FolderPicker } from "../../components/FolderPicker";
-import { ProgressBar } from "../../components/ProgressBar";
+import { TargetInput } from "../../components/workbench/TargetInput";
 import { Button, Switch } from "../../components/ui";
 import { InlineState } from "../../components/workbench/InlineState";
 import type { ProjectContext, RecentProject, ScanProgress } from "../../lib/types";
@@ -11,6 +10,7 @@ import type {
   SourceScanOptionValues,
 } from "../../lib/sourceScanOptions";
 import { fmtDateTime } from "../../lib/format";
+import { serverMode } from "../../lib/transport";
 import { PolicyStatusView } from "./PolicyStatus";
 import { useProjectDrop } from "./useProjectDrop";
 
@@ -39,7 +39,6 @@ export function SourceTargetPanel(props: {
     running,
     cancelling,
     dropping: externalDropping,
-    progress,
     rulePackFiles,
     onRulePackFilesChange,
     onPathChange,
@@ -49,12 +48,15 @@ export function SourceTargetPanel(props: {
   } = props;
   const [dropUnavailable, setDropUnavailable] = useState(false);
   const onDropError = useCallback(() => setDropUnavailable(true), []);
-  const { dropping } = useProjectDrop(onPathChange, onDropError);
-  const activeDrop = externalDropping || dropping;
+  const selectDroppedPath = useCallback((nextPath: string) => {
+    if (!running && !props.blocked && !serverMode) onPathChange(nextPath);
+  }, [onPathChange, props.blocked, running]);
+  const { dropping } = useProjectDrop(selectDroppedPath, onDropError);
+  const activeDrop = !running && !props.blocked && !serverMode && (externalDropping || dropping);
   const values = options.values;
   const noCategories = !values.scanSecrets && !values.scanVulnerabilities;
   const policyInvalid = project?.policy.status === "invalid";
-  const runDisabled = props.blocked || !path || !project || running || !options.resolved || noCategories || policyInvalid;
+  const runDisabled = props.blocked || !path.trim() || !project || running || !options.resolved || noCategories || policyInvalid;
 
   return (
     <section aria-label="Source scan target" className={`rounded-sm border bg-surface-secondary p-4 ${activeDrop ? "border-accent bg-accent-subtle" : "border-border"}`}>
@@ -62,18 +64,18 @@ export function SourceTargetPanel(props: {
         <div className="min-w-0">
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[min(100%,24rem)] flex-1">
-              <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-                Project folder
-              </label>
-              <FolderPicker
+              <TargetInput
                 value={path}
                 onChange={onPathChange}
-                disabled={running}
+                disabled={running || props.blocked}
+                label="Project folder"
                 inputLabel="Project folder path"
-                buttonLabel="Browse…"
+                pickers={["folder"]}
+                placeholder="Choose a project folder…"
+                hint="Source scans support a project folder. Choose Run scan when ready."
               />
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               {running && (
                 <Button type="button" onClick={onCancel} disabled={cancelling} variant="danger" size="md">
                   <Ban size={13} aria-hidden="true" />
@@ -87,9 +89,9 @@ export function SourceTargetPanel(props: {
             </div>
           </div>
 
-          <p className="mt-2 text-[11px] text-text-muted">
-            {activeDrop ? "Drop the folder to inspect it." : dropUnavailable ? "Drag-and-drop is unavailable here; Browse still works." : "Browse, paste a path, or drop a project folder anywhere on this window."}
-          </p>
+          {!serverMode && <p className="mt-2 text-[11px] text-text-muted">
+            {activeDrop ? "Drop the folder to inspect it." : dropUnavailable ? "Drag-and-drop is unavailable here; use Choose folder or paste a path." : "You can also drop a project folder anywhere on this window to inspect it."}
+          </p>}
 
           <details className="mt-3 border-t border-border pt-3">
             <summary className="w-fit cursor-pointer text-[12px] font-medium text-text-secondary hover:text-text-primary">
@@ -145,24 +147,6 @@ export function SourceTargetPanel(props: {
               <InlineState tone="unavailable" compact title="No scan categories selected" description="Enable secrets or vulnerabilities to run a source scan." />
             </div>
           )}
-          {running && progress && (
-            <div className="mt-3">
-              <InlineState
-                tone="running"
-                compact
-                title="Scanning project"
-                description={progress.file}
-                progress={
-                  <ProgressBar
-                    indeterminate={!progress.total}
-                    value={progress.done ?? 0}
-                    max={progress.total ?? 0}
-                    label={progress.phase === "walking" ? "Walking directory tree…" : "Scanning files…"}
-                  />
-                }
-              />
-            </div>
-          )}
         </div>
 
         <aside aria-labelledby="recent-projects-title" className="min-w-0 border-t border-border pt-3 min-[980px]:border-l min-[980px]:border-t-0 min-[980px]:pl-4 min-[980px]:pt-0">
@@ -186,7 +170,7 @@ export function SourceTargetPanel(props: {
                     type="button"
                     aria-current={selected ? "true" : undefined}
                     onClick={() => onPathChange(recent.canonicalPath)}
-                    disabled={running}
+                    disabled={running || props.blocked}
                     className={`w-full px-2 py-2 text-left transition-colors ${selected ? "bg-accent-subtle" : "hover:bg-surface-hover"}`}
                   >
                     <span className="flex items-center justify-between gap-3">

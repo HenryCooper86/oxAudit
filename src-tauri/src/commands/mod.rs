@@ -1114,6 +1114,21 @@ pub(crate) fn load_source_run_inner(
     findings.findings_service()?.load_run(run_id)
 }
 
+pub(crate) fn load_source_run_metadata_inner(
+    findings: &impl FindingsServiceAccess,
+    run_id: &str,
+) -> Result<crate::findings::domain::SourceRunMetadata, CommandError> {
+    findings.findings_service()?.load_run_metadata(run_id)
+}
+
+pub(crate) fn load_source_run_page_inner(
+    findings: &impl FindingsServiceAccess,
+    run_id: &str,
+    query: crate::findings::domain::SourceFindingsQuery,
+) -> Result<crate::findings::domain::SourceFindingsPage, CommandError> {
+    findings.findings_service()?.load_run_page(run_id, &query)
+}
+
 pub(crate) fn retry_source_run_save_inner(
     findings: &impl FindingsServiceAccess,
     retry_token: &str,
@@ -1216,6 +1231,23 @@ pub fn load_source_run(
     run_id: String,
 ) -> Result<ScanRunDetail, CommandError> {
     load_source_run_inner(&*state, &run_id)
+}
+
+#[tauri::command]
+pub fn load_source_run_metadata(
+    state: State<'_, FindingsState>,
+    run_id: String,
+) -> Result<crate::findings::domain::SourceRunMetadata, CommandError> {
+    load_source_run_metadata_inner(&*state, &run_id)
+}
+
+#[tauri::command]
+pub fn load_source_run_page(
+    state: State<'_, FindingsState>,
+    run_id: String,
+    query: Option<crate::findings::domain::SourceFindingsQuery>,
+) -> Result<crate::findings::domain::SourceFindingsPage, CommandError> {
+    load_source_run_page_inner(&*state, &run_id, query.unwrap_or_default())
 }
 
 #[tauri::command]

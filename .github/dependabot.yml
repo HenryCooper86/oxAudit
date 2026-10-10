@@ -7,13 +7,21 @@ updates:
     groups:
       frontend:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule:
       interval: weekly
+    # keyring 4 replaces the platform feature/store contract used by 3.x.
+    # Migrate and validate stored-credential compatibility deliberately;
+    # see docs/dependency-maintenance.md. Compatible 3.x updates stay enabled.
+    ignore:
+      - dependency-name: keyring
+        update-types: ["version-update:semver-major"]
     groups:
       rust:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

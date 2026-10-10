@@ -7,7 +7,7 @@ export type GitPathMode = "all" | "changed" | "staged" | "unstaged";
 const EMPTY: Finding[] = [];
 interface Choices { key: string; generation: number; baseline: string; baseInput: string; requestedBase: string; pathMode: GitPathMode; refresh: number }
 
-export function useReviewChanges(target: string, run: ScanRunDetail | null) {
+export function useReviewChanges(target: string, run: ScanRunDetail | null, paged = false) {
   const key = JSON.stringify([target, run?.runId]);
   const defaults = (generation: number): Choices => ({ key, generation, baseline: "automatic", baseInput: "HEAD", requestedBase: "HEAD", pathMode: "all", refresh: 0 });
   const [stored, setChoices] = useState<Choices>(() => defaults(0));
@@ -29,14 +29,14 @@ export function useReviewChanges(target: string, run: ScanRunDetail | null) {
   }
 
   useEffect(() => {
-    if (!run || baseline === "automatic" || run.status !== "completed" || run.persistence.status !== "saved") return;
+    if (paged || !run || baseline === "automatic" || run.status !== "completed" || run.persistence.status !== "saved") return;
     let disposed = false;
     void Promise.resolve().then(() => api.compareSourceRuns(run.runId, baseline)).then(
       findings => { if (!disposed) setComparison({ key, generation, baseline, run, findings }); },
       error => { if (!disposed) setComparison({ key, generation, baseline, run, error: normalizeCommandError(error).message }); },
     );
     return () => { disposed = true; };
-  }, [key, generation, baseline, run]);
+  }, [key, generation, baseline, run, paged]);
 
   useEffect(() => {
     if (!target) return;
@@ -61,9 +61,9 @@ export function useReviewChanges(target: string, run: ScanRunDetail | null) {
 
   const selected = comparison?.key === key && comparison.generation === generation && comparison.baseline === baseline && comparison.run === run ? comparison : null;
   const comparing = baseline !== "automatic";
-  const comparisonReady = !comparing || Boolean(selected?.findings);
+  const comparisonReady = paged || !comparing || Boolean(selected?.findings);
   const allFindings = selected?.findings ?? run?.findings ?? EMPTY;
-  const baselineId = comparing && selected?.findings ? baseline : run?.baselineRunId;
+  const baselineId = comparing && (paged || selected?.findings) ? baseline : run?.baselineRunId;
   const hasBaseline = Boolean(baselineId) && comparisonReady;
   const current = inspection?.key === key && inspection.generation === generation && inspection.reference === requestedBase && inspection.refresh === refresh ? inspection : null;
   const git = current?.context ?? null;
@@ -80,10 +80,11 @@ export function useReviewChanges(target: string, run: ScanRunDetail | null) {
   }, [allFindings]);
   return {
     baseline, baselineId, hasBaseline, comparisonReady, comparisonError: selected?.error ?? null,
-    comparisonLoading: comparing && !selected, counts, allFindings, findings,
+    comparisonLoading: !paged && comparing && !selected, counts, allFindings, findings,
     setBaseline: (value: string) => update({ baseline: value }),
     baseInput, setBaseInput: (value: string) => update({ baseInput: value }),
     pathMode, setPathMode: (value: GitPathMode) => update({ pathMode: value }),
+    filePaths: gitUsable && git && pathMode !== "all" ? (pathMode === "changed" ? git.changedPaths : pathMode === "staged" ? git.stagedPaths : git.unstagedPaths) : null,
     git, gitUsable, gitLoading: Boolean(target && !current), gitError: current?.error ?? null,
     refreshGit: () => update({ requestedBase: baseInput, refresh: refresh + 1 }),
   };

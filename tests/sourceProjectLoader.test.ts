@@ -80,7 +80,7 @@ test("the latest target wins when project inspection resolves out of order", asy
   const loader = new SourceProjectLoader({
     inspectSourceProject: (path) => inspections.get(path)!.promise,
     listSourceRuns: async (projectId) => [summary(projectId)],
-    loadSourceRun: async (runId) => run(runId.replace(/^run-/, "")),
+    loadSourceRunMetadata: async (runId) => run(runId.replace(/^run-/, "")),
   });
 
   const loadA = loader.load("/project-a");
@@ -103,7 +103,7 @@ test("a project without a prior run still loads its durable context", async () =
       policy: { status: "invalid", message: "reason is required" },
     }),
     listSourceRuns: async () => [],
-    loadSourceRun: async () => {
+    loadSourceRunMetadata: async () => {
       throw new Error("must not be called");
     },
   });
@@ -119,7 +119,7 @@ test("invalidate prevents an in-flight load from publishing", async () => {
   const loader = new SourceProjectLoader({
     inspectSourceProject: () => inspection.promise,
     listSourceRuns: async () => [],
-    loadSourceRun: async () => run("unused"),
+    loadSourceRunMetadata: async () => run("unused"),
   });
   const pending = loader.load("/project");
   loader.invalidate();
@@ -132,7 +132,7 @@ test("an explicit project handoff restores that run rather than silently selecti
   const loader = new SourceProjectLoader({
     inspectSourceProject: async () => context("project"),
     listSourceRuns: async () => [],
-    loadSourceRun: async id => { requested.push(id); return { ...run("project"), runId: id }; },
+    loadSourceRunMetadata: async id => { requested.push(id); return { ...run("project"), runId: id }; },
   });
   const loaded = await loader.load("/project", "older-run");
   assert.equal(loaded?.run?.runId, "older-run");

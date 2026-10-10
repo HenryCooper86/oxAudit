@@ -191,6 +191,7 @@ pub fn prepare_docker(
     // available and the one to prefer for untrusted firmware.
     if request.offline {
         args.push("--network=none".into());
+        args.push("--pull=never".into());
     } else if nvd_api_key.is_some_and(|key| !key.trim().is_empty()) {
         args.push("--env".into());
         args.push("NVD_API_KEY".into());
@@ -430,6 +431,10 @@ mod tests {
         )
         .unwrap();
         assert!(prepared.args.iter().any(|a| a == "--network=none"));
+        assert!(
+            prepared.args.iter().any(|a| a == "--pull=never"),
+            "offline must also prevent the Docker daemon from fetching a missing image"
+        );
 
         // An online scan must keep networking, or the database can never update.
         let online = prepare_docker(
@@ -442,6 +447,7 @@ mod tests {
         )
         .unwrap();
         assert!(!online.args.iter().any(|a| a == "--network=none"));
+        assert!(!online.args.iter().any(|a| a == "--pull=never"));
     }
 
     #[test]

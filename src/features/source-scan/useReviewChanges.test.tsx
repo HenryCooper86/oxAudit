@@ -93,3 +93,17 @@ test.each([false, true])("A to B to A starts a fresh inspection lifetime (target
   expect(hook.result.current.gitUsable).toBe(true);
   expect(hook.result.current.git?.stagedPaths).toEqual(["changed.js"]);
 });
+
+test('paged saved reviews delegate baseline and path queries without loading a full comparison', async () => {
+  vi.mocked(api.inspectSourceGit).mockResolvedValue(git);
+  vi.mocked(api.compareSourceRuns).mockClear();
+  const hook = renderHook(() => useReviewChanges('/a', { ...run, findings: [] }, true));
+  await waitFor(() => expect(hook.result.current.gitUsable).toBe(true));
+  act(() => hook.result.current.setBaseline('chosen'));
+  act(() => hook.result.current.setPathMode('staged'));
+  expect(hook.result.current.baselineId).toBe('chosen');
+  expect(hook.result.current.filePaths).toEqual(['app.js']);
+  expect(api.compareSourceRuns).not.toHaveBeenCalled();
+  act(() => window.dispatchEvent(new Event('focus')));
+  expect(hook.result.current.filePaths).toBeNull();
+});

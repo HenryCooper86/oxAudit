@@ -1,3 +1,4 @@
+import { installPagingFixtures } from "../../../tests/fixtures/pagedResults";
 import { projectSettings } from "../../../tests/fixtures/projectHome";
 import {
   act,
@@ -25,6 +26,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 beforeEach(() => {
+  installPagingFixtures(api);
   useAppStore.setState({
     selectedProject: null,
     activeProject: null,
@@ -210,7 +212,7 @@ test("retry save repairs the shared source receipt through leaving and reopening
   fireEvent.click(screen.getByRole("button", { name: "View source findings" }));
   home.unmount();
   render(<SourceScanPage />);
-  await waitFor(() => expect(api.loadSourceRun).toHaveBeenCalledWith("s"));
+  await waitFor(() => expect(api.loadSourceRunMetadata).toHaveBeenCalledWith("s"));
   expect(
     screen.queryByRole("button", { name: /Retry save/ }),
   ).not.toBeInTheDocument();
@@ -314,7 +316,7 @@ test("initial same-path home handoff restores durable dependencies after restart
   render(<DepsScanPage />);
   expect(await screen.findByText("37")).toBeInTheDocument();
   expect(screen.getByLabelText("Project folder path")).toHaveValue("/project");
-  expect(api.loadCanonicalProjection).toHaveBeenCalledWith(
+  expect(api.loadCanonicalProjectionMetadata).toHaveBeenCalledWith(
     "saved-dependencies",
   );
   expect(scan).not.toHaveBeenCalled();
@@ -463,6 +465,11 @@ test.each(['completed','handoff','restored'] as const)('dependency %s receipt co
   if(source==='completed') vi.spyOn(api,'scanDependencies').mockResolvedValue(receipt);
   render(<DepsScanPage/>);
   if(source==='completed') fireEvent.click(screen.getByRole('button',{name:'Check dependencies'}));
+  if(source==='restored') {
+    expect(await screen.findAllByText('(packages unknown)').then(nodes => nodes[0])).toBeInTheDocument();
+    expect(api.loadCanonicalProjection).not.toHaveBeenCalled();
+    return;
+  }
   expect(await screen.findByText('(2 pkgs)')).toBeInTheDocument();
   expect(screen.getByTitle('/project/package-lock.json')).toHaveTextContent('(2 pkgs)');
   expect(screen.getByTitle('/project/empty/package-lock.json')).toHaveTextContent('(0 pkgs)');
@@ -559,7 +566,7 @@ test('source reloads the saved A receipt after completing A, editing B, and retu
   expect(screen.queryByText('73')).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('Project folder path'), { target: { value: '/project-a' } });
   expect(await screen.findByText('73')).toBeInTheDocument();
-  expect(api.loadSourceRun).toHaveBeenCalledWith(saved.runId);
+  expect(api.loadSourceRunMetadata).toHaveBeenCalledWith(saved.runId);
   expect(scan).toHaveBeenCalledTimes(1);
   expect(useScanWorkStore.getState().recoveryRevision).toBe(revision);
 });

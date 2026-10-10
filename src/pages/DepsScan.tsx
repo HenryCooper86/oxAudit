@@ -1,14 +1,17 @@
+import { phaseProgress } from "../features/runs/nativeProgress";
 import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { listen, type UnlistenFn } from "../lib/events";
 import { openUrl } from "../lib/opener";
 import { Ban, Boxes, ExternalLink, Play, Search } from "lucide-react";
-import { FolderPicker } from "../components/FolderPicker";
-import { ProgressBar } from "../components/ProgressBar";
+import { TargetInput } from "../components/workbench/TargetInput";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { ResultPagination } from "../components/workbench/ResultPagination";
+import { useCanonicalPage, useServerPage } from "../lib/serverPagination";
+import { ServerPageState } from "../components/workbench/ServerPageState";
+import type { Pagination } from "../lib/pagination";
 import { usePagination } from "../lib/pagination";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { TargetBar } from "../components/workbench/TargetBar";
@@ -18,7 +21,7 @@ import { resolveRuntimeProject } from "../lib/assistantSessions";
 import { latestCompletedRun, normalizedTarget } from "../lib/durableRuns";
 import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
-import type { CanonicalRun, DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
+import type { CanonicalRun, DependencyScanResult, LockfileInfo, Vulnerability, ResultPageQuery } from "../lib/types";
 import { Button, Switch } from "../components/ui";
 import { RunTimeline } from "../features/runs/RunTimeline";
 import { dependencyEvidence, EvidenceSummary } from "../features/runs/EvidenceSummary";
@@ -69,12 +72,22 @@ export function DepsScanPage() {
   const handoffRevisionRef = useRef(recoveryRevision);
   const [result, setResult] = useState<DependencyScanResult | null>(null);
   const [receipt, setReceipt] = useState<CanonicalRun | null>(null);
+  const [savedVulnerabilityTotal, setSavedVulnerabilityTotal] = useState(0);
+  const decisionKey = JSON.stringify([path, receipt?.id]);
+  const [decisionOwner, setDecisionOwner] = useState({ key: decisionKey, generation: 0 });
+  let owner = decisionOwner;
+  if (decisionOwner.key !== decisionKey) { owner = { key: decisionKey, generation: decisionOwner.generation + 1 }; setDecisionOwner(owner); }
+  const [decisionRequest, setDecisionRequest] = useState<{ key: string; generation: number; data?: DependencyScanResult; loading: boolean; error: string | null } | null>(null);
+  const ownedDecision = decisionRequest?.key === owner.key && decisionRequest.generation === owner.generation ? decisionRequest : null;
+  const completeDecisions = ownedDecision?.data && receipt ? { runId: receipt.id, data: ownedDecision.data } : null;
+  const decisionsLoading = ownedDecision?.loading ?? false;
+  const decisionsError = ownedDecision?.error ?? null;
   const [attempt, setAttempt] = useState<CanonicalRun | null>(null);
   const [operationState, setOperationState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failedOperation, setFailedOperation] = useState<FailedOperation | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{ operationId?: string; phase: string; done?: number; total?: number } | null>(null);
   const [progressBridgeAvailable, setProgressBridgeAvailable] = useState<boolean | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -111,10 +124,12 @@ export function DepsScanPage() {
         const runs = await api.listCanonicalRuns("dependencies");
         const saved = latestCompletedRun(runs, "dependencies", requestedPath);
         if (!saved || requestId !== historyRequestRef.current) return;
-        const restored = await api.loadCanonicalProjection<DependencyScanResult>(saved.id);
+        const metadata = await api.loadCanonicalProjectionMetadata<DependencyScanResult>(saved.id);
+        const restored = metadata.projection;
         if (requestId !== historyRequestRef.current) return;
         setResult(restored);
         setReceipt(saved);
+        setSavedVulnerabilityTotal(metadata.sections.vulnerabilities ?? 0);
         setAttempt(runs.filter(run => run.kind === "dependencies" && normalizedTarget(run.targetLabel) === normalizedTarget(requestedPath)).sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id))[0] ?? null);
         setPreview(previewFromResult(restored));
         setPageStatus("deps-scan", {
@@ -134,9 +149,10 @@ export function DepsScanPage() {
       try {
         const unlisten = await listen<{ operationId?: string; phase: string; done?: number; total?: number }>("deps://progress", (event) => {
           const active = useScanWorkStore.getState().active;
-          if (!disposed && ownsCurrentInvocation() && !active?.terminalStatus && (!event.payload.operationId || event.payload.operationId === active?.operationId)) {
-            setPhase(event.payload.phase);
-            setProgress({ done: event.payload.done ?? 0, total: event.payload.total ?? 0 });
+          const parsed = phaseProgress(event.payload, ["parsing", "querying-osv", "loading-cache", "matching-local", "exploitation-signal"]);
+          if (!disposed && parsed && active?.owner === "dependencies" && !active.terminalStatus && (parsed.operationId === active.operationId || (!parsed.operationId && ownsCurrentInvocation()))) {
+            setPhase(parsed.phase);
+            setProgress({ ...parsed, operationId: active.operationId });
           }
         });
         if (disposed) {
@@ -289,7 +305,7 @@ export function DepsScanPage() {
     setError(null);
     setFailedOperation(null);
     setOperationState(null);
-    setProgress({ done: 0, total: 0 });
+    setProgress(null);
     const requestedPath = path;
     try {
       const runtime = await resolveRuntimeProject(
@@ -392,18 +408,33 @@ export function DepsScanPage() {
       .toLowerCase()
       .includes(normalizedQuery);
   }), [vulns, query]);
-  const selected = filteredVulns.find((v) => vulnerabilityKey(v) === selectedKey) ?? filteredVulns[0] ?? null;
+  const savedVulns = useCanonicalPage<Vulnerability>(receipt?.id ?? null, "vulnerabilities", { search: query }, savedVulnerabilityTotal);
+  const savedCritical = useCanonicalCount(receipt?.id ?? null, "critical");
+  const savedHigh = useCanonicalCount(receipt?.id ?? null, "high");
+  const visibleVulns = receipt ? savedVulns.items : filteredVulns;
+  const vulnerabilityTotal = receipt ? savedVulnerabilityTotal : vulns.length;
+  const decisionAdvisory = receipt && completeDecisions?.runId === receipt.id ? completeDecisions.data.vulnerabilities.find(v => vulnerabilityKey(v) === selectedKey) : null;
+  const selected = visibleVulns.find((v) => vulnerabilityKey(v) === selectedKey) ?? (!savedVulns.loading && !savedVulns.error && !query ? decisionAdvisory : null) ?? visibleVulns[0] ?? null;
   const hasExplicitSelection = selectedKey !== null && selected !== null && vulnerabilityKey(selected) === selectedKey;
-  const critical = vulns.filter((vulnerability) => vulnerability.severity === "critical").length;
-  const high = vulns.filter((vulnerability) => vulnerability.severity === "high").length;
-  const progressLabel =
-    phase === "parsing"
-      ? "Parsing lockfiles…"
-      : phase === "querying-osv"
-        ? "Querying OSV vulnerability database…"
-        : phase === "loading-cache"
-          ? "Loading cached advisories…"
-          : "Checking dependencies…";
+  const loadCompleteDecisions = async () => {
+    if (!receipt || decisionsLoading) return;
+    const { key, generation } = owner;
+    setDecisionRequest({ key, generation, loading: true, error: null });
+    const publish = (result: { data?: DependencyScanResult; error: string | null }) => setDecisionRequest(current =>
+      current?.key === key && current.generation === generation ? { key, generation, ...result, loading: false } : current);
+    try {
+      const data = await api.loadCanonicalProjection<DependencyScanResult>(receipt.id);
+      publish({ data, error: null });
+    } catch (cause) { publish({ error: String(cause) }); }
+  };
+  const critical = receipt ? savedCritical ?? "…" : vulns.filter((vulnerability) => vulnerability.severity === "critical").length;
+  const high = receipt ? savedHigh ?? "…" : vulns.filter((vulnerability) => vulnerability.severity === "high").length;
+  const progressLabel = phase === "parsing" ? "Parsing lockfiles"
+    : phase === "querying-osv" ? "Querying OSV advisories"
+    : phase === "loading-cache" ? "Loading cached advisories"
+    : phase === "matching-local" ? "Matching local advisories"
+    : phase === "exploitation-signal" ? "Checking exploitation signals"
+    : phase || "Checking dependencies";
 
   return (
     <ToolPage
@@ -416,7 +447,7 @@ export function DepsScanPage() {
             <Button
               type="button"
               onClick={findLockfiles}
-              disabled={!path || running || discovering}
+              disabled={!path.trim() || running || discovering || Boolean(activeWork)}
               variant="outline"
               size="md"
             >
@@ -424,11 +455,11 @@ export function DepsScanPage() {
               {discovering ? "Finding…" : "Find lockfiles"}
             </Button>
             {running ? (
-              <Button type="button" onClick={() => void cancel()} variant="danger" size="md">
+              <Button type="button" onClick={() => void cancel()} disabled={activeWork?.cancelling} variant="danger" size="md">
                 <Ban size={13} aria-hidden="true" />Cancel
               </Button>
             ) : (
-              <Button type="button" onClick={run} disabled={!path || discovering || Boolean(activeWork)} variant="primary" size="md">
+              <Button type="button" onClick={run} disabled={!path.trim() || discovering || Boolean(activeWork)} variant="primary" size="md">
                 <Play size={13} aria-hidden="true" />Check dependencies
               </Button>
             )}
@@ -437,30 +468,6 @@ export function DepsScanPage() {
         }
         secondary={
           <>
-            {running && (
-              <InlineState
-                tone="running"
-                compact
-                title="Checking dependencies"
-                description={
-                  result
-                    ? "Previous completed results remain available below."
-                    : progressBridgeAvailable === false
-                      ? "Live progress is unavailable; the dependency check is still running."
-                      : undefined
-                }
-                progress={
-                  progressBridgeAvailable === false ? undefined : (
-                    <ProgressBar
-                      indeterminate={!progress?.total}
-                      value={progress?.done ?? 0}
-                      max={progress?.total ?? 0}
-                      label={progressLabel}
-                    />
-                  )
-                }
-              />
-            )}
             {discovering && (
               <InlineState
                 tone="running"
@@ -503,15 +510,15 @@ export function DepsScanPage() {
           </>
         }
       >
-        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-          Project folder
-        </label>
-        <FolderPicker
+        <TargetInput
+          label="Project folder"
           value={path}
           onChange={changePath}
-          disabled={running || discovering}
+          disabled={running || discovering || Boolean(activeWork)}
           inputLabel="Project folder path"
-          buttonLabel="Browse…"
+          pickers={["folder"]}
+          placeholder="Choose a project folder…"
+          hint="Supports a project folder with lockfiles. Choose Check dependencies when ready."
         />
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Switch
@@ -524,7 +531,7 @@ export function DepsScanPage() {
             <input
               aria-label="Advisory database path"
               title="Answer advisories from this local database instead of the network, built on the Advisory Database page"
-              className="min-w-[240px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
+              className="min-w-0 basis-full sm:basis-auto sm:flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
               placeholder="advisories.sqlite3"
               value={advisoryDbPath}
               onChange={(event) => setAdvisoryDbPath(event.target.value)}
@@ -535,9 +542,12 @@ export function DepsScanPage() {
       </TargetBar>
 
       <RunTimeline
-        active={!running && result ? "completed" : phase === "parsing" ? "detecting" : phase === "querying-osv" || phase === "loading-cache" || phase === "exploitation-signal" ? "enriching" : "discovering"}
-        running={running || discovering}
+        kind="dependencies"
+        running={running}
         hasCompletedResult={Boolean(result)}
+        title="Checking dependencies"
+        unavailable={progressBridgeAvailable === false}
+        progress={progress && phase ? { ...progress, label: progressLabel, unit: phase === "parsing" ? "lockfiles" : undefined } : null}
       />
 
       {result && <EvidenceSummary label="Dependency" evidence={dependencyEvidence(result, receipt)} running={running} cancelling={activeWork?.cancelling} attempt={attempt} operation={operationState}>
@@ -554,20 +564,23 @@ export function DepsScanPage() {
           <SummaryMetric label="Lockfiles" value={result.summary.lockfilesFound.length.toLocaleString()} />
           <SummaryMetric label="Packages found" value={result.summary.packagesFound.toLocaleString()} />
           <SummaryMetric label="Packages checked" value={result.summary.packagesQueried.toLocaleString()} />
-          <SummaryMetric label="Vulnerabilities" value={vulns.length.toLocaleString()} />
+          <SummaryMetric label="Vulnerabilities" value={vulnerabilityTotal.toLocaleString()} />
           <SummaryMetric label="Critical / High" value={`${critical} / ${high}`} />
         </section>
       )}
 
-      {result && <UpgradeDecisions result={result} disabled={running || discovering || activeWork !== null} onRecheck={() => { void run(); }} onSelect={(advisory) => {
+      {result && (!receipt || completeDecisions?.runId === receipt.id) && <UpgradeDecisions result={receipt ? completeDecisions!.data : result} disabled={running || discovering || activeWork !== null} onRecheck={() => { void run(); }} onSelect={(advisory) => {
         setQuery(""); setSelectedKey(vulnerabilityKey(advisory));
         document.getElementById("dependency-advisories")?.scrollIntoView?.({ block: "start", behavior: "smooth" });
       }} />}
 
-      {result && vulns.length > 0 && (
+      {result && receipt && completeDecisions?.runId !== receipt.id && <InlineState tone="idle" compact title="Upgrade decisions need the complete saved inventory" description="Load all packages and advisories explicitly to compare upgrade groups." action={<Button disabled={decisionsLoading} variant="outline" onClick={() => void loadCompleteDecisions()}>{decisionsLoading ? "Loading complete upgrade decisions…" : "Load complete upgrade decisions"}</Button>} />}
+      {decisionsError && <InlineState tone="error" compact title="Upgrade decisions unavailable" description={decisionsError} />}
+
+      {result && vulnerabilityTotal > 0 && (
         <section id="dependency-advisories" aria-label="Dependency vulnerabilities" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <ResultsToolbar
-            countLabel={`${filteredVulns.length} of ${vulns.length} vulnerabilities`}
+            countLabel={receipt && savedVulns.loading ? `Loading this view · ${vulnerabilityTotal} vulnerabilities` : receipt && savedVulns.error ? `This view is unavailable · ${vulnerabilityTotal} vulnerabilities` : `${receipt ? savedVulns.total : filteredVulns.length} of ${vulnerabilityTotal} vulnerabilities`}
             search={
               <label className="relative min-w-0">
                 <span className="sr-only">Search dependency vulnerabilities</span>
@@ -585,17 +598,18 @@ export function DepsScanPage() {
               </label>
             }
           />
-          {filteredVulns.length > 0 ? (
+          {receipt && <ServerPageState page={savedVulns} />}
+          {visibleVulns.length > 0 || receipt && (savedVulns.loading || savedVulns.error) ? (
             <SplitWorkspace
               panelId="dependency-vulnerabilities"
               listLabel="Vulnerable packages"
               detailLabel="Advisory detail"
               hasSelection={hasExplicitSelection}
               onBackToList={() => setSelectedKey(null)}
-              list={<VulnerabilityTable vulnerabilities={filteredVulns} selected={selected} onSelect={setSelectedKey} />}
+              list={<VulnerabilityTable serverPagination={receipt ? savedVulns : undefined} vulnerabilities={visibleVulns} selected={selected} onSelect={setSelectedKey} />}
               detail={selected ? <AdvisoryDetail vulnerability={selected} onOpenReference={openReference} /> : <InlineState tone="empty" compact title="Select an advisory" />}
             />
-          ) : (
+          ) : receipt && (savedVulns.loading || savedVulns.error) ? null : (
             <InlineState
               tone="empty"
               compact
@@ -615,7 +629,7 @@ export function DepsScanPage() {
         </section>
       )}
 
-      {result && vulns.length === 0 && result.summary.advisoryCoverage === "complete" && (
+      {result && vulnerabilityTotal === 0 && result.summary.advisoryCoverage === "complete" && (
         <InlineState
           tone="empty"
           title={result.summary.packagesQueried === 0 ? "No packages to query" : "OSV returned no published vulnerabilities for the queried packages."}
@@ -623,7 +637,7 @@ export function DepsScanPage() {
         />
       )}
 
-      {result && vulns.length === 0 && result.summary.advisoryCoverage !== "complete" && (
+      {result && vulnerabilityTotal === 0 && result.summary.advisoryCoverage !== "complete" && (
         <InlineState
           tone="unavailable"
           title="Advisory coverage was not recorded for these saved results."
@@ -652,14 +666,17 @@ export function DepsScanPage() {
 
 function VulnerabilityTable({
   vulnerabilities,
+  serverPagination,
   selected,
   onSelect,
 }: {
   vulnerabilities: Vulnerability[];
+  serverPagination?: Pagination & { setPage(page: number): void };
   selected: Vulnerability | null;
   onSelect: (key: string) => void;
 }): JSX.Element {
-  const pagination = usePagination(vulnerabilities, 50, selected ? vulnerabilities.indexOf(selected) : -1);
+  const localPagination = usePagination(vulnerabilities, 50, selected ? vulnerabilities.indexOf(selected) : -1);
+  const pagination = serverPagination ? { ...serverPagination, items: vulnerabilities } : localPagination;
   const tableRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (tableRef.current) tableRef.current.scrollTop = 0;
@@ -959,4 +976,10 @@ function DependencyError({
       }
     />
   );
+}
+
+const loadVulnerabilityCount = (id: string, query: ResultPageQuery) => api.loadCanonicalProjectionPage<Vulnerability>(id, "vulnerabilities", query);
+function useCanonicalCount(runId: string | null, severity: "critical" | "high") {
+  const page = useServerPage<Vulnerability>(runId, { severity }, loadVulnerabilityCount, 0, 0, 1);
+  return page.data?.filteredTotal ?? null;
 }

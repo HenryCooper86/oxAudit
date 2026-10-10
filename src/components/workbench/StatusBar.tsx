@@ -36,7 +36,7 @@ export function StatusBar(): JSX.Element {
   }[aiReadiness.status];
 
   return (
-    <footer className="flex h-7 items-center gap-4 border-t border-border bg-surface-secondary px-3 text-[11px] text-text-muted">
+    <footer className="flex h-7 min-w-0 items-center gap-2 border-t border-border bg-surface-secondary px-3 text-[11px] text-text-muted min-[600px]:gap-4">
       <div role="status" className="flex min-w-0 flex-1 items-center gap-1.5">
         <span className="sr-only">{status?.tone ?? "neutral"} status:</span>
         <span
@@ -57,9 +57,9 @@ export function StatusBar(): JSX.Element {
           Cancel
         </button>
       )}
-      {recoveryError && <span title={recoveryError} className="shrink-0 text-warning">Scan status unavailable</span>}
-      <span className="shrink-0">AI {aiStatusLabel}</span>
-      <span className="shrink-0">oxAudit v{version}</span>
+      {recoveryError && <span title={recoveryError} className="min-w-0 max-w-[50%] truncate text-warning">Scan status unavailable</span>}
+      <span className="shrink-0 max-[600px]:sr-only">AI {aiStatusLabel}</span>
+      <span className="shrink-0 max-[600px]:sr-only">oxAudit v{version}</span>
     </footer>
   );
 }
