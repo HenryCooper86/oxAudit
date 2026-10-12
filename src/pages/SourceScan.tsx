@@ -617,8 +617,8 @@ export function SourceScanPage(): JSX.Element {
     }
   };
 
-  const loadRun = async (runId: string) => {
-    if (runId === run?.runId) return;
+  const loadRun = async (runId: string, forceReload = false) => {
+    if (runId === run?.runId && !forceReload) return;
     const generation = ++runLoadGenerationRef.current;
     setLoadingRunId(runId);
     setSelectedFingerprint(null);
@@ -690,6 +690,7 @@ export function SourceScanPage(): JSX.Element {
       try {
         refreshed = await api.loadSourceRunMetadata(run.runId);
       } catch (error) {
+        if (generation !== runLoadGenerationRef.current) return;
         const normalized = normalizeCommandError(error);
         setOperationError({
           ...normalized,
@@ -957,7 +958,7 @@ export function SourceScanPage(): JSX.Element {
           onRetry={operationRetry ? () => {
             if (operationRetry.kind === "scan") void runScan(false);
             if (operationRetry.kind === "save") void retrySave();
-            if (operationRetry.kind === "loadRun") void loadRun(operationRetry.runId);
+            if (operationRetry.kind === "loadRun") void loadRun(operationRetry.runId, true);
           } : undefined}
         />
       )}

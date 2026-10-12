@@ -21,6 +21,7 @@ export function AdvisoryDatabasePage() {
   const [progress, setProgress] = useState<string[]>([]);
   const [report, setReport] = useState<AdvisoryDbUpdateReport | null>(null);
   const mounted = useRef(true);
+  const statusRequest = useRef(0);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -29,14 +30,21 @@ export function AdvisoryDatabasePage() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
     let stop: (() => void) | undefined;
     void listen<string>("advisorydb://progress", (event) => {
-      if (mounted.current) setProgress((lines) => [...lines.slice(-200), event.payload]);
+      if (!disposed) setProgress((lines) => [...lines.slice(-200), event.payload]);
     }).then((unlisten) => {
-      stop = unlisten;
+      if (disposed) unlisten();
+      else stop = unlisten;
+    }).catch((cause) => {
+      if (!disposed) push("error", `advisory database progress unavailable: ${String(cause)}`);
     });
-    return () => stop?.();
-  }, []);
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, [push]);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,21 +62,23 @@ export function AdvisoryDatabasePage() {
 
   const refreshStatus = async () => {
     if (!path.trim()) return;
+    const request = ++statusRequest.current;
     setBusy("status");
     setStatusError(null);
     try {
       const next = await api.advisoryDbStatus(path.trim());
-      if (mounted.current) setStatus(next);
+      if (mounted.current && request === statusRequest.current) setStatus(next);
     } catch (cause) {
-      if (mounted.current) setStatusError(String(cause));
+      if (mounted.current && request === statusRequest.current) setStatusError(String(cause));
     } finally {
-      if (mounted.current) setBusy(null);
+      if (mounted.current && request === statusRequest.current) setBusy(null);
     }
   };
 
   const update = async () => {
     if (!path.trim()) return;
     setBusy("update");
+    setStatusError(null);
     setProgress([]);
     setReport(null);
     const ecosystems = extraEcosystems
@@ -80,8 +90,13 @@ export function AdvisoryDatabasePage() {
       if (!mounted.current) return;
       setReport(next);
       push("success", `advisory database updated: ${next.totalAdvisories} advisories`);
-      const refreshed = await api.advisoryDbStatus(path.trim());
-      if (mounted.current) setStatus(refreshed);
+      setStatus(null);
+      try {
+        const refreshed = await api.advisoryDbStatus(path.trim());
+        if (mounted.current) setStatus(refreshed);
+      } catch (cause) {
+        if (mounted.current) setStatusError(`advisory database status refresh failed: ${String(cause)}`);
+      }
     } catch (cause) {
       if (mounted.current) push("error", `advisory database update failed: ${String(cause)}`);
     } finally {
@@ -103,7 +118,16 @@ export function AdvisoryDatabasePage() {
               className="min-w-[320px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[13px] text-text-primary"
               placeholder="advisories.sqlite3 — the file dependency and image scans answer from offline"
               value={path}
-              onChange={(event) => setPath(event.target.value)}
+              disabled={busy === "update"}
+              onChange={(event) => {
+                statusRequest.current += 1;
+                setPath(event.target.value);
+                setStatus(null);
+                setStatusError(null);
+                setReport(null);
+                setProgress([]);
+                setBusy((current) => current === "status" ? null : current);
+              }}
             />
             <Button variant="outline" disabled={busy !== null || !path.trim()} onClick={refreshStatus}>
               {busy === "status" ? <RefreshCw size={13} className="animate-spin" aria-hidden /> : <Database size={13} aria-hidden />}

@@ -8,7 +8,7 @@ import {
   Play,
   ShieldAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { FolderPicker } from "../components/FolderPicker";
 import { Button, Input, Select, Textarea } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
@@ -161,6 +161,7 @@ export function ComplianceCenterPage(): JSX.Element {
   const [selectedView, setSelectedView] = useState<ComplianceAssessmentView | null>(null);
   const [running, setRunning] = useState(false);
   const [loadingView, setLoadingView] = useState(false);
+  const viewRequest = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [historyCollapsed, toggleHistoryCollapsed] = usePanelCollapsed("compliance-history");
 
@@ -174,7 +175,7 @@ export function ComplianceCenterPage(): JSX.Element {
         setSelectedIds(loadedProfiles.map((profile) => profile.id));
       })
       .catch((cause) => { if (!disposed) setError(String(cause)); });
-    return () => { disposed = true; };
+    return () => { disposed = true; viewRequest.current += 1; };
   }, []);
 
   const latestReviews = useMemo(() => {
@@ -192,14 +193,16 @@ export function ComplianceCenterPage(): JSX.Element {
   };
 
   const loadAssessment = async (assessmentId: string) => {
+    const request = ++viewRequest.current;
     setLoadingView(true);
     setError(null);
     try {
-      setSelectedView(await api.loadComplianceAssessment(assessmentId));
+      const loaded = await api.loadComplianceAssessment(assessmentId);
+      if (request === viewRequest.current) setSelectedView(loaded);
     } catch (cause) {
-      setError(String(cause));
+      if (request === viewRequest.current) setError(String(cause));
     } finally {
-      setLoadingView(false);
+      if (request === viewRequest.current) setLoadingView(false);
     }
   };
 
@@ -220,7 +223,9 @@ export function ComplianceCenterPage(): JSX.Element {
   };
 
   const recordReview = (review: ComplianceReview) => {
-    setSelectedView((current) => current ? { ...current, reviews: [review, ...current.reviews] } : current);
+    setSelectedView((current) => current?.assessment.id === review.assessmentId
+      ? { ...current, reviews: [review, ...current.reviews] }
+      : current);
   };
 
   const canRun = targetPath.trim() && selectedIds.length && title.trim() && organization.trim() && assessor.trim() && scope.trim();

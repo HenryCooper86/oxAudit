@@ -83,12 +83,13 @@ export function ExportCenterPage(): JSX.Element {
   const selectedFormat = useMemo(() => FORMATS.find((item) => item.id === format)!, [format]);
   const exportFile = async () => {
     if (!preview) return;
-    const destination = await save({
-      defaultPath: preview.suggestedFileName,
-      filters: [{ name: selectedFormat.label, extensions: [selectedFormat.id.endsWith("-csv") ? "csv" : "json"] }],
-    });
-    if (!destination) return;
+    setError(null);
     try {
+      const destination = await save({
+        defaultPath: preview.suggestedFileName,
+        filters: [{ name: selectedFormat.label, extensions: [selectedFormat.id.endsWith("-csv") ? "csv" : "json"] }],
+      });
+      if (!destination) return;
       await api.writeRunExport(runId, format, destination);
       push("success", `Saved ${selectedFormat.label}`);
     } catch (cause) {
@@ -98,17 +99,17 @@ export function ExportCenterPage(): JSX.Element {
   };
 
   const chooseImport = async () => {
-    const selected = await open({
-      multiple: false,
-      directory: false,
-      filters: [{ name: "Security report", extensions: ["json", "sarif", "spdx", "cdx"] }],
-    });
-    if (!selected || Array.isArray(selected)) return;
-    setImportPath(selected);
-    setImportPreview(null);
-    setImportError(null);
-    setImportLoading(true);
     try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Security report", extensions: ["json", "sarif", "spdx", "cdx"] }],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      setImportPath(selected);
+      setImportPreview(null);
+      setImportError(null);
+      setImportLoading(true);
       setImportPreview(await api.previewReportImport(selected));
     } catch (cause) {
       setImportError(String(cause));
