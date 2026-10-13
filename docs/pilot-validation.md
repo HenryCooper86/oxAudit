@@ -122,7 +122,10 @@ browser, native-dialog or assistive-technology observation.
 
 Maintainer observations for the server and inventory changes are recorded in
 [the workflow verification report](qa/2026-10-13-remaining-workflows.md). They are
-not external participant feedback.
+not external participant feedback. The subsequent
+[native, accessibility and recovery pass](qa/2026-10-13-native-accessibility-recovery.md)
+adds actual macOS dialog checks, user-assisted VoiceOver listening, network-fault
+observations and hosted verification.
 
 ## Empty feedback form
 

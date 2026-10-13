@@ -252,13 +252,18 @@ export function SourceScanPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!running) return;
+    if (!running) {
+      if (useAppStore.getState().pageStatus["source-scan"]?.tone === "running") {
+        clearPageStatus("source-scan");
+      }
+      return;
+    }
     setPageStatus("source-scan", {
       label: "Scanning",
       tone: "running",
       detail: progress?.file,
     });
-  }, [progress?.file, running, setPageStatus]);
+  }, [clearPageStatus, progress?.file, running, setPageStatus]);
 
   useEffect(() => {
     if (running && !handoffRunId) return;

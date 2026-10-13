@@ -62,6 +62,11 @@ These are maintainer fixture checks, not scanner-accuracy or participant results
 
 ## Limits and follow-up
 
+The subsequent [native, accessibility and recovery pass](2026-10-13-native-accessibility-recovery.md)
+records actual macOS save dialogs, user-confirmed VoiceOver speech, browser
+network faults and hosted checks. The paragraph below describes the boundary
+of this original implementation pass.
+
 Native desktop save dialogs, actual screen-reader speech, Windows/Linux clients,
 hosted CI and externally recruited participant sessions were not executed here.
 Delayed report ownership and reconnect races were exercised by deterministic

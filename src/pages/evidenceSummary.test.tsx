@@ -10,6 +10,7 @@ import { DepsScanPage } from "./DepsScan";
 import { BinaryScanPage } from "./BinaryScan";
 import { ImageScanPage } from "./ImageScanPage";
 import { HistoryScanPage } from "./HistoryScan";
+import { StatusBar } from "../components/workbench/StatusBar";
 import { dependencyResult, projectContext, projectSettings, sourceResult } from "../../tests/fixtures/projectHome";
 import type { BinaryScanResult, CanonicalRun, HistoryScanResult, ImageScanOutcome } from "../lib/types";
 
@@ -72,6 +73,63 @@ test("source evidence keeps skipped scope and save recovery visible with no reco
   expect(warning.closest("[hidden]")).toBeNull();
   expect(summary).toHaveTextContent("2026-09-07T00:01:00.000Z");
   expect(summary).toHaveTextContent(/Retry saving/);
+});
+
+test("a detached source scan does not leave the footer scanning after its saved receipt is recovered", async () => {
+  useAppStore.setState({ page: "source-scan" });
+  let finish!: (result: typeof source) => void;
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args) => command === "scan_project"
+    ? new Promise(resolve => { finish = resolve; })
+    : original(command, args));
+  const view = render(<><SourceScanPage /><StatusBar /></>);
+  await screen.findByRole("region", { name: "Source evidence summary" });
+  fireEvent.click(screen.getByRole("button", { name: "Run scan" }));
+  await waitFor(() => expect(finish).toBeDefined());
+  const active = useScanWorkStore.getState().active!;
+  expect(screen.getByRole("contentinfo")).toHaveTextContent("Scanning source");
+
+  act(() => useAppStore.setState({ page: "dashboard" }));
+  view.rerender(<StatusBar />);
+  expect(useScanWorkStore.getState().active?.recovered).toBe(true);
+  act(() => reconcileBackendWork({ active: null, recent: [{
+    operationId: active.operationId, kind: "source", target, status: "completed",
+    runId: source.runId, startedAtMs: observed - 1000, updatedAtMs: observed,
+  }] }));
+  expect(screen.getByRole("contentinfo")).toHaveTextContent("Ready");
+
+  act(() => useAppStore.setState({ page: "source-scan" }));
+  view.rerender(<><SourceScanPage /><StatusBar /></>);
+  expect(await screen.findByRole("region", { name: "Source evidence summary" })).toHaveTextContent("Saved receipt · completed");
+  expect(screen.getByRole("button", { name: "Run scan" })).toBeEnabled();
+  expect(screen.getByRole("contentinfo")).not.toHaveTextContent(/running status|Scanning/);
+  await act(async () => finish(source));
+});
+
+test("loading source evidence keeps an active global scan in the footer", async () => {
+  useAppStore.setState({ page: "source-scan", pageStatus: { "source-scan": { label: "Scanning", tone: "running" } } });
+  act(() => reconcileBackendWork({ active: {
+    operationId: "active-binary", kind: "binary", target: "/other/project", status: "running",
+    runId: null, startedAtMs: observed - 1000, updatedAtMs: observed,
+  }, recent: [] }));
+  render(<><SourceScanPage /><StatusBar /></>);
+  await screen.findByRole("region", { name: "Source evidence summary" });
+  expect(screen.getByRole("contentinfo")).toHaveTextContent("Scanning binaries");
+  expect(screen.getByRole("button", { name: "Cancel active scan" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Run scan" })).toBeDisabled();
+  expect(useScanWorkStore.getState().active?.operationId).toBe("active-binary");
+  act(() => reconcileBackendWork({ active: null, recent: [] }));
+  expect(screen.getByRole("contentinfo")).not.toHaveTextContent(/running status|Scanning/);
+});
+
+test.each([
+  { label: "Scan complete", tone: "success" as const },
+  { label: "Scan failed", tone: "error" as const },
+])("loading source evidence retains the terminal $label footer", async status => {
+  useAppStore.setState({ page: "source-scan", pageStatus: { "source-scan": status } });
+  render(<><SourceScanPage /><StatusBar /></>);
+  await screen.findByRole("region", { name: "Source evidence summary" });
+  expect(screen.getByRole("contentinfo")).toHaveTextContent(status.label);
 });
 
 // Legacy receipts without advisory coverage must stay unknown even when the operation completed.
