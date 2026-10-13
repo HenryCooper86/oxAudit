@@ -55,6 +55,40 @@ test("a failed event subscription remains visible and polling still recovers oth
   } finally { vi.useRealTimers(); }
 });
 
+test("slow status responses can recover and retire work without being superseded by every poll", async () => {
+  vi.useFakeTimers();
+  try {
+    const active = { active: work("slow-operation"), recent: [] };
+    const completed = { active: null, recent: [{ ...work("slow-operation", "completed"), runId: "saved-image" }] };
+    backend.scanWorkStatus.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(active), 3_000)))
+      .mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(completed), 3_000)));
+    render(<RecoveryHarness />);
+    await act(async () => {});
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    expect(coordinator.useScanWorkStore.getState().active?.operationId).toBe("slow-operation");
+    await act(async () => vi.advanceTimersByTimeAsync(4_000));
+    expect(coordinator.useScanWorkStore.getState().active).toBeNull();
+    expect(coordinator.useScanWorkStore.getState().backend.recent[0]?.runId).toBe("saved-image");
+    expect(backend.scanWorkStatus).toHaveBeenCalledTimes(2);
+  } finally { vi.useRealTimers(); }
+});
+
+test("a reconnect supersedes a stalled request without blocking later polling", async () => {
+  vi.useFakeTimers();
+  try {
+    backend.scanWorkStatus.mockImplementationOnce(() => new Promise(() => {}))
+      .mockResolvedValueOnce({ active: work("replacement"), recent: [] })
+      .mockResolvedValue({ active: null, recent: [work("replacement", "completed")] });
+    render(<RecoveryHarness />);
+    await act(async () => {});
+    await act(async () => handlers.get("transport://reconnected")?.({ payload: {} }));
+    expect(coordinator.useScanWorkStore.getState().active?.operationId).toBe("replacement");
+    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    expect(coordinator.useScanWorkStore.getState().active).toBeNull();
+    expect(backend.scanWorkStatus).toHaveBeenCalledTimes(3);
+  } finally { vi.useRealTimers(); }
+});
+
 test("malformed backend work cannot replace ownership or throw from an event callback", async () => {
   backend.scanWorkStatus.mockResolvedValue({ active: work(), recent: [] });
   render(<><RecoveryHarness /><StatusBar /></>);

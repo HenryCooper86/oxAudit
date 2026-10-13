@@ -8,10 +8,21 @@ export function useScanWorkRecovery(enabled = true): void {
     if (!enabled) return;
     let disposed = false;
     let subscriptionError: string | null = null;
+    let refreshSequence = 0;
+    let pendingRefresh: number | null = null;
     const stops: Array<() => void> = [];
     const refresh = async (forceRevision = false) => {
-      await refreshScanWork(forceRevision);
-      if (!disposed && subscriptionError) useScanWorkStore.setState({ recoveryError: subscriptionError });
+      // Polls must let slow responses settle. Otherwise each timer tick makes
+      // the previous request stale forever. Reconnect/lag still take priority.
+      if (!forceRevision && pendingRefresh !== null) return;
+      const request = ++refreshSequence;
+      pendingRefresh = request;
+      try {
+        await refreshScanWork(forceRevision);
+        if (!disposed && subscriptionError) useScanWorkStore.setState({ recoveryError: subscriptionError });
+      } finally {
+        if (pendingRefresh === request) pendingRefresh = null;
+      }
     };
     const subscribe = async (name: string, callback: (event: { payload: unknown }) => void) => {
       try {

@@ -1,6 +1,6 @@
 import { Download, FileCode2, FileSpreadsheet, FileText, RefreshCw, ShieldAlert } from "lucide-react";
 import { save } from "../lib/dialog";
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { Button, Input, Select, Switch, Textarea } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
@@ -38,8 +38,12 @@ export function ReportStudioPage(): JSX.Element {
   const [preview, setPreview] = useState<ComplianceReportPreview | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const revision = useRef(0);
+  const busy = useRef(false);
+  const mounted = useRef(true);
 
   useEffect(() => {
+    mounted.current = true;
     let disposed = false;
     void api.listComplianceAssessments(100).then((loaded) => {
       if (disposed) return;
@@ -50,63 +54,74 @@ export function ReportStudioPage(): JSX.Element {
         setMetadata(defaultMetadata(first));
       }
     }).catch((cause) => { if (!disposed) setError(String(cause)); });
-    return () => { disposed = true; };
+    return () => { disposed = true; mounted.current = false; revision.current += 1; };
   }, []);
 
   const selectedAssessment = useMemo(() => assessments?.find((assessment) => assessment.id === assessmentId), [assessmentId, assessments]);
   const selectedFormat = REPORT_FORMATS.find((item) => item.id === format) ?? REPORT_FORMATS[0];
 
-  const selectAssessment = (id: string) => {
-    setAssessmentId(id);
+  const invalidatePreview = () => {
+    // A -> B -> A is a new input lifetime, even when the values match again.
+    revision.current += 1;
     setPreview(null);
+    setError(null);
+  };
+
+  const selectAssessment = (id: string) => {
+    invalidatePreview();
+    setAssessmentId(id);
     const assessment = assessments?.find((item) => item.id === id);
     if (assessment) setMetadata(defaultMetadata(assessment));
   };
 
   const updateMetadata = <K extends keyof ComplianceReportMetadata>(key: K, value: ComplianceReportMetadata[K]) => {
+    invalidatePreview();
     setMetadata((current) => ({ ...current, [key]: value }));
-    setPreview(null);
   };
 
   const buildPreview = async () => {
-    if (!assessmentId) return;
+    if (!assessmentId || busy.current) return;
+    busy.current = true;
+    const requestedRevision = ++revision.current;
     setWorking(true);
     setError(null);
     try {
-      setPreview(await api.previewComplianceReport({ assessmentId, format, metadata }));
+      const result = await api.previewComplianceReport({ assessmentId, format, metadata });
+      if (requestedRevision === revision.current) setPreview(result);
     } catch (cause) {
-      setError(String(cause));
+      if (requestedRevision === revision.current) setError(String(cause));
     } finally {
-      setWorking(false);
+      busy.current = false;
+      if (mounted.current) setWorking(false);
     }
   };
 
   const saveReport = async () => {
-    if (!assessmentId) return;
-    let currentPreview = preview;
-    if (!currentPreview || currentPreview.format !== format) {
-      setWorking(true);
-      try {
-        currentPreview = await api.previewComplianceReport({ assessmentId, format, metadata });
-        setPreview(currentPreview);
-      } catch (cause) {
-        setError(String(cause));
-        setWorking(false);
-        return;
-      }
-      setWorking(false);
-    }
-    const destination = await save({ defaultPath: currentPreview.suggestedFileName, filters: [{ name: selectedFormat.label, extensions: [format === "markdown" ? "md" : format] }] });
-    if (!destination) return;
+    if (!assessmentId || busy.current) return;
+    busy.current = true;
+    const requestedRevision = ++revision.current;
+    const request = { assessmentId, format, metadata };
     setWorking(true);
+    setError(null);
     try {
-      const receipt = await api.writeComplianceReport({ assessmentId, format, metadata }, destination);
-      push("success", `Saved report · SHA-256 ${receipt.contentSha256.slice(0, 12)}…`);
+      let currentPreview = preview;
+      if (!currentPreview || currentPreview.format !== format) {
+        currentPreview = await api.previewComplianceReport(request);
+        if (requestedRevision !== revision.current) return;
+        setPreview(currentPreview);
+      }
+      const destination = await save({ defaultPath: currentPreview.suggestedFileName, filters: [{ name: selectedFormat.label, extensions: [format === "markdown" ? "md" : format] }] });
+      if (!destination || requestedRevision !== revision.current) return;
+      const receipt = await api.writeComplianceReport(request, destination);
+      if (mounted.current) push("success", `Saved ${currentPreview.suggestedFileName} · SHA-256 ${receipt.contentSha256.slice(0, 12)}…`);
     } catch (cause) {
-      setError(String(cause));
-      push("error", "The report could not be saved");
+      if (requestedRevision === revision.current) {
+        setError(String(cause));
+        push("error", "The report could not be saved");
+      }
     } finally {
-      setWorking(false);
+      busy.current = false;
+      if (mounted.current) setWorking(false);
     }
   };
 
@@ -142,7 +157,7 @@ export function ReportStudioPage(): JSX.Element {
             <section className="rounded-sm border border-border bg-surface-secondary p-4">
               <h2 className="text-[13px] font-semibold text-text-primary">3. Format and disclosure</h2>
               <div className="mt-3 grid gap-2 min-[700px]:grid-cols-2">
-                {REPORT_FORMATS.map((item) => { const Icon = item.icon; const active = format === item.id; return <button key={item.id} type="button" aria-pressed={active} onClick={() => { setFormat(item.id); setPreview(null); }} className={`flex items-start gap-3 rounded-sm border p-3 text-left ${active ? "border-accent bg-accent-subtle" : "border-border bg-surface-primary hover:bg-surface-hover"}`}><Icon size={15} aria-hidden="true" className={active ? "text-accent" : "text-text-muted"} /><span><strong className="block text-[11px] text-text-primary">{item.label}</strong><span className="mt-1 block text-[10px] leading-relaxed text-text-muted">{item.description}</span></span></button>; })}
+                {REPORT_FORMATS.map((item) => { const Icon = item.icon; const active = format === item.id; return <button key={item.id} type="button" aria-pressed={active} onClick={() => { invalidatePreview(); setFormat(item.id); }} className={`flex items-start gap-3 rounded-sm border p-3 text-left ${active ? "border-accent bg-accent-subtle" : "border-border bg-surface-primary hover:bg-surface-hover"}`}><Icon size={15} aria-hidden="true" className={active ? "text-accent" : "text-text-muted"} /><span><strong className="block text-[11px] text-text-primary">{item.label}</strong><span className="mt-1 block text-[10px] leading-relaxed text-text-muted">{item.description}</span></span></button>; })}
               </div>
               <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 border-t border-border pt-4"><Switch checked={metadata.includeEvidence} onChange={(value) => updateMetadata("includeEvidence", value)} label="Include evidence references" /><Switch checked={metadata.includeReviews} onChange={(value) => updateMetadata("includeReviews", value)} label="Include human reviews" /><Switch checked={metadata.includeReferences} onChange={(value) => updateMetadata("includeReferences", value)} label="Include source references" /></div>
             </section>

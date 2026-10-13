@@ -7,7 +7,7 @@ import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import type { CanonicalRun, InventoryView } from "../lib/types";
 
-const INVENTORY_RUN_KINDS = new Set(["dependencies", "binary", "firmware", "import"]);
+const INVENTORY_RUN_KINDS = new Set(["dependencies", "binary", "image", "firmware", "import"]);
 const PAGE_SIZE = 100;
 
 export function InventoryPage(): JSX.Element {
@@ -34,8 +34,8 @@ export function InventoryPage(): JSX.Element {
 
   useEffect(() => {
     let disposed = false;
+    setInventory(null);
     if (!runId) {
-      setInventory(null);
       return;
     }
     setLoading(true);
@@ -95,7 +95,7 @@ export function InventoryPage(): JSX.Element {
       </section>
 
       {!runs && !error && <InlineState tone="running" title="Loading durable inventories" />}
-      {runs?.length === 0 && <InlineState tone="empty" title="No completed inventory runs yet" description="Run a Dependency or Binary scan. Inventory is persisted before advisory enrichment, so unflagged components remain visible here." />}
+      {runs?.length === 0 && <InlineState tone="empty" title="No completed inventory runs yet" description="Run a Dependency, Binary, or Image scan. Inventory is persisted before advisory enrichment, so unflagged components remain visible here." />}
       {loading && <InlineState compact tone="running" title="Loading component evidence" />}
       {error && <InlineState tone="error" title="Inventory is unavailable" description={error} />}
       {inventory && !loading && (
