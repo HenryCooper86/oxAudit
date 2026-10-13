@@ -5,6 +5,54 @@
 //! without widening anything to `pub`.
 
 use super::*;
+use crate::findings::{
+    domain::{ResultPage, ResultPageQuery},
+    inventory::InventoryPage,
+};
+
+#[tauri::command]
+pub fn list_inventory_runs(
+    findings: State<'_, FindingsState>,
+    query: Option<ResultPageQuery>,
+) -> Result<ResultPage<oxaudit_domain::Run>, String> {
+    list_inventory_runs_inner(&findings, query.unwrap_or_default())
+}
+
+pub(crate) fn list_inventory_runs_inner(
+    findings: &FindingsState,
+    query: ResultPageQuery,
+) -> Result<ResultPage<oxaudit_domain::Run>, String> {
+    findings
+        .service()
+        .map_err(|error| error.to_string())?
+        .repository()
+        .inventory_runs_page(&query)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn load_inventory_page(
+    findings: State<'_, FindingsState>,
+    run_id: String,
+    query: Option<ResultPageQuery>,
+) -> Result<InventoryPage, String> {
+    load_inventory_page_inner(&findings, run_id, query.unwrap_or_default())
+}
+
+pub(crate) fn load_inventory_page_inner(
+    findings: &FindingsState,
+    run_id: String,
+    query: ResultPageQuery,
+) -> Result<InventoryPage, String> {
+    let id =
+        oxaudit_domain::RunId::parse(run_id).map_err(|_| "invalid run identity".to_string())?;
+    findings
+        .service()
+        .map_err(|error| error.to_string())?
+        .repository()
+        .inventory_page(&id, &query)
+        .map_err(|error| error.to_string())
+}
 
 #[tauri::command]
 pub fn preview_report_import(

@@ -233,6 +233,8 @@ pub fn run() {
             commands::quality::list_data_sources,
             commands::quality::refresh_data_source,
             commands::reporting::load_inventory,
+            commands::reporting::list_inventory_runs,
+            commands::reporting::load_inventory_page,
             commands::reporting::preview_report_import,
             commands::reporting::import_inventory_report,
             commands::reporting::import_external_report,

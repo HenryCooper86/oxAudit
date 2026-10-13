@@ -39,6 +39,11 @@ check, not a measured network-performance claim.
 
 ## Next priorities
 
+Follow-up: these implementation items and browser fixture checks are now
+recorded in [the workflow verification report](2026-10-13-remaining-workflows.md).
+The list below preserves the findings that motivated that work; native and
+screen-reader checks remain explicitly distinguished from automated coverage.
+
 1. **Complete browser report saving.** Report Studio still invokes the native
    save dialog. `src/lib/dialog.ts` deliberately refuses it in server mode,
    while this page offers no server-path field. The failure is now visible;

@@ -406,7 +406,7 @@ fn creates_current_schema() {
             row.get(0)
         })
         .expect("query migration version");
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
 }
 
 #[test]

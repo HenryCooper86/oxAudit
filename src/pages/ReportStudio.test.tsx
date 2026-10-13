@@ -9,6 +9,8 @@ import { ReportStudioPage } from "./ReportStudio";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../lib/dialog", () => ({ save: vi.fn() }));
+const transport = vi.hoisted(() => ({ serverMode: false }));
+vi.mock("../lib/transport", () => ({ get serverMode() { return transport.serverMode; }, httpInvoke: vi.fn() }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -34,16 +36,58 @@ const preview: ComplianceReportPreview = {
 };
 
 beforeEach(() => {
+  transport.serverMode = false;
   vi.mocked(save).mockReset();
   useToastStore.setState({ toasts: [] });
   vi.spyOn(api, "listComplianceAssessments").mockResolvedValue([assessment("A"), assessment("B")]);
   vi.spyOn(api, "previewComplianceReport").mockResolvedValue(preview);
-  vi.spyOn(api, "writeComplianceReport").mockResolvedValue({
-    id: "receipt", assessmentId: "A", format: "pdf", outputPath: "/reports/a.pdf",
+  vi.spyOn(api, "writeComplianceReport").mockImplementation(async (request, outputPath) => ({
+    id: "receipt", ...request, outputPath,
     contentSha256: "abcdef0123456789", createdAtMs: 1,
-    metadata: { title: "Assessment A readiness report", organization: "Example", assessor: "Reviewer A",
-      classification: "Confidential", executiveSummary: "Summary", includeEvidence: true, includeReviews: true, includeReferences: true },
-  });
+  }));
+});
+
+test("browser reports require a server destination and save without a native dialog", async () => {
+  transport.serverMode = true;
+  render(<ReportStudioPage />);
+  const button = await screen.findByRole("button", { name: "Save to server" });
+  expect(button).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Report file on server"), { target: { value: "   " } });
+  expect(button).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Report file on server"), { target: { value: " /reports/current.pdf " } });
+  await userEvent.click(button);
+  await waitFor(() => expect(api.writeComplianceReport).toHaveBeenCalledWith(
+    expect.objectContaining({ assessmentId: "A", format: "pdf" }), "/reports/current.pdf",
+  ));
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.getByRole("status")).toHaveTextContent("/reports/current.pdf");
+});
+
+test("editing the server destination while compilation is pending cancels the obsolete save", async () => {
+  transport.serverMode = true;
+  const pending = deferred<ComplianceReportPreview>();
+  vi.mocked(api.previewComplianceReport).mockReturnValueOnce(pending.promise);
+  render(<ReportStudioPage />);
+  fireEvent.change(await screen.findByLabelText("Report file on server"), { target: { value: "/reports/old.pdf" } });
+  await userEvent.click(screen.getByRole("button", { name: "Save to server" }));
+  fireEvent.change(screen.getByLabelText("Report file on server"), { target: { value: "/reports/new.pdf" } });
+  await act(async () => pending.resolve(preview));
+  expect(api.writeComplianceReport).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Save to server" }));
+  await waitFor(() => expect(api.writeComplianceReport).toHaveBeenCalledWith(expect.anything(), "/reports/new.pdf"));
+});
+
+test("server write failures are visible and a retry announces the saved path", async () => {
+  transport.serverMode = true;
+  vi.mocked(api.writeComplianceReport).mockRejectedValueOnce("Destination directory does not exist");
+  render(<ReportStudioPage />);
+  fireEvent.change(await screen.findByLabelText("Report file on server"), { target: { value: "/reports/current.pdf" } });
+  await userEvent.click(screen.getByRole("button", { name: "Save to server" }));
+  expect(await screen.findByText("Destination directory does not exist")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Save to server" }));
+  await waitFor(() => expect(api.writeComplianceReport).toHaveBeenCalledTimes(2));
+  expect(screen.queryByText("Destination directory does not exist")).not.toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("/reports/current.pdf");
 });
 
 test.each(["assessment", "format", "metadata", "disclosure", "A to B to A"])(

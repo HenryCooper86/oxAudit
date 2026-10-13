@@ -167,41 +167,7 @@ pub struct ImportPreview {
     can_import_external_claims: bool,
 }
 
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InventoryIdentityView {
-    method: String,
-    value: String,
-    confidence: f32,
-    artifact_id: String,
-    artifact_path: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InventoryComponentView {
-    id: String,
-    name: String,
-    version: Option<String>,
-    supplier: Option<String>,
-    ecosystem: Option<String>,
-    purl: Option<String>,
-    cpes: Vec<String>,
-    aliases: Vec<String>,
-    identities: Vec<InventoryIdentityView>,
-    advisory_ids: Vec<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InventoryView {
-    run_id: String,
-    target_label: String,
-    run_kind: oxaudit_domain::RunKind,
-    updated_at_ms: u64,
-    provider_snapshot_count: usize,
-    components: Vec<InventoryComponentView>,
-}
+use crate::findings::inventory::{InventoryComponentView, InventoryIdentityView, InventoryView};
 
 fn report_data(
     service: &FindingsService,

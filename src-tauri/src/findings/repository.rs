@@ -31,6 +31,13 @@ use crate::{
 #[path = "paged_repository.rs"]
 mod paging;
 
+#[path = "inventory_repository.rs"]
+mod inventory_paging;
+
+#[cfg(test)]
+#[path = "inventory_repository_tests.rs"]
+mod inventory_tests;
+
 const MIGRATION_V1: &str = r#"
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
@@ -441,6 +448,7 @@ impl FindingsRepository {
                     ],
                 )
                 .map_err(persistence_error)?;
+            inventory_paging::save_advisories(&transaction, run_id.as_str(), &record.evidence)?;
             if matches!(
                 record.observation.kind,
                 oxaudit_domain::ObservationKind::SourceWeakness
@@ -507,6 +515,7 @@ impl FindingsRepository {
                     params![component.id.as_str(), run_id.as_str(), payload],
                 )
                 .map_err(persistence_error)?;
+            inventory_paging::save_component_index(&transaction, run_id.as_str(), component)?;
         }
         transaction.commit().map_err(persistence_error)
     }
@@ -4077,6 +4086,7 @@ fn migrate(connection: &mut Connection, migration_v1: &str) -> Result<(), Comman
         apply_migration(connection, 7, MIGRATION_V7)?;
     }
     paging::migrate_paged_storage(connection)?;
+    inventory_paging::migrate_inventory(connection)?;
     Ok(())
 }
 

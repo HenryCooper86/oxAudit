@@ -38,6 +38,7 @@ import type {
   ExportFormat,
   ExportPreview,
   InventoryView,
+  InventoryPage,
   ImportPreview,
   CanonicalFinding,
   ExternalBenchmarkReport,
@@ -176,6 +177,10 @@ export const api = {
     invoke<DataSourceStatus>("refresh_data_source", { providerId }),
   loadInventory: (runId: string) =>
     invoke<InventoryView>("load_inventory", { runId }),
+  listInventoryRuns: (query: ResultPageQuery = {}) =>
+    invoke<ResultPage<CanonicalRun>>("list_inventory_runs", { query }),
+  loadInventoryPage: (runId: string, query: ResultPageQuery = {}) =>
+    invoke<InventoryPage>("load_inventory_page", { runId, query }),
   previewReportImport: (path: string) =>
     invoke<ImportPreview>("preview_report_import", { path }),
   importInventoryReport: (path: string, expectedSha256: string) =>

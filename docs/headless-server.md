@@ -63,7 +63,24 @@ ghcr.io/henrycooper86/oxaudit scan /workspace --format sarif`.
   refuses those commands with a stated reason, and the desktop app or CLI
   remains the way to run AI research.
 - Import/export paths are paths **on the server's filesystem**; a browser
-  cannot open a native save dialog, so the pages say so instead of
-  pretending.
+  cannot open a native save dialog. In Report Studio, enter **Report file on
+  server** including the extension, then choose **Save to server**. The parent
+  directory must already exist and the server process must be able to write
+  there. Saving replaces an existing file at that path. The receipt identifies
+  the saved server path; this does not download the file to the browser.
 - Events ride one SSE stream; a client that falls behind is told what it
   missed (`hub://lagged`) rather than silently resuming.
+
+## Saved inventory
+
+Inventory lists completed Dependency, Binary, Image, Firmware and Import runs
+in pages of 50, so newer Source or History activity cannot hide old inventories.
+Use the run pagination above the component list to reach older runs. Component
+pages and searches are queried on the server; search covers package identity,
+aliases, CPEs and advisory IDs across the whole selected inventory. Counts refer
+to the full inventory and filtered result set, not just the visible page.
+
+The first database open after upgrading builds derived inventory search indexes
+under schema version 9. It preserves canonical evidence and processes the new
+index backfill one stored row at a time. Large existing databases can take longer
+to open during that migration. Full saved-run exports remain separate operations.

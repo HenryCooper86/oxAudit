@@ -5,6 +5,7 @@ import { Button, Input, Select, Switch, Textarea } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { serverMode } from "../lib/transport";
 import { useToastStore } from "../lib/stores";
 import type { ComplianceAssessment, ComplianceReportFormat, ComplianceReportMetadata, ComplianceReportPreview } from "../lib/types";
 
@@ -38,6 +39,8 @@ export function ReportStudioPage(): JSX.Element {
   const [preview, setPreview] = useState<ComplianceReportPreview | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [serverPath, setServerPath] = useState("");
+  const [savedPath, setSavedPath] = useState<string | null>(null);
   const revision = useRef(0);
   const busy = useRef(false);
   const mounted = useRef(true);
@@ -65,6 +68,7 @@ export function ReportStudioPage(): JSX.Element {
     revision.current += 1;
     setPreview(null);
     setError(null);
+    setSavedPath(null);
   };
 
   const selectAssessment = (id: string) => {
@@ -97,12 +101,14 @@ export function ReportStudioPage(): JSX.Element {
   };
 
   const saveReport = async () => {
-    if (!assessmentId || busy.current) return;
+    if (!assessmentId || busy.current || (serverMode && !serverPath.trim())) return;
     busy.current = true;
     const requestedRevision = ++revision.current;
     const request = { assessmentId, format, metadata };
+    const requestedPath = serverPath.trim();
     setWorking(true);
     setError(null);
+    setSavedPath(null);
     try {
       let currentPreview = preview;
       if (!currentPreview || currentPreview.format !== format) {
@@ -110,10 +116,13 @@ export function ReportStudioPage(): JSX.Element {
         if (requestedRevision !== revision.current) return;
         setPreview(currentPreview);
       }
-      const destination = await save({ defaultPath: currentPreview.suggestedFileName, filters: [{ name: selectedFormat.label, extensions: [format === "markdown" ? "md" : format] }] });
+      const destination = serverMode ? requestedPath : await save({ defaultPath: currentPreview.suggestedFileName, filters: [{ name: selectedFormat.label, extensions: [format === "markdown" ? "md" : format] }] });
       if (!destination || requestedRevision !== revision.current) return;
       const receipt = await api.writeComplianceReport(request, destination);
-      if (mounted.current) push("success", `Saved ${currentPreview.suggestedFileName} · SHA-256 ${receipt.contentSha256.slice(0, 12)}…`);
+      if (mounted.current) {
+        setSavedPath(receipt.outputPath);
+        push("success", `Saved ${receipt.outputPath} · SHA-256 ${receipt.contentSha256.slice(0, 12)}…`);
+      }
     } catch (cause) {
       if (requestedRevision === revision.current) {
         setError(String(cause));
@@ -133,6 +142,7 @@ export function ReportStudioPage(): JSX.Element {
       {!assessments && !error ? <InlineState tone="running" title="Loading durable assessments" /> : null}
       {assessments?.length === 0 ? <InlineState tone="empty" title="No compliance assessments are available" description="Run checks in Compliance Center before compiling a report." /> : null}
       {error ? <InlineState tone="error" title="Report Studio unavailable" description={error} /> : null}
+      {savedPath && <p role="status" className="break-all text-[12px] text-success">Saved report to {savedPath}</p>}
 
       {assessments?.length ? (
         <div className="grid gap-5 min-[1050px]:grid-cols-[minmax(0,1fr)_minmax(24rem,0.9fr)]">
@@ -164,7 +174,8 @@ export function ReportStudioPage(): JSX.Element {
           </div>
 
           <section className="min-w-0 self-start overflow-hidden rounded-sm border border-border bg-surface-secondary min-[1050px]:sticky min-[1050px]:top-5">
-            <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3"><div><h2 className="text-[13px] font-semibold text-text-primary">Report preview</h2><p className="mt-1 text-[10px] text-text-muted">{selectedFormat.label} · generated from saved assessment truth</p></div><div className="flex gap-2"><Button variant="outline" disabled={!canGenerate || working} onClick={() => void buildPreview()}><RefreshCw size={13} aria-hidden="true" />{working ? "Building…" : "Build preview"}</Button><Button variant="primary" disabled={!canGenerate || working} onClick={() => void saveReport()}><Download size={13} aria-hidden="true" />Save…</Button></div></header>
+            {serverMode && <div className="border-b border-border p-4"><label className="block text-[12px] text-text-secondary">Report file on server<Input className="mt-1" value={serverPath} onChange={(event) => { invalidatePreview(); setServerPath(event.target.value); }} placeholder={`/data/report.${format === "markdown" ? "md" : format}`} aria-describedby="report-server-path-help" /></label><p id="report-server-path-help" className="mt-2 text-[11px] text-text-muted">Enter the full file path on the server, including the extension. The destination folder must exist. Saving replaces an existing file at this path.</p></div>}
+            <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3"><div><h2 className="text-[13px] font-semibold text-text-primary">Report preview</h2><p className="mt-1 text-[10px] text-text-muted">{selectedFormat.label} · generated from saved assessment truth</p></div><div className="flex gap-2"><Button variant="outline" disabled={!canGenerate || working} onClick={() => void buildPreview()}><RefreshCw size={13} aria-hidden="true" />{working ? "Working…" : "Build preview"}</Button><Button variant="primary" disabled={!canGenerate || working || (serverMode && !serverPath.trim())} onClick={() => void saveReport()}><Download size={13} aria-hidden="true" />{serverMode ? "Save to server" : "Save…"}</Button></div></header>
             {!preview ? <div className="p-4"><InlineState tone="idle" title="Preview has not been compiled" description="Choose a format and build a fresh preview. PDF previews show document size and contents summary; saved PDF output is fully paginated." /></div> : null}
             {preview ? <><div className="border-b border-border px-4 py-2 text-[10px] text-text-muted">{preview.mediaType} · {preview.bytes.toLocaleString()} bytes · {preview.suggestedFileName}</div>{preview.warnings.map((warning) => <p key={warning} className="border-b border-warning-border bg-warning-subtle px-4 py-2 text-[10px] text-text-secondary">{warning}</p>)}<pre className="selectable max-h-[46rem] overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-[10px] leading-relaxed text-text-secondary">{preview.content}</pre>{preview.truncated ? <p className="border-t border-border px-4 py-2 text-[10px] text-text-muted">Preview limited to 1 MiB; the saved report is complete.</p> : null}</> : null}
           </section>

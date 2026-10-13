@@ -102,6 +102,28 @@ or maintainer check does not count as an external participant observation.
 No participant results are prefilled. The prepared JSON form remains empty;
 keep real notes and artifacts only where the participant has consented to share.
 
+## Delays, reconnects and report destinations
+
+Use disposable local fixtures and an isolated server/database. Record the
+transport, build, injected condition, expected result and observed result for
+each attempted case. A deterministic component test does not replace an actual
+browser, native-dialog or assistive-technology observation.
+
+| Case | Procedure and expected evidence |
+| --- | --- |
+| Browser report save | Leave **Report file on server** blank and verify Save is disabled. Enter a path whose parent is missing, record the visible error, then retry in an existing writable directory. Compare the saved file's SHA-256 with its receipt. Verify the success status names the server path. |
+| Pending report edits | Delay report compilation, start Save, then change assessment, format, metadata or server destination. The old operation must not open a dialog or write a file. Repeat after navigating away and after A → B → A selection. |
+| Desktop dialog failure | On each supported desktop platform, cancel a save dialog and verify controls recover. Exercise a refused/rejected dialog through the native test harness, then retry. Change report inputs while the dialog is pending; the old destination must not receive a write. Record native execution separately from mocked boundary tests. |
+| Older inventories | Retain more than 100 completed inventory runs plus newer Source/History runs. Reach the final run page, select an old inventory, and confirm its identity and evidence belong to that run. |
+| Large inventory and late responses | Use more than 200 components. Navigate deep, delay its response, then search by alias or advisory. Counts must describe all matching components, and the late old page must not replace the new results. |
+| Page failure and recovery | Make a later run/component page request fail. The error must remain visible on that page. Retry must request the same offset; First/Previous must still navigate to an available page. Restore connectivity and confirm recovery. |
+| Slow scan recovery | Delay status requests beyond the two-second polling interval and suppress a terminal event. A settled response must restore the persisted terminal state. Interrupt and restore the event stream while an older request remains pending; obsolete results must not overwrite the reconnect refresh. A request that never settles remains a separately recorded transport-deadline limitation. |
+| Keyboard and announcements | Use keyboard activation for Save, Retry and pagination. Inspect focus during loading/error/retry; type a search while a page loads. With the named screen reader/version, record whether loading, error and saved-path statuses are spoken. DOM roles alone are not evidence of spoken announcements. |
+
+Maintainer observations for the server and inventory changes are recorded in
+[the workflow verification report](qa/2026-10-13-remaining-workflows.md). They are
+not external participant feedback.
+
 ## Empty feedback form
 
 Leave blank until an engineer actually performs the tasks. Do not infer success

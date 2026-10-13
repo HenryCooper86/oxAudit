@@ -397,6 +397,19 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                 &ctx.findings, a.id,
             ))
         }
+        "list_inventory_runs" => {
+            #[derive(serde::Deserialize)]
+            struct Args { query: Option<crate::findings::domain::ResultPageQuery> }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::reporting::list_inventory_runs_inner(&ctx.findings, a.query.unwrap_or_default()))
+        }
+        "load_inventory_page" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args { run_id: String, query: Option<crate::findings::domain::ResultPageQuery> }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::reporting::load_inventory_page_inner(&ctx.findings, a.run_id, a.query.unwrap_or_default()))
+        }
 
         // ------------------------------------------- import/export/reports
         "preview_report_import" => {

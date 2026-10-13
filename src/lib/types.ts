@@ -374,6 +374,8 @@ export interface InventoryView {
   components: InventoryComponentView[];
 }
 
+export interface InventoryPage extends ResultPage<InventoryComponentView>, Omit<InventoryView, "components"> {}
+
 export interface CanonicalFinding {
   id: string;
   runId: string;

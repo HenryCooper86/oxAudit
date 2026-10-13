@@ -48,3 +48,19 @@ test('loading pagination announces the pending page without presenting metadata 
   expect(screen.getByRole('status')).not.toHaveTextContent('of 300');
   expect(screen.getByRole('button', { name: 'Last page of findings' })).toBeDisabled();
 });
+
+test('a failed deep page can navigate back using the retained authoritative total', async () => {
+  const load = vi.fn(async (_: string, query: ResultPageQuery) => {
+    if (query.offset === 100) throw new Error('Page unavailable');
+    return page(['healthy'], 120);
+  });
+  const hook = renderHook(() => useServerPage<string>('run', {}, load));
+  await waitFor(() => expect(hook.result.current.items).toEqual(['healthy']));
+  act(() => hook.result.current.setPage(2));
+  await waitFor(() => expect(hook.result.current.error).toBe('Page unavailable'));
+  expect(hook.result.current.page).toBe(2);
+  act(() => hook.result.current.setPage(0));
+  await waitFor(() => expect(hook.result.current.items).toEqual(['healthy']));
+  expect(load.mock.calls.map(([, query]) => query.offset)).toEqual([0, 100, 0]);
+  expect(hook.result.current.error).toBeNull();
+});
