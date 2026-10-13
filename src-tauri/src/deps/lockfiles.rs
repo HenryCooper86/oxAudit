@@ -331,35 +331,93 @@ fn split_name_range(s: &str) -> (String, String) {
     }
 }
 
+// Only YAML inventories retain source order; JSON inventories keep their
+// existing deterministic key order.
+type YamlPackages = indexmap::IndexMap<String, serde_json::Value>;
+
+#[derive(serde::Deserialize)]
+struct YamlPackageLockfile {
+    packages: Option<YamlPackages>,
+}
+
+#[derive(serde::Deserialize)]
+struct PipfileLockfile {
+    default: Option<YamlPackages>,
+    develop: Option<YamlPackages>,
+}
+
+fn parse_yaml_lockfile<T: serde::de::DeserializeOwned>(
+    content: &str,
+    name: &str,
+) -> Result<T, String> {
+    // Lockfiles are untrusted. Bound expansion as well as the file bytes
+    // checked by the caller, and retain the previous YAML 1.2 scalar/merge behavior.
+    let options = serde_saphyr::options! {
+        strict_booleans: true,
+        ignore_binary_tag_for_string: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        emit_comments: false,
+        with_snippet: false,
+        budget: serde_saphyr::budget! {
+            max_depth: 64,
+            max_documents: 1,
+            max_nodes: MAX_DEPENDENCIES * 16,
+            max_events: MAX_DEPENDENCIES * 32,
+            max_anchors: 1_024,
+            max_aliases: 1_024,
+            max_recorded_anchor_events: 100_000,
+            max_recorded_anchor_bytes: MAX_LOCKFILE_BYTES as usize,
+            max_total_scalar_bytes: MAX_LOCKFILE_BYTES as usize,
+        },
+        alias_limits: serde_saphyr::alias_limits! {
+            max_total_replayed_events: 100_000,
+            max_replay_stack_depth: 32,
+            max_alias_expansions_per_anchor: 1_024,
+        },
+    };
+    serde_saphyr::from_str_with_options(content, options).map_err(|error| {
+        use serde_saphyr::Error;
+        if matches!(
+            error.without_snippet(),
+            Error::Budget { .. }
+                | Error::AliasReplayCounterOverflow { .. }
+                | Error::AliasReplayLimitExceeded { .. }
+                | Error::AliasExpansionLimitExceeded { .. }
+                | Error::AliasReplayStackDepthExceeded { .. }
+        ) {
+            format!("{RESOURCE_LIMIT_PREFIX} {name}: {error}")
+        } else {
+            format!("invalid {name}: {error}")
+        }
+    })
+}
+
 fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
-    let root: serde_yaml::Value =
-        serde_yaml::from_str(content).map_err(|e| format!("invalid pnpm-lock.yaml: {e}"))?;
+    let root: YamlPackageLockfile = parse_yaml_lockfile(content, "pnpm-lock.yaml")?;
     let mut out = Vec::new();
-    if let Some(packages) = root.get("packages").and_then(|p| p.as_mapping()) {
-        for (key, _val) in packages {
-            if let Some(k) = key.as_str() {
-                // v5 uses /name/version; v6+ uses name@version. Peer
-                // contexts are install identities, not advisory versions.
-                let coordinate = k.trim_start_matches('/').split('(').next().unwrap_or("");
-                let name_start = if coordinate.starts_with('@') {
-                    coordinate
-                        .find('/')
-                        .map(|slash| slash + 1)
-                        .unwrap_or(coordinate.len())
-                } else {
-                    0
-                };
-                let Some(separator) = coordinate[name_start..]
-                    .find(['@', '/'])
-                    .map(|offset| name_start + offset)
-                else {
-                    continue;
-                };
-                let name = &coordinate[..separator];
-                let version = coordinate[separator + 1..].split('_').next().unwrap_or("");
-                if !name.is_empty() && !version.is_empty() {
-                    out.push((name.to_string(), version.to_string()));
-                }
+    if let Some(packages) = root.packages {
+        for k in packages.keys() {
+            // v5 uses /name/version; v6+ uses name@version. Peer
+            // contexts are install identities, not advisory versions.
+            let coordinate = k.trim_start_matches('/').split('(').next().unwrap_or("");
+            let name_start = if coordinate.starts_with('@') {
+                coordinate
+                    .find('/')
+                    .map(|slash| slash + 1)
+                    .unwrap_or(coordinate.len())
+            } else {
+                0
+            };
+            let Some(separator) = coordinate[name_start..]
+                .find(['@', '/'])
+                .map(|offset| name_start + offset)
+            else {
+                continue;
+            };
+            let name = &coordinate[..separator];
+            let version = coordinate[separator + 1..].split('_').next().unwrap_or("");
+            if !name.is_empty() && !version.is_empty() {
+                out.push((name.to_string(), version.to_string()));
             }
         }
     }
@@ -543,27 +601,25 @@ fn parse_mix_lock(content: &str) -> Result<Vec<(String, String)>, String> {
 /// git packages carry a registry version; `path` is local code and `sdk` is
 /// the Dart/Flutter SDK itself — neither is a Pub advisory target.
 fn parse_pubspec_lock(content: &str) -> Result<Vec<(String, String)>, String> {
-    let root: serde_yaml::Value =
-        serde_yaml::from_str(content).map_err(|error| format!("invalid pubspec.lock: {error}"))?;
+    let root: YamlPackageLockfile = parse_yaml_lockfile(content, "pubspec.lock")?;
     let packages = root
-        .get("packages")
-        .and_then(serde_yaml::Value::as_mapping)
+        .packages
         .ok_or_else(|| "pubspec.lock has no packages map".to_string())?;
     let mut out = Vec::new();
-    for (key, entry) in packages {
-        let (Some(name), Some(entry)) = (key.as_str(), entry.as_mapping()) else {
+    for (name, entry) in packages {
+        let Some(entry) = entry.as_object() else {
             continue;
         };
         let source = entry
-            .get(serde_yaml::Value::String("source".into()))
-            .and_then(serde_yaml::Value::as_str)
+            .get("source")
+            .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         if matches!(source, "path" | "sdk") {
             continue;
         }
         let version = entry
-            .get(serde_yaml::Value::String("version".into()))
-            .and_then(serde_yaml::Value::as_str)
+            .get("version")
+            .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         if !version.is_empty() {
             out.push((name.to_string(), version.to_string()));
@@ -576,21 +632,17 @@ fn parse_pubspec_lock(content: &str) -> Result<Vec<(String, String)>, String> {
 }
 
 fn parse_pipfile_lock(content: &str) -> Result<Vec<(String, String)>, String> {
-    let root: serde_yaml::Value =
-        serde_yaml::from_str(content).map_err(|e| format!("invalid Pipfile.lock: {e}"))?;
+    let root: PipfileLockfile = parse_yaml_lockfile(content, "Pipfile.lock")?;
     let mut out = Vec::new();
-    for section in ["default", "develop"] {
-        if let Some(map) = root.get(section).and_then(|v| v.as_mapping()) {
-            for (key, val) in map {
-                let name = key.as_str().unwrap_or("").to_string();
-                let version = val
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .map(strip_version_ops)
-                    .unwrap_or_default();
-                if !name.is_empty() && !version.is_empty() {
-                    out.push((name, version));
-                }
+    for map in [root.default, root.develop].into_iter().flatten() {
+        for (name, val) in map {
+            let version = val
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(strip_version_ops)
+                .unwrap_or_default();
+            if !name.is_empty() && !version.is_empty() {
+                out.push((name.to_string(), version));
             }
         }
     }
@@ -1176,6 +1228,103 @@ packages:
                 ("@my_scope/tool_name".into(), "2.3.4".into()),
             ]
         );
+    }
+
+    #[test]
+    fn yaml_lockfiles_preserve_aliases_and_package_order() {
+        for (name, content, expected) in [
+            (
+                "pnpm-lock.yaml",
+                "lockfileVersion: '9.0'\nmetadata: &metadata {integrity: sha512-example}\npackages:\n  zebra@2.0.0: *metadata\n  alpha@1.0.0: *metadata\n",
+                vec![("zebra", "2.0.0"), ("alpha", "1.0.0")],
+            ),
+            (
+                "pubspec.lock",
+                "version: &version '1.2.3'\npackages:\n  zebra: {source: hosted, version: *version}\n  no: {source: git, version: '2.3.4'}\n  local: {source: path, version: '3.4.5'}\n  flutter: {source: sdk, version: '4.5.6'}\n",
+                vec![("zebra", "1.2.3"), ("no", "2.3.4")],
+            ),
+            (
+                "Pipfile.lock",
+                r#"{"_meta":{"pipfile-spec":6},"default":{"zebra":{"version":"==2.0.0","hashes":["sha256:example"]},"alpha":{"version":"==1.0.0"}},"develop":{"pytest":{"version":"==8.0.0"}}}"#,
+                vec![("zebra", "2.0.0"), ("alpha", "1.0.0"), ("pytest", "8.0.0")],
+            ),
+        ] {
+            let packages = lockfile_packages(name, content).unwrap();
+            let packages: Vec<_> = packages
+                .iter()
+                .map(|(name, version)| (name.as_str(), version.as_str()))
+                .collect();
+            assert_eq!(packages, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn yaml_lockfiles_keep_binary_tagged_versions_as_literal_strings() {
+        for (name, content, version) in [
+            (
+                "pubspec.lock",
+                "packages: {tool: {source: hosted, version: !!binary 'MS4yLjM='}}",
+                "MS4yLjM=",
+            ),
+            (
+                "Pipfile.lock",
+                "default: {tool: {version: !!binary '==1.2.3'}}",
+                "1.2.3",
+            ),
+        ] {
+            assert_eq!(
+                lockfile_packages(name, content).unwrap(),
+                vec![("tool".to_string(), version.to_string())],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn yaml_lockfiles_reject_malformed_and_ambiguous_documents() {
+        for (name, inventory) in [
+            ("pnpm-lock.yaml", "packages: {tool@1.2.3: {}}\n"),
+            (
+                "pubspec.lock",
+                "packages: {tool: {source: hosted, version: '1.2.3'}}\n",
+            ),
+            ("Pipfile.lock", "default: {tool: {version: '==1.2.3'}}\n"),
+        ] {
+            for suffix in [
+                "metadata: [unterminated",
+                "metadata: *undefined",
+                "metadata: &cycle {self: *cycle}",
+                "metadata: {}\nmetadata: {}",
+                "---\nmetadata: {}",
+            ] {
+                let content = format!("{inventory}{suffix}");
+                assert!(
+                    lockfile_packages(name, &content).is_err(),
+                    "accepted {name}: {content}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn yaml_lockfiles_report_excessive_nesting_as_a_resource_limit() {
+        let content = format!("metadata: {}0{}\n", "[".repeat(96), "]".repeat(96));
+        for name in ["pnpm-lock.yaml", "pubspec.lock", "Pipfile.lock"] {
+            let error = lockfile_packages(name, &content).unwrap_err();
+            assert!(super::is_resource_limit_error(&error), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn yaml_lockfiles_bound_alias_expansion() {
+        let content = format!(
+            "base: &base [a, b, c, d]\nmetadata: [{}]\n",
+            vec!["*base"; 2_000].join(", ")
+        );
+        for name in ["pnpm-lock.yaml", "pubspec.lock", "Pipfile.lock"] {
+            let error = lockfile_packages(name, &content).unwrap_err();
+            assert!(super::is_resource_limit_error(&error), "{name}: {error}");
+        }
     }
 
     #[test]
