@@ -411,7 +411,7 @@ pub fn validate_rule_pack(path: String) -> Result<RulePackValidationPreview, Str
 ///
 /// The result stays honest about the corpus boundary and is not presented as a
 /// representative ecosystem-wide recall claim.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn quality_status(findings: State<'_, FindingsState>) -> Result<QualityStatus, String> {
     quality_status_inner(&findings)
 }
@@ -425,7 +425,8 @@ pub(crate) fn quality_status_inner(findings: &FindingsState) -> Result<QualitySt
         .repository()
         .benchmark_latest(&suite.id)
         .map_err(|error| error.to_string())?
-        .and_then(|value| serde_json::from_value::<QualityStatus>(value).ok());
+        .and_then(|value| serde_json::from_value::<QualityStatus>(value).ok())
+        .filter(|previous| previous.schema_version == 1 && previous.suite_version == suite.version);
 
     let regression = previous.as_ref().is_some_and(|previous| {
         report.totals.false_positives as usize > previous.false_positives
@@ -452,10 +453,7 @@ pub(crate) fn quality_status_inner(findings: &FindingsState) -> Result<QualitySt
         suite_version: suite.version.clone(),
         description: suite.description.clone(),
         corpus_targets: suite.targets.len(),
-        // A fixture passes when it produced neither a miss nor a false positive.
-        passed_targets: suite.targets.len()
-            - report.misses.len()
-            - report.totals.false_positives as usize,
+        passed_targets: report.passed_fixtures as usize,
         true_positives: report.totals.true_positives as usize,
         false_positives: report.totals.false_positives as usize,
         false_negatives: report.totals.false_negatives as usize,
@@ -520,4 +518,39 @@ pub fn list_compiled_grammars() -> Vec<String> {
         .iter()
         .map(|grammar| (*grammar).to_string())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_changed_corpus_version_does_not_claim_regression_against_incompatible_measurements() {
+        let repository =
+            crate::findings::repository::FindingsRepository::open_in_memory().expect("repository");
+        let findings = FindingsState::available(FindingsService::new(repository));
+        let current = quality_status_inner(&findings).expect("initial benchmark");
+        let old = QualityStatus {
+            suite_version: "obsolete-corpus-version".into(),
+            precision: Some(0.123),
+            recall: Some(0.456),
+            ..current.clone()
+        };
+        findings
+            .service()
+            .expect("service")
+            .repository()
+            .benchmark_save(
+                "incompatible",
+                &old.suite_id,
+                &old.suite_version,
+                epoch_millis() + 1000,
+                &old,
+            )
+            .expect("save incompatible baseline");
+        let next = quality_status_inner(&findings).expect("next benchmark");
+        assert_eq!(next.previous_precision, None);
+        assert_eq!(next.previous_recall, None);
+        assert!(!next.regression);
+    }
 }

@@ -1,11 +1,14 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { RuleLibraryPage } from "./RuleLibrary";
 import type { InstalledRulePack, RuleLibraryPackStatus } from "../lib/types";
 
 const open = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: (...args: unknown[]) => open(...args) }));
+const transport = vi.hoisted(() => ({ server: false }));
+vi.mock("../lib/transport", () => ({ get serverMode() { return transport.server; } }));
+beforeEach(() => { transport.server = false; });
 
 const ruleLibraryStatus = vi.fn();
 const validateRulePack = vi.fn();
@@ -84,6 +87,39 @@ test("an empty store says so and points at validation", async () => {
   listInstalledRulePacks.mockResolvedValue([]);
   render(<RuleLibraryPage />);
   expect(await screen.findByText(/no packs installed/i)).toBeInTheDocument();
+});
+
+test("searching by a pack name or engine preserves its matching rules", async () => {
+  ruleLibraryStatus.mockResolvedValue([builtInPack()]);
+  listInstalledRulePacks.mockResolvedValue([]);
+  render(<RuleLibraryPage />);
+  await screen.findByText("eval of dynamic input");
+  await userEvent.type(screen.getByLabelText("Search rules"), "source_regex");
+  expect(screen.getByText("eval of dynamic input")).toBeInTheDocument();
+});
+
+test("a failed pack dialog is reported in the validation panel", async () => {
+  ruleLibraryStatus.mockResolvedValue([builtInPack()]);
+  listInstalledRulePacks.mockResolvedValue([]);
+  open.mockRejectedValueOnce("Dialog unavailable");
+  render(<RuleLibraryPage />);
+  await userEvent.click(screen.getByRole("button", { name: /choose pack/i }));
+  expect(await screen.findByText("Dialog unavailable")).toBeInTheDocument();
+});
+
+test("server mode validates a typed file path without a native dialog", async () => {
+  transport.server = true;
+  ruleLibraryStatus.mockResolvedValue([builtInPack()]);
+  listInstalledRulePacks.mockResolvedValue([]);
+  validateRulePack.mockResolvedValue({
+    id: "rulepack.acme", name: "Acme house rules", version: "1", contentSha256: "a".repeat(64),
+    ruleCount: 1, engines: ["source_regex"], fixtureCount: 2, license: "Apache-2.0", source: "Local", validation: "verified",
+  });
+  render(<RuleLibraryPage />);
+  await userEvent.type(screen.getByLabelText("Rule pack file on server"), "/data/pack.toml");
+  await userEvent.click(screen.getByRole("button", { name: "Validate pack" }));
+  expect(await screen.findByText("Safe declarative pack verified")).toBeInTheDocument();
+  expect(validateRulePack).toHaveBeenLastCalledWith("/data/pack.toml");
 });
 
 test("a validated pack installs from the file it was validated from", async () => {

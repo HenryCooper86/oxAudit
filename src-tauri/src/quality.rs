@@ -119,6 +119,8 @@ pub struct BenchmarkReport {
     pub suite_id: String,
     pub suite_version: String,
     pub fixtures: u32,
+    /// Targets without a scored miss or false positive, counted once each.
+    pub passed_fixtures: u32,
     #[serde(flatten)]
     pub totals: Counts,
     pub precision: Option<f64>,
@@ -217,6 +219,7 @@ pub fn score(
     let mut collateral = Vec::new();
     let mut misses = Vec::new();
     let mut syntax_analyzed_fixtures = 0u32;
+    let mut passed_fixtures = 0u32;
 
     // Only rules the corpus actually covers can be scored. A rule firing
     // outside that set is still recorded as collateral, but it is not silently
@@ -228,6 +231,7 @@ pub fn score(
         .collect();
 
     for target in &suite.targets {
+        let failures_before = (totals.false_positives, totals.false_negatives);
         let content = read_fixture(&target.input_path)?;
 
         let digest = sha256_hex(&content);
@@ -298,6 +302,9 @@ pub fn score(
                 totals.false_positives += 1;
             }
         }
+        if failures_before == (totals.false_positives, totals.false_negatives) {
+            passed_fixtures += 1;
+        }
     }
 
     let rules = per_rule
@@ -322,6 +329,7 @@ pub fn score(
         suite_id: suite.id.clone(),
         suite_version: suite.version.clone(),
         fixtures: suite.targets.len() as u32,
+        passed_fixtures,
         precision: totals.precision(),
         recall: totals.recall(),
         f1: totals.f1(),
@@ -491,6 +499,71 @@ pub fn render_text(report: &BenchmarkReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_passes_count_targets_instead_of_subtracting_each_failed_rule() {
+        let broken = b"eval(userInput);\nrequire('child_process').exec(command);";
+        let clean = b"const answer = 42;";
+        let target = |id: &str,
+                      content: &[u8],
+                      expected: Vec<ExpectedRule>,
+                      absent: Vec<AbsentRule>| CorpusTarget {
+            id: id.into(),
+            input_path: id.into(),
+            input_sha256: sha256_hex(content),
+            language: Some("javascript".into()),
+            scanner_families: vec!["source-pattern".into()],
+            rule_id: "js-eval".into(),
+            expected,
+            expected_absent: absent,
+        };
+        let suite = CorpusSuite {
+            id: "multiple-failures".into(),
+            version: "1".into(),
+            description: String::new(),
+            targets: vec![
+                target(
+                    "broken",
+                    broken,
+                    vec![ExpectedRule {
+                        rule_id: "missing-rule".into(),
+                        minimum: 1,
+                    }],
+                    vec![
+                        AbsentRule {
+                            rule_id: "js-eval".into(),
+                        },
+                        AbsentRule {
+                            rule_id: "js-child-process".into(),
+                        },
+                    ],
+                ),
+                target(
+                    "clean",
+                    clean,
+                    vec![],
+                    vec![AbsentRule {
+                        rule_id: "js-eval".into(),
+                    }],
+                ),
+            ],
+        };
+        let report = score(&suite, |path| {
+            Ok(if path == "broken" {
+                broken.to_vec()
+            } else {
+                clean.to_vec()
+            })
+        })
+        .expect("score");
+        assert_eq!(report.totals.false_positives, 2);
+        assert_eq!(report.totals.false_negatives, 1);
+        let json = serde_json::to_value(&report).expect("report JSON");
+        assert_eq!(
+            json["passedFixtures"], 1,
+            "one failed target must count once even when three rules fail"
+        );
+    }
 
     #[test]
     fn precision_is_undefined_rather_than_zero_when_nothing_fired() {

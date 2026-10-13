@@ -64,7 +64,9 @@ export function QualityLabPage(): JSX.Element {
           <InlineState tone="unavailable" title="Scope limitation" description={status.limitation} />
           <InlineState
             tone={status.regression ? "error" : "empty"}
-            title={status.regression ? "Regression from the previous saved run" : "No measured regression from the previous saved run"}
+            title={status.previousPrecision === null && status.previousRecall === null
+              ? "Local benchmark baseline established"
+              : status.regression ? "Regression from the previous saved run" : "No measured regression from the previous saved run"}
             description={
               status.previousPrecision === null && status.previousRecall === null
                 ? "This result established the first local baseline."
@@ -106,7 +108,7 @@ function ExternalBenchmarkPanel(): JSX.Element {
 
   return (
     <section aria-labelledby="external-benchmark-title" className="rounded-sm border border-border bg-surface-secondary p-4">
-      <SectionLabel>External benchmark · OWASP Benchmark</SectionLabel>
+      <h2 id="external-benchmark-title"><SectionLabel>External benchmark · OWASP Benchmark</SectionLabel></h2>
       <p className="mt-2 text-[12px] leading-relaxed text-text-secondary">
         Score the scanner against the OWASP Benchmark Project's Java ground truth. Point this at a
         local checkout of the Benchmark repository. Scoring a full checkout can take a while; the
@@ -204,24 +206,30 @@ function metrics(counts: BenchmarkCounts) {
 
 function CompiledGrammarsPanel(): JSX.Element {
   const [grammars, setGrammars] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [revision, setRevision] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     api.listCompiledGrammars()
       .then((next) => {
         if (!cancelled) setGrammars(next);
       })
-      .catch(() => {
-        if (!cancelled) setGrammars([]);
+      .catch(cause => {
+        if (!cancelled) setError(String(cause));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [revision]);
 
   return (
     <section aria-labelledby="compiled-grammars-title" className="rounded-sm border border-border bg-surface-secondary p-4">
-      <SectionLabel>Compiled grammars</SectionLabel>
-      {grammars === null ? (
+      <h2 id="compiled-grammars-title"><SectionLabel>Compiled grammars</SectionLabel></h2>
+      {error ? (
+        <InlineState compact tone="error" title="Compiled grammars unavailable" description={error}
+          action={<Button onClick={() => setRevision(value => value + 1)}>Retry grammars</Button>} />
+      ) : grammars === null ? (
         <p className="mt-2 text-[12px] text-text-muted">Loading…</p>
       ) : (
         <>

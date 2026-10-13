@@ -62,10 +62,12 @@ export function CveResearchPage(): JSX.Element {
   const searchRequestRef = useRef(false);
   const detailRequestRef = useRef(0);
   const packageRequestRef = useRef(0);
+  const searchGenerationRef = useRef(0);
 
   const search = useCallback(
     async (parameters: SearchParameters) => {
       if (searchRequestRef.current) return;
+      const generation = ++searchGenerationRef.current;
       searchRequestRef.current = true;
       setLoading(true);
       setSearchError(null);
@@ -81,6 +83,7 @@ export function CveResearchPage(): JSX.Element {
           PER_PAGE,
           parameters.recent ? 7 : null,
         );
+        if (generation !== searchGenerationRef.current) return;
         setResult(res);
         setCompletedSearch(parameters);
         detailRequestRef.current += 1;
@@ -94,6 +97,7 @@ export function CveResearchPage(): JSX.Element {
           detail: `${res.total} results`,
         });
       } catch (error) {
+        if (generation !== searchGenerationRef.current) return;
         setSearchError(String(error));
         setFailedSearch(parameters);
         setPageStatus("cve-research", {
@@ -101,14 +105,22 @@ export function CveResearchPage(): JSX.Element {
           tone: "error",
         });
       } finally {
-        setLoading(false);
-        searchRequestRef.current = false;
+        if (generation === searchGenerationRef.current) {
+          setLoading(false);
+          searchRequestRef.current = false;
+        }
       }
     },
     [setPageStatus],
   );
 
-  useEffect(() => () => clearPageStatus("cve-research"), [clearPageStatus]);
+  useEffect(() => () => {
+    searchGenerationRef.current += 1;
+    detailRequestRef.current += 1;
+    packageRequestRef.current += 1;
+    searchRequestRef.current = false;
+    clearPageStatus("cve-research");
+  }, [clearPageStatus]);
 
   const openDetail = async (id: string) => {
     if (detailLoading || (id === selectedCveId && detail)) return;

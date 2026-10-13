@@ -7,6 +7,7 @@ import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import { useToastStore } from "../lib/stores";
+import { serverMode } from "../lib/transport";
 import type { InstalledRulePack, RuleLibraryPackStatus, RulePackValidationPreview } from "../lib/types";
 
 export function RuleLibraryPage(): JSX.Element {
@@ -16,6 +17,7 @@ export function RuleLibraryPage(): JSX.Element {
   const [query, setQuery] = useState("");
   const [externalPreview, setExternalPreview] = useState<RulePackValidationPreview | null>(null);
   const [externalPath, setExternalPath] = useState<string | null>(null);
+  const [serverPackPath, setServerPackPath] = useState("");
   const [externalError, setExternalError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -90,33 +92,33 @@ export function RuleLibraryPage(): JSX.Element {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return packs ?? [];
     return (packs ?? [])
-      .map((pack) => ({
-        ...pack,
-        rules: pack.rules.filter((rule) =>
-          `${rule.id} ${rule.title} ${rule.severity} ${rule.scope.join(" ")} ${rule.provenance}`
-            .toLowerCase()
-            .includes(normalized),
-        ),
-      }))
-      .filter(
-        (pack) =>
-          pack.rules.length > 0 ||
-          `${pack.id} ${pack.name} ${pack.engine}`.toLowerCase().includes(normalized),
-      );
+      .map((pack) => {
+        if (`${pack.id} ${pack.name} ${pack.engine}`.toLowerCase().includes(normalized)) return pack;
+        return {
+          ...pack,
+          rules: pack.rules.filter((rule) =>
+            `${rule.id} ${rule.title} ${rule.severity} ${rule.scope.join(" ")} ${rule.provenance}`
+              .toLowerCase()
+              .includes(normalized),
+          ),
+        };
+      })
+      .filter(pack => pack.rules.length > 0);
   }, [packs, query]);
 
   const validateExternalPack = async () => {
-    const selected = await open({
-      multiple: false,
-      directory: false,
-      filters: [{ name: "Declarative rule pack", extensions: ["toml"] }],
-    });
-    if (!selected || Array.isArray(selected)) return;
+    if (validating || installing) return;
     setValidating(true);
     setExternalError(null);
-    setExternalPreview(null);
-    setExternalPath(null);
     try {
+      const selected = serverMode ? serverPackPath.trim() : await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "Declarative rule pack", extensions: ["toml"] }],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      setExternalPreview(null);
+      setExternalPath(null);
       setExternalPreview(await api.validateRulePack(selected));
       setExternalPath(selected);
     } catch (cause) {
@@ -137,9 +139,19 @@ export function RuleLibraryPage(): JSX.Element {
             <h2 className="text-[13px] font-semibold text-text-primary">Install a public pack</h2>
             <p className="mt-1 text-[12px] leading-relaxed text-text-muted">Inspect an oxAudit declarative TOML pack locally. Validation checks provenance, immutable hashes, bounded regexes, fixture hashes, and path containment — nothing executes. A validated pack can be installed; every enabled pack's text-engine rules then run beside the built-ins in each source scan, with findings prefixed by the pack id.</p>
           </div>
-          <Button type="button" variant="outline" size="md" onClick={() => void validateExternalPack()} disabled={validating}>
-            <FileCheck2 size={13} aria-hidden="true" />{validating ? "Validating…" : "Choose pack…"}
-          </Button>
+          <div className="flex flex-wrap items-end gap-2">
+            {serverMode && <label className="text-[12px] text-text-secondary">Rule pack file on server
+              <input value={serverPackPath} onChange={event => {
+                setServerPackPath(event.target.value);
+                setExternalPreview(null);
+                setExternalPath(null);
+                setExternalError(null);
+              }} disabled={validating || installing} placeholder="/data/pack.toml" className="mt-1 block rounded-sm border border-border bg-surface-primary px-3 py-2 text-[12px] text-text-primary" />
+            </label>}
+            <Button type="button" variant="outline" size="md" onClick={() => void validateExternalPack()} disabled={validating || installing || (serverMode && !serverPackPath.trim())}>
+              <FileCheck2 size={13} aria-hidden="true" />{validating ? "Validating…" : serverMode ? "Validate pack" : "Choose pack…"}
+            </Button>
+          </div>
         </div>
         {externalError && <div className="mt-3"><InlineState compact tone="error" title="Pack validation failed" description={externalError} /></div>}
         {externalPreview && (

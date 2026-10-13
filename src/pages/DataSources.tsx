@@ -1,41 +1,61 @@
 import { CheckCircle2, Database, RefreshCw, WifiOff } from "lucide-react";
-import { useCallback, useEffect, useState, type JSX } from "react";
+import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { openUrl } from "../lib/opener";
 import { Button } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { useToastStore } from "../lib/stores";
 import type { DataSourceStatus } from "../lib/types";
 
 export function DataSourcesPage(): JSX.Element {
+  const push = useToastStore(state => state.push);
   const [sources, setSources] = useState<DataSourceStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<string | null>(null);
+  const request = useRef(0);
+  const refreshPending = useRef(false);
 
   const load = useCallback(async () => {
+    const generation = ++request.current;
     setError(null);
     try {
-      setSources(await api.listDataSources());
+      const loaded = await api.listDataSources();
+      if (generation === request.current) setSources(loaded);
     } catch (cause) {
-      setError(String(cause));
+      if (generation === request.current) setError(String(cause));
     }
   }, []);
   useEffect(() => {
     void load();
+    return () => { request.current += 1; };
   }, [load]);
 
   const refresh = async (providerId: string) => {
+    if (refreshPending.current) return;
+    refreshPending.current = true;
+    const generation = ++request.current;
     setRefreshing(providerId);
     setError(null);
     try {
       const next = await api.refreshDataSource(providerId);
+      if (generation !== request.current) return;
       setSources((current) =>
         (current ?? []).map((source) => (source.id === providerId ? next : source)),
       );
     } catch (cause) {
-      setError(String(cause));
+      if (generation === request.current) setError(String(cause));
     } finally {
-      setRefreshing(null);
+      refreshPending.current = false;
+      if (generation === request.current) setRefreshing(null);
+    }
+  };
+
+  const openTerms = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch {
+      push("error", "The terms and provenance reference could not be opened");
     }
   };
 
@@ -45,7 +65,9 @@ export function DataSourcesPage(): JSX.Element {
       description="See exactly which advisory data oxAudit uses, validate new immutable snapshots, and know what remains available offline."
     >
       {!sources && !error && <InlineState tone="running" title="Loading provider registry" />}
-      {error && <InlineState tone="error" title="A data-source operation failed" description={error} />}
+      {error && <InlineState tone="error" title="A data-source operation failed" description={error}
+        action={<Button disabled={refreshing !== null} onClick={() => void load()}>Retry registry</Button>} />}
+      {sources?.length === 0 && <InlineState tone="empty" title="No data sources are registered" />}
       {sources && (
         <div className="grid gap-3 min-[820px]:grid-cols-2">
           {sources.map((source) => (
@@ -73,7 +95,7 @@ export function DataSourcesPage(): JSX.Element {
                   <RefreshCw size={13} aria-hidden="true" />
                   {refreshing === source.id ? "Refreshing…" : "Refresh safely"}
                 </Button>
-                <Button type="button" onClick={() => void openUrl(source.termsUrl)} variant="ghost" size="md">Terms & provenance</Button>
+                <Button type="button" onClick={() => void openTerms(source.termsUrl)} variant="ghost" size="md">Terms & provenance</Button>
               </div>
             </article>
           ))}

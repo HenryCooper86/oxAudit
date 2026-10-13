@@ -117,6 +117,7 @@ export function SettingsPage() {
   const formRef = useRef<AppSettings | null>(form);
   const formInitializedRef = useRef(form !== null);
   const editRevisionRef = useRef(0);
+  const themeRevisionRef = useRef(0);
   const savePendingRef = useRef(false);
   const testPendingRef = useRef(false);
   const mountedRef = useRef(false);
@@ -218,6 +219,7 @@ export function SettingsPage() {
   }
 
   const publishDraft = (next: AppSettings) => {
+    if (formRef.current?.theme !== next.theme) themeRevisionRef.current += 1;
     formRef.current = next;
     editRevisionRef.current += 1;
     setForm(next);
@@ -255,6 +257,7 @@ export function SettingsPage() {
     // diff, then persist. Theme cannot affect AI readiness, so this write
     // skips the connection test a full save performs.
     const next = { ...current, theme: preference };
+    const themeRevision = ++themeRevisionRef.current;
     formRef.current = next;
     setForm(next);
 
@@ -262,7 +265,23 @@ export function SettingsPage() {
       () => useAppStore.getState().settings,
       preference,
       setSettings,
-    ).catch(() => {
+    ).then(persisted => {
+      if (!persisted || !mountedRef.current || themeRevision !== themeRevisionRef.current) return;
+      const draft = formRef.current;
+      if (!draft) return;
+      const updated = { ...draft, theme: persisted.theme };
+      formRef.current = updated;
+      setForm(updated);
+    }).catch(() => {
+      if (mountedRef.current && themeRevision === themeRevisionRef.current) {
+        const draft = formRef.current;
+        const persisted = useAppStore.getState().settings;
+        if (draft && persisted) {
+          const restored = { ...draft, theme: persisted.theme };
+          formRef.current = restored;
+          setForm(restored);
+        }
+      }
       push("error", "Could not save the theme preference.");
     });
   };
@@ -286,6 +305,7 @@ export function SettingsPage() {
       nvdApiKey: credentialMutation(nvdApiKeyDraft, removeNvdApiKey),
     };
     const submittedRevision = editRevisionRef.current;
+    const submittedThemeRevision = themeRevisionRef.current;
     savePendingRef.current = true;
     setSaving(true);
     setSaveState(null);
@@ -305,6 +325,9 @@ export function SettingsPage() {
         const hasNewerEdits = editRevisionRef.current !== submittedRevision;
         if (!hasNewerEdits) {
           const persisted = cloneSettings(publication.settings);
+          if (themeRevisionRef.current !== submittedThemeRevision) {
+            persisted.theme = formRef.current?.theme ?? persisted.theme;
+          }
           formRef.current = persisted;
           setForm(persisted);
           setAiApiKeyDraft("");
