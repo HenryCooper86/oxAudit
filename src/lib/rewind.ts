@@ -25,9 +25,9 @@ export interface RewindPlan {
  * Plan a rewind to `messageId`.
  *
  * Returns `null` when the rewind would be meaningless or unsafe: an unknown id,
- * an assistant turn (rewinding to the model's own output would leave a dangling
- * question), or a target that is already the last thing in the conversation
- * with nothing after it to discard.
+ * or an assistant turn (rewinding to the model's own output would leave a
+ * dangling question). Rewinding to the last user turn is allowed: nothing is
+ * kept after it, and its text is restored to the composer to be re-asked.
  */
 export function planRewind(
   messages: readonly RewindTarget[],
@@ -40,7 +40,6 @@ export function planRewind(
   if (target.role !== "user") return null;
 
   const discardedCount = messages.length - index;
-  if (discardedCount <= 0) return null;
 
   return {
     keepCount: index,

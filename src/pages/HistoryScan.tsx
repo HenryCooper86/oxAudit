@@ -81,8 +81,9 @@ export function HistoryScanPage(): JSX.Element {
     void readSavedScanReceipt<HistoryScanResult>("history", path.trim(), recent?.runId).then(saved => {
       if (!mounted.current || generation !== receiptRequest.current) return;
       setAttempt(saved.attempt);
-      if (saved.loadError) setError(`Saved history evidence could not be loaded: ${saved.loadError}`);
+      if (saved.loadError && !saved.data) setError(`Saved history evidence could not be loaded: ${saved.loadError}`);
       if (saved.data) {
+        setError(null);
         setResult(saved.data);
         setReceipt(saved.receipt);
         setFindingTotal(saved.sections.findings ?? 0);

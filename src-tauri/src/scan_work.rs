@@ -11,6 +11,9 @@ use crate::findings::service::ScanEventSink;
 
 const RECENT_LIMIT: usize = 32;
 const MAX_OPERATION_IDS: usize = 1_000_000;
+/// Phantom cancellations (for IDs never registered) are bounded; after the
+/// cap the oldest reservation is evicted and its ID may be registered again.
+const MAX_CANCELLED_BEFORE_START: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,6 +91,7 @@ struct WorkState {
     recent: VecDeque<WorkDescriptor>,
     used_ids: HashSet<uuid::Uuid>,
     cancelled_before_start: HashSet<uuid::Uuid>,
+    cancelled_before_start_order: VecDeque<uuid::Uuid>,
 }
 
 #[derive(Default)]
@@ -201,13 +205,22 @@ impl ScanWorkRegistry {
             .map_err(|_| "invalid scan operation ID")?;
         // A cancellation can overtake its HTTP scan request. Reserve that
         // exact ID so delayed registration cannot start the cancelled work.
+        // Phantom reservations do not burn the `used_ids` allowance; their
+        // window is bounded by `MAX_CANCELLED_BEFORE_START` instead.
         if let Some(identity) = identity {
-            if !state.used_ids.contains(&identity) {
-                if state.used_ids.len() >= MAX_OPERATION_IDS {
-                    return Err("scan operation-ID allowance reached".into());
-                }
-                state.used_ids.insert(identity);
+            // An already-reserved ID falls through to active-work matching:
+            // the reservation did its job, and a repeat cancel must not
+            // report fresh success (or touch whatever work replaced it).
+            if !state.used_ids.contains(&identity)
+                && !state.cancelled_before_start.contains(&identity)
+            {
                 state.cancelled_before_start.insert(identity);
+                state.cancelled_before_start_order.push_back(identity);
+                while state.cancelled_before_start.len() > MAX_CANCELLED_BEFORE_START {
+                    if let Some(oldest) = state.cancelled_before_start_order.pop_front() {
+                        state.cancelled_before_start.remove(&oldest);
+                    }
+                }
                 return Ok(true);
             }
         }
@@ -475,6 +488,51 @@ mod tests {
             .unwrap();
         assert!(!registry.cancel(Some(&delayed), &[]).unwrap());
         assert!(!replacement.cancellation().load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn phantom_cancel_reserves_id_without_burning_used_ids_allowance() {
+        let registry = ScanWorkRegistry::default();
+        let phantom = uuid::Uuid::new_v4().to_string();
+        assert!(registry.cancel(Some(&phantom), &[]).unwrap());
+        assert!(registry
+            .begin(WorkKind::Image, "delayed", Some(&phantom), &Quiet)
+            .err()
+            .unwrap()
+            .contains("cancelled"));
+        let state = registry.state.lock().unwrap();
+        assert!(state.cancelled_before_start.contains(
+            &uuid::Uuid::parse_str(&phantom).unwrap()
+        ));
+        assert!(!state
+            .used_ids
+            .contains(&uuid::Uuid::parse_str(&phantom).unwrap()));
+        assert!(state.used_ids.is_empty());
+    }
+
+    #[test]
+    fn phantom_cancel_reservations_are_bounded_and_oldest_is_evicted() {
+        let registry = ScanWorkRegistry::default();
+        let oldest = uuid::Uuid::new_v4().to_string();
+        assert!(registry.cancel(Some(&oldest), &[]).unwrap());
+        for _ in 0..MAX_CANCELLED_BEFORE_START {
+            let id = uuid::Uuid::new_v4().to_string();
+            assert!(registry.cancel(Some(&id), &[]).unwrap());
+        }
+        {
+            let state = registry.state.lock().unwrap();
+            assert_eq!(state.cancelled_before_start.len(), MAX_CANCELLED_BEFORE_START);
+            assert_eq!(
+                state.cancelled_before_start_order.len(),
+                MAX_CANCELLED_BEFORE_START
+            );
+            assert!(state.used_ids.is_empty());
+        }
+        // The oldest reservation was evicted, so its ID may register again.
+        let work = registry
+            .begin(WorkKind::Image, "after eviction", Some(&oldest), &Quiet)
+            .unwrap();
+        assert_eq!(work.id(), oldest);
     }
 
     #[test]

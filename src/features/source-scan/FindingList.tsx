@@ -131,10 +131,27 @@ export function FindingList(props: {
         }
         return;
       case "PageDown":
-      case "PageUp":
+      case "PageUp": {
         event.preventDefault();
-        move(event.key === "PageDown" ? pagination.pageSize : -pagination.pageSize);
+        const delta = event.key === "PageDown" ? pagination.pageSize : -pagination.pageSize;
+        // Server-paged lists only hold the current page's rows, so a move past
+        // the edge changes the page instead of clamping inside it.
+        const server = props.serverPagination;
+        if (server) {
+          const current = findings.findIndex((finding) => finding.fingerprint === selectedFingerprint);
+          const target = current === -1 ? (delta > 0 ? 0 : findings.length - 1) : current + delta;
+          if (target >= findings.length && server.page < server.pageCount - 1) {
+            server.setPage(server.page + 1);
+            return;
+          }
+          if (target < 0 && server.page > 0) {
+            server.setPage(server.page - 1);
+            return;
+          }
+        }
+        move(delta);
         return;
+      }
       default:
     }
   };

@@ -983,10 +983,82 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
         "stream_chat" | "research_cve" | "test_ai" | "test_ai_with" => {
             Err(disabled("The AI assistant is not available through the headless server yet; run the desktop app or the CLI for AI research."))
         }
-        "cancel_chat" | "steer_chat" | "todo_list" | "respond_permission"
-        | "respond_interaction" | "get_conversation_usage" | "get_total_usage" => {
-            Ok(Value::Null)
+        "cancel_chat" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                run_id: String,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::assistant::cancel_chat_inner(
+                &ctx.app, &a.run_id,
+            ))
         }
+        "steer_chat" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                run_id: String,
+                message: String,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::assistant::steer_chat_inner(
+                &ctx.app, &a.run_id, &a.message,
+            ))
+        }
+        "todo_list" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                conversation_id: String,
+            }
+            let a: Args = from_args(&args)?;
+            ok(crate::commands::assistant::todo_list_inner(
+                &ctx.app,
+                &a.conversation_id,
+            ))
+        }
+        "respond_permission" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                request_id: String,
+                approve: bool,
+            }
+            let a: Args = from_args(&args)?;
+            crate::commands::assistant::respond_permission_inner(&ctx.app, &a.request_id, a.approve);
+            ok(Value::Null)
+        }
+        "respond_interaction" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                request_id: String,
+                answers: Value,
+            }
+            let a: Args = from_args(&args)?;
+            crate::commands::assistant::respond_interaction_inner(
+                &ctx.app,
+                &a.request_id,
+                a.answers,
+            );
+            ok(Value::Null)
+        }
+        "get_conversation_usage" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                conversation_id: String,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::assistant::get_conversation_usage_inner(
+                &ctx.config_dir.join("usage.json"),
+                &a.conversation_id,
+            ))
+        }
+        "get_total_usage" => ok_st(crate::commands::assistant::get_total_usage_inner(
+            &ctx.config_dir.join("usage.json"),
+        )),
         "open_scan_finding" => Err(disabled(
             "Opening files in an editor requires the desktop app; copy the path instead.",
         )),
@@ -1090,4 +1162,55 @@ fn st_err(error: String) -> Value {
 
 fn ser_err<E: std::fmt::Display>(error: E) -> Value {
     Value::String(format!("result could not be serialized: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn test_context() -> (ServerContext, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let app = crate::commands::AppState::new();
+        let cve = crate::cve::CveState::new(app.http.clone());
+        let ctx = ServerContext {
+            app,
+            findings: crate::initialize_findings_state(&data_dir, chrono::Utc::now()),
+            cve,
+            rule_packs: crate::rulepack_store::RulePacksState::unavailable("test".into()),
+            schedules: crate::schedule_store::ScheduleState::unavailable("test".into()),
+            hub: Arc::new(crate::server::hub::EventHub::new()),
+            data_dir,
+            cache_dir: dir.path().join("cache"),
+            config_dir,
+            web_root: None,
+        };
+        (ctx, dir)
+    }
+
+    #[tokio::test]
+    async fn todo_list_returns_empty_list_in_server_mode() {
+        let (ctx, _dir) = test_context();
+        let result = dispatch(&ctx, "todo_list", serde_json::json!({ "conversationId": "c1" }))
+            .await
+            .expect("todo_list should succeed");
+        assert_eq!(result, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn steer_chat_returns_false_when_no_run_is_active() {
+        let (ctx, _dir) = test_context();
+        let result = dispatch(
+            &ctx,
+            "steer_chat",
+            serde_json::json!({ "runId": "run-1", "message": "keep going" }),
+        )
+        .await
+        .expect("steer_chat should succeed");
+        assert_eq!(result, serde_json::json!(false));
+    }
 }

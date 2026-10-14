@@ -580,6 +580,7 @@ export type RunPersistence =
 export type ErrorCode =
   | "baselineIncompatible"
   | "invalidTarget"
+  | "nothingToScan"
   | "scanCancelled"
   | "scanFailed"
   | "scanAlreadyRunning"

@@ -59,6 +59,12 @@ pub async fn stream_chat(
     let cancel = Arc::new(crate::agent::tool::RunCancellation::new());
     let steer = Arc::new(crate::agent::tool::SteerQueue::new());
     let project_root = capture_active_project(&state);
+    // Every fallible preparation happens before the run id is registered, so
+    // an early error cannot leak a registration a retry would collide with.
+    let usage_path = usage_path(&app)?;
+    let client = crate::ai::AiClient::new(state.http.clone());
+    let registry = crate::agent::tool::ToolRegistry::from_tools(crate::agent::tools::builtins());
+    let app2 = app.clone();
     {
         let mut active_chats = state.active_chats.lock().unwrap();
         if active_chats.contains_key(&run_id) {
@@ -72,10 +78,6 @@ pub async fn stream_chat(
             .insert(run_id.clone(), steer.clone());
     }
 
-    let client = crate::ai::AiClient::new(state.http.clone());
-    let registry = crate::agent::tool::ToolRegistry::from_tools(crate::agent::tools::builtins());
-    let app2 = app.clone();
-    let usage_path = usage_path(&app)?;
     let conversation_id = request.conversation_id.clone();
     let user_messages: Vec<Value> = request
         .messages
@@ -163,7 +165,11 @@ pub async fn stream_chat(
 /// Request cancellation of an in-flight chat stream.
 #[tauri::command]
 pub fn cancel_chat(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
-    if let Some(cancellation) = state.active_chats.lock().unwrap().get(&run_id) {
+    cancel_chat_inner(&state, &run_id)
+}
+
+pub(crate) fn cancel_chat_inner(state: &AppState, run_id: &str) -> Result<(), String> {
+    if let Some(cancellation) = state.active_chats.lock().unwrap().get(run_id) {
         cancellation.cancel();
     }
     Ok(())
@@ -178,13 +184,20 @@ pub fn todo_list(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<Vec<crate::agent::tools::TodoItem>, String> {
-    Ok(state
+    Ok(todo_list_inner(&state, &conversation_id))
+}
+
+pub(crate) fn todo_list_inner(
+    state: &AppState,
+    conversation_id: &str,
+) -> Vec<crate::agent::tools::TodoItem> {
+    state
         .todos
         .lock()
         .unwrap()
-        .get(&conversation_id)
+        .get(conversation_id)
         .cloned()
-        .unwrap_or_default())
+        .unwrap_or_default()
 }
 
 /// Queue a message for a turn that is already running.
@@ -198,11 +211,19 @@ pub fn steer_chat(
     run_id: String,
     message: String,
 ) -> Result<bool, String> {
+    steer_chat_inner(&state, &run_id, &message)
+}
+
+pub(crate) fn steer_chat_inner(
+    state: &AppState,
+    run_id: &str,
+    message: &str,
+) -> Result<bool, String> {
     let message = message.trim().to_string();
     if message.is_empty() {
         return Err("steer message must not be empty".into());
     }
-    if message.len() > MAX_STEER_CHARS {
+    if message.chars().count() > MAX_STEER_CHARS {
         return Err(format!(
             "steer message is too long (limit {MAX_STEER_CHARS} characters)"
         ));
@@ -212,7 +233,7 @@ pub fn steer_chat(
     // message: it is removed when the run tears down, and closed atomically
     // while empty just before the run finishes. No separate liveness check can
     // be as precise, because the run could finish between the two lookups.
-    match state.pending_steers.lock().unwrap().get(&run_id) {
+    match state.pending_steers.lock().unwrap().get(run_id) {
         Some(queue) => Ok(queue.push(message)),
         None => Ok(false),
     }
@@ -225,15 +246,19 @@ pub fn respond_permission(
     request_id: String,
     approve: bool,
 ) -> Result<(), String> {
+    respond_permission_inner(&state, &request_id, approve);
+    Ok(())
+}
+
+pub(crate) fn respond_permission_inner(state: &AppState, request_id: &str, approve: bool) {
     if let Some(tx) = state
         .pending_permissions
         .lock()
         .unwrap()
-        .remove(&request_id)
+        .remove(request_id)
     {
         let _ = tx.send(approve);
     }
-    Ok(())
 }
 
 /// Resolve a pending `ask_user` interaction with the user's answers.
@@ -243,15 +268,19 @@ pub fn respond_interaction(
     request_id: String,
     answers: Value,
 ) -> Result<(), String> {
+    respond_interaction_inner(&state, &request_id, answers);
+    Ok(())
+}
+
+pub(crate) fn respond_interaction_inner(state: &AppState, request_id: &str, answers: Value) {
     if let Some(tx) = state
         .pending_interactions
         .lock()
         .unwrap()
-        .remove(&request_id)
+        .remove(request_id)
     {
         let _ = tx.send(answers);
     }
-    Ok(())
 }
 
 #[tauri::command]
@@ -259,13 +288,24 @@ pub fn get_conversation_usage(
     app: AppHandle,
     conversation_id: String,
 ) -> Result<UsageSummary, String> {
-    let store = UsageStore::load(&usage_path(&app)?)?;
-    Ok(store.conversation_summary(&conversation_id))
+    get_conversation_usage_inner(&usage_path(&app)?, &conversation_id)
+}
+
+pub(crate) fn get_conversation_usage_inner(
+    usage_path: &std::path::Path,
+    conversation_id: &str,
+) -> Result<UsageSummary, String> {
+    let store = UsageStore::load(usage_path)?;
+    Ok(store.conversation_summary(conversation_id))
 }
 
 #[tauri::command]
 pub fn get_total_usage(app: AppHandle) -> Result<UsageSummary, String> {
-    let store = UsageStore::load(&usage_path(&app)?)?;
+    get_total_usage_inner(&usage_path(&app)?)
+}
+
+pub(crate) fn get_total_usage_inner(usage_path: &std::path::Path) -> Result<UsageSummary, String> {
+    let store = UsageStore::load(usage_path)?;
     Ok(store.total())
 }
 

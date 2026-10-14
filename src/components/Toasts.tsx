@@ -2,7 +2,8 @@ import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 import { useToastStore } from "../lib/stores";
 
 export function Toasts() {
-  const { toasts, dismiss } = useToastStore();
+  const toasts = useToastStore((state) => state.toasts);
+  const dismiss = useToastStore((state) => state.dismiss);
   if (toasts.length === 0) return null;
   return (
     <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-96 flex-col gap-2">

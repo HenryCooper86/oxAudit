@@ -4,16 +4,6 @@ import type { AiReadiness } from "./settingsRequests";
 import type { AppSettings, DependencyScanResult } from "./types";
 import type { AssistantHandoff, Page, WorkbenchStatus } from "./workbench";
 
-export interface RecentScan {
-  id: string;
-  kind: "source" | "deps";
-  path: string;
-  at: string;
-  findings: number;
-  critical: number;
-  high: number;
-}
-
 interface AppStore {
   page: Page;
   setPage: (p: Page) => void;
@@ -45,31 +35,9 @@ interface AppStore {
   assistantHandoff: AssistantHandoff | null;
   openAssistant: (handoff: AssistantHandoff) => void;
   clearAssistantHandoff: () => void;
-  recentScans: RecentScan[];
-  addRecentScan: (r: RecentScan) => void;
   pageStatus: Partial<Record<Page, WorkbenchStatus>>;
   setPageStatus: (page: Page, status: WorkbenchStatus) => void;
   clearPageStatus: (page: Page) => void;
-}
-
-const RECENT_KEY = "vc.recentScans";
-
-function loadRecent(): RecentScan[] {
-  try {
-    const value: unknown = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
-    if (!Array.isArray(value)) return [];
-    return value.filter((entry): entry is RecentScan => {
-      if (!entry || typeof entry !== "object") return false;
-      return typeof entry.id === "string" &&
-        (entry.kind === "source" || entry.kind === "deps") &&
-        typeof entry.path === "string" && typeof entry.at === "string" &&
-        [entry.findings, entry.critical, entry.high].every((count) =>
-          Number.isSafeInteger(count) && count >= 0,
-        );
-    }).slice(0, 12);
-  } catch {
-    return [];
-  }
 }
 
 export const useAppStore = create<AppStore>((set) => ({
@@ -119,20 +87,6 @@ export const useAppStore = create<AppStore>((set) => ({
   openAssistant: (assistantHandoff) =>
     set({ assistantHandoff, page: "assistant" }),
   clearAssistantHandoff: () => set({ assistantHandoff: null }),
-  recentScans: loadRecent(),
-  addRecentScan: (r) =>
-    set((s) => {
-      const recentScans = [
-        r,
-        ...s.recentScans.filter((x) => x.id !== r.id),
-      ].slice(0, 12);
-      try {
-        localStorage.setItem(RECENT_KEY, JSON.stringify(recentScans));
-      } catch {
-        /* ignore */
-      }
-      return { recentScans };
-    }),
   pageStatus: {},
   setPageStatus: (page, status) =>
     set((state) => ({ pageStatus: { ...state.pageStatus, [page]: status } })),

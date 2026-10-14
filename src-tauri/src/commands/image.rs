@@ -296,10 +296,11 @@ pub(crate) async fn cancellable_image<F: std::future::Future>(
 }
 
 #[tauri::command]
-pub fn cancel_image_scan(state: State<'_, AppState>) {
-    let _ = state
+pub fn cancel_image_scan(state: State<'_, AppState>) -> Result<(), String> {
+    state
         .scan_work
-        .cancel(None, &[crate::scan_work::WorkKind::Image]);
+        .cancel(None, &[crate::scan_work::WorkKind::Image])?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -164,10 +164,11 @@ pub(crate) async fn scan_dependencies_engine(
 }
 
 #[tauri::command]
-pub fn cancel_dependency_scan(state: State<'_, AppState>) {
-    let _ = state
+pub fn cancel_dependency_scan(state: State<'_, AppState>) -> Result<(), String> {
+    state
         .scan_work
-        .cancel(None, &[crate::scan_work::WorkKind::Dependencies]);
+        .cancel(None, &[crate::scan_work::WorkKind::Dependencies])?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -248,16 +249,9 @@ pub(crate) async fn binary_tool_status_engine(
     .await
     .map_err(|e| format!("tool detection failed: {e}"))?;
 
-    // cve-bin-tool is reachable if its chosen runtime is; grype needs no runtime.
-    let cve_bin_tool_usable = match runtime {
-        crate::binscan::runtime::Runtime::Native => cve_bin_tool.available,
-        crate::binscan::runtime::Runtime::Docker => docker.available,
-        crate::binscan::runtime::Runtime::Auto => cve_bin_tool.available || docker.available,
-    };
-
     // The native scanner is not probed: it is part of the binary and cannot be
-    // absent. `_usable` still feeds the per-tool display of the others.
-    let _ = cve_bin_tool_usable;
+    // absent, so `can_scan` is always true. The other tools report their own
+    // per-tool availability for display.
     let native = crate::binscan::detect::BinaryToolStatus::builtin(
         env!("CARGO_PKG_VERSION"),
         "Built in — no installation required. Reads component versions from strings, ELF package notes and byte patterns.",

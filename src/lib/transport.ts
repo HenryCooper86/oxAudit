@@ -212,6 +212,10 @@ export function sseListen<T>(
     if (sourceRefcount === 0) {
       source?.close();
       source = null;
+      // A late or idempotent unlisten must not find its entry and decrement
+      // the refcount past zero.
+      sourceRefcount = 0;
+      eventListeners.forEach((listeners) => listeners.clear());
       eventListeners.clear();
     }
   };

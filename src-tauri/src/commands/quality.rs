@@ -145,13 +145,21 @@ pub(crate) async fn refresh_data_source_inner(
     {
         return Err("provider response exceeded the 32 MiB safety limit".into());
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("{} response could not be read: {error}", definition.name))?;
-    if bytes.len() as u64 > MAX_PROVIDER_BYTES {
-        return Err("provider response exceeded the 32 MiB safety limit".into());
-    }
+    let bytes = {
+        use futures::StreamExt;
+
+        let mut body = Vec::new();
+        let mut chunks = response.bytes_stream();
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk
+                .map_err(|error| format!("{} response could not be read: {error}", definition.name))?;
+            body.extend_from_slice(&chunk);
+            if body.len() as u64 > MAX_PROVIDER_BYTES {
+                return Err("provider response exceeded the 32 MiB safety limit".into());
+            }
+        }
+        body
+    };
     // Exploit-DB is a CSV, not JSON. It is validated by the same parser the
     // scans use, and the refresh also updates the disk cache the exploit
     // signal reads, so a manual refresh here is the refresh a scan would do.
@@ -160,11 +168,18 @@ pub(crate) async fn refresh_data_source_inner(
         let set = crate::exploit::PoCSet::parse_csv(&text)
             .map_err(|error| format!("{} index is not a valid CSV: {error}", definition.name))?;
         if let Some(data_dir) = data_dir {
-            let _ = std::fs::create_dir_all(data_dir);
+            std::fs::create_dir_all(data_dir)
+                .map_err(|error| format!("{} cache could not be persisted: {error}", definition.name))?;
             let cache_path = crate::exploit::poc_cache_path(data_dir);
             let temporary = cache_path.with_extension("csv.tmp");
-            if std::fs::write(&temporary, &bytes).is_ok() {
-                let _ = std::fs::rename(&temporary, &cache_path);
+            std::fs::write(&temporary, &bytes)
+                .map_err(|error| format!("{} cache could not be persisted: {error}", definition.name))?;
+            if let Err(error) = std::fs::rename(&temporary, &cache_path) {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(format!(
+                    "{} cache could not be persisted: {error}",
+                    definition.name
+                ));
             }
         }
         Some(set.len() as u64)

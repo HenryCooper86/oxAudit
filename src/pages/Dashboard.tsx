@@ -21,7 +21,8 @@ const toolIcons = {
 };
 
 export function Dashboard() {
-  const { setPage, aiReadiness } = useAppStore();
+  const setPage = useAppStore((state) => state.setPage);
+  const aiReadiness = useAppStore((state) => state.aiReadiness);
   const aiAnnouncement = {
     loading: "AI assistant settings are loading.",
     checking: "AI assistant endpoint is being checked.",

@@ -1026,7 +1026,11 @@ pub fn cancel_scan_work(
 ) -> Result<bool, String> {
     let cancelled = state.scan_work.cancel(Some(&operation_id), &[])?;
     if cancelled {
-        let _ = app.emit("work://changed", state.scan_work.snapshot()?);
+        // The cancel already took effect; a failed snapshot must not turn
+        // this command into an error that invites a retry reporting `false`.
+        if let Ok(snapshot) = state.scan_work.snapshot() {
+            let _ = app.emit("work://changed", snapshot);
+        }
     }
     Ok(cancelled)
 }

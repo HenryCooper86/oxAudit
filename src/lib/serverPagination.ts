@@ -49,7 +49,7 @@ export function useServerPage<T, P extends ResultPage<T> = ResultPage<T>>(
     page: boundedPage, pageCount, pageSize, total, start, end: Math.min(start + pageSize, total),
     items: boundedPage === page ? data?.items ?? [] : [], data: boundedPage === page ? data : undefined,
     loading: Boolean(runId && !settled), error: settled?.error ?? null,
-    setPage: (next: number) => { if (owned?.total !== undefined) setPosition({ ...current, page: Math.max(0, Math.min(pageCount - 1, Math.trunc(next) || 0)) }); },
+    setPage: (next: number) => { setPosition({ ...current, page: Math.max(0, Math.min(pageCount - 1, Math.trunc(next) || 0)) }); },
     retry: () => setPosition({ ...current, retry: retry + 1 }),
   };
 }

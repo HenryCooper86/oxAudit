@@ -249,10 +249,11 @@ pub(crate) async fn scan_history_workflow(
 }
 
 #[tauri::command]
-pub fn cancel_history_scan(state: State<'_, AppState>) {
-    let _ = state
+pub fn cancel_history_scan(state: State<'_, AppState>) -> Result<(), String> {
+    state
         .scan_work
-        .cancel(None, &[crate::scan_work::WorkKind::History]);
+        .cancel(None, &[crate::scan_work::WorkKind::History])?;
+    Ok(())
 }
 
 #[cfg(test)]

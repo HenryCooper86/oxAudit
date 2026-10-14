@@ -41,12 +41,6 @@ export class SourceProjectLoader {
     return { context, run, runs };
   }
 
-  async refreshRuns(projectId: string): Promise<ScanRunSummary[] | null> {
-    const token = this.requests.begin();
-    const runs = await this.api.listSourceRuns(projectId, 50);
-    return this.requests.isCurrent(token) ? runs : null;
-  }
-
   invalidate(): void {
     this.requests.invalidate();
   }

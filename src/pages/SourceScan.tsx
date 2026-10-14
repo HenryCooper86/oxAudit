@@ -114,7 +114,6 @@ const DEFAULT_QUERY: ResultsQuery = {
 export function SourceScanPage(): JSX.Element {
   const settings = useAppStore((state) => state.settings);
   const settingsLoadError = useAppStore((state) => state.settingsLoadError);
-  const addRecentScan = useAppStore((state) => state.addRecentScan);
   const publishActiveProject = useAppStore((state) => state.setActiveProject);
   const ownRuntimeUpdate = useRef(false);
   const pathEdited = useRef(false);
@@ -226,19 +225,6 @@ export function SourceScanPage(): JSX.Element {
           return;
         }
         unlisteners.push(progressUnlisten);
-
-        const doneUnlisten = await listen<ScanProgress>("scan://done", (event) => {
-          const active = useScanWorkStore.getState().active;
-          const parsed = phaseProgress(event.payload, ["walking", "scanning", "exploitation-signal"]);
-          if (!disposed && parsed && active?.owner === "source" && !active.terminalStatus && parsed.operationId === active.operationId) {
-            setProgress(parsed as ScanProgress);
-          }
-        });
-        if (disposed) {
-          doneUnlisten();
-          return;
-        }
-        unlisteners.push(doneUnlisten);
       } catch {
         release();
         // The event bridge is unavailable in browser-only checks.
@@ -461,17 +447,6 @@ export function SourceScanPage(): JSX.Element {
         detail: `${result.summary.totalFindings} findings`,
       });
 
-      if (result.status === "completed" && result.persistence.status === "saved") {
-        addRecentScan({
-          id: result.runId,
-          kind: "source",
-          path: target,
-          at: result.completedAt ?? new Date().toISOString(),
-          findings: result.summary.totalFindings,
-          critical: result.summary.critical,
-          high: result.summary.high,
-        });
-      }
       push(
         result.persistence.status === "saved" ? "success" : "info",
         result.persistence.status === "saved"
@@ -718,9 +693,9 @@ export function SourceScanPage(): JSX.Element {
         push("info", "The review was saved, but project totals could not be refreshed.");
       }
     } catch (error) {
-      setReviewError(normalizeCommandError(error));
+      if (generation === runLoadGenerationRef.current) setReviewError(normalizeCommandError(error));
     } finally {
-      setSavingReview(false);
+      if (generation === runLoadGenerationRef.current) setSavingReview(false);
     }
   };
 
@@ -748,10 +723,10 @@ export function SourceScanPage(): JSX.Element {
       }
     } catch (error) {
       const normalized = normalizeCommandError(error);
-      setReviewError(normalized);
+      if (generation === runLoadGenerationRef.current) setReviewError(normalized);
       push("error", `The decision could not be reset: ${normalized.message}`);
     } finally {
-      setSavingReview(false);
+      if (generation === runLoadGenerationRef.current) setSavingReview(false);
     }
   };
 
@@ -826,9 +801,9 @@ export function SourceScanPage(): JSX.Element {
       restoreMetadata(refreshed);
       setReviewAnnouncement(`${outcome.recorded.length} reviews recorded.`);
     } catch (error) {
-      setReviewError(normalizeCommandError(error));
+      if (generation === runLoadGenerationRef.current) setReviewError(normalizeCommandError(error));
     } finally {
-      setBulkSaving(false);
+      if (generation === runLoadGenerationRef.current) setBulkSaving(false);
     }
   };
   const selectedFinding =

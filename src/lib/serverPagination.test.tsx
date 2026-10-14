@@ -49,6 +49,20 @@ test('loading pagination announces the pending page without presenting metadata 
   expect(screen.getByRole('button', { name: 'Last page of findings' })).toBeDisabled();
 });
 
+test('a failed first page with only a total hint still issues the requested page load', async () => {
+  const load = vi.fn(async (_: string, query: ResultPageQuery) => {
+    if (query.offset === 0) throw new Error('First page unavailable');
+    return page(['second'], 300, 50);
+  });
+  const hook = renderHook(() => useServerPage<string>('run', {}, load, 300));
+  await waitFor(() => expect(hook.result.current.error).toBe('First page unavailable'));
+  expect(hook.result.current.pageCount).toBe(6);
+  act(() => hook.result.current.setPage(1));
+  await waitFor(() => expect(hook.result.current.items).toEqual(['second']));
+  expect(load.mock.calls.map(([, query]) => query.offset)).toEqual([0, 50]);
+  expect(hook.result.current.error).toBeNull();
+});
+
 test('a failed deep page can navigate back using the retained authoritative total', async () => {
   const load = vi.fn(async (_: string, query: ResultPageQuery) => {
     if (query.offset === 100) throw new Error('Page unavailable');

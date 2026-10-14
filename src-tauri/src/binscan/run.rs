@@ -235,20 +235,49 @@ pub async fn execute(
     let status = loop {
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill().await;
+            // Join the readers so the pipes are fully drained and nothing the
+            // scanner already wrote is stranded in a detached task.
+            if let Some(task) = stderr_task {
+                let _ = task.await;
+            }
+            if let Some(task) = stdout_task {
+                let _ = task.await;
+            }
             return Err("scan cancelled".into());
         }
         if started.elapsed() > timeout {
             let _ = child.kill().await;
-            return Err(format!(
+            if let Some(task) = stderr_task {
+                let _ = task.await;
+            }
+            if let Some(task) = stdout_task {
+                let _ = task.await;
+            }
+            let stderr_tail = tail.lock().unwrap().join("\n");
+            let message = format!(
                 "{} did not finish within {} seconds",
                 prepared.program,
                 timeout.as_secs()
-            ));
+            );
+            return Err(if stderr_tail.trim().is_empty() {
+                message
+            } else {
+                format!("{message}:\n{stderr_tail}")
+            });
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => tokio::time::sleep(Duration::from_millis(200)).await,
-            Err(e) => return Err(format!("{} could not be monitored: {e}", prepared.program)),
+            Err(e) => {
+                let _ = child.kill().await;
+                if let Some(task) = stderr_task {
+                    let _ = task.await;
+                }
+                if let Some(task) = stdout_task {
+                    let _ = task.await;
+                }
+                return Err(format!("{} could not be monitored: {e}", prepared.program));
+            }
         }
     };
 

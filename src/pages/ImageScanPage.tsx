@@ -62,8 +62,9 @@ export function ImageScanPage() {
     void readSavedScanReceipt<ImageScanOutcome>("image", target.trim(), recent?.runId).then(saved => {
       if (!mounted.current || generation !== receiptRequest.current) return;
       setAttempt(saved.attempt);
-      if (saved.loadError) setError(`Saved image evidence could not be loaded: ${saved.loadError}`);
+      if (saved.loadError && !saved.data) setError(`Saved image evidence could not be loaded: ${saved.loadError}`);
       if (saved.data) {
+        setError(null);
         setOutcome(saved.data);
         setReceipt(saved.receipt);
         setLayerTotal(saved.sections.layers ?? 0);

@@ -780,6 +780,7 @@ impl FindingsService {
             // Workers only retain one bounded outcome each. The shared collector
             // enforces the run limit as findings are produced, before later files run.
             let aggregate = std::sync::Mutex::new((Vec::new(), Vec::new(), None));
+            let panicked_files = std::sync::Mutex::new(Vec::<String>::new());
             let stopped = AtomicBool::new(false);
             collection.files.par_iter().for_each(|file| {
                 if stopped.load(Ordering::Relaxed) {
@@ -793,15 +794,20 @@ impl FindingsService {
                     .project_relative_path
                     .to_string_lossy()
                     .replace('\\', "/");
-                let outcome = scanners::scan_file_in_project_with_packs(
-                    &file.canonical_path,
-                    &relative,
-                    options.max_file_size_kb.max(1),
-                    options.scan_secrets,
-                    options.scan_vulnerabilities,
-                    &project_config,
-                    packs,
-                );
+                // The scanners parse untrusted input; a panicking file must be
+                // skipped, not abort the run and poison the collector for
+                // every file still waiting on it.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    scanners::scan_file_in_project_with_packs(
+                        &file.canonical_path,
+                        &relative,
+                        options.max_file_size_kb.max(1),
+                        options.scan_secrets,
+                        options.scan_vulnerabilities,
+                        &project_config,
+                        packs,
+                    )
+                }));
                 let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
                 if done % 25 == 0 || done == total {
                     let _ = events.emit(
@@ -809,7 +815,19 @@ impl FindingsService {
                         serde_json::json!({"total": total, "done": done, "phase": "scanning"}),
                     );
                 }
-                let mut aggregate = aggregate.lock().expect("source collector not poisoned");
+                let outcome = match outcome {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        panicked_files
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .push(format!("{relative}: scanner panicked; file skipped"));
+                        return;
+                    }
+                };
+                let mut aggregate = aggregate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if aggregate.2.is_some() {
                     return;
                 }
@@ -838,9 +856,18 @@ impl FindingsService {
             }
             let (mut findings, mut coverage_entries, limit_error) = aggregate
                 .into_inner()
-                .expect("source collector not poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(error) = limit_error {
                 return Err(error);
+            }
+            for message in panicked_files
+                .into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+            {
+                managed_run
+                    .as_mut()
+                    .expect("managed run exists until terminal handling")
+                    .warning("source_file_panic", message);
             }
             coverage_entries.sort_by(|a, b| a.0.cmp(&b.0));
             if cancel.load(Ordering::Relaxed) {

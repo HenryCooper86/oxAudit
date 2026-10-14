@@ -47,7 +47,6 @@ function previewFromResult(result: DependencyScanResult): LockfilePreview[] {
 type FailedOperation = "discovery" | "check";
 
 export function DepsScanPage() {
-  const addRecentScan = useAppStore((state) => state.addRecentScan);
   const publishActiveProject = useAppStore((state) => state.setActiveProject);
   const ownRuntimeUpdate = useRef(false);
   const activeWork = useScanWorkStore(state => state.active);
@@ -344,15 +343,6 @@ export function DepsScanPage() {
         label: `Dependencies checked · ${scanResult.summary.vulnerabilitiesFound} vulnerabilities`,
         tone: "success",
       });
-      addRecentScan({
-        id: `deps-${Date.now()}`,
-        kind: "deps",
-        path,
-        at: new Date().toISOString(),
-        findings: scanResult.summary.vulnerabilitiesFound,
-        critical: scanResult.vulnerabilities.filter((vulnerability) => vulnerability.severity === "critical").length,
-        high: scanResult.vulnerabilities.filter((vulnerability) => vulnerability.severity === "high").length,
-      });
       push(
         "success",
         `Dependency scan complete — ${scanResult.summary.vulnerabilitiesFound} vulnerabilities across ${scanResult.summary.packagesQueried} packages`,
@@ -413,7 +403,7 @@ export function DepsScanPage() {
   const savedHigh = useCanonicalCount(receipt?.id ?? null, "high");
   const visibleVulns = receipt ? savedVulns.items : filteredVulns;
   const vulnerabilityTotal = receipt ? savedVulnerabilityTotal : vulns.length;
-  const decisionAdvisory = receipt && completeDecisions?.runId === receipt.id ? completeDecisions.data.vulnerabilities.find(v => vulnerabilityKey(v) === selectedKey) : null;
+  const decisionAdvisory = completeDecisions?.data ? completeDecisions.data.vulnerabilities.find(v => vulnerabilityKey(v) === selectedKey) : null;
   const selected = visibleVulns.find((v) => vulnerabilityKey(v) === selectedKey) ?? (!savedVulns.loading && !savedVulns.error && !query ? decisionAdvisory : null) ?? visibleVulns[0] ?? null;
   const hasExplicitSelection = selectedKey !== null && selected !== null && vulnerabilityKey(selected) === selectedKey;
   const loadCompleteDecisions = async () => {
