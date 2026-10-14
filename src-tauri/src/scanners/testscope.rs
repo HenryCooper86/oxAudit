@@ -20,12 +20,17 @@
 //!   unittest actually collect on.
 //! * **Go** — `func TestXxx(t *testing.T)`, requiring the `testing` parameter
 //!   rather than trusting the name.
+//! * **PHP** — PHPUnit's two collection forms: methods named `test*` and
+//!   methods carrying the `#[Test]` attribute.
+//! * **Ruby** — Minitest's `def test_*` and RSpec's `describe`/`context`/
+//!   `it`/`specify` block calls, requiring an actual block.
 //!
 //! JavaScript and TypeScript are deliberately absent. `describe`/`it`/`test`
 //! are ordinary identifiers that a non-test file may legitimately define, and
 //! the path rules already catch `.test.ts`, `.spec.ts`, and `__tests__/`. The
 //! marginal recall was not worth a rule that could hide a real finding in
-//! application code.
+//! application code. Ruby's block calls survive this bar only because the
+//! `block` field is required: a bare `describe` with no block is not matched.
 
 use std::ops::Range;
 
@@ -63,6 +68,11 @@ fn is_test_region(node: Node<'_>, content: &str, language: &str) -> bool {
         "java" => java_test_member(node, content),
         "python" => python_test_definition(node, content),
         "go" => go_test_function(node, content),
+        "php" => php_test_method(node, content),
+        "ruby" => ruby_test_construct(node, content),
+        // c/cpp/csharp/kotlin/swift have no single framework-enforced idiom
+        // this layer can prove, so they stay on path classification alone —
+        // the same default as JavaScript above.
         _ => false,
     }
 }
@@ -173,6 +183,67 @@ fn go_test_function(node: Node<'_>, content: &str) -> bool {
         .is_some_and(|parameters| parameters.contains("testing."))
 }
 
+/// A PHPUnit method: named `test*` or carrying the `#[Test]` attribute.
+///
+/// PHPUnit collects both forms, and both are method-level — the class itself
+/// stays production code so a helper method in `FooTest` is not silenced.
+fn php_test_method(node: Node<'_>, content: &str) -> bool {
+    if node.kind() != "method_declaration" {
+        return false;
+    }
+    let named_for_phpunit = node
+        .child_by_field_name("name")
+        .map(|name| text(name, content))
+        .is_some_and(|name| name.starts_with("test"));
+    if named_for_phpunit {
+        return true;
+    }
+    // `#[Test]` sits in an `attributes` field as attribute_list →
+    // attribute_group → attribute, and only the attribute's name matters.
+    let Some(attributes) = node.child_by_field_name("attributes") else {
+        return false;
+    };
+    let mut stack = vec![attributes];
+    while let Some(current) = stack.pop() {
+        if current.kind() == "attribute"
+            && current
+                .child(0)
+                .is_some_and(|name| text(name, content) == "Test")
+        {
+            return true;
+        }
+        let mut cursor = current.walk();
+        for child in current.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+/// Minitest's `def test_*` and RSpec's `describe`/`context`/`it`/`specify`
+/// block calls.
+///
+/// A block call without a block is an ordinary method call, so the `block`
+/// field is required — `describe` on its own proves nothing.
+fn ruby_test_construct(node: Node<'_>, content: &str) -> bool {
+    match node.kind() {
+        "method" => node
+            .child_by_field_name("name")
+            .map(|name| text(name, content))
+            .is_some_and(|name| name.starts_with("test_")),
+        "call" => {
+            node.child_by_field_name("block").is_some()
+                && node
+                    .child_by_field_name("method")
+                    .map(|method| text(method, content))
+                    .is_some_and(|method| {
+                        ["describe", "context", "it", "specify"].contains(&method)
+                    })
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::scanners::syntax;
@@ -265,10 +336,68 @@ mod tests {
     }
 
     #[test]
+    fn phpunit_naming_marks_a_php_method() {
+        let source = concat!(
+            "<?php\n",
+            "class FooTest extends TestCase {\n",
+            "    public function testItWorks() { $k = 'ghp_x'; }\n",
+            "    public function helper() { $k = 'ghp_y'; }\n",
+            "}\n",
+        );
+        assert!(in_test_region(source, "php", "ghp_x"));
+        assert!(!in_test_region(source, "php", "ghp_y"));
+    }
+
+    #[test]
+    fn phpunit_attribute_marks_a_php_method() {
+        let source = concat!(
+            "<?php\n",
+            "class FooTest extends TestCase {\n",
+            "    #[Test]\n",
+            "    public function itWorks(): void { $k = 'ghp_x'; }\n",
+            "}\n",
+        );
+        assert!(in_test_region(source, "php", "ghp_x"));
+    }
+
+    #[test]
+    fn minitest_naming_marks_a_ruby_method() {
+        let source = "def test_login\n  token = 'ghp_x'\nend\ndef login\n  x = 'ghp_y'\nend\n";
+        assert!(in_test_region(source, "ruby", "ghp_x"));
+        assert!(!in_test_region(source, "ruby", "ghp_y"));
+    }
+
+    #[test]
+    fn rspec_block_calls_mark_a_ruby_region() {
+        let source = concat!(
+            "describe 'auth' do\n",
+            "  it 'works' do\n",
+            "    k = 'ghp_x'\n",
+            "  end\n",
+            "end\n",
+            "specify 'thing' do\n",
+            "  s = 'ghp_y'\n",
+            "end\n",
+            "context 'scope' do\n",
+            "  c = 'ghp_z'\n",
+            "end\n",
+        );
+        assert!(in_test_region(source, "ruby", "ghp_x"));
+        assert!(in_test_region(source, "ruby", "ghp_y"));
+        assert!(in_test_region(source, "ruby", "ghp_z"));
+    }
+
+    #[test]
+    fn a_bare_ruby_call_without_a_block_is_not_a_test_region() {
+        let source = "it 'works'\nk = 'ghp_x'\n";
+        assert!(!in_test_region(source, "ruby", "ghp_x"));
+    }
+
+    #[test]
     fn a_language_without_a_grammar_reports_nothing() {
         let source = "# [cfg(test)]\nsecret = 'ghp_x'\n";
-        assert!(syntax::parse(source, "ruby")
-            .test_regions(source, "ruby")
+        assert!(syntax::parse(source, "brainfuck")
+            .test_regions(source, "brainfuck")
             .is_empty());
     }
 }

@@ -26,7 +26,7 @@ import { Button, Switch } from "../components/ui";
 import { RunTimeline } from "../features/runs/RunTimeline";
 import { dependencyEvidence, EvidenceSummary } from "../features/runs/EvidenceSummary";
 
-import { vulnerabilityKey } from "../features/dependencies/decisions";
+import { upgradeGroups, vulnerabilityKey } from "../features/dependencies/decisions";
 import { UpgradeDecisions } from "../features/dependencies/UpgradeDecisions";
 type LockfilePreview = Omit<LockfileInfo, "packages"> & { packages: number | null };
 function previewFromResult(result: DependencyScanResult): LockfilePreview[] {
@@ -774,6 +774,7 @@ function AdvisoryDetail({
   vulnerability: Vulnerability;
   onOpenReference: (reference: string) => Promise<void>;
 }): JSX.Element {
+  const fixCandidate = upgradeGroups([vulnerability]).map((group) => group.candidate).find((candidate) => candidate !== null) ?? null;
   return (
     <article className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -874,8 +875,12 @@ function AdvisoryDetail({
             <p className="text-text-muted">No aliases reported.</p>
           )}
         </DetailSection>
-        <DetailSection label="Advisory-reported fixed versions">
-          {vulnerability.fixedVersions.length > 0 ? (
+        {fixCandidate ? (
+          <DetailSection label="Recommended fix">
+            <p className="font-mono text-text-primary">Fix: upgrade to {fixCandidate}</p>
+          </DetailSection>
+        ) : vulnerability.fixedVersions.length > 0 ? (
+          <DetailSection label="Advisory-reported fixed versions">
             <div className="flex flex-wrap gap-1.5">
               {vulnerability.fixedVersions.map((version) => (
                 <span key={version} className="rounded-sm border border-success-border bg-success-subtle px-1.5 py-0.5 font-mono text-[11px] text-success">
@@ -883,10 +888,8 @@ function AdvisoryDetail({
                 </span>
               ))}
             </div>
-          ) : (
-            <p className="text-warning">No fixed version supplied by this advisory.</p>
-          )}
-        </DetailSection>
+          </DetailSection>
+        ) : null}
         {vulnerability.references.length > 0 && (
           <DetailSection label="References">
             <div className="flex flex-wrap gap-1.5">

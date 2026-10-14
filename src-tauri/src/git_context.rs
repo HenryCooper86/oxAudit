@@ -419,6 +419,15 @@ pub fn snapshot(target: &Path) -> Result<GitSnapshot, String> {
     discover(target)?.0.snapshot()
 }
 
+/// Resolve the repository root containing `target`, with the same hardened
+/// discovery and cleared environment as context inspection. The staged-index
+/// scan and the hook installer need the checkout root without paying for a
+/// full context snapshot.
+pub(crate) fn repo_root(target: &Path) -> Result<PathBuf, String> {
+    let (git, _) = discover(target)?;
+    Ok(git.root)
+}
+
 pub fn inspect(target: &Path, reference: &str) -> Result<GitContext, String> {
     let (git, prefix) = discover(target)?;
     let before = git.snapshot()?;

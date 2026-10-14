@@ -1,0 +1,63 @@
+{
+  "name": "oxaudit-vscode",
+  "displayName": "oxAudit",
+  "description": "Static security scanning for your workspace, powered by the oxAudit CLI",
+  "version": "0.1.0",
+  "publisher": "oxaudit",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Security"
+  ],
+  "activationEvents": [
+    "onCommand:oxaudit.scanWorkspace",
+    "onCommand:oxaudit.clearDiagnostics",
+    "workspaceContains:**/*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "oxaudit.scanWorkspace",
+        "title": "Scan Workspace",
+        "category": "oxAudit",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "oxaudit.clearDiagnostics",
+        "title": "Clear Findings",
+        "category": "oxAudit"
+      }
+    ],
+    "configuration": {
+      "title": "oxAudit",
+      "properties": {
+        "oxaudit.cliPath": {
+          "type": "string",
+          "default": "oxaudit-cli",
+          "description": "Path to the oxaudit-cli executable (resolved from PATH by default)."
+        },
+        "oxaudit.scanOnOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run a scan once when a workspace folder is opened."
+        },
+        "oxaudit.maxFindings": {
+          "type": "number",
+          "default": 500,
+          "description": "Maximum number of findings published as diagnostics per scan."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "@types/vscode": "^1.85.0"
+  }
+}

@@ -843,7 +843,7 @@ fn rule_severity(rule_id: Option<&str>) -> Option<&'static str> {
 /// SARIF has no "critical", so critical and high both become `error`. Losing
 /// that distinction in `level` is why the original severity is also carried in
 /// `properties.severity`.
-fn sarif_level(severity: Option<&str>) -> &'static str {
+pub(crate) fn sarif_level(severity: Option<&str>) -> &'static str {
     match severity {
         Some("critical") | Some("high") => "error",
         Some("medium") | Some("low") => "warning",

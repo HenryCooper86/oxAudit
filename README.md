@@ -127,7 +127,10 @@ scan coverage remain **not evaluated**.
 Git path modes select findings in all files, changes since a chosen base (using
 the merge base), staged paths, or unstaged/untracked paths. Every scan still reads
 the full working tree. Staged paths include current working-tree content, including
-unstaged edits to partially staged files; oxAudit does not scan index contents.
+unstaged edits to partially staged files; these GUI modes do not scan index
+contents. The one deliberate exception is `oxaudit-cli scan --staged`: a
+pre-commit gate reads exactly what the commit will contain, so it scans the
+staged index blobs themselves.
 The panel separates the run’s captured revision from the current checkout and
 shows scanned/skipped coverage. Old runs show revision unavailable. Git context
 expires on focus changes or after a minute; refresh after editing or staging.
@@ -226,6 +229,9 @@ with a reason, an expiry, and a pull request.
 | **Standards and verification** | Preview and export oxAudit JSON, SARIF 2.1.0, CycloneDX 1.6 (including the dependency graph, with edges emitted only where relationship evidence exists — npm lockfile declaration chains — never an empty array that would claim "depends on nothing" — and declared licenses: read straight from npm lockfiles, and during online dependency scans from the measured registries — PyPI, crates.io, RubyGems, Packagist, and Maven Central POMs — bounded at 500 packages per run; Go and NuGet have no single-request license source and stay unknown, stated rather than guessed), SPDX 2.3, OpenVEX, and CycloneDX VEX. Preview bounded imports with conflict/unmapped records, import SBOM inventory separately, and retain strictly mapped SARIF/VEX assertions as immutable `external-unverified` claims that cannot alter local findings or reviews. Independent verification records bind a separate verifier to an immutable input hash |
 | **Compliance readiness and reports** | GUI-first evidence checks for ISO 26262, ISO/SAE 21434, UNECE R155/R156, GDPR, CCPA/CPRA, NIST Privacy Framework, ISO/IEC 27001, OWASP Top 10:2021, and SOC 2 Trust Services Criteria; append-only qualified reviews; and professional JSON, CSV, Markdown, self-contained HTML, and paginated PDF reports. Readiness is never presented as certification or legal conformity |
 | **Dashboard** | At-a-glance stats, quick actions, recent scan history |
+| **Pre-commit secrets gate** | `oxaudit-cli scan --staged` scans the staged index blobs — exactly what the commit will contain, not the working tree — and blocks the commit on high-severity secrets by default; `oxaudit-cli hook install` wires it into `.git/hooks/pre-commit` without clobbering an existing hook |
+| **CI annotations** | Under GitHub Actions the CLI annotates findings on the pull request's files automatically and appends a severity-table job summary — no inputs, no extra step; SARIF upload to code scanning stays available and opt-in |
+| **Editor integration** | A VS Code extension ([`editors/vscode/`](editors/vscode)) scans the open workspace with the same CLI and reports findings as native diagnostics, with severity mapping and a status-bar scan control |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
 | **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, shipped in the same container image ([ADR 0004](docs/architecture/adr/0004-headless-server.md)) |
 
@@ -340,6 +346,18 @@ oxaudit-cli scan . --rule-pack rulepack.e2e --rule-pack-db packs.sqlite3
 # of pack.toml + fixtures. Same validation as a hand install; disabled packs
 # stay disabled across updates.
 oxaudit-cli rule-pack update --db packs.sqlite3 --feed https://example.com/oxaudit/feed/index.json
+
+# Pre-commit push protection: scan what is actually staged (index content,
+# not the working tree) and block the commit on secrets. Unlike plain scans,
+# --staged fails on high-or-above findings by default.
+oxaudit-cli scan --staged
+
+# Install the pre-commit hook that runs exactly that. Idempotent; appends to
+# an existing hook without touching its contents, and uninstall removes only
+# oxAudit's marked block.
+oxaudit-cli hook install
+oxaudit-cli hook status
+oxaudit-cli hook uninstall
 ```
 
 Rule packs resolve before any scanning starts: an invalid pack file is a
@@ -432,13 +450,16 @@ schema 1 envelope stay unchanged. Older projections default relationships/range
 proof to unknown and require a manual decision.
 
 A combined candidate must be an advisory-reported fixed version that clears every
-supplied supported range and explicit affected-version list. Numeric npm `SEMVER`
-ranges support sorted, disjoint introduced/fixed intervals, inclusive `last_affected`,
-and exclusive `limit` boundaries. Other ecosystems/range types, prereleases, ambiguous
-versions and historical flattened strings stay manual. Patch/minor/major labels
-classify only the version change; neither a fixed string nor this proof establishes
-that a release exists or is compatible. A last-affected/limit boundary alone does
-not supply a fixed-release candidate.
+supplied supported range and explicit affected-version list. Comparison follows
+each ecosystem's own ordering — npm/crates.io/Go-style `SEMVER`, PyPI's PEP 440,
+Maven qualifiers, RubyGems segments, NuGet revisions, and Debian policy
+epoch/upstream/revision — ported from the same comparator the advisory database
+uses. Ecosystems whose ranges or versions cannot be compared with certainty stay
+manual, as do ambiguous versions and historical flattened strings. A candidate is
+the lowest advisory-reported fixed version strictly above the installed one.
+Patch/minor/major labels classify only the version change; neither a fixed string
+nor this proof establishes that a release exists or is compatible. A
+last-affected/limit boundary alone does not supply a fixed-release candidate.
 
 Copyable npm commands are limited to precisely identified direct runtime/dev/optional
 declarations with supported numeric specs and complete relationship evidence. They
@@ -464,6 +485,24 @@ scanning, so findings appear inline in pull requests and in the Security tab —
 opt-in because repositories without that capability would fail the step. oxAudit's
 own [self-scan](.github/workflows/self-scan.yml) retains downloadable SARIF on
 every completed scan; its publication uses the same variable.
+
+When `oxaudit-cli scan` runs under GitHub Actions it also annotates findings
+directly on the pull request's files (`::error`/`::warning`/`::notice` workflow
+commands on stderr, so stdout stays a clean report) and appends a markdown
+severity table plus per-file finding list to the job summary. Both are automatic
+whenever `GITHUB_ACTIONS` is set — the [composite action](action/action.yml)
+needs no extra inputs — and annotation paths are rewritten relative to the
+repository root, so scanning a subdirectory still lands annotations on the right
+files.
+
+### In the editor
+
+A VS Code extension ships in [`editors/vscode/`](editors/vscode). It shells out to
+the installed `oxaudit-cli scan <workspace> --format json` — the published,
+versioned, offline seam — and turns findings into native diagnostics with the
+same severities the GUI uses, plus a status-bar scan control and optional
+scan-on-open. Diagnostics link findings to their rule ids, so the editor, the
+desktop app, and CI report the same finding three ways.
 
 ## Detection quality
 

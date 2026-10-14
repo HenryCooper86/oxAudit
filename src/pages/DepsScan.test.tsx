@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { DepsScanPage } from "./DepsScan";
+import type { DependencyScanResult, Vulnerability } from "../lib/types";
 import { api } from "../lib/api";
 import { useAppStore } from "../lib/stores";
 import { reconcileBackendWork, useScanWorkStore } from "../features/project-home/coordinator";
@@ -55,4 +56,46 @@ test('malformed owned native progress cannot replace the current phase or crash 
   const progress = screen.getByRole('region', { name: 'Scan progress' });
   expect(progress).toHaveTextContent('1 of 3 lockfiles');
   expect(progress).not.toHaveTextContent('invented');
+});
+
+test("advisory detail promotes a proven ecosystem candidate to a recommended fix", async () => {
+  const pypi: Vulnerability = {
+    id: "GHSA-pypi", aliases: [], summary: "PyPI advisory", details: "detail", severity: "high",
+    cvssScore: 7, epss: null, epssPercentile: null, knownExploited: false, ransomware: false, publicExploit: false,
+    directUsage: { referenced: null, referencedFiles: 0, exampleFile: null },
+    ecosystem: "PyPI", packageName: "leaf", installedVersion: "1.0.0", fixedVersions: ["1.0.1"],
+    affectedRange: null, references: [], published: null, modified: null, lockfile: "/repo/Pipfile.lock",
+    occurrence: { installPath: "site-packages/leaf", status: "available", warnings: [], paths: [{ workspace: "", entryPoint: "leaf", chain: [{ name: "leaf", packageName: "leaf", installPath: "site-packages/leaf", dependencyType: "runtime", declared: "==1.0.0" }] }] },
+    affectedEvidence: { ecosystem: "PyPI", packageName: "leaf", records: [{ package: { ecosystem: "PyPI", name: "leaf" }, ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "1.0.1" }] }] }] },
+  };
+  const result: DependencyScanResult = {
+    summary: { path: "/repo", lockfilesFound: ["/repo/Pipfile.lock"], packagesFound: 1, packagesQueried: 1, vulnerabilitiesFound: 1, durationMs: 0 },
+    dependencies: [],
+    vulnerabilities: [pypi],
+  };
+  useAppStore.getState().openProject("/repo", "deps-scan", undefined, result);
+  render(<DepsScanPage />);
+  expect(await screen.findByText("Fix: upgrade to 1.0.1")).toBeInTheDocument();
+});
+
+test("advisory detail keeps raw fixed-version chips when no candidate is proven", async () => {
+  const legacy: Vulnerability = {
+    id: "GHSA-none", aliases: [], summary: "advisory without range evidence", details: "detail", severity: "medium",
+    cvssScore: null, epss: null, epssPercentile: null, knownExploited: false, ransomware: false, publicExploit: false,
+    directUsage: { referenced: null, referencedFiles: 0, exampleFile: null },
+    ecosystem: "npm", packageName: "leaf", installedVersion: "1.0.0", fixedVersions: ["2.0.0"],
+    affectedRange: null, references: [], published: null, modified: null, lockfile: "/repo/package-lock.json",
+    occurrence: { installPath: "node_modules/leaf", status: "available", warnings: [], paths: [] },
+    affectedEvidence: null,
+  };
+  const result: DependencyScanResult = {
+    summary: { path: "/repo", lockfilesFound: ["/repo/package-lock.json"], packagesFound: 1, packagesQueried: 1, vulnerabilitiesFound: 1, durationMs: 0 },
+    dependencies: [],
+    vulnerabilities: [legacy],
+  };
+  useAppStore.getState().openProject("/repo", "deps-scan", undefined, result);
+  render(<DepsScanPage />);
+  expect(await screen.findByText("Advisory-reported fixed versions")).toBeInTheDocument();
+  expect((await screen.findAllByText("2.0.0")).length).toBeGreaterThan(0);
+  expect(screen.queryByText(/^Fix: upgrade to/)).not.toBeInTheDocument();
 });

@@ -22,6 +22,7 @@
 
 pub mod baseline;
 mod dependency_baseline;
+mod staged;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -105,6 +106,12 @@ enum Command {
     },
     /// List the language grammars compiled into this binary.
     Languages,
+    /// Install, remove, or inspect the oxaudit pre-commit hook, which scans
+    /// the staged git index for secrets before a commit lands.
+    Hook {
+        #[command(subcommand)]
+        command: HookCommand,
+    },
     /// Score against the OWASP Benchmark: ground truth oxAudit did not write.
     ExternalBenchmark(ExternalBenchmarkArgs),
 }
@@ -220,6 +227,19 @@ enum RulePackCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum HookCommand {
+    /// Write (or idempotently refresh) the oxaudit block in
+    /// .git/hooks/pre-commit, preserving any hook already there.
+    Install,
+    /// Remove the oxaudit block from the pre-commit hook, leaving the rest
+    /// of the hook — and the file, when anything else remains — untouched.
+    Uninstall,
+    /// Report whether the oxaudit pre-commit hook is installed and the exact
+    /// command it runs.
+    Status,
+}
+
 #[derive(Args, Debug)]
 struct ImportArgs {
     /// Report file: SARIF 2.1.0, OpenVEX, or CycloneDX VEX.
@@ -317,8 +337,19 @@ enum AdvisoryDbCommand {
 
 #[derive(Args, Debug)]
 struct ScanArgs {
-    /// Directory to scan.
-    path: PathBuf,
+    /// Directory to scan. With --staged it is only used to locate the
+    /// repository and defaults to the current directory.
+    #[arg(required_unless_present = "staged")]
+    path: Option<PathBuf>,
+
+    /// Scan the staged git index — the content a commit would record — for
+    /// secrets, instead of the working tree. This is the one mode that reads
+    /// index blobs; normal scans never do. In memory only, so --format is
+    /// limited to text and json, and --fail-on defaults to high because
+    /// every secret rule fires at high severity. Intended for pre-commit
+    /// hooks; see `oxaudit hook`.
+    #[arg(long)]
+    staged: bool,
 
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -329,8 +360,10 @@ struct ScanArgs {
     output: Option<PathBuf>,
 
     /// Exit 1 when a finding at this severity or higher is reported.
-    #[arg(long, value_enum, default_value_t = FailOn::None)]
-    fail_on: FailOn,
+    /// Defaults to none — reporting should not break a build — except with
+    /// --staged, where the default is high.
+    #[arg(long, value_enum)]
+    fail_on: Option<FailOn>,
 
     /// A previous `--format json` report to compare against.
     ///
@@ -716,6 +749,7 @@ pub fn run() -> i32 {
         Command::Import(args) => run_import(args),
         Command::Vex { command } => run_vex(command),
         Command::Languages => run_languages(),
+        Command::Hook { command } => staged::run_hook(command),
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
     };
 
@@ -1168,9 +1202,20 @@ fn run_advisory_db(command: &AdvisoryDbCommand, quiet: bool) -> CliResult {
 }
 
 fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
-    if !args.path.is_dir() {
-        return Err(usage(format!("{} is not a directory", args.path.display())));
+    // Staged mode reads the git index, never the working tree — a different
+    // evidence surface with its own rendering and gating path.
+    if args.staged {
+        return staged::run_staged(args, quiet);
     }
+    let path = match args.path.as_deref() {
+        Some(path) => path,
+        // clap enforces the positional unless --staged, so this is unreachable.
+        None => return Err(usage("scan needs a directory to scan")),
+    };
+    if !path.is_dir() {
+        return Err(usage(format!("{} is not a directory", path.display())));
+    }
+    let fail_on = args.fail_on.unwrap_or(FailOn::None);
     if args.no_secrets && args.no_patterns {
         return Err(usage(
             "--no-secrets and --no-patterns together leave nothing to scan",
@@ -1202,7 +1247,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     let service = FindingsService::new(repository);
 
     let mut options = ScanOptions {
-        path: args.path.to_string_lossy().into_owned(),
+        path: path.to_string_lossy().into_owned(),
         include_git: args.include_git,
         follow_symlinks: args.follow_symlinks,
         max_file_size_kb: args.max_file_size.max(1),
@@ -1214,7 +1259,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     };
 
     if !quiet {
-        eprintln!("Scanning {}", args.path.display());
+        eprintln!("Scanning {}", path.display());
     }
 
     let http = build_http_client()?;
@@ -1314,9 +1359,15 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
 
     write_output(args.output.as_deref(), &rendered)?;
 
-    if let Some(path) = &args.db {
+    // GitHub integration is environment-gated: workflow annotations go to
+    // stderr and the job summary is appended to its file only under Actions,
+    // so local runs and piped stdout are untouched.
+    emit_github_annotations(&detail.findings, path);
+    write_step_summary(&render_summary_markdown(summary, &detail.findings), quiet);
+
+    if let Some(db_path) = &args.db {
         if !quiet {
-            eprintln!("Run {} saved to {}", detail.run_id, path.display());
+            eprintln!("Run {} saved to {}", detail.run_id, db_path.display());
         }
     }
 
@@ -1338,7 +1389,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
             .iter()
             .filter(|finding| gates_the_build(finding))
             .map(|finding| severity_rank(&finding.severity)),
-        args.fail_on,
+        fail_on,
         quiet,
     );
 
@@ -2119,23 +2170,26 @@ fn build_http_client() -> Result<reqwest::Client, CliError> {
 // ------------------------------------------------------------------ renderers
 
 fn render_findings_text(detail: &crate::findings::domain::ScanRunDetail) -> Vec<u8> {
-    use std::collections::BTreeMap;
+    render_scan_text(&detail.summary, &detail.findings)
+}
+
+/// The shared text rendering: summary header, findings grouped by file,
+/// severity counts at the end. `scan --staged` renders through this too, so
+/// a leak looks identical whether it was found in the tree or in the index.
+fn render_scan_text(
+    summary: &crate::models::ScanSummary,
+    findings: &[crate::models::Finding],
+) -> Vec<u8> {
     use std::fmt::Write as _;
 
     let mut out = String::new();
-    let summary = &detail.summary;
 
-    if detail.findings.is_empty() {
+    if findings.is_empty() {
         let _ = writeln!(out, "No findings in {} file(s).", summary.files_scanned);
         return out.into_bytes();
     }
 
-    let mut by_file: BTreeMap<&str, Vec<&crate::models::Finding>> = BTreeMap::new();
-    for finding in &detail.findings {
-        by_file.entry(&finding.file_path).or_default().push(finding);
-    }
-
-    for (file, mut findings) in by_file {
+    for (file, mut findings) in findings_by_file(findings) {
         findings.sort_by_key(|finding| (finding.line, finding.column));
         let _ = writeln!(out, "\n{file}");
         for finding in findings {
@@ -2159,14 +2213,172 @@ fn render_findings_text(detail: &crate::findings::domain::ScanRunDetail) -> Vec<
     let _ = writeln!(
         out,
         "\n{} finding(s): {} critical, {} high, {} medium, {} low, {} info",
-        summary.total_findings,
-        summary.critical,
-        summary.high,
-        summary.medium,
-        summary.low,
-        summary.info
+        summary.total_findings, summary.critical, summary.high, summary.medium,
+        summary.low, summary.info
     );
     out.into_bytes()
+}
+
+/// Group findings by their file, sorted by path — the grouping both the text
+/// report and the GitHub job summary use.
+fn findings_by_file(
+    findings: &[crate::models::Finding],
+) -> std::collections::BTreeMap<&str, Vec<&crate::models::Finding>> {
+    let mut by_file: std::collections::BTreeMap<&str, Vec<&crate::models::Finding>> =
+        std::collections::BTreeMap::new();
+    for finding in findings {
+        by_file
+            .entry(finding.file_path.as_str())
+            .or_default()
+            .push(finding);
+    }
+    by_file
+}
+
+// --------------------------------------------------------- github integration
+
+/// Escape a workflow-command message: `%`, CR, and LF would otherwise corrupt
+/// the command or inject a second one.
+fn escape_github_message(value: &str) -> String {
+    value
+        .replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+}
+
+/// Escape a workflow-command property value: the message escapes, plus `:`
+/// and `,`, which terminate and split the property list.
+fn escape_github_property(value: &str) -> String {
+    escape_github_message(value)
+        .replace(':', "%3A")
+        .replace(',', "%2C")
+}
+
+/// One annotation line in GitHub's workflow-command format. Pure, so the
+/// exact wire format is testable without standing up a runner. The severity
+/// mapping reuses the SARIF one — the two formats grade severity the same
+/// way, and "note" is what GitHub calls SARIF's level too, just spelled
+/// "notice".
+fn github_annotation(finding: &crate::models::Finding, file: &str) -> String {
+    let command = match reporting::sarif_level(Some(&finding.severity)) {
+        "error" => "error",
+        "warning" => "warning",
+        _ => "notice",
+    };
+    format!(
+        "::{command} file={},line={},col={},title={}::{}",
+        escape_github_property(file),
+        finding.line,
+        finding.column,
+        escape_github_property(&finding.rule_id),
+        escape_github_message(&finding.title),
+    )
+}
+
+/// Finding paths are scan-root-relative; GitHub annotates
+/// repo-root-relative paths. When GITHUB_WORKSPACE contains the scan root,
+/// prefix the difference; when it cannot be determined, emit paths as-is.
+fn github_workspace_prefix(scan_root: &Path) -> String {
+    let Some(workspace) = std::env::var_os("GITHUB_WORKSPACE") else {
+        return String::new();
+    };
+    let (Ok(workspace), Ok(root)) = (
+        std::fs::canonicalize(workspace),
+        scan_root.canonicalize(),
+    ) else {
+        return String::new();
+    };
+    let Ok(relative) = root.strip_prefix(&workspace) else {
+        return String::new();
+    };
+    if relative.as_os_str().is_empty() {
+        String::new()
+    } else {
+        format!("{}/", relative.to_string_lossy().replace('\\', "/"))
+    }
+}
+
+/// Emit one GitHub workflow annotation per finding, on stderr — stdout stays
+/// clean for the report, whatever --format selected.
+fn emit_github_annotations(findings: &[crate::models::Finding], scan_root: &Path) {
+    if std::env::var_os("GITHUB_ACTIONS").is_none() {
+        return;
+    }
+    let prefix = github_workspace_prefix(scan_root);
+    for finding in findings {
+        eprintln!(
+            "{}",
+            github_annotation(finding, &format!("{prefix}{}", finding.file_path))
+        );
+    }
+}
+
+/// A Markdown job summary: heading, severity table, then the same per-file
+/// grouping the text report uses.
+fn render_summary_markdown(
+    summary: &crate::models::ScanSummary,
+    findings: &[crate::models::Finding],
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "## oxAudit scan summary\n");
+    let _ = writeln!(
+        out,
+        "{} file(s) scanned, {} skipped, in {} ms.\n",
+        summary.files_scanned, summary.files_skipped, summary.duration_ms
+    );
+    let _ = writeln!(out, "| Severity | Findings |");
+    let _ = writeln!(out, "| --- | ---: |");
+    for (label, count) in [
+        ("Critical", summary.critical),
+        ("High", summary.high),
+        ("Medium", summary.medium),
+        ("Low", summary.low),
+        ("Info", summary.info),
+    ] {
+        let _ = writeln!(out, "| {label} | {count} |");
+    }
+    if findings.is_empty() {
+        let _ = writeln!(out, "\nNo findings.");
+    } else {
+        let _ = writeln!(out, "\n### Findings");
+        for (file, mut findings) in findings_by_file(findings) {
+            findings.sort_by_key(|finding| (finding.line, finding.column));
+            let _ = writeln!(out, "\n`{file}`");
+            for finding in findings {
+                let _ = writeln!(
+                    out,
+                    "- {}:{} **{}** {} (`{}`)",
+                    finding.line,
+                    finding.column,
+                    finding.severity.to_uppercase(),
+                    finding.title,
+                    finding.rule_id,
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Append the job summary to $GITHUB_STEP_SUMMARY when a runner provides one.
+/// Appending matters: several steps share the file. A summary that fails to
+/// write warns on stderr but never fails the scan itself.
+fn write_step_summary(markdown: &str, quiet: bool) {
+    let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") else {
+        return;
+    };
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(markdown.as_bytes()));
+    if let Err(error) = result {
+        if !quiet {
+            eprintln!("warning: could not write the GitHub step summary: {error}");
+        }
+    }
 }
 
 fn render_deps_text(
@@ -2738,5 +2950,124 @@ mod tests {
             panic!("expected scan");
         };
         assert_eq!(args.max_file_size.max(1), 1);
+    }
+
+    fn test_finding(severity: &str, rule_id: &str, title: &str, file: &str) -> crate::models::Finding {
+        crate::models::Finding {
+            id: "test".into(),
+            category: "secret".into(),
+            rule_id: rule_id.into(),
+            rule_name: rule_id.into(),
+            severity: severity.into(),
+            title: title.into(),
+            description: String::new(),
+            file_path: file.into(),
+            line: 3,
+            column: 7,
+            match_text: String::new(),
+            context: String::new(),
+            language: String::new(),
+            cwe: None,
+            cwe_exploited: false,
+            cwe_exploited_count: 0,
+            recommendation: String::new(),
+            entropy: None,
+            verified: None,
+            analysis: crate::models::AnalysisTier::Text,
+            analysis_gates: Vec::new(),
+            in_test_region: false,
+            observation_run_id: String::new(),
+            resolved_by_run_id: None,
+            fingerprint_version: 0,
+            fingerprint: String::new(),
+            scope: None,
+            scope_reason: None,
+            review: None,
+            review_history: Vec::new(),
+            diff_status: None,
+        }
+    }
+
+    #[test]
+    fn workflow_commands_escape_properties_and_messages_by_their_own_rules() {
+        // `%`, CR, LF everywhere; `:` and `,` additionally in properties.
+        assert_eq!(escape_github_message("100%\r\nx:y,z"), "100%25%0D%0Ax:y,z");
+        assert_eq!(
+            escape_github_property("100%\r\nx:y,z"),
+            "100%25%0D%0Ax%3Ay%2Cz"
+        );
+    }
+
+    #[test]
+    fn annotations_follow_the_workflow_command_wire_format() {
+        let finding = test_finding("high", "aws:key", "AWS key 100%\nlive", "src/a,b.rs");
+        assert_eq!(
+            github_annotation(&finding, "src/a,b.rs"),
+            "::error file=src/a%2Cb.rs,line=3,col=7,title=aws%3Akey::AWS key 100%25%0Alive"
+        );
+        // The SARIF grading carries over: medium warns, info notices.
+        assert!(github_annotation(&test_finding("medium", "r", "t", "f"), "f")
+            .starts_with("::warning "));
+        assert!(github_annotation(&test_finding("info", "r", "t", "f"), "f")
+            .starts_with("::notice "));
+    }
+
+    #[test]
+    fn the_job_summary_counts_severities_and_groups_by_file() {
+        let findings = vec![
+            test_finding("high", "aws-access-key", "AWS key", "src/app.rb"),
+            test_finding("medium", "weak-random", "Weak RNG", "src/lib.rs"),
+        ];
+        let summary = crate::models::ScanSummary {
+            coverage_warnings: Vec::new(),
+            git_context: None,
+            path: ".".into(),
+            files_scanned: 2,
+            files_skipped: 0,
+            bytes_scanned: 42,
+            duration_ms: 5,
+            secrets_found: 1,
+            vulnerabilities_found: 1,
+            total_findings: 2,
+            critical: 0,
+            high: 1,
+            medium: 1,
+            low: 0,
+            info: 0,
+            rules_fired: std::collections::BTreeMap::new(),
+        };
+        let markdown = render_summary_markdown(&summary, &findings);
+        assert!(markdown.contains("## oxAudit scan summary"));
+        assert!(markdown.contains("| High | 1 |"));
+        assert!(markdown.contains("| Medium | 1 |"));
+        assert!(markdown.contains("| Critical | 0 |"));
+        assert!(markdown.contains("`src/app.rb`"));
+        assert!(markdown.contains("`src/lib.rs`"));
+        assert!(markdown.contains("- 3:7 **HIGH** AWS key (`aws-access-key`)"));
+    }
+
+    #[test]
+    fn the_job_summary_says_so_when_there_is_nothing_to_say() {
+        let summary = crate::models::ScanSummary {
+            coverage_warnings: Vec::new(),
+            git_context: None,
+            path: ".".into(),
+            files_scanned: 3,
+            files_skipped: 1,
+            bytes_scanned: 10,
+            duration_ms: 1,
+            secrets_found: 0,
+            vulnerabilities_found: 0,
+            total_findings: 0,
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            info: 0,
+            rules_fired: std::collections::BTreeMap::new(),
+        };
+        let markdown = render_summary_markdown(&summary, &[]);
+        assert!(markdown.contains("No findings."));
+        assert!(!markdown.contains("### Findings"));
     }
 }
