@@ -71,6 +71,33 @@ ghcr.io/henrycooper86/oxaudit scan /workspace --format sarif`.
 - Events ride one SSE stream; a client that falls behind is told what it
   missed (`hub://lagged`) rather than silently resuming.
 
+## Browser import/export
+
+Export Center uses explicit paths on the server; desktop mode keeps native file
+dialogs. In a container, use paths visible inside the container, with the
+appropriate volume mounted. These controls do not upload or download files.
+
+1. Enter **Report file on server**, then choose **Inspect report**. Inspect the
+   format, inventory, external claims, warnings and SHA-256 before importing.
+   Choose **Import separate inventory** or **Retain external claims** when the
+   preview supports that action. External claims remain `external-unverified`;
+   they do not overwrite local findings or reviews.
+2. Editing the import path clears its approval, including changing away and
+   back to the same path. Inspect it again. If the file's contents change after
+   inspection, import fails with a request to preview again.
+3. Select a saved run and format. Enter **Export file on server**, including its
+   extension, then choose **Save to server**. The destination parent must exist
+   and be writable. Saving replaces an existing file; the success status names
+   the destination. The saved report is complete even when its preview is
+   truncated to 1 MiB.
+
+Prefer absolute paths such as `/data/reports/run.json`; paths do not expand
+`~` or environment variables. Missing files, malformed reports and unwritable
+destinations produce visible errors. Correct the path or file and retry.
+Pending actions cannot be submitted twice. Changing run, format or destination
+while a desktop save dialog is pending invalidates that save; an already
+submitted write retains its captured run, format and destination.
+
 ## Saved inventory
 
 Inventory lists completed Dependency, Binary, Image, Firmware and Import runs

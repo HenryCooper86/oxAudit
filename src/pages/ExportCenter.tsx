@@ -1,10 +1,11 @@
 import { CheckCircle2, Download, FileJson, ShieldAlert, TriangleAlert, Upload } from "lucide-react";
 import { open, save } from "../lib/dialog";
-import { useEffect, useMemo, useState, type JSX } from "react";
-import { Button, Select } from "../components/ui";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { Button, Input, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { serverMode } from "../lib/transport";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { CanonicalRun, ExportFormat, ExportPreview, ImportPreview } from "../lib/types";
 
@@ -31,12 +32,47 @@ export function ExportCenterPage(): JSX.Element {
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [serverExportPath, setServerExportPath] = useState("");
+  const [savedPath, setSavedPath] = useState<string | null>(null);
+  const [exportWorking, setExportWorking] = useState(false);
+  const exportRevision = useRef(0);
+  const importRevision = useRef(0);
+  const exportBusy = useRef(false);
+  const importBusy = useRef(false);
+  const mounted = useRef(true);
+
+  const invalidateExport = () => {
+    exportRevision.current += 1;
+    setError(null);
+    setSavedPath(null);
+  };
+
+  const selectRun = (id: string) => {
+    invalidateExport();
+    setRunId(id);
+  };
+
+  const changeImportPath = (path: string) => {
+    importRevision.current += 1;
+    setImportPath(path);
+    setImportPreview(null);
+    setImportError(null);
+  };
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      exportRevision.current += 1;
+      importRevision.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     const applyHandoff = () => {
       const handoff = useAppStore.getState().exportHandoff;
       if (handoff) {
-        setRunId(handoff.runId);
+        selectRun(handoff.runId);
         useAppStore.setState({ exportHandoff: null });
       }
     };
@@ -66,6 +102,7 @@ export function ExportCenterPage(): JSX.Element {
       return;
     }
     setLoading(true);
+    setPreview(null);
     setError(null);
     void api.previewRunExport(runId, format).then((next) => {
       if (!disposed) setPreview(next);
@@ -82,78 +119,101 @@ export function ExportCenterPage(): JSX.Element {
 
   const selectedFormat = useMemo(() => FORMATS.find((item) => item.id === format)!, [format]);
   const exportFile = async () => {
-    if (!preview) return;
+    if (!preview || loading || exportBusy.current || (serverMode && !serverExportPath.trim())) return;
+    exportBusy.current = true;
+    const requestedRevision = ++exportRevision.current;
+    const requestedRun = runId;
+    const requestedFormat = format;
+    const requestedLabel = selectedFormat.label;
+    const requestedPath = serverExportPath.trim();
+    setExportWorking(true);
     setError(null);
+    setSavedPath(null);
     try {
-      const destination = await save({
+      const destination = serverMode ? requestedPath : await save({
         defaultPath: preview.suggestedFileName,
-        filters: [{ name: selectedFormat.label, extensions: [selectedFormat.id.endsWith("-csv") ? "csv" : "json"] }],
+        filters: [{ name: requestedLabel, extensions: [requestedFormat.endsWith("-csv") ? "csv" : "json"] }],
       });
-      if (!destination) return;
-      await api.writeRunExport(runId, format, destination);
-      push("success", `Saved ${selectedFormat.label}`);
+      if (!destination || requestedRevision !== exportRevision.current) return;
+      // Once submitted, a write retains its captured run, format and destination.
+      await api.writeRunExport(requestedRun, requestedFormat, destination);
+      if (mounted.current) {
+        if (requestedRevision === exportRevision.current) setSavedPath(destination);
+        push("success", `Saved ${requestedLabel} to ${destination}`);
+      }
     } catch (cause) {
-      setError(String(cause));
-      push("error", "The export could not be saved");
+      if (requestedRevision === exportRevision.current) {
+        setError(String(cause));
+        push("error", "The export could not be saved");
+      }
+    } finally {
+      exportBusy.current = false;
+      if (mounted.current) setExportWorking(false);
     }
   };
 
   const chooseImport = async () => {
+    if (importBusy.current || (serverMode && !importPath.trim())) return;
+    importBusy.current = true;
+    const requestedRevision = ++importRevision.current;
+    const requestedPath = importPath.trim();
+    setImportLoading(true);
+    setImportError(null);
     try {
-      const selected = await open({
+      const selected = serverMode ? requestedPath : await open({
         multiple: false,
         directory: false,
         filters: [{ name: "Security report", extensions: ["json", "sarif", "spdx", "cdx"] }],
       });
-      if (!selected || Array.isArray(selected)) return;
+      if (!selected || Array.isArray(selected) || requestedRevision !== importRevision.current) return;
       setImportPath(selected);
       setImportPreview(null);
-      setImportError(null);
-      setImportLoading(true);
-      setImportPreview(await api.previewReportImport(selected));
+      const result = await api.previewReportImport(selected);
+      if (requestedRevision === importRevision.current) setImportPreview(result);
     } catch (cause) {
-      setImportError(String(cause));
+      if (requestedRevision === importRevision.current) setImportError(String(cause));
     } finally {
-      setImportLoading(false);
+      importBusy.current = false;
+      if (mounted.current) setImportLoading(false);
     }
   };
 
-  const importInventory = async () => {
-    if (!importPreview || !importPath) return;
+  const importReport = async (kind: "inventory" | "external") => {
+    if (!importPreview || !importPath || importBusy.current) return;
+    importBusy.current = true;
+    const requestedRevision = ++importRevision.current;
+    const requestedPath = importPath;
+    const expectedSha256 = importPreview.contentSha256;
+    const componentRecords = importPreview.componentRecords;
+    const mappedClaimCount = importPreview.mappedClaimCount;
     setImportLoading(true);
     setImportError(null);
     try {
-      const importedRun = await api.importInventoryReport(importPath, importPreview.contentSha256);
-      setRuns((current) => current ? [importedRun, ...current.filter((run) => run.id !== importedRun.id)] : [importedRun]);
-      push("success", `Imported ${importPreview.componentRecords} components as a separate durable run`);
+      const importedRun = kind === "inventory"
+        ? await api.importInventoryReport(requestedPath, expectedSha256)
+        : await api.importExternalReport(requestedPath, expectedSha256);
+      if (mounted.current) {
+        setRuns((current) => [importedRun, ...(current ?? []).filter((run) => run.id !== importedRun.id)]);
+        setRunId((current) => current || importedRun.id);
+        push("success", kind === "inventory"
+          ? `Imported ${componentRecords} components from ${requestedPath} as a separate durable run`
+          : `Retained ${mappedClaimCount} mapped claims from ${requestedPath} with external-unverified trust`);
+      }
     } catch (cause) {
-      setImportError(String(cause));
-      push("error", "The inventory was not imported");
+      if (requestedRevision === importRevision.current) {
+        setImportError(String(cause));
+        push("error", kind === "inventory" ? "The inventory was not imported" : "The external claims were not imported");
+      }
     } finally {
-      setImportLoading(false);
-    }
-  };
-
-  const importExternalClaims = async () => {
-    if (!importPreview || !importPath) return;
-    setImportLoading(true);
-    setImportError(null);
-    try {
-      const importedRun = await api.importExternalReport(importPath, importPreview.contentSha256);
-      setRuns((current) => current ? [importedRun, ...current.filter((run) => run.id !== importedRun.id)] : [importedRun]);
-      push("success", `Retained ${importPreview.mappedClaimCount} mapped claims with external-unverified trust`);
-    } catch (cause) {
-      setImportError(String(cause));
-      push("error", "The external claims were not imported");
-    } finally {
-      setImportLoading(false);
+      importBusy.current = false;
+      if (mounted.current) setImportLoading(false);
     }
   };
 
   return (
     <ToolPage
       title="Export Center"
-      description="Choose saved evidence, preview exactly what leaves oxAudit, validate the format, and save it locally. Incomplete or failed receipts retain their coverage state."
+      description="Choose saved evidence, preview exactly what leaves oxAudit, validate the format, and save the complete report. Incomplete or failed receipts retain their coverage state."
     >
       <section className="rounded-sm border border-border bg-surface-secondary p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -161,8 +221,37 @@ export function ExportCenterPage(): JSX.Element {
             <h2 className="text-[13px] font-semibold text-text-primary">Import and conflict preview</h2>
             <p className="mt-1 text-[12px] leading-relaxed text-text-muted">Inspect bounded oxAudit JSON, SARIF, CycloneDX, SPDX, or OpenVEX before anything is persisted. SBOM components can be imported into a separate immutable run; VEX and SARIF never overwrite local findings or reviews.</p>
           </div>
-          <Button type="button" onClick={() => void chooseImport()} variant="outline" size="md" disabled={importLoading}><Upload size={13} aria-hidden="true" />{importLoading ? "Inspecting…" : "Choose report…"}</Button>
+          <div className="flex min-w-0 flex-wrap items-end gap-2">
+            {serverMode && (
+              <label className="min-w-0 flex-1 text-[12px] text-text-secondary">
+                Report file on server
+                <Input
+                  className="mt-1"
+                  value={importPath}
+                  onChange={(event) => changeImportPath(event.target.value)}
+                  placeholder="/data/inventory.json"
+                  aria-describedby="import-server-path-help"
+                />
+              </label>
+            )}
+            <Button
+              type="button"
+              onClick={() => void chooseImport()}
+              variant="outline"
+              size="md"
+              disabled={importLoading || (serverMode && !importPath.trim())}
+            >
+              <Upload size={13} aria-hidden="true" />
+              {importLoading ? "Inspecting…" : serverMode ? "Inspect report" : "Choose report…"}
+            </Button>
+          </div>
         </div>
+        {serverMode && (
+          <p id="import-server-path-help" className="mt-2 text-[11px] text-text-muted">
+            Enter a report path on the server, not your browser's computer. Inspect it before importing;
+            changing the path requires a new preview. Import verifies the inspected file's SHA-256.
+          </p>
+        )}
         {importError && <div className="mt-3"><InlineState compact tone="error" title="Import preview failed" description={importError} /></div>}
         {importPreview && (
           <div className="mt-3 overflow-hidden rounded-sm border border-border bg-surface-primary">
@@ -173,10 +262,10 @@ export function ExportCenterPage(): JSX.Element {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {importPreview.canImportInventory && (
-                  <Button type="button" onClick={() => void importInventory()} variant="primary" size="md" disabled={importLoading}><Upload size={13} aria-hidden="true" />Import separate inventory</Button>
+                  <Button type="button" onClick={() => void importReport("inventory")} variant="primary" size="md" disabled={importLoading}><Upload size={13} aria-hidden="true" />Import separate inventory</Button>
                 )}
                 {importPreview.canImportExternalClaims && (
-                  <Button type="button" onClick={() => void importExternalClaims()} variant="outline" size="md" disabled={importLoading}><ShieldAlert size={13} aria-hidden="true" />Retain external claims</Button>
+                  <Button type="button" onClick={() => void importReport("external")} variant="outline" size="md" disabled={importLoading}><ShieldAlert size={13} aria-hidden="true" />Retain external claims</Button>
                 )}
                 {!importPreview.canImportInventory && !importPreview.canImportExternalClaims && (
                 <span className="inline-flex items-center gap-1 text-[11px] text-warning"><ShieldAlert size={13} aria-hidden="true" />Preview only—mapping required</span>
@@ -216,24 +305,50 @@ export function ExportCenterPage(): JSX.Element {
       <section className="rounded-sm border border-border bg-surface-secondary p-4">
         <div className="grid gap-4 min-[760px]:grid-cols-2">
           <label className="text-[12px] text-text-secondary">Saved run
-            <Select className="mt-1 w-full" value={runId} onChange={(event) => setRunId(event.target.value)} disabled={!runs?.length && !runId}>
+            <Select className="mt-1 w-full" value={runId} onChange={(event) => selectRun(event.target.value)} disabled={!runs?.length && !runId}>
               {runId && !runs?.some(run => run.id === runId) && <option value={runId}>Selected saved run · {runId}</option>}
               {(runs ?? []).map((run) => <option key={run.id} value={run.id}>{run.kind} · {run.targetLabel} · {run.state} · {new Date(run.updatedAtMs).toLocaleString()}</option>)}
             </Select>
           </label>
           <label className="text-[12px] text-text-secondary">Format
-            <Select className="mt-1 w-full" value={format} onChange={(event) => setFormat(event.target.value as ExportFormat)}>
+            <Select className="mt-1 w-full" value={format} onChange={(event) => {
+              invalidateExport();
+              setPreview(null);
+              setFormat(event.target.value as ExportFormat);
+            }}>
               {FORMATS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
             </Select>
           </label>
         </div>
         <p className="mt-3 text-[12px] leading-relaxed text-text-muted">{selectedFormat.description}</p>
+        {serverMode && (
+          <div className="mt-4">
+            <label className="block text-[12px] text-text-secondary">
+              Export file on server
+              <Input
+                className="mt-1"
+                value={serverExportPath}
+                onChange={(event) => {
+                  invalidateExport();
+                  setServerExportPath(event.target.value);
+                }}
+                placeholder={preview ? `/data/${preview.suggestedFileName}` : "/data/report.json"}
+                aria-describedby="export-server-path-help"
+              />
+            </label>
+            <p id="export-server-path-help" className="mt-2 text-[11px] text-text-muted">
+              Enter the full file path on the server, including the extension. The destination folder
+              must exist. Saving replaces an existing file at this path; it does not download to your browser.
+            </p>
+          </div>
+        )}
       </section>
 
       {!runs && !error && <InlineState tone="running" title="Loading durable runs" />}
       {runs?.length === 0 && !runId && <InlineState tone="empty" title="No saved canonical runs are available yet" description="Run a Source, Dependency, Binary, Image, or History scan first." />}
       {loading && <InlineState tone="running" compact title="Generating and validating preview" />}
       {error && <InlineState tone="error" title="Export is unavailable" description={error} />}
+      {savedPath && <p role="status" className="break-all text-[12px] text-success">Saved export to {savedPath}</p>}
       {preview && !loading && (
         <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
@@ -243,7 +358,10 @@ export function ExportCenterPage(): JSX.Element {
             </div>
             <div className="flex items-center gap-3">
               <span className="inline-flex items-center gap-1 text-[11px] text-success"><CheckCircle2 size={12} aria-hidden="true" />Structure valid</span>
-              <Button type="button" onClick={() => void exportFile()} variant="primary" size="md"><Download size={13} aria-hidden="true" />Save export…</Button>
+              <Button type="button" onClick={() => void exportFile()} variant="primary" size="md" disabled={exportWorking || (serverMode && !serverExportPath.trim())}>
+                <Download size={13} aria-hidden="true" />
+                {exportWorking ? "Saving…" : serverMode ? "Save to server" : "Save export…"}
+              </Button>
             </div>
           </header>
           {preview.warnings.map((warning) => <p key={warning} className="flex items-start gap-2 border-b border-warning-subtle bg-warning-subtle px-4 py-2 text-[11px] text-text-secondary"><TriangleAlert size={13} aria-hidden="true" className="mt-0.5 shrink-0" />{warning}</p>)}
