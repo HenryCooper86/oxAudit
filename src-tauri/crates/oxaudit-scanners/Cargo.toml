@@ -15,7 +15,7 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 thiserror = "2"
-toml = "0.8"
+toml = "1.1"
 object = { version = "0.36", default-features = false, features = ["read_core", "elf", "macho", "pe", "std"] }
 
 [dev-dependencies]
