@@ -17,6 +17,7 @@ import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { normalizeCommandError } from "../lib/commandError";
 import { resolveRuntimeProject } from "../lib/assistantSessions";
 import { latestCompletedRun, normalizedTarget } from "../lib/durableRuns";
 import { fmtDate } from "../lib/format";
@@ -45,6 +46,7 @@ function previewFromResult(result: DependencyScanResult): LockfilePreview[] {
   }));
 }
 type FailedOperation = "discovery" | "check";
+type HistoryStatus = "loading" | "ready" | "empty" | "error";
 
 export function DepsScanPage() {
   const publishActiveProject = useAppStore((state) => state.setActiveProject);
@@ -85,6 +87,10 @@ export function DepsScanPage() {
   const [operationState, setOperationState] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failedOperation, setFailedOperation] = useState<FailedOperation | null>(null);
+  // Status publication reads the latest attempt without making errors trigger
+  // another history request during explicit discovery or its retry.
+  const preserveOperationStatus = useRef(false);
+  preserveOperationStatus.current = Boolean(operationState || error);
   const [phase, setPhase] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ operationId?: string; phase: string; done?: number; total?: number } | null>(null);
   const [progressBridgeAvailable, setProgressBridgeAvailable] = useState<boolean | null>(null);
@@ -93,11 +99,15 @@ export function DepsScanPage() {
   const [offline, setOffline] = useState(false);
   const [useAdvisoryDb, setUseAdvisoryDb] = useState(false);
   const [advisoryDbPath, setAdvisoryDbPath] = useState("");
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [advisoryLookup, setAdvisoryLookup] = useState<{ status: "loading" | "error"; error: string | null } | null>(null);
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const discoveryRequestRef = useRef(0);
   const pathRequestRef = useRef(0);
   const historyRequestRef = useRef(0);
+  const advisoryLookupRef = useRef(0);
   const scanInvocationRef = useRef<{ ownership: number; requestId: number } | null>(null);
   const ownsCurrentInvocation = useCallback(() => {
     const invocation = scanInvocationRef.current;
@@ -115,29 +125,44 @@ export function DepsScanPage() {
       setReceipt(null);
       setAttempt(null);
       setPreview(previewFromResult(handoffResult));
+      setHistoryStatus("ready");
+      setHistoryError(null);
       return;
     }
 
+    setHistoryStatus("loading");
+    setHistoryError(null);
     void (async () => {
       try {
         const runs = await api.listCanonicalRuns("dependencies");
-        const saved = latestCompletedRun(runs, "dependencies", requestedPath);
-        if (!saved || requestId !== historyRequestRef.current) return;
-        const metadata = await api.loadCanonicalProjectionMetadata<DependencyScanResult>(saved.id);
-        const restored = metadata.projection;
         if (requestId !== historyRequestRef.current) return;
+        const saved = latestCompletedRun(runs, "dependencies", requestedPath);
+        if (!saved) {
+          setHistoryStatus("empty");
+          return;
+        }
+        const metadata = await api.loadCanonicalProjectionMetadata<DependencyScanResult>(saved.id);
+        if (requestId !== historyRequestRef.current) return;
+        const restored = metadata.projection;
         setResult(restored);
         setReceipt(saved);
         setSavedVulnerabilityTotal(metadata.sections.vulnerabilities ?? 0);
         setAttempt(runs.filter(run => run.kind === "dependencies" && normalizedTarget(run.targetLabel) === normalizedTarget(requestedPath)).sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id))[0] ?? null);
         setPreview(previewFromResult(restored));
-        setPageStatus("deps-scan", {
-          label: `Saved dependency results · ${restored.summary.vulnerabilitiesFound} vulnerabilities`,
-          tone: "success",
-        });
-      } catch {
+        setHistoryStatus("ready");
+        if (!preserveOperationStatus.current) {
+          setPageStatus("deps-scan", {
+            label: `Saved dependency results · ${restored.summary.vulnerabilitiesFound} vulnerabilities`,
+            tone: "success",
+          });
+        }
+      } catch (cause) {
+        if (requestId !== historyRequestRef.current) return;
         // History is a convenience surface. A missing/corrupt saved projection
-        // must never prevent a fresh scan from running.
+        // must never prevent a fresh scan from running, but the failure is
+        // surfaced with an in-page retry instead of vanishing.
+        setHistoryStatus("error");
+        setHistoryError(normalizeCommandError(cause).message);
       }
     })();
     return () => { historyRequestRef.current += 1; };
@@ -187,13 +212,23 @@ export function DepsScanPage() {
 
   const changeAdvisoryDb = useCallback((enabled: boolean) => {
     setUseAdvisoryDb(enabled);
-    if (enabled && !advisoryDbPath.trim()) {
-      api.defaultAdvisoryDbPath().then((defaultPath) => {
-        setAdvisoryDbPath((current) => current || defaultPath);
-      }).catch(() => {
-        // The field stays editable; a failed default lookup must not block scans.
-      });
+    advisoryLookupRef.current += 1;
+    if (!enabled || advisoryDbPath.trim()) {
+      setAdvisoryLookup(null);
+      return;
     }
+    const requestId = advisoryLookupRef.current;
+    setAdvisoryLookup({ status: "loading", error: null });
+    api.defaultAdvisoryDbPath().then((defaultPath) => {
+      if (requestId !== advisoryLookupRef.current) return;
+      setAdvisoryLookup(null);
+      setAdvisoryDbPath((current) => current || defaultPath);
+    }).catch((cause) => {
+      if (requestId !== advisoryLookupRef.current) return;
+      // The field stays editable, but a failed lookup is surfaced: the enabled
+      // option must never silently fall back to `advisoryDbPath: null`.
+      setAdvisoryLookup({ status: "error", error: normalizeCommandError(cause).message });
+    });
   }, [advisoryDbPath]);
 
   const changePath = useCallback((nextPath: string) => {
@@ -208,6 +243,8 @@ export function DepsScanPage() {
     setResult(null);
     setReceipt(null);
     setAttempt(null);
+    setHistoryStatus(null);
+    setHistoryError(null);
     setOperationState(null);
     setError(null);
     setFailedOperation(null);
@@ -254,6 +291,10 @@ export function DepsScanPage() {
     if (!path || running || discovering) return;
     const requestId = ++discoveryRequestRef.current;
     historyRequestRef.current += 1;
+    // Discovery invalidates any pending history restore; its status must not
+    // linger as a loading/empty claim the discarded request can never settle.
+    setHistoryStatus(null);
+    setHistoryError(null);
     const requestedPath = path;
     setDiscovering(true);
     setError(null);
@@ -294,11 +335,17 @@ export function DepsScanPage() {
 
   const run = async () => {
     if (!path || running || discovering) return;
+    // An enabled local advisory database must never be dropped from the request
+    // as a silent `advisoryDbPath: null`; the toolbar stays disabled until a
+    // usable path exists.
+    if (useAdvisoryDb && !advisoryDbPath.trim()) return;
     const ownership = acquireScan("dependencies", path, "Checking dependencies");
     if (ownership === null) return;
     const requestId = ++discoveryRequestRef.current;
     scanInvocationRef.current = { ownership, requestId };
     historyRequestRef.current += 1;
+    setHistoryStatus(null);
+    setHistoryError(null);
     setRunning(true);
     setPhase(null);
     setError(null);
@@ -350,7 +397,19 @@ export function DepsScanPage() {
     } catch (scanError) {
       if (requestId !== discoveryRequestRef.current) return;
       scanInvocationRef.current = null;
-      setError(String(scanError));
+      const message = normalizeCommandError(scanError).message;
+      const active = useScanWorkStore.getState().active;
+      const cancelled = Boolean(active?.cancelling)
+        || active?.terminalStatus === "cancelled"
+        || message.toLowerCase().includes("cancelled");
+      if (cancelled) {
+        // User-requested cancellation is not a failure: previous evidence is
+        // preserved and no retry affordance or error toast is published.
+        setOperationState("Latest operation cancelled");
+        setPageStatus("deps-scan", { label: "Dependency check cancelled", tone: "neutral" });
+        return;
+      }
+      setError(message);
       setOperationState("Latest operation failed");
       setFailedOperation("check");
       setPageStatus("deps-scan", { label: "Dependency check failed", tone: "error" });
@@ -425,6 +484,8 @@ export function DepsScanPage() {
     : phase === "matching-local" ? "Matching local advisories"
     : phase === "exploitation-signal" ? "Checking exploitation signals"
     : phase || "Checking dependencies";
+  const advisoryDbRequired = useAdvisoryDb && !advisoryDbPath.trim();
+  const advisoryDbLookingUp = advisoryDbRequired && advisoryLookup?.status === "loading";
 
   return (
     <ToolPage
@@ -449,7 +510,7 @@ export function DepsScanPage() {
                 <Ban size={13} aria-hidden="true" />Cancel
               </Button>
             ) : (
-              <Button type="button" onClick={run} disabled={!path.trim() || discovering || Boolean(activeWork)} variant="primary" size="md">
+              <Button type="button" onClick={run} disabled={!path.trim() || discovering || Boolean(activeWork) || advisoryDbRequired} variant="primary" size="md">
                 <Play size={13} aria-hidden="true" />Check dependencies
               </Button>
             )}
@@ -474,6 +535,18 @@ export function DepsScanPage() {
                 description="Dependency checks can still run, but live progress updates are unavailable in this environment."
               />
             )}
+            {advisoryDbRequired && (
+              <InlineState
+                tone={advisoryDbLookingUp ? "running" : "unavailable"}
+                compact
+                title={advisoryDbLookingUp ? "Looking up the default advisory database" : "Local advisory database needs a path"}
+                description={advisoryDbLookingUp
+                  ? "Dependency checking starts once the default database path is known."
+                  : advisoryLookup?.status === "error"
+                    ? `${advisoryLookup.error} Enter the advisory database path, or turn off Local advisory database to check against OSV.`
+                    : "Enter the advisory database path, or turn off Local advisory database to check against OSV."}
+              />
+            )}
             {preview && preview.length > 0 && !running && (
               <div className="flex flex-wrap gap-2" aria-label="Detected lockfiles">
                 {preview.map((lockfile) => (
@@ -495,6 +568,7 @@ export function DepsScanPage() {
                 detail={error}
                 operation={failedOperation}
                 onRetry={failedOperation === "discovery" ? findLockfiles : run}
+                disabled={discovering || Boolean(activeWork) || (failedOperation === "check" && advisoryDbRequired)}
               />
             )}
           </>
@@ -524,7 +598,16 @@ export function DepsScanPage() {
               className="min-w-0 basis-full sm:basis-auto sm:flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
               placeholder="advisories.sqlite3"
               value={advisoryDbPath}
-              onChange={(event) => setAdvisoryDbPath(event.target.value)}
+              onChange={(event) => {
+                const value = event.target.value;
+                setAdvisoryDbPath(value);
+                // A user-provided path satisfies the requirement; any pending or
+                // failed default lookup is retired and must not overwrite it.
+                if (value.trim()) {
+                  advisoryLookupRef.current += 1;
+                  setAdvisoryLookup(null);
+                }
+              }}
               disabled={running || discovering}
             />
           )}
@@ -559,7 +642,7 @@ export function DepsScanPage() {
         </section>
       )}
 
-      {result && (!receipt || completeDecisions?.runId === receipt.id) && <UpgradeDecisions result={receipt ? completeDecisions!.data : result} disabled={running || discovering || activeWork !== null} onRecheck={() => { void run(); }} onSelect={(advisory) => {
+      {result && (!receipt || completeDecisions?.runId === receipt.id) && <UpgradeDecisions result={receipt ? completeDecisions!.data : result} disabled={running || discovering || activeWork !== null || advisoryDbRequired} onRecheck={() => { void run(); }} onSelect={(advisory) => {
         setQuery(""); setSelectedKey(vulnerabilityKey(advisory));
         document.getElementById("dependency-advisories")?.scrollIntoView?.({ block: "start", behavior: "smooth" });
       }} />}
@@ -640,6 +723,7 @@ export function DepsScanPage() {
           detail={error}
           operation={failedOperation}
           onRetry={failedOperation === "discovery" ? findLockfiles : run}
+          disabled={discovering || Boolean(activeWork) || (failedOperation === "check" && advisoryDbRequired)}
         />
       )}
 
@@ -647,7 +731,36 @@ export function DepsScanPage() {
         <InlineState tone="empty" title="No supported lockfiles were found in this project." />
       )}
 
-      {!result && !error && !running && preview === null && (
+      {!result && !error && !running && preview === null && historyStatus === "loading" && (
+        <InlineState
+          tone="running"
+          title="Looking for saved dependency results"
+          description="Reading the most recent saved dependency check for the selected project."
+        />
+      )}
+
+      {!result && !error && !running && preview === null && historyStatus === "empty" && (
+        <InlineState
+          tone="empty"
+          title="No saved dependency results for this project."
+          description="Run Check dependencies to record the first dependency check for the selected project."
+        />
+      )}
+
+      {!result && !error && !running && preview === null && historyStatus === "error" && (
+        <InlineState
+          tone="error"
+          title="Saved dependency results could not be loaded."
+          description={historyError ? `${historyError} A fresh dependency check can still record new results.` : "A fresh dependency check can still record new results."}
+          action={
+            <Button type="button" variant="outline" size="md" onClick={() => setHistoryReload((value) => value + 1)}>
+              Retry loading saved results
+            </Button>
+          }
+        />
+      )}
+
+      {!result && !error && !running && preview === null && !path.trim() && (
         <InlineState tone="idle" title="Choose a project to detect supported lockfiles." />
       )}
     </ToolPage>
@@ -938,10 +1051,12 @@ function DependencyError({
   detail,
   operation,
   onRetry,
+  disabled,
 }: {
   detail: string;
   operation: FailedOperation;
   onRetry: () => void;
+  disabled: boolean;
 }): JSX.Element {
   const discovery = operation === "discovery";
   return (
@@ -954,6 +1069,7 @@ function DependencyError({
           <Button
             type="button"
             onClick={onRetry}
+            disabled={disabled}
             variant="danger"
             size="md"
           >

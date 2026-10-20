@@ -86,8 +86,8 @@ export function applyResolvedTheme(theme: ResolvedTheme): void {
 }
 
 export function readCachedThemePreference(): ThemePreference {
-  if (typeof localStorage === "undefined") return DEFAULT_PREFERENCE;
   try {
+    if (typeof localStorage === "undefined") return DEFAULT_PREFERENCE;
     return normalizeThemePreference(localStorage.getItem(THEME_CACHE_KEY));
   } catch {
     return DEFAULT_PREFERENCE;
@@ -95,8 +95,8 @@ export function readCachedThemePreference(): ThemePreference {
 }
 
 export function cacheThemePreference(preference: ThemePreference): void {
-  if (typeof localStorage === "undefined") return;
   try {
+    if (typeof localStorage === "undefined") return;
     localStorage.setItem(THEME_CACHE_KEY, preference);
   } catch {
     /* private mode / quota — the settings file remains the source of truth */

@@ -331,6 +331,7 @@ export function SourceScanPage(): JSX.Element {
       loaderRef.current.invalidate();
       runLoadGenerationRef.current += 1;
       setHandoffRunId(undefined);
+      setLoadingRunId(null);
       setPath(nextPath);
       setProject(null);
       setRuns([]);
@@ -352,6 +353,7 @@ export function SourceScanPage(): JSX.Element {
       if (handoff?.page === "source-scan") {
         settledRevisionRef.current = null;
         runLoadGenerationRef.current += 1;
+        setLoadingRunId(null);
         changePath(handoff.path);
         setHandoffRunId(handoff.runId);
         setLoadVersion(value => value + 1);
@@ -396,6 +398,10 @@ export function SourceScanPage(): JSX.Element {
     if (ownership === null) return;
     scanInvocationRef.current = ownership;
     setHandoffRunId(undefined);
+    // A scan supersedes any in-flight history load: bump the generation and
+    // clear the spinner so a stale restore cannot overwrite this fresh result.
+    runLoadGenerationRef.current += 1;
+    setLoadingRunId(null);
     const runGeneration = runLoadGenerationRef.current;
     setRunning(true);
     cancellingRef.current = false;
@@ -598,7 +604,7 @@ export function SourceScanPage(): JSX.Element {
   };
 
   const loadRun = async (runId: string, forceReload = false) => {
-    if (runId === run?.runId && !forceReload) return;
+    if (running || (runId === run?.runId && !forceReload)) return;
     const generation = ++runLoadGenerationRef.current;
     setLoadingRunId(runId);
     setSelectedFingerprint(null);
@@ -695,7 +701,7 @@ export function SourceScanPage(): JSX.Element {
     } catch (error) {
       if (generation === runLoadGenerationRef.current) setReviewError(normalizeCommandError(error));
     } finally {
-      if (generation === runLoadGenerationRef.current) setSavingReview(false);
+      setSavingReview(false);
     }
   };
 
@@ -726,7 +732,7 @@ export function SourceScanPage(): JSX.Element {
       if (generation === runLoadGenerationRef.current) setReviewError(normalized);
       push("error", `The decision could not be reset: ${normalized.message}`);
     } finally {
-      if (generation === runLoadGenerationRef.current) setSavingReview(false);
+      setSavingReview(false);
     }
   };
 
@@ -803,7 +809,7 @@ export function SourceScanPage(): JSX.Element {
     } catch (error) {
       if (generation === runLoadGenerationRef.current) setReviewError(normalizeCommandError(error));
     } finally {
-      if (generation === runLoadGenerationRef.current) setBulkSaving(false);
+      setBulkSaving(false);
     }
   };
   const selectedFinding =
@@ -964,6 +970,7 @@ export function SourceScanPage(): JSX.Element {
             runs={runs}
             selectedRunId={run?.runId ?? null}
             loadingRunId={loadingRunId}
+            running={running}
             onSelect={(runId) => void loadRun(runId)}
           />
         </div>

@@ -14,8 +14,8 @@ export function readPanelCollapsed(
   panelId: string,
   fallback = false,
 ): boolean {
-  if (typeof localStorage === "undefined") return fallback;
   try {
+    if (typeof localStorage === "undefined") return fallback;
     return (
       parsePanelCollapsed(
         localStorage.getItem(panelCollapsedCacheKey(panelId)),
@@ -30,8 +30,8 @@ export function cachePanelCollapsed(
   panelId: string,
   collapsed: boolean,
 ): void {
-  if (typeof localStorage === "undefined") return;
   try {
+    if (typeof localStorage === "undefined") return;
     localStorage.setItem(
       panelCollapsedCacheKey(panelId),
       String(collapsed),

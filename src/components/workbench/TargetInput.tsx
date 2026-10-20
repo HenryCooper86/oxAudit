@@ -9,7 +9,7 @@ export type TargetPickerMode = "folder" | "file";
 /** Choosing a target only updates the field; the containing page owns Start. */
 export function TargetInput({
   value, onChange, label, inputLabel = label, placeholder, disabled = false,
-  pickers = [], pickerLabels, hint, error,
+  pickers = [], pickerLabels, hint, error, onPickStart,
 }: {
   value: string;
   onChange(path: string): void;
@@ -21,6 +21,7 @@ export function TargetInput({
   pickerLabels?: Partial<Record<TargetPickerMode, string>>;
   hint?: string;
   error?: string;
+  onPickStart?: () => void;
 }) {
   const id = useId();
   const [pickerError, setPickerError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export function TargetInput({
     setPickerError(null);
     const generation = pickerGeneration.current;
     try {
+      onPickStart?.();
       const selected = await open({ directory: mode === "folder", multiple: false, title: `Select a ${mode}` });
       if (mounted.current && available.current && generation === pickerGeneration.current && typeof selected === "string" && selected) onChange(selected);
     } catch (cause) {

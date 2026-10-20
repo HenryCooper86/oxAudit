@@ -23,9 +23,13 @@ const FORMATS: Array<{ id: ExportFormat; label: string; description: string }> =
 export function ExportCenterPage(): JSX.Element {
   const push = useToastStore((state) => state.push);
   const [runs, setRuns] = useState<CanonicalRun[] | null>(null);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [runsRevision, setRunsRevision] = useState(0);
   const [runId, setRunId] = useState(() => useAppStore.getState().exportHandoff?.runId ?? "");
   const [format, setFormat] = useState<ExportFormat>("oxaudit-json");
   const [preview, setPreview] = useState<ExportPreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importPath, setImportPath] = useState("");
@@ -84,21 +88,24 @@ export function ExportCenterPage(): JSX.Element {
 
   useEffect(() => {
     let disposed = false;
+    setRunsError(null);
     void api.listCanonicalRuns(undefined, 100).then((loaded) => {
       if (disposed) return;
       const completed = loaded.filter((run) => ["completed", "incomplete", "failed", "cancelled"].includes(run.state));
       setRuns(completed);
       setRunId((current) => current || completed[0]?.id || "");
     }).catch((cause) => {
-      if (!disposed) setError(String(cause));
+      if (!disposed) setRunsError(String(cause));
     });
     return () => { disposed = true; };
-  }, []);
+  }, [runsRevision]);
 
   useEffect(() => {
     let disposed = false;
+    setPreviewError(null);
     if (!runId) {
       setPreview(null);
+      setLoading(false);
       return;
     }
     setLoading(true);
@@ -109,13 +116,13 @@ export function ExportCenterPage(): JSX.Element {
     }).catch((cause) => {
       if (!disposed) {
         setPreview(null);
-        setError(String(cause));
+        setPreviewError(String(cause));
       }
     }).finally(() => {
       if (!disposed) setLoading(false);
     });
     return () => { disposed = true; };
-  }, [format, runId]);
+  }, [format, runId, previewRevision]);
 
   const selectedFormat = useMemo(() => FORMATS.find((item) => item.id === format)!, [format]);
   const exportFile = async () => {
@@ -344,9 +351,13 @@ export function ExportCenterPage(): JSX.Element {
         )}
       </section>
 
-      {!runs && !error && <InlineState tone="running" title="Loading durable runs" />}
+      {!runs && !runsError && <InlineState tone="running" title="Loading durable runs" />}
+      {runsError && <InlineState tone="error" title="Saved runs are unavailable" description={runsError}
+        action={<Button type="button" variant="outline" onClick={() => setRunsRevision((revision) => revision + 1)}>Retry loading runs</Button>} />}
       {runs?.length === 0 && !runId && <InlineState tone="empty" title="No saved canonical runs are available yet" description="Run a Source, Dependency, Binary, Image, or History scan first." />}
       {loading && <InlineState tone="running" compact title="Generating and validating preview" />}
+      {previewError && <InlineState tone="error" title="Export preview is unavailable" description={previewError}
+        action={<Button type="button" variant="outline" onClick={() => setPreviewRevision((revision) => revision + 1)}>Retry preview</Button>} />}
       {error && <InlineState tone="error" title="Export is unavailable" description={error} />}
       {savedPath && <p role="status" className="break-all text-[12px] text-success">Saved export to {savedPath}</p>}
       {preview && !loading && (

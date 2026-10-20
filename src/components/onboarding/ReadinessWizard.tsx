@@ -5,14 +5,14 @@ import {
   RefreshCw,
   ScanSearch,
   Settings2,
-  FolderOpen,
   Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { open as pickFolder } from "../../lib/dialog";
+import { FolderPicker } from "../FolderPicker";
 import { normalizeCommandError } from "../../lib/commandError";
 import { startProjectCheck, useScanWorkStore } from "../../features/project-home/coordinator";
 import { api } from "../../lib/api";
+import { serverMode } from "../../lib/transport";
 import {
   completeReadinessWizard,
   isReadinessWizardComplete,
@@ -44,11 +44,17 @@ export function ReadinessWizard() {
   const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const aiReadiness = useAppStore((state) => state.aiReadiness);
   const setPage = useAppStore((state) => state.setPage);
-  const [open, setOpen] = useState(() =>
-    typeof localStorage === "undefined"
-      ? false
-      : !isReadinessWizardComplete(localStorage),
-  );
+  const [open, setOpen] = useState(() => {
+    // Resolving the `localStorage` binding itself can throw (SecurityError) in
+    // hardened WebViews; `isReadinessWizardComplete` only guards its own read.
+    // Treat an unreadable flag like the helper does: completion is unknown, so
+    // offer the wizard instead of crashing the shell.
+    try {
+      return !isReadinessWizardComplete(localStorage);
+    } catch {
+      return true;
+    }
+  });
   const [step, setStep] = useState(0);
   const [projectPath, setProjectPath] = useState(() => useAppStore.getState().selectedProject ?? "");
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -103,7 +109,11 @@ export function ReadinessWizard() {
     generation.current += 1;
     readinessRequest.current += 1;
     setSelecting(false);
-    completeReadinessWizard(localStorage);
+    try {
+      completeReadinessWizard(localStorage);
+    } catch {
+      // Storage can be unavailable in hardened WebViews; the wizard still closes.
+    }
     setOpen(false);
   }, []);
 
@@ -112,17 +122,6 @@ export function ReadinessWizard() {
     setProjectPath(path);
     setProjectError(null);
     setSelecting(false);
-  };
-  const browseProject = async () => {
-    const token = ++generation.current;
-    setProjectError(null);
-    setSelecting(false);
-    try {
-      const path = await pickFolder({ directory: true, multiple: false, title: "Select your first project" });
-      if (generation.current === token && typeof path === "string") changeProject(path);
-    } catch (error) {
-      if (generation.current === token) setProjectError(normalizeCommandError(error).message);
-    }
   };
   const checkProject = async () => {
     if (!projectPath.trim() || !settings || useScanWorkStore.getState().active) return;
@@ -290,8 +289,8 @@ export function ReadinessWizard() {
                 <CheckRow
                   ready={!checks.error}
                   pending={checks.loading}
-                  title="Desktop command bridge"
-                  description={checks.error ? "Some readiness details were unavailable. Core screens remain usable." : "Native desktop services responded."}
+                  title={serverMode ? "Server command bridge" : "Desktop command bridge"}
+                  description={checks.error ? "Some readiness details were unavailable. Core screens remain usable." : serverMode ? "The server API responded." : "Native desktop services responded."}
                 />
               </div>
               <Button className="mt-4" variant="ghost" onClick={() => void refreshChecks()} disabled={checks.loading}>
@@ -340,18 +339,17 @@ export function ReadinessWizard() {
               <p id="readiness-wizard-description" className="text-[13px] leading-relaxed text-text-secondary">
                 Choose a project folder, then check its source and dependencies from Home. AI is optional. No repository scripts are executed.
               </p>
-              <div className="flex items-center gap-2">
-                <input
-                  aria-label="First project folder"
-                  value={projectPath}
-                  onChange={(event) => changeProject(event.target.value)}
-                  placeholder="Choose a project folder…"
-                  className="selectable min-w-0 flex-1 rounded-sm border border-border bg-surface-secondary px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted"
-                />
-                <Button ref={firstActionRef} variant="outline" onClick={() => void browseProject()}>
-                  <FolderOpen size={14} aria-hidden="true" /> Browse…
-                </Button>
-              </div>
+              <FolderPicker
+                value={projectPath}
+                onChange={changeProject}
+                onPickStart={() => {
+                  generation.current += 1;
+                  setSelecting(false);
+                  setProjectError(null);
+                }}
+                inputLabel="First project folder"
+                buttonLabel="Browse…"
+              />
               {selecting && <p role="status" className="text-[13px] text-text-secondary">Inspecting project…</p>}
               {projectError && <p role="alert" className="text-[13px] text-error">Project unavailable: {projectError}</p>}
               {!settings && <p className="text-[13px] text-warning">Settings could not be loaded. Open Settings and retry before checking a project.</p>}
@@ -360,7 +358,7 @@ export function ReadinessWizard() {
                 Home keeps your project history and results. You can reopen this setup from Settings and add a project later.
               </p>
               <div className="flex flex-wrap gap-2">
-                <Button variant="primary"
+                <Button ref={firstActionRef} variant="primary"
                   disabled={!projectPath.trim() || !settings || selecting || Boolean(activeScan)}
                   onClick={() => void checkProject()}>
                   <ScanSearch size={13} aria-hidden="true" /> Check project

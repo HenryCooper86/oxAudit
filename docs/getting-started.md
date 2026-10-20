@@ -113,9 +113,10 @@ credential ever committed?* — including in files deleted long ago:
 oxaudit-cli history . --fail-on high
 ```
 
-In the app, **History Scan** runs the same engine against a chosen repository;
-results are not saved. See the README's “Git history secret scanning” section
-for what it covers and its stated limits.
+In the app, **History Scan** runs the same engine against a chosen repository.
+Saved redacted receipts can be reopened after navigation or restart and sent to
+**Export Center**. CLI history persists between invocations only with `--db`.
+See the README's “Git history secret scanning” section for coverage limits.
 
 ## Complete consumer CI example
 

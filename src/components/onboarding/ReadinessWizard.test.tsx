@@ -9,9 +9,12 @@ import { Dashboard } from "../../pages/Dashboard";
 import { projectSettings, projectContext, sourceResult } from "../../../tests/fixtures/projectHome";
 import type { ProjectContext } from "../../lib/types";
 import { ReadinessWizard } from "./ReadinessWizard";
+const transport = vi.hoisted(() => ({ server: false }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("../../lib/transport", () => ({ get serverMode() { return transport.server; } }));
 beforeEach(() => {
+  transport.server = false;
   localStorage.clear();
   useAppStore.setState({ settings: projectSettings, settingsLoadError: false,
     selectedProject: null, activeProject: null, page: "settings",
@@ -113,6 +116,22 @@ test("late native picker result after skip and reopen cannot replace the current
   await act(async () => resolve("/old"));
   expect(screen.getByLabelText("First project folder")).toHaveValue("/new");
 });
+test("opening a folder picker invalidates an earlier project inspection", async () => {
+  let inspected!: (value: ProjectContext) => void;
+  let picked!: (value: string) => void;
+  vi.mocked(api.inspectSourceProject).mockImplementationOnce(() => new Promise((resolve) => { inspected = resolve; }));
+  vi.mocked(open).mockImplementationOnce(() => new Promise((resolve) => { picked = resolve; }));
+  render(<ReadinessWizard />); nextToProject(); enter("/old");
+  fireEvent.click(screen.getByRole("button", { name: "Check project" }));
+  fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+
+  await act(async () => inspected(projectContext("/old")));
+  expect(useScanWorkStore.getState().check).toBeNull();
+  expect(useAppStore.getState().selectedProject).toBeNull();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  await act(async () => picked("/new"));
+  expect(screen.getByLabelText("First project folder")).toHaveValue("/new");
+});
 test("new draft invalidates pending check and no check starts without loaded scan settings", async () => {
   let resolve!: (value: ProjectContext) => void;
   vi.mocked(api.inspectSourceProject).mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
@@ -135,4 +154,32 @@ test("readiness response from an earlier wizard session cannot overwrite a reope
   await act(async () => reject(new Error("old session failure")));
   expect(screen.getByText("0 sources registered; 0 currently available offline.")).toBeInTheDocument();
   expect(screen.queryByText(/Some readiness details were unavailable/)).not.toBeInTheDocument();
+});
+test("a blocked storage binding still opens the wizard and Escape closes it", async () => {
+  const original = Object.getOwnPropertyDescriptor(window, "localStorage");
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    get() {
+      throw new Error("Access denied");
+    },
+  });
+  try {
+    render(<ReadinessWizard />);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  } finally {
+    if (original) Object.defineProperty(window, "localStorage", original);
+    else Reflect.deleteProperty(window, "localStorage");
+  }
+});
+test("server mode accepts a typed project without offering a native folder picker", () => {
+  transport.server = true;
+  render(<ReadinessWizard />);
+  nextToProject();
+  enter("/server/project");
+  expect(screen.queryByRole("button", { name: "Browse…" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("First project folder")).toHaveValue("/server/project");
+  expect(screen.getByRole("button", { name: "Check project" })).toBeEnabled();
+  expect(useScanWorkStore.getState().check).toBeNull();
 });

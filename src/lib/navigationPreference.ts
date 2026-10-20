@@ -8,8 +8,8 @@ export function parseNavigationCollapsed(value: unknown): boolean | null {
 }
 
 export function readNavigationCollapsed(): boolean | null {
-  if (typeof localStorage === "undefined") return null;
   try {
+    if (typeof localStorage === "undefined") return null;
     return parseNavigationCollapsed(
       localStorage.getItem(NAVIGATION_COLLAPSED_CACHE_KEY),
     );
@@ -19,8 +19,8 @@ export function readNavigationCollapsed(): boolean | null {
 }
 
 export function cacheNavigationCollapsed(collapsed: boolean): void {
-  if (typeof localStorage === "undefined") return;
   try {
+    if (typeof localStorage === "undefined") return;
     localStorage.setItem(
       NAVIGATION_COLLAPSED_CACHE_KEY,
       String(collapsed),

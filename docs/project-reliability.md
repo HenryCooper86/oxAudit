@@ -25,6 +25,32 @@ scope. Enabled packs that could not be applied remain visible in saved coverage
 warnings. Malformed lockfiles show an unknown count and parser error; a parsed
 empty inventory shows zero.
 
+Source history loads belong to the current request, not just a run ID. Changing
+projects or starting a scan retires pending loads; history rows are disabled
+while a source scan is active. A late review write cannot replace the displayed
+project's findings, and its controls become usable again when the write settles.
+
+Dependency cancellation is a neutral outcome, not a failed check, and does not
+discard previous saved evidence. A project without a saved dependency check is
+labelled separately from an unselected project. Failed saved-result reads offer
+**Retry loading saved results** without blocking a fresh check. If **Local
+advisory database** is enabled, checking, retrying and rechecking require a
+nonblank database path; a pending or failed default-path lookup cannot silently
+switch the check back to OSV.
+
+## Browser preferences and recovery
+
+Blocked browser storage must not prevent startup, closing setup, or changing
+navigation and findings-panel layout. Those choices remain usable in memory;
+browser-only preferences, setup completion and the server access token may need
+to be entered again after a reload. Saved scan evidence and application settings
+remain on the backend, not in the browser preference cache.
+
+Export Center keeps saved-run loading, report-preview generation and file-write
+errors separate. Use **Retry loading runs** or **Retry preview** after a transient
+read failure; retrying preserves the selected run and format. A failed save leaves
+the preview available so the destination can be corrected and the save retried.
+
 ## Saved image and history receipts
 
 CLI storage is explicit, matching the existing source/dependency commands:

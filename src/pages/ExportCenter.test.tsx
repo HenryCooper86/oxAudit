@@ -76,6 +76,53 @@ test('an explicitly requested receipt outside the recent list is still selected 
   expect(screen.getByLabelText('Saved run')).toHaveValue('partial-image');
 });
 
+test('a failed saved-run load can recover without leaving Export Center', async () => {
+  vi.spyOn(api, 'listCanonicalRuns')
+    .mockRejectedValueOnce('Database temporarily unavailable')
+    .mockResolvedValueOnce([run('saved-source', 'source')]);
+  vi.mocked(api.previewRunExport).mockResolvedValue(exportPreview);
+  render(<ExportCenterPage />);
+
+  await userEvent.click(await screen.findByRole('button', { name: 'Retry loading runs' }));
+  expect(await screen.findByRole('button', { name: 'Save export…' })).toBeEnabled();
+  expect(screen.getByLabelText('Saved run')).toHaveValue('saved-source');
+  expect(screen.getByText(exportPreview.content)).toBeInTheDocument();
+  expect(screen.queryByText('Database temporarily unavailable')).not.toBeInTheDocument();
+});
+
+test('a failed preview can recover for the same run and format after editing the destination', async () => {
+  transport.serverMode = true;
+  vi.spyOn(api, 'listCanonicalRuns').mockResolvedValue([run('saved-source', 'source')]);
+  vi.mocked(api.previewRunExport)
+    .mockRejectedValueOnce('Preview temporarily unavailable')
+    .mockResolvedValueOnce(exportPreview);
+  render(<ExportCenterPage />);
+
+  await screen.findByRole('button', { name: 'Retry preview' });
+  fireEvent.change(screen.getByLabelText('Export file on server'), { target: { value: '/reports/source.json' } });
+  await userEvent.click(screen.getByRole('button', { name: 'Retry preview' }));
+  expect(await screen.findByRole('button', { name: 'Save to server' })).toBeEnabled();
+  expect(screen.getByLabelText('Saved run')).toHaveValue('saved-source');
+  expect(screen.getByLabelText('Format')).toHaveValue('oxaudit-json');
+  expect(screen.getByText(exportPreview.content)).toBeInTheDocument();
+  expect(screen.queryByText('Preview temporarily unavailable')).not.toBeInTheDocument();
+});
+
+test('loading an exact receipt does not hide a separate run-list failure', async () => {
+  vi.spyOn(api, 'listCanonicalRuns')
+    .mockRejectedValueOnce('Run list temporarily unavailable')
+    .mockResolvedValueOnce([run('saved-source', 'source')]);
+  vi.mocked(api.previewRunExport).mockResolvedValue(exportPreview);
+  useAppStore.getState().openExport('saved-source');
+  render(<ExportCenterPage />);
+
+  expect(await screen.findByRole('button', { name: 'Save export…' })).toBeEnabled();
+  await userEvent.click(await screen.findByRole('button', { name: 'Retry loading runs' }));
+  await waitFor(() => expect(screen.queryByText('Run list temporarily unavailable')).not.toBeInTheDocument());
+  expect(screen.getByLabelText('Saved run')).toHaveValue('saved-source');
+  expect(screen.getByRole('button', { name: 'Save export…' })).toBeEnabled();
+});
+
 test.each(dialogFailures)('export surfaces $name and a subsequent save clears the failure', async ({ fail }) => {
   vi.spyOn(api, 'listCanonicalRuns').mockResolvedValue([run('saved-source', 'source')]);
   vi.mocked(api.previewRunExport).mockResolvedValue(exportPreview);

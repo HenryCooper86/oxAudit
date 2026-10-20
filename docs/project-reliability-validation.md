@@ -92,3 +92,54 @@ Real-browser paint, screen-reader behavior and external participant acceptance
 remain unmeasured. The user requested [pilot preparation](pilot-validation.md)
 and supplied no participant feedback. Hosted CI/quality outcomes must come from
 actual GitHub runs after delivery; local checks do not substitute for those runs.
+
+## Daily-use recovery validation, 2026-10-19
+
+This pass fixes frontend startup, scan/history request ownership, dependency
+cancellation and export recovery. It does not establish glitch-free operation,
+a signed release, or cross-platform acceptance.
+
+| Check | Observed result |
+| --- | --- |
+| `npm run test:unit` | 173 passed |
+| `npm run test:components` | 483 passed across 54 files |
+| `npm run build` | TypeScript and production bundle passed; Vite retains its warning about the intentionally server-supplied `/env.js` script |
+| Locked debug build, server feature, CLI and server binaries | Passed |
+| `npm run pilot:smoke -- --cli ./src-tauri/target/debug/oxaudit-cli` | Passed: source finding, unchanged/new baseline gates, correction, SARIF, durable history and malformed dependency rejection |
+
+Live Chromium used the built frontend and actual headless backend with isolated
+temporary data/config directories and inert copied scan inputs:
+
+- Before the fix, a throwing `window.localStorage` getter produced a blank
+  application and an uncaught `SecurityError`. Afterward, authentication,
+  onboarding, Escape dismissal, navigation collapse and a backend-saved theme
+  change worked without a page error. Headless setup showed server-path guidance
+  without a native Browse button.
+- A delayed saved-source metadata request followed by clearing and restoring the
+  project path previously left an empty findings list while showing one finding.
+  The corrected path restored the actual `eval()` finding and enabled review.
+- Starting a real source scan while old metadata remained pending disabled history
+  navigation. Releasing the old request afterward left the newly scanned run
+  selected with its finding visible.
+- User cancellation of a delayed dependency command previously showed a failure
+  banner, error toast and Retry. The corrected path showed cancellation without
+  a failure/Retry and retained the previous three-advisory receipt. A source-only
+  project showed an explicit no-saved-dependency-results state and one Check action.
+- A failed default advisory-database path lookup visibly blocked checking.
+  Entering an explicit path enabled checking; no scan was submitted with the
+  enabled option silently omitted.
+- Injected HTTP 503 responses for the export run list and preview were recoverable
+  in place. Editing the destination did not hide preview retry. Saving afterward
+  wrote a real SARIF document with version `2.1.0`.
+
+Independent review found and corrected two additional request-ownership races:
+overlapping A→B→A history loads and discovery retries rearming saved-history
+restoration. Regression tests cover these transitions, review-control recovery,
+onboarding inspection versus native-picker opening, and advisory-path requirements
+on retry/recheck as well as the primary Check action.
+
+Limits: native macOS dialogs/bundles, Windows/Linux desktops, screen readers,
+large-project soak behavior and external participant acceptance were not exercised
+in this pass. The CLI smoke refused optional enrichment requests; the separate
+live dependency receipt used online advisory data. Injected transport failures
+establish frontend recovery behavior, not a general network-availability guarantee.

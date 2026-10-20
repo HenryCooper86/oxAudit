@@ -7,9 +7,10 @@ export function RunHistory(props: {
   runs: ScanRunSummary[];
   selectedRunId: string | null;
   loadingRunId: string | null;
+  running: boolean;
   onSelect(runId: string): void;
 }): JSX.Element {
-  const { runs, selectedRunId, loadingRunId, onSelect } = props;
+  const { runs, selectedRunId, loadingRunId, running, onSelect } = props;
 
   return (
     <section aria-labelledby="run-history-title" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
@@ -33,7 +34,7 @@ export function RunHistory(props: {
                 type="button"
                 aria-current={selected ? "true" : undefined}
                 onClick={() => onSelect(run.runId)}
-                disabled={loading}
+                disabled={loading || running}
                 className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors ${selected ? "bg-accent-subtle" : "hover:bg-surface-hover"}`}
               >
                 <Icon

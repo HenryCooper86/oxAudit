@@ -20,38 +20,25 @@ and a finding on a workstation are the same finding.
 
 ## Install
 
-```bash
-# Release binary, checksum-verified before install (macOS, Linux x86_64
-# and aarch64, Windows):
-curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/scripts/install.sh | sh
-
-# Or the multi-architecture container image (linux/amd64, linux/arm64):
-docker run --rm -v "$PWD:/workspace" ghcr.io/henrycooper86/oxaudit \
-  scan /workspace --format sarif --fail-on high
-
-# Or the whole GUI in a browser, from the same image:
-docker run --rm -p 8080:8080 -v oxaudit-data:/data \
-  --entrypoint oxaudit-server ghcr.io/henrycooper86/oxaudit
-```
-
-The container is the no-install path: any machine with a container runtime
-gets the same CLI, and the release notes pin the image digest with the
-`cosign verify` command that proves it. The headless server serves the
-desktop workbench to any browser — scanning, reviews, compliance, reports —
-through the same engines; [the server guide](docs/headless-server.md) covers
-the token gate and remote-access posture. The installer prints the PATH line
-to add and never executes anything unverified.
-
-Build the **local pilot from source** using the exact platform prerequisites and
-commands in [Getting started](docs/getting-started.md). Start with Node 22.22.2,
-the pinned Rust 1.97.1 toolchain, and the platform's Tauri prerequisites.
+Start with the **local source-build pilot**. The
+[Getting started guide](docs/getting-started.md) lists repository access,
+Node 22.22.2, the pinned Rust 1.97.1 toolchain, and platform-specific native
+prerequisites. Do not assume that a public installer or container image is
+available; local builds do not establish a signed release.
 
 ```bash
 npm ci
 rustup show active-toolchain
+npm run build
 cargo build --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli
 npm run pilot:smoke -- --cli ./src-tauri/target/debug/oxaudit-cli
+npm run tauri dev
 ```
+
+For browser access, build and run the headless server using
+[the server guide](docs/headless-server.md). It serves the workbench through
+the same engines and documents the access token, server-side paths, and
+remote-access precautions.
 
 The guide includes desktop bundle/install commands and the first-project wizard.
 The [inert demo](examples/pilot/README.md), [pilot protocol](docs/pilot-validation.md),
@@ -1089,12 +1076,14 @@ Four limits, stated because they bound what the result means:
 
 `--fail-on`, `--baseline`, and `--fail-on-new` behave exactly as they do for
 `scan`, so a post-purge history can be gated against the pre-purge report.
-The desktop workbench runs the same engine from **History Scan** — results
-appear at their historical paths with redacted evidence and are not saved;
-leaving the page discards them. History runs are not stored as canonical runs
-and export no standards formats; they are an incident-response surface, not a
-second workbench. Rotation, not deletion, closes a leaked credential —
-deleting the file never revoked anything.
+The desktop workbench runs the same engine from **History Scan**. Saved receipts
+retain redacted evidence and historical `git:<object-id>!<repository-path>`
+identities; they can be reopened after navigation or restart and sent to
+**Export Center**. CLI history is durable only when you pass `--db`; without it,
+the report uses an in-memory repository. See the
+[reliability guide](docs/project-reliability.md#saved-image-and-history-receipts)
+for persistence and export limits. Rotation, not deletion, closes a leaked
+credential — deleting the file never revoked anything.
 
 ### Live validation, opt-in
 
