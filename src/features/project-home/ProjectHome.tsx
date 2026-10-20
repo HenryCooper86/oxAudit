@@ -102,7 +102,7 @@ export function ProjectHome() {
       aria-label="Project home"
       className="space-y-4 text-[13px] text-text-secondary"
     >
-      <div className="rounded-sm border border-border bg-surface-secondary p-4 space-y-3">
+      <div className="space-y-3 rounded-sm bg-surface-secondary p-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-[13px] font-semibold">Your project</h2>
           <Button

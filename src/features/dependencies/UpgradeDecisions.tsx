@@ -3,6 +3,7 @@ import type { DependencyScanResult, Vulnerability } from '../../lib/types';
 import { upgradeGroups } from './decisions';
 import { usePagination } from '../../lib/pagination';
 import { ResultPagination } from '../../components/workbench/ResultPagination';
+import { revealWorkspaceDetail } from '../../lib/workspaceScroll';
 const noAdvisories: Vulnerability[]=[];
 
 const control='rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] text-text-primary hover:bg-surface-active disabled:opacity-50';
@@ -16,6 +17,7 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
   const copyScope=useMemo(()=>({}),[result,result.summary.runId,selected?.key]);
   const [copyFeedback,setCopyFeedback]=useState<{scope:object;message:string}|null>(null);
   const copyRequest=useRef(0);
+  const detailRef=useRef<HTMLDivElement>(null);
   useLayoutEffect(()=>()=>{copyRequest.current+=1;},[copyScope]);
   const copyStatus=copyFeedback?.scope===copyScope ? copyFeedback.message : '';
   const enrichment=result.summary.enrichment;
@@ -43,11 +45,11 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
       {enrichment?.warnings.map((warning,index)=><p className="text-warning" key={`${index}:${warning}`}>{warning}</p>)}
     </div>
     {selected ? <div className="grid min-[1000px]:grid-cols-[minmax(240px,1fr)_minmax(0,2fr)]">
-      <div className="max-h-[34rem] overflow-auto border-b border-border min-[1000px]:border-b-0 min-[1000px]:border-r">
+      <div className="overflow-x-auto border-b border-border min-[1000px]:border-b-0 min-[1000px]:border-r">
         <table className="w-full text-left"><caption className="sr-only">Upgrade groups by installation and update entry point</caption>
           <thead><tr><th scope="col" className="p-3">Package / location</th><th scope="col" className="p-3">Advisories</th></tr></thead>
           <tbody>{groupPagination.items.map(group=>{const first=group.advisories[0];return <tr key={group.key} className={selected.key===group.key?'bg-surface-active':''}>
-            <td className="p-3"><button type="button" aria-pressed={selected.key===group.key} className="w-full text-left text-info" onClick={()=>{setSelectedKey(group.key);setCopyFeedback(null);copyRequest.current+=1;}}>
+            <td className="p-3"><button type="button" aria-pressed={selected.key===group.key} className="w-full text-left text-info" onClick={()=>{setSelectedKey(group.key);setCopyFeedback(null);copyRequest.current+=1;revealWorkspaceDetail(detailRef.current);}}>
               <span className="font-mono">{first.packageName}@{first.installedVersion}</span>
               <span className="mt-1 block break-all text-[11px] text-text-muted">{group.paths[0] ? group.paths[0].workspace || 'Root manifest' : 'Workspace unknown'} · {group.paths[0]?.entryPoint ?? 'Entry point unknown'}</span>
               <span className="block break-all text-[11px] text-text-muted">{first.lockfile} · {first.occurrence?.installPath ?? 'Installation path unknown'}</span>
@@ -60,7 +62,7 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
           setCopyFeedback(null);copyRequest.current+=1;
         }}/> : null}
       </div>
-      <div aria-label="Selected upgrade group" className="min-w-0 space-y-3 p-4 text-text-secondary">
+      <div ref={detailRef} aria-label="Selected upgrade group" className="min-w-0 space-y-3 p-4 text-text-secondary">
         <h3 className="font-mono text-text-primary">{selected.advisories[0].packageName}@{selected.advisories[0].installedVersion}</h3>
         <p className="break-all">{selected.advisories[0].lockfile}</p>
         <p className="break-all">Installation: {selected.advisories[0].occurrence?.installPath ?? 'unknown'} · Relationships: {selected.advisories[0].occurrence?.status ?? 'unknown'}</p>

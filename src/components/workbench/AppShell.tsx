@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type JSX } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
 import {
   cacheNavigationCollapsed,
   readNavigationCollapsed,
@@ -13,6 +13,7 @@ import { WorkbenchHeader } from "./WorkbenchHeader";
 export function AppShell({ children }: { children: React.ReactNode }): JSX.Element {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const page = useAppStore((state) => state.page);
+  const mainRef = useRef<HTMLElement>(null);
   const [collapsedPreference, setCollapsedPreference] = useState<boolean | null>(
     readNavigationCollapsed,
   );
@@ -22,6 +23,11 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
   );
 
   useAppTheme();
+
+  // Tool navigation starts at its heading; result activation owns in-page scrolling.
+  useLayoutEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+  }, [page]);
 
   const closeNavigation = useCallback(() => {
     setNavigationOpen(false);
@@ -84,7 +90,7 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
 
   return (
     <div
-      className={`grid h-full overflow-hidden bg-surface-primary transition-[grid-template-columns] duration-200 motion-reduce:transition-none max-[900px]:grid-cols-1 ${compactNavigation ? "grid-cols-[52px_minmax(0,1fr)]" : "grid-cols-[240px_minmax(0,1fr)]"}`}
+      className={`relative grid h-full min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-surface-primary transition-[grid-template-columns] duration-200 motion-reduce:transition-none max-[900px]:grid-cols-1 ${compactNavigation ? "grid-cols-[52px_minmax(0,1fr)]" : "grid-cols-[240px_minmax(0,1fr)]"}`}
     >
       <a
         href="#main-content"
@@ -104,10 +110,10 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
       />
       <section
         inert={navigationOpen}
-        className="grid min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[52px_minmax(0,1fr)_28px] overflow-hidden"
+        className="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[52px_minmax(0,1fr)_28px] overflow-hidden"
       >
         <WorkbenchHeader onOpenNavigation={() => setNavigationOpen(true)} />
-        <main id="main-content" tabIndex={-1} className="min-h-0 min-w-0 overflow-y-auto">
+        <main ref={mainRef} id="main-content" tabIndex={-1} className="relative min-h-0 min-w-0 overflow-y-auto overscroll-y-contain">
           {children}
         </main>
         <StatusBar />

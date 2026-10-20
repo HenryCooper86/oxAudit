@@ -80,7 +80,7 @@ Linux machines may also need `npx playwright install --with-deps chromium`.
 repository-relative path; Windows uses the `.exe` binary. Missing prerequisites
 fail with the corresponding build instruction rather than downloading a server.
 
-The three serial scenarios cover:
+The serial scenarios cover:
 
 - Token onboarding without AI; a real source check and persisted review; a
   corrected-file recheck with compatible coverage; restarting the actual server;
@@ -90,6 +90,11 @@ The three serial scenarios cover:
 - A completed empty dependency inventory followed by backend-confirmed
   cancellation before registration; run-list HTTP 503 and malformed preview JSON;
   same-page recovery and export of the original completed receipt.
+- A real 120-finding source run: one workspace scroll owner, keyboard selection
+  and explicit detail activation without losing focus, and pagination returning
+  to the beginning after the requested rows arrive without moving the app frame.
+- The 900px desktop / 899px drawer boundary: collapse/expand, Escape focus
+  restoration, and compact navigation labels staying inside the viewport.
 
 Each scenario owns temporary project, data and configuration directories and an
 ephemeral access token. A loopback proxy refuses optional backend enrichment;

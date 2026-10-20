@@ -36,7 +36,7 @@ export function StatusBar(): JSX.Element {
   }[aiReadiness.status];
 
   return (
-    <footer className="flex h-7 min-w-0 items-center gap-2 border-t border-border bg-surface-secondary px-3 text-[11px] text-text-muted min-[600px]:gap-4">
+    <footer className="flex h-7 min-w-0 items-center gap-2 bg-surface-secondary px-3 text-[11px] text-text-muted min-[600px]:gap-4">
       <div role="status" className="flex min-w-0 flex-1 items-center gap-1.5">
         <span className="sr-only">{status?.tone ?? "neutral"} status:</span>
         <span

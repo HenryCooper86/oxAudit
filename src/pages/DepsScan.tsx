@@ -780,13 +780,9 @@ function VulnerabilityTable({
 }): JSX.Element {
   const localPagination = usePagination(vulnerabilities, 50, selected ? vulnerabilities.indexOf(selected) : -1);
   const pagination = serverPagination ? { ...serverPagination, items: vulnerabilities } : localPagination;
-  const tableRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (tableRef.current) tableRef.current.scrollTop = 0;
-  }, [pagination.page, vulnerabilities]);
   return (
     <div className="min-w-0">
-    <div ref={tableRef} className="max-h-[39rem] min-w-0 overflow-auto" aria-label="Scrollable vulnerable package table">
+    <div className="min-w-0 overflow-x-auto" aria-label="Scrollable vulnerable package table">
       <table className="min-w-[44rem] w-full table-fixed border-collapse text-left">
         <caption className="sr-only">Vulnerable packages and their advisory risk</caption>
         <thead className="border-b border-border bg-surface-secondary text-[12px] font-semibold uppercase tracking-[0.1em] text-text-muted">
@@ -808,11 +804,12 @@ function VulnerabilityTable({
                 tabIndex={0}
                 aria-current={current}
                 aria-label={`Select ${vulnerability.packageName} advisory ${vulnerability.id}`}
+                data-detail-trigger
                 onClick={select}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
-                    select();
+                    event.currentTarget.click();
                   }
                 }}
                 className={`cursor-pointer border-l-2 text-[13px] text-text-secondary transition-colors ${ current ? "border-accent-glow bg-accent-subtle" : "border-transparent hover:bg-surface-hover" }`}

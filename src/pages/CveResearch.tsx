@@ -551,13 +551,14 @@ function CveList({
   onSelect: (id: string) => void;
 }): JSX.Element {
   return (
-    <ul className="max-h-[39rem] overflow-auto" aria-label="CVE results">
+    <ul aria-label="CVE results">
       {items.map((item) => {
         const selected = item.id === selectedId;
         return (
           <li key={item.id}>
             <button
               type="button"
+              data-detail-trigger
               disabled={disabled}
               aria-current={selected ? "true" : undefined}
               onClick={() => void onSelect(item.id)}

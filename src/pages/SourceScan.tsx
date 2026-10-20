@@ -278,7 +278,15 @@ export function SourceScanPage(): JSX.Element {
           setProject(loaded.context);
           setRuns(loaded.runs);
           if (unsaved) { setRun(unsaved); setPagedRun(false); }
-          else if (loaded.run) restoreMetadata(loaded.run);
+          else if (loaded.run) {
+            // Automatic target/context hydration must not clobber the run the
+            // reviewer is already viewing. A same-run restore resets findings,
+            // selection, page, and any open editor — e.g. the fresh-scan
+            // completion reconcile arriving right after the local full result.
+            // Explicit refreshes (review save/reset, recheck, bulk review,
+            // history selection) still call restoreMetadata themselves.
+            if (loaded.run.runId !== run?.runId) restoreMetadata(loaded.run);
+          }
           else { setRun(null); setPagedRun(false); }
           setScanOptions((current) =>
             hydrateSourceScanOptionsFromProject(current, loaded.context.lastOptions),

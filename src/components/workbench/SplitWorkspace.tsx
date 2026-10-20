@@ -1,6 +1,7 @@
 import { ArrowLeft } from "lucide-react";
-import type { JSX, ReactNode } from "react";
+import { useRef, type JSX, type ReactNode } from "react";
 import { usePanelCollapsed } from "../../lib/usePanelCollapsed";
+import { revealWorkspaceDetail } from "../../lib/workspaceScroll";
 import { Button } from "../ui";
 import { PanelCollapseButton } from "./PanelCollapseButton";
 
@@ -16,11 +17,18 @@ export function SplitWorkspace(props: {
   const { panelId, listLabel, list, detailLabel, detail, hasSelection, onBackToList } = props;
   const [listCollapsed, toggleListCollapsed] = usePanelCollapsed(panelId);
   const listContentId = `${panelId}-content`;
+  const detailRef = useRef<HTMLElement>(null);
 
   return (
     <div className={`grid min-h-[28rem] transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${listCollapsed ? "min-[900px]:grid-cols-[44px_minmax(0,1fr)]" : "min-[900px]:grid-cols-[minmax(17rem,0.8fr)_minmax(0,1.35fr)]"}`}>
       <section
         aria-label={listLabel}
+        onClick={(event) => {
+          const target = event.target;
+          if (target instanceof Element && target.closest("[data-detail-trigger]")) {
+            revealWorkspaceDetail(detailRef.current);
+          }
+        }}
         className={`min-w-0 border-border min-[900px]:border-r ${hasSelection ? "max-[900px]:hidden" : ""}`}
       >
         <div className={`hidden h-9 items-center border-b border-border min-[900px]:flex ${listCollapsed ? "justify-center px-1" : "justify-between px-3"}`}>
@@ -44,6 +52,7 @@ export function SplitWorkspace(props: {
         </div>
       </section>
       <section
+        ref={detailRef}
         aria-label={detailLabel}
         className={`min-w-0 ${hasSelection ? "" : "max-[900px]:hidden"}`}
       >

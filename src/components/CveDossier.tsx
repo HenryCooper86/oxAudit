@@ -109,7 +109,7 @@ export function CveDossier({
   };
 
   return (
-    <div className="max-h-[39rem] overflow-y-auto p-4">
+    <div className="p-4">
       <section
         aria-labelledby="cve-overview-heading"
         className="rounded-sm border border-border bg-surface-secondary p-4"

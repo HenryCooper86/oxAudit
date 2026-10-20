@@ -162,7 +162,7 @@ function ExternalReportView({ report }: { report: ExternalBenchmarkReport }): JS
           out of the figures — absent rules, not inaccurate ones.
         </p>
       )}
-      <div className="max-h-[28rem] overflow-auto rounded-sm border border-border" aria-label="External benchmark category table">
+      <div className="overflow-x-auto rounded-sm border border-border" aria-label="External benchmark category table">
         <table className="w-full table-fixed border-collapse text-left text-[12px]">
           <caption className="sr-only">Per-category OWASP Benchmark results</caption>
           <thead className="sticky top-0 border-b border-border bg-surface-secondary text-[11px] font-semibold uppercase tracking-[0.1em] text-text-muted">

@@ -90,11 +90,33 @@ reports a phantom diff and a later Save cannot revert the theme.
 
 - **Sidebar** (240px, `surface-secondary`): Finder/Notes-style. 10px uppercase
   `0.08em` section headers, 13px/500 items on 4px radius, 18px icon slot.
-  Active = `surface-active` + border, with the icon in `accent`. Hover =
-  `accent-subtle`. Settings is pinned in a bordered footer.
-- **Header** (52px): app title in `font-display` italic, then the breadcrumb,
+  Active = `surface-active`, with the icon in `accent`; selection does not add
+  another outlined box. Hover = `accent-subtle`. Settings stays pinned in the footer.
+- **Header** (52px, aligned with the navigation header): app title, breadcrumb,
   then 32×32 header action buttons on the right.
 - **Status bar** (28px): page status dot, AI readiness, version.
+- **Scroll ownership:** the document and app frame stay within the viewport.
+  The workspace owns page scrolling; its header and status bar stay visible.
+  Navigation scrolls independently when it does not fit. Result lists and
+  assessment controls flow with the page rather than adding vertical scroll
+  boxes. Wide tables retain horizontal scrolling; raw code/report previews and
+  the assistant's independent panes may retain bounded scrolling.
+  Explicit result activation reveals an offscreen detail without moving focus;
+  arrow-key selection keeps following the list row. Pagination returns the
+  results container to its beginning after the requested page has rendered.
+  Programmatic detail and page navigation scroll the workspace explicitly:
+  `overflow: hidden` does not prevent `scrollIntoView` from scrolling the document.
+  Positioned frame and scroll containers also contain absolute screen-reader
+  labels, so clipped navigation or long result rows cannot enlarge the document.
+- **Tool navigation:** reset the workspace to the new page heading without
+  moving keyboard focus. Result selection and pagination own in-page scrolling.
+- **Source result ownership:** automatic context refreshes for the same run
+  preserve the displayed findings, selection, page, and unsaved review draft.
+  Explicit run selection and review save/retry still refresh the displayed data.
+- **Panel hierarchy:** dashboard project and launcher groups use secondary
+  surfaces without outlines. The sidebar, header, and footer have no decorative
+  divider borders. Reserve borders for controls, overlays, and structured result
+  panels; use the shared `border` token and retain keyboard-focus indicators.
 
 ## 7. Component primitives
 

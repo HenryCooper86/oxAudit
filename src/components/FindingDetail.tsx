@@ -1,6 +1,6 @@
 import { remediationFor } from "../features/source-scan/remediation";
 import { Bot, Clipboard, ExternalLink, History, RotateCcw, ShieldCheck } from "lucide-react";
-import { useEffect, useState, type JSX } from "react";
+import { useLayoutEffect, useState, type JSX } from "react";
 import { diffLabel, reviewLabel, scopeLabel } from "../features/source-scan/FindingList";
 import { FindingReviewForm } from "../features/source-scan/FindingReviewForm";
 import { fmtDateTime } from "../lib/format";
@@ -41,7 +41,8 @@ export function FindingDetail({
     ? "[REDACTED]"
     : finding.matchText;
 
-  useEffect(() => setReviewing(false), [finding.fingerprint, finding.review?.id]);
+  // Reset before the new finding becomes interactive, not after an editor opens.
+  useLayoutEffect(() => setReviewing(false), [finding.fingerprint, finding.review?.id]);
 
   const discussFinding = () => {
     const content = [

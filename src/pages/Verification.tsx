@@ -92,6 +92,7 @@ export function VerificationPage(): JSX.Element {
                     <li key={claim.id}>
                       <button
                         type="button"
+                        data-detail-trigger
                         onClick={() => setSelectedId(claim.id)}
                         aria-current={selected?.id === claim.id}
                         className={`w-full border-l-2 px-3 py-3 text-left ${selected?.id === claim.id ? "border-accent-glow bg-accent-subtle" : "border-transparent hover:bg-surface-hover"}`}

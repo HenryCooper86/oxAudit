@@ -17,7 +17,7 @@ export function ToolLaunchCard(props: ToolLaunchCardProps): JSX.Element {
     <button
       type="button"
       onClick={onOpen}
-      className="group flex min-h-[108px] w-full flex-col items-start rounded-sm border border-border bg-surface-secondary px-4 py-3.5 text-left transition-colors hover:border-border-strong hover:bg-surface-hover"
+      className="group flex min-h-[108px] w-full flex-col items-start rounded-sm bg-surface-secondary px-4 py-3.5 text-left transition-colors hover:bg-surface-active"
     >
       <div className="flex w-full items-center justify-between gap-3">
         <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">

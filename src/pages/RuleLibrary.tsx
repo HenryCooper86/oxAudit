@@ -258,7 +258,7 @@ export function RuleLibraryPage(): JSX.Element {
                     <summary className="cursor-pointer px-3 py-2 text-[12px] font-medium text-text-primary">
                       {pack.rules.length} rules in this view
                     </summary>
-                    <div className="max-h-80 overflow-auto border-t border-border">
+                    <div className="overflow-x-auto border-t border-border">
                       <table className="w-full min-w-[42rem] text-left text-[12px]">
                         <thead className="sticky top-0 bg-surface-secondary text-text-muted">
                           <tr><th className="px-3 py-2">Rule</th><th className="px-3 py-2">Severity</th><th className="px-3 py-2">Scope</th><th className="px-3 py-2">Fixtures</th></tr>

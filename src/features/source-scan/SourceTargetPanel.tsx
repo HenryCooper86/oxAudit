@@ -160,7 +160,7 @@ export function SourceTargetPanel(props: {
               <p>No previous source scans. Browse or drop a folder to begin.</p>
             </div>
           ) : (
-            <div className="mt-2 max-h-52 overflow-y-auto divide-y divide-border">
+            <div className="mt-2 divide-y divide-border">
               {recentProjects.slice(0, 12).map((recent) => {
                 const selected = recent.canonicalPath === path;
                 const countsAvailable = recent.lastCompletedRunId && recent.countsAvailable !== false;

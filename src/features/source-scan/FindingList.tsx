@@ -1,5 +1,5 @@
 import { FileCode2, KeyRound } from "lucide-react";
-import { useEffect, useRef, type JSX, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, type JSX, type KeyboardEvent } from "react";
 import { SeverityBadge } from "../../components/SeverityBadge";
 import { ResultPagination } from "../../components/workbench/ResultPagination";
 import type { Pagination } from "../../lib/pagination";
@@ -74,8 +74,8 @@ export function FindingList(props: {
   const localPagination = usePagination(findings, 50, activeIndex);
   const pagination = props.serverPagination ? { ...props.serverPagination, items: findings } : localPagination;
 
-  // Keep the focused row visible when the keyboard moves past the viewport.
-  useEffect(() => {
+  // Finish keyboard scrolling before an explicit activation reveals the detail.
+  useLayoutEffect(() => {
     listRef.current
       ?.querySelector('[data-active="true"]')
       ?.scrollIntoView({ block: "nearest" });
@@ -101,6 +101,13 @@ export function FindingList(props: {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
 
     switch (event.key) {
+      case "Enter":
+        if (event.target !== event.currentTarget || activeIndex < 0) return;
+        event.preventDefault();
+        listRef.current
+          ?.querySelector<HTMLButtonElement>('[data-active="true"] [data-detail-trigger]')
+          ?.click();
+        return;
       case "j":
       case "ArrowDown":
         event.preventDefault();
@@ -166,7 +173,7 @@ export function FindingList(props: {
         aria-multiselectable={bulkEnabled || undefined}
         tabIndex={0}
         onKeyDown={onKeyDown}
-        className="max-h-[42rem] divide-y divide-border overflow-y-auto outline-none focus-visible:ring-1 focus-visible:ring-border-focus"
+        className="divide-y divide-border outline-none focus-visible:ring-1 focus-visible:ring-border-focus"
       >
         {pagination.items.map((finding, index) => {
           const Icon = finding.category === "secret" ? KeyRound : FileCode2;
@@ -202,6 +209,7 @@ export function FindingList(props: {
               )}
               <button
                 type="button"
+                data-detail-trigger
                 onClick={() => onSelect(finding.fingerprint)}
                 // The row is reachable through the listbox; taking it out of the
                 // tab order stops Tab walking every finding one at a time.

@@ -277,7 +277,7 @@ export function ComplianceCenterPage(): JSX.Element {
           <div id="compliance-history-content" className={historyCollapsed ? "min-[1000px]:hidden" : undefined}>
           {!history ? <div className="p-3"><InlineState compact tone="running" title="Loading history" /></div> : null}
           {history?.length === 0 ? <div className="p-3"><InlineState compact tone="empty" title="No assessments yet" /></div> : null}
-          <div className="max-h-[42rem] overflow-y-auto">
+          <div>
             {(history ?? []).map((assessment) => (
               <button key={assessment.id} type="button" onClick={() => void loadAssessment(assessment.id)} className={`w-full border-b border-border px-3 py-3 text-left last:border-b-0 hover:bg-surface-hover ${selectedView?.assessment.id === assessment.id ? "bg-accent-subtle" : ""}`}>
                 <p className="truncate text-[11px] font-semibold text-text-primary">{assessment.profileName}</p><p className="mt-1 truncate font-mono text-[9px] text-text-muted">{assessment.targetLabel}</p><div className="mt-2 flex items-center justify-between text-[10px] text-text-muted"><span>{new Date(assessment.createdAtMs).toLocaleDateString()}</span><span>{assessment.summary.evidenceCoveragePercent}% coverage</span></div>
@@ -294,7 +294,7 @@ export function ComplianceCenterPage(): JSX.Element {
             <>
               <header className="border-b border-border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-wide text-accent">{selectedView.assessment.domain}</p><h2 className="mt-1 text-[14px] font-semibold text-text-primary">{selectedView.assessment.profileName} · {selectedView.assessment.profileVersion}</h2><p className="mt-1 break-all font-mono text-[10px] text-text-muted">{selectedView.assessment.targetLabel}</p></div><a href={selectedView.assessment.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"><BookOpen size={12} aria-hidden="true" />Official source</a></div><div className="mt-4"><SummaryCards assessment={selectedView.assessment} /></div></header>
               <div className="border-b border-warning-border bg-warning-subtle px-4 py-2 text-[10px] leading-relaxed text-text-secondary">{selectedView.assessment.disclaimer}</div>
-              <div className="max-h-[50rem] overflow-y-auto [content-visibility:auto]">
+              <div className="[content-visibility:auto]">
                 {selectedView.assessment.controls.map((control) => <ControlReviewCard key={`${selectedView.assessment.id}:${control.controlId}`} assessmentId={selectedView.assessment.id} control={control} latestReview={latestReviews.get(control.controlId)} defaultAuthor={assessor || selectedView.assessment.metadata.assessor} onSaved={recordReview} />)}
               </div>
             </>

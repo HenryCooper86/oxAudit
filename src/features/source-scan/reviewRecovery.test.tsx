@@ -1,12 +1,12 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { sourceMetadata, sourcePage } from "../../../tests/fixtures/pagedResults";
 import { projectContext, projectSettings, sourceResult } from "../../../tests/fixtures/projectHome";
 import { api } from "../../lib/api";
 import { useAppStore } from "../../lib/stores";
-import type { Finding, ReviewRecord, ScanRunDetail } from "../../lib/types";
+import type { Finding, ReviewRecord, ScanRunDetail, SourceRunMetadata } from "../../lib/types";
 import { SourceScanPage } from "../../pages/SourceScan";
-import { useScanWorkStore } from "../project-home/coordinator";
+import { reconcileBackendWork, useScanWorkStore } from "../project-home/coordinator";
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
@@ -104,4 +104,42 @@ test("a failed review refresh cannot publish its recovery error into a different
   expect(screen.queryByText("The review was saved, but refreshed results could not be loaded.")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Second project finding" })).toBeInTheDocument();
+});
+
+test("a late automatic metadata refresh keeps the open review editor and typed draft for the displayed run", async () => {
+  const base = vi.mocked(api.loadSourceRunMetadata).getMockImplementation()!;
+  let late = false;
+  let resolveLate!: (value: SourceRunMetadata) => void;
+  vi.mocked(api.loadSourceRunMetadata).mockImplementation(async (id) => {
+    if (late) return new Promise<SourceRunMetadata>((resolve) => { resolveLate = resolve; });
+    return base(id);
+  });
+
+  render(<SourceScanPage />);
+  await openAcceptedRiskReview();
+  // A distinct draft makes a remount (which resets the form) observable.
+  fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Survives late hydration" } });
+  expect(screen.getByLabelText("Decision")).toHaveValue("acceptedRisk");
+
+  // Simulate the fresh-scan completion reconcile: backend work re-runs the
+  // automatic target hydration for the already-displayed run.
+  await act(async () => {
+    late = true;
+    reconcileBackendWork({
+      active: null,
+      recent: [{
+        operationId: "late", kind: "source", target: original.summary.path,
+        status: "completed", runId: "s", startedAtMs: 1, updatedAtMs: 2,
+      }],
+    });
+  });
+
+  // The re-hydration loads the same run's metadata; let it resolve.
+  await waitFor(() => expect(resolveLate).toBeDefined());
+  await act(async () => resolveLate(sourceMetadata(durableRun)));
+
+  // The open editor, its typed draft, and the selection all survive.
+  expect(screen.getByLabelText("Decision")).toHaveValue("acceptedRisk");
+  expect(screen.getByLabelText("Reason")).toHaveValue("Survives late hydration");
+  expect(screen.getByRole("tab", { name: "Open 1" })).toBeInTheDocument();
 });

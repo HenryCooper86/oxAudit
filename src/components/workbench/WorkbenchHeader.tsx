@@ -61,7 +61,7 @@ export function WorkbenchHeader({
   const meta = PAGE_META[page];
 
   return (
-    <header className="flex h-[52px] items-center gap-3 border-b border-border bg-surface-primary px-4">
+    <header className="flex h-[52px] items-center gap-3 bg-surface-primary px-4">
       <button
         id="navigation-menu-button"
         type="button"

@@ -301,13 +301,14 @@ export function HistoryScanPage(): JSX.Element {
                 listLabel="Historical secrets"
                 list={
                   <>
-                  <ul className="max-h-[36rem] overflow-auto" aria-label="Historical secret findings">
+                  <ul aria-label="Historical secret findings">
                     {pagination.items.map((finding) => {
                       const active = selected?.fingerprint === finding.fingerprint;
                       return (
                         <li key={finding.fingerprint}>
                           <button
                             type="button"
+                            data-detail-trigger
                             aria-current={active ? "true" : undefined}
                             onClick={() => setSelectedFingerprint(finding.fingerprint)}
                             className={`block w-full border-b border-border px-3 py-2.5 text-left transition-colors ${active ? "bg-accent-subtle" : "hover:bg-surface-hover"}`}

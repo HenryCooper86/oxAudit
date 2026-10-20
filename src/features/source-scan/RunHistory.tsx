@@ -22,7 +22,7 @@ export function RunHistory(props: {
       {runs.length === 0 ? (
         <p className="px-3 py-4 text-[12px] text-text-muted">No previous source scans.</p>
       ) : (
-        <div className="max-h-56 overflow-y-auto divide-y divide-border">
+        <div className="divide-y divide-border">
           {runs.map((run) => {
             const selected = selectedRunId === run.runId;
             const loading = loadingRunId === run.runId;

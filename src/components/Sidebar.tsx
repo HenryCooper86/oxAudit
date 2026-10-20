@@ -107,14 +107,14 @@ export function Sidebar({
         title={compact ? label : undefined}
         aria-current={active ? "page" : undefined}
         onClick={() => selectPage(itemPage)}
-        className={`mb-0.5 flex w-full items-center gap-2 rounded-sm border px-2.5 py-[7px] text-left text-[13px] leading-tight font-medium transition-colors duration-150 ${compact ? "min-[901px]:justify-center min-[901px]:px-1" : ""} ${ active ? "border-border bg-surface-active text-text-primary" : "border-transparent text-text-primary hover:bg-accent-subtle" }`}
+        className={`mb-0.5 flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-[13px] leading-tight font-medium transition-colors duration-150 ${compact ? "min-[900px]:justify-center min-[900px]:px-1" : ""} ${ active ? "bg-surface-active text-text-primary" : "text-text-primary hover:bg-accent-subtle" }`}
       >
         <span
           className={`inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center ${ active ? "text-accent" : "text-text-muted" }`}
         >
           <Icon aria-hidden="true" size={15} />
         </span>
-        <span className={`min-w-0 flex-1 truncate ${compact ? "min-[901px]:sr-only" : ""}`}>
+        <span className={`min-w-0 flex-1 truncate ${compact ? "min-[900px]:sr-only" : ""}`}>
           {label}
         </span>
       </button>
@@ -134,7 +134,7 @@ export function Sidebar({
       )}
       <aside
         aria-label="Primary navigation"
-        className={`z-40 flex h-full flex-col border-r border-border bg-surface-secondary transition-[width,transform] max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 max-[900px]:w-60 ${compact ? "w-[52px]" : "w-60"} ${ open ? "max-[900px]:visible max-[900px]:translate-x-0" : "max-[900px]:invisible max-[900px]:-translate-x-full" }`}
+        className={`relative z-40 flex h-full min-h-0 flex-col overflow-hidden bg-surface-secondary transition-[width,transform] max-[900px]:fixed max-[900px]:inset-y-0 max-[900px]:left-0 max-[900px]:w-60 ${compact ? "w-[52px]" : "w-60"} ${ open ? "max-[900px]:visible max-[900px]:translate-x-0" : "max-[900px]:invisible max-[900px]:-translate-x-full" }`}
       >
         <div className="flex items-center justify-end px-2 pt-1.5 min-[900px]:hidden">
           <button
@@ -148,7 +148,7 @@ export function Sidebar({
         </div>
 
         <div
-          className={`hidden h-[42px] shrink-0 items-center border-b border-border px-2 min-[901px]:flex ${compact ? "justify-center" : "justify-between"}`}
+          className={`hidden h-[52px] shrink-0 items-center px-2 min-[900px]:flex ${compact ? "justify-center" : "justify-between"}`}
         >
           {!compact && (
             <span className="pl-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
@@ -165,14 +165,14 @@ export function Sidebar({
 
         <nav
           id="primary-navigation-content"
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pt-1.5"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain px-2 pt-1.5"
         >
           {NAVIGATION_GROUPS.map((group) => (
             <div
               key={group.label}
-              className={compact ? "min-[901px]:border-b min-[901px]:border-border min-[901px]:py-1" : undefined}
+              className={compact ? "min-[900px]:py-1" : undefined}
             >
-              <div className={compact ? "px-2.5 pb-1 pt-2.5 min-[901px]:hidden" : "px-2.5 pb-1 pt-2.5"}>
+              <div className={compact ? "px-2.5 pb-1 pt-2.5 min-[900px]:hidden" : "px-2.5 pb-1 pt-2.5"}>
                 <SectionLabel>{group.label}</SectionLabel>
               </div>
               {group.items.map(navigationButton)}
@@ -180,7 +180,7 @@ export function Sidebar({
           ))}
         </nav>
 
-        <div className="shrink-0 border-t border-border px-2 py-1.5">
+        <div className="shrink-0 px-2 py-1.5">
           {navigationButton({ page: "settings", label: "Settings", icon: Settings })}
         </div>
       </aside>

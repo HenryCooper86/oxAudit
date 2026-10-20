@@ -47,11 +47,11 @@ export function ServerTokenGate({ onConnected }: { onConnected: () => void }): J
       role="dialog"
       aria-modal="true"
       aria-labelledby="server-token-title"
-      className="flex min-h-screen items-center justify-center bg-surface-primary p-6"
+      className="flex h-full flex-col overflow-y-auto bg-surface-primary p-6"
     >
       <form
         onSubmit={submit}
-        className="w-full max-w-sm space-y-4 rounded-sm border border-border bg-surface-secondary p-5"
+        className="m-auto w-full max-w-sm shrink-0 space-y-4 rounded-sm border border-border bg-surface-secondary p-5"
       >
         <div className="flex items-center gap-2">
           <ShieldCheck size={16} aria-hidden="true" className="text-accent" />
