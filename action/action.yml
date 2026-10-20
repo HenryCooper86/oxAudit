@@ -1,10 +1,9 @@
 # The oxAudit GitHub Action: download a pinned release of oxaudit-cli,
 # verify it against the release's SHA256SUMS.txt, and run it.
 #
-# Until the repository is public this action is inert (release assets on a
-# private repository are not downloadable by consumers); it ships now so the
-# first published tag is immediately usable as:
-#   uses: HenryCooper86/oxAudit/action@<tag>
+# Public release assets are available. Pin the action to a reviewed commit
+# and select a published version that includes the runner's platform;
+# docs/getting-started.md lists the available artifacts and verification limits.
 name: oxAudit Security Scan
 description: Scan source, dependencies, and binaries for vulnerabilities and leaked credentials — fully local.
 branding:

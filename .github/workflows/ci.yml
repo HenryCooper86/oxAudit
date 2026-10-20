@@ -132,6 +132,40 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 
+      - name: Set up Node.js for browser smoke
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Build the real browser workbench
+        if: runner.os == 'Linux'
+        run: |
+          npm ci
+          npm run build
+          cargo build --locked --manifest-path src-tauri/Cargo.toml --all-features --bin oxaudit-server
+
+      - name: Install Chromium and browser system dependencies
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+
+      - name: Exercise browser workflows against the real backend
+        if: runner.os == 'Linux'
+        run: npm run test:e2e
+
+      - name: Retain browser smoke diagnostics
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
       # Each language grammar is an optional dependency behind a `grammar-*`
       # feature, so a size-constrained build can leave some out. Nothing in the
       # test suite exercises those configurations — the tests assume every

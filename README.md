@@ -20,20 +20,45 @@ and a finding on a workstation are the same finding.
 
 ## Install
 
-Start with the **local source-build pilot**. The
-[Getting started guide](docs/getting-started.md) lists repository access,
-Node 22.22.2, the pinned Rust 1.97.1 toolchain, and platform-specific native
-prerequisites. Do not assume that a public installer or container image is
-available; local builds do not establish a signed release.
+Two real paths, and they are different builds:
 
-```bash
-npm ci
-rustup show active-toolchain
-npm run build
-cargo build --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli
-npm run pilot:smoke -- --cli ./src-tauri/target/debug/oxaudit-cli
-npm run tauri dev
-```
+- **Published release.** [v0.1.0](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.1.0)
+  (2026-09-26) ships prebuilt `oxaudit-cli` binaries for Linux x86_64,
+  macOS x86_64/arm64, and Windows x86_64, plus unsigned Linux x86_64
+  desktop packages. On macOS/Linux the installer verifies the release
+  checksum before installing:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/scripts/install.sh | sh
+  ```
+
+  Windows x86_64: download `oxaudit-cli-windows-x86_64.exe` from the
+  release page, or use the [composite Action](action/action.yml) in CI.
+- **Build from source.** Needed for the desktop pilot (macOS/Windows
+  bundles), the headless browser server, a Linux aarch64 CLI, and anything
+  newer than the v0.1.0 tag — `main` still declares 0.1.0 while being
+  newer code. The [Getting started guide](docs/getting-started.md) lists
+  Node 22.22.2, the pinned Rust 1.97.1 toolchain, and platform-specific
+  native prerequisites.
+
+  ```bash
+  npm ci
+  rustup show active-toolchain
+  npm run build
+  cargo build --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli
+  npm run pilot:smoke -- --cli ./src-tauri/target/debug/oxaudit-cli
+  npm run tauri dev
+  ```
+
+The [platform availability and verification matrix](docs/getting-started.md#platform-availability-and-verification)
+names every published artifact exactly, separates checksum integrity from
+minisign/Sigstore/provenance publisher identity, and states what is not
+published: macOS/Windows desktop installers, a Linux aarch64 CLI, and a
+publicly pullable container image. CLI and Linux releases publish without
+macOS/Windows credentials; native desktop-signing gates stay armed only for
+the optional desktop-bundle jobs (currently disabled). The
+[release checklist](docs/release-checklist.md) records publication state and
+dated verification evidence.
 
 For browser access, build and run the headless server using
 [the server guide](docs/headless-server.md). It serves the workbench through
@@ -49,12 +74,6 @@ records benchmark and performance methods.
 AI is optional. Local pilot bundles do not establish native signing or
 notarization; [the QA log](docs/qa/2026-09-07-everyday-workflow.md) records observed
 artifacts and limits.
-
-Publishable release tags still require macOS signing/notarization and Windows
-Authenticode signing. Missing credentials stop publication; unsigned manual dry
-runs cannot publish. Release artifacts receive SHA-256 checksums, provenance
-attestations, and SBOMs. No release is
-claimed by these local pilot instructions.
 
 ## Project home
 
@@ -220,7 +239,7 @@ with a reason, an expiry, and a pull request.
 | **CI annotations** | Under GitHub Actions the CLI annotates findings on the pull request's files automatically and appends a severity-table job summary — no inputs, no extra step; SARIF upload to code scanning stays available and opt-in |
 | **Editor integration** | A VS Code extension ([`editors/vscode/`](editors/vscode)) scans the open workspace with the same CLI and reports findings as native diagnostics, with severity mapping and a status-bar scan control |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
-| **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, shipped in the same container image ([ADR 0004](docs/architecture/adr/0004-headless-server.md)) |
+| **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, designed to ship in the project's container image ([ADR 0004](docs/architecture/adr/0004-headless-server.md)); no public image is published yet |
 
 ## Screens
 
@@ -465,9 +484,10 @@ Parser and range semantics follow the [npm lockfile documentation](https://githu
 
 Use the [complete consumer workflow](examples/ci/oxaudit.yml). The
 [installation guide](docs/getting-started.md#complete-consumer-ci-example) explains
-private tool access, fork restrictions, main baseline authority, canonical
-single-run JSON/SARIF export, and report retention. Setting the repository
-variable `OXAUDIT_CODE_SCANNING=true` additionally uploads the SARIF to code
+the pinned tool checkout and its read token, fork restrictions, main baseline
+authority, canonical single-run JSON/SARIF export, and report retention.
+Setting the repository variable `OXAUDIT_CODE_SCANNING=true` additionally
+uploads the SARIF to code
 scanning, so findings appear inline in pull requests and in the Security tab —
 opt-in because repositories without that capability would fail the step. oxAudit's
 own [self-scan](.github/workflows/self-scan.yml) retains downloadable SARIF on

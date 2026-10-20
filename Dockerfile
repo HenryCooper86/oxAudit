@@ -1,19 +1,12 @@
-# oxAudit command line + headless server — the no-install path for any
-# machine with a container runtime.
+# oxAudit command line + headless server container build recipe.
 #
-#   # The CLI, mounted on the project to scan:
-#   docker run --rm -v "$PWD:/workspace" ghcr.io/henrycooper86/oxaudit \
-#     scan /workspace --format sarif --fail-on high
+# The release workflow can build native linux/amd64 + linux/arm64 images.
+# This is not evidence of a publicly pullable image: see docs/getting-started.md
+# for the dated availability matrix and docs/release-checklist.md for the
+# required digest, signature and anonymous-pull checks.
 #
-#   # The full GUI in a browser (token printed on startup):
-#   docker run --rm -p 8080:8080 -v oxaudit-data:/data \
-#     ghcr.io/henrycooper86/oxaudit --web-root /app/dist
-#
-# Released as a multi-architecture image (linux/amd64 + linux/arm64) by the
-# release workflow; each architecture is built natively on its own runner,
-# never under emulation. The release notes pin the image digest, and the
-# image is cosign-signed with the same keyless identity as the release
-# binaries — see SECURITY.md for verification.
+# The default entrypoint is the CLI. A reviewed image can run the browser
+# workbench with --entrypoint oxaudit-server; its startup log supplies the token.
 
 # Both base images are pinned and swappable in one place; the ARGs live in
 # the global scope (before any FROM) so both FROM lines can see them.

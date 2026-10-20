@@ -1,10 +1,15 @@
 # Local pilot protocol
 
 Use the [installation guide](getting-started.md) and the [inert fixture
-instructions](../examples/pilot/README.md). No AI setup, live credentials, or
-fixture execution is required. This protocol collects manual feedback only;
-oxAudit adds no telemetry, and no external engineer feedback has been collected
-by this change.
+instructions](../examples/pilot/README.md). The desktop/browser workflow tasks
+below target the **current checkout**, built from source: published v0.1.0 does
+not establish acceptance of later workbench changes. Evaluate published-release
+installation separately and record the exact artifact/version. Do not combine a
+release CLI installation result with a different build's GUI acceptance record.
+
+No AI setup, live credentials, or fixture execution is required. This protocol
+collects manual feedback only; oxAudit adds no telemetry. Prepared forms and
+automated browser receipts are not external participant feedback.
 
 ## Deterministic command-line smoke
 
@@ -56,6 +61,49 @@ The consumer workflow shell contracts run separately with `npm run test:ci-shell
 in the [documented Ubuntu/Bash/jq environment](getting-started.md#contributor-workflow-shell-tests).
 They remain required in repository CI and are not part of the portable default
 `npm test` installation sequence.
+
+## Automated browser smoke
+
+Run the current production frontend in real Chromium against a real local
+`oxaudit-server`, separately from the component tests in `npm test`:
+
+```bash
+npm ci
+npm run build
+cargo build --locked --features server --manifest-path src-tauri/Cargo.toml --bin oxaudit-server
+npx playwright install chromium
+npm run test:e2e
+```
+
+Linux machines may also need `npx playwright install --with-deps chromium`.
+`OXAUDIT_E2E_SERVER` can select an already built server by absolute or
+repository-relative path; Windows uses the `.exe` binary. Missing prerequisites
+fail with the corresponding build instruction rather than downloading a server.
+
+The three serial scenarios cover:
+
+- Token onboarding without AI; a real source check and persisted review; a
+  corrected-file recheck with compatible coverage; restarting the actual server;
+  reopening the saved review and exporting its exact run as a validated SARIF file.
+- Delayed metadata for an older saved source run, superseded by target changes
+  and a fresh scan. Assertions check run identity as well as finding contents.
+- A completed empty dependency inventory followed by backend-confirmed
+  cancellation before registration; run-list HTTP 503 and malformed preview JSON;
+  same-page recovery and export of the original completed receipt.
+
+Each scenario owns temporary project, data and configuration directories and an
+ephemeral access token. A loopback proxy refuses optional backend enrichment;
+this is not an OS network sandbox or isolation from the OS credential store.
+No fixture JavaScript or package installation is executed. Teardown removes the
+owned temporary state, including when server startup fails.
+
+The Linux Rust CI job builds the workbench and executes the same command.
+Failed runs retain traces, screenshots and backend diagnostics in `test-results/`.
+`playwright-report/` contains the HTML report. CI retains these directories for
+14 days. Run only one suite per output
+directory at a time. These are automated maintainer checks, not proof of native
+desktop dialogs, screen-reader announcements, external acceptance or every
+supported platform.
 
 ## Manual desktop tasks
 

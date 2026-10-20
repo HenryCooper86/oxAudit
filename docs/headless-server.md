@@ -23,16 +23,15 @@ The first start generates an access token, prints it, and stores it
 (`data/server-token`, chmod 600) so restarts reuse it. Open the printed
 address in a browser and paste the token at the gate.
 
-With the published container the GUI is one flag away:
+### Container distribution
 
-```bash
-docker run --rm -p 8080:8080 -v oxaudit-data:/data \
-  --entrypoint oxaudit-server ghcr.io/henrycooper86/oxaudit
-# then open http://localhost:8080 and paste the token from the container log
-```
-
-The same image is also the CLI: `docker run --rm -v "$PWD:/workspace"
-ghcr.io/henrycooper86/oxaudit scan /workspace --format sarif`.
+Do not rely on an anonymous pull from `ghcr.io/henrycooper86/oxaudit`:
+published v0.1.0 includes no container reference, and an anonymous registry
+request was refused on 2026-10-20. Use the source-build commands above for
+the current browser workbench. The
+[installation matrix](getting-started.md#platform-availability-and-verification)
+and [release checklist](release-checklist.md#container-availability) distinguish
+workflow build capabilities from an actually available, verified distribution.
 
 ## Flags and environment
 

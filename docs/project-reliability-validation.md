@@ -143,3 +143,45 @@ large-project soak behavior and external participant acceptance were not exercis
 in this pass. The CLI smoke refused optional enrichment requests; the separate
 live dependency receipt used online advisory data. Injected transport failures
 establish frontend recovery behavior, not a general network-availability guarantee.
+
+## Installation and automated browser validation, 2026-10-20
+
+The adoption pass reconciles published-release instructions with source-build
+instructions and adds a Chromium smoke suite against the real headless backend.
+The [pilot protocol](pilot-validation.md#automated-browser-smoke) documents setup,
+scenarios, isolated state and diagnostics; the
+[release checklist](release-checklist.md#exercised-verification-2026-10-20-macos-arm64)
+records downloaded-release verification separately.
+
+| Check | Observed result |
+| --- | --- |
+| `npm test` | 173 tooling tests and 483 component tests passed |
+| `npm run build` and locked server-feature debug build | Passed |
+| `npm run check` | Passed |
+| `actionlint .github/workflows/ci.yml` and action-pin check | Passed; all 45 action references pinned |
+| `npm run test:e2e && npm run test:e2e` | Both consecutive runs passed all three scenarios, 13.5 seconds per run; retries disabled |
+| Absent and non-executable server overrides | Both failed with exit 1 and actionable prerequisite/spawn diagnostics; zero owned backend directories left |
+| Blank participant form init/validate | Prepared with zero observations; participant acceptance remains incomplete |
+
+The browser suite uses real scans, persistence, review writes, process restart and
+on-disk SARIF exports. It verifies distinct run identities rather than merely
+non-empty screens. Cancellation must succeed in the backend before the held
+command is released; that command must return a cancellation error, and the
+export must retain the original completed receipt's identity. Export recovery
+covers a run-list HTTP 503 and a successful-HTTP response with malformed preview
+JSON. Source cases hold actual older saved-run metadata across target navigation
+and a fresh scan, then check the displayed identity after the response and paint.
+
+Independent review corrected false-pass gaps in the initial scenarios and a
+missing-prerequisite temporary-directory leak. Fault diagnostics were exercised:
+the attachment API now produces backend logs alongside screenshots and traces.
+Only one runner may own an output directory: overlapping diagnostic runs removed
+shared trace files during initial validation; the final two exclusive runs both
+passed without manual artifact cleanup.
+
+This is local macOS arm64 Chromium/server evidence, not a hosted Linux CI result.
+The Linux Rust job is wired to run the same suite; its actual hosted outcome must
+come from a later GitHub run. Native desktop dialogs, Windows/Linux desktop
+acceptance, assistive technology, large-project soak behavior and external
+participant sessions were not exercised by these browser checks. Filesystem
+state is temporary; the suite is not an OS credential-store or network sandbox.
