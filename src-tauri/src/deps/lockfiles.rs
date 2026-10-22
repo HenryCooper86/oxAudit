@@ -225,7 +225,38 @@ fn parse_package_lock(content: &str) -> Result<Vec<(String, String)>, String> {
                         "invalid package-lock.json: dependency {name:?} has no version"
                     ));
                 }
-                out.push((name.clone(), version.to_string()));
+                // v1 aliases record the registry identity as `npm:name@version`.
+                // An alias that cannot resolve to a real registry identity —
+                // a bare scope, a missing name or version, or a version that
+                // is a local or remote source — is malformed data, not an
+                // entry to fabricate or silently drop.
+                if let Some(aliased) = version.strip_prefix("npm:") {
+                    let (target, target_version) = split_name_range(aliased);
+                    let readable_name = !target.is_empty()
+                        && !target.contains('\\')
+                        && if let Some(scoped) = target.strip_prefix('@') {
+                            scoped
+                                .split_once('/')
+                                .is_some_and(|(scope, name)| !scope.is_empty() && !name.is_empty())
+                        } else {
+                            !target.contains('@')
+                        };
+                    if !readable_name
+                        || target_version.is_empty()
+                        || nonregistry_protocol(&target_version)
+                    {
+                        return Err(format!(
+                            "invalid package-lock.json: dependency {name:?} has an unresolved alias version"
+                        ));
+                    }
+                    out.push((target, target_version));
+                } else if !version.contains(':') && !version.contains('/') {
+                    // Git, file, and link resolutions keep their URL or path
+                    // in the version field; they have no registry version to
+                    // query and are excluded from the inventory rather than
+                    // reported with a false one.
+                    out.push((name.clone(), version.to_string()));
+                }
                 walk_deps(val, out)?;
             }
         }
@@ -340,6 +371,68 @@ struct YamlPackageLockfile {
     packages: Option<YamlPackages>,
 }
 
+/// pnpm lockfiles across versions carry a `lockfileVersion` marker plus one
+/// of a few known inventory sections. The envelope check separates a real
+/// lockfile (possibly empty) from arbitrary YAML that happens to sit in a
+/// file named `pnpm-lock.yaml`.
+#[derive(serde::Deserialize)]
+struct PnpmLockfile {
+    #[serde(rename = "lockfileVersion")]
+    lockfile_version: Option<serde_json::Value>,
+    packages: Option<YamlPackages>,
+    importers: Option<serde_json::Value>,
+    snapshots: Option<serde_json::Value>,
+    specifiers: Option<serde_json::Value>,
+}
+
+/// pnpm writes its format marker as an unquoted YAML number (`5.4`) or a
+/// quoted string (`'6.0'`, `'9.0'`); YAML numbers arrive as f64 and string
+/// forms must parse as numbers. Any positive numeric marker identifies a
+/// pnpm lockfile — a whitelist would reject valid past (5.2) and future
+/// markers, and f64 round-trips like 6.0/9.0 would not match a string list.
+fn positive_pnpm_lockfile_version(value: &serde_json::Value) -> bool {
+    let number = match value {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(text) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    number.is_some_and(|number| number.is_finite() && number > 0.0)
+}
+
+/// Explicit non-registry resolution specifiers. `git@` covers scp-style git
+/// URLs, `github:`/`gitlab:`/`bitbucket:` the npm shorthand host forms.
+fn nonregistry_protocol(text: &str) -> bool {
+    [
+        "link:",
+        "file:",
+        "workspace:",
+        "git+",
+        "http://",
+        "https://",
+        "git://",
+        "git@",
+        "github:",
+        "gitlab:",
+        "bitbucket:",
+    ]
+    .iter()
+    .any(|protocol| text.starts_with(protocol))
+}
+
+/// Registry evidence inside an importer or specifier value. The default is
+/// registry: numbers and plain strings — including alias identities such as
+/// `@aspect-test/a@5.0.2` and peer-suffixed versions like
+/// `18.2.0(react@18.2.0)`, which contain slashes — prove a registry
+/// dependency. Only the explicit non-registry protocols above are local
+/// resolutions that carry no registry version.
+fn registry_version_evidence(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(_) => true,
+        serde_json::Value::String(text) => !nonregistry_protocol(text),
+        _ => false,
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct PipfileLockfile {
     default: Option<YamlPackages>,
@@ -393,7 +486,145 @@ fn parse_yaml_lockfile<T: serde::de::DeserializeOwned>(
 }
 
 fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
-    let root: YamlPackageLockfile = parse_yaml_lockfile(content, "pnpm-lock.yaml")?;
+    let root: PnpmLockfile = parse_yaml_lockfile(content, "pnpm-lock.yaml")?;
+    // A real pnpm lockfile always declares its format version and at least
+    // one of the known inventory sections; without both, the document is not
+    // a readable pnpm inventory and must not scan as a complete empty one.
+    if !root
+        .lockfile_version
+        .as_ref()
+        .is_some_and(positive_pnpm_lockfile_version)
+    {
+        return Err("invalid pnpm-lock.yaml: unsupported or missing lockfileVersion".into());
+    }
+    if root.packages.is_none()
+        && root.importers.is_none()
+        && root.snapshots.is_none()
+        && root.specifiers.is_none()
+    {
+        return Err("invalid pnpm-lock.yaml: no packages or importers inventory".into());
+    }
+    // The inventory sections are mappings in every pnpm format; a scalar
+    // in their place (e.g. `importers: false`) is not a readable inventory.
+    if let Some(importers) = &root.importers {
+        if importers.as_object().is_none() {
+            return Err("invalid pnpm-lock.yaml: importers must be a mapping".into());
+        }
+    }
+    if let Some(snapshots) = &root.snapshots {
+        if snapshots.as_object().is_none() {
+            return Err("invalid pnpm-lock.yaml: snapshots must be a mapping".into());
+        }
+    }
+    if let Some(specifiers) = &root.specifiers {
+        if specifiers.as_object().is_none() {
+            return Err("invalid pnpm-lock.yaml: specifiers must be a mapping".into());
+        }
+    }
+    // An omitted or empty packages map is only a complete empty inventory
+    // when nothing else declares a registry dependency. Importers and
+    // specifiers that still pin registry versions, or a non-empty snapshots
+    // map, mean the packages section was lost or truncated.
+    if root
+        .packages
+        .as_ref()
+        .map_or(true, |packages| packages.is_empty())
+    {
+        if let Some(importers) = root
+            .importers
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+        {
+            for importer in importers.values() {
+                let importer = importer
+                    .as_object()
+                    .ok_or("invalid pnpm-lock.yaml: importer entries must be mappings")?;
+                for field in ["dependencies", "devDependencies", "optionalDependencies"] {
+                    let Some(declarations) = importer.get(field) else {
+                        continue;
+                    };
+                    let declarations = declarations.as_object().ok_or(
+                        "invalid pnpm-lock.yaml: importer dependency sections must be mappings",
+                    )?;
+                    for entry in declarations.values() {
+                        let evidence = match entry {
+                            serde_json::Value::String(_) | serde_json::Value::Number(_) => {
+                                registry_version_evidence(entry)
+                            }
+                            serde_json::Value::Object(_) => {
+                                let entry = entry.as_object().expect("matched object");
+                                for key in ["version", "specifier"] {
+                                    if let Some(field_value) = entry.get(key) {
+                                        if !matches!(
+                                            field_value,
+                                            serde_json::Value::String(_)
+                                                | serde_json::Value::Number(_)
+                                        ) {
+                                            return Err(format!(
+                                                "invalid pnpm-lock.yaml: importer {key} must be a string or number"
+                                            ));
+                                        }
+                                    }
+                                }
+                                // The actual resolution wins: a local link
+                                // version overrides a registry-looking
+                                // specifier, and a registry version survives
+                                // a non-registry specifier (tarballs keep
+                                // their URL in the specifier).
+                                match entry.get("version") {
+                                    Some(version) => registry_version_evidence(version),
+                                    None => match entry.get("specifier") {
+                                        Some(specifier) => registry_version_evidence(specifier),
+                                        None => {
+                                            return Err("invalid pnpm-lock.yaml: importer dependency entry declares neither version nor specifier".into())
+                                        }
+                                    },
+                                }
+                            }
+                            _ => {
+                                return Err("invalid pnpm-lock.yaml: importer dependency entries must be strings, numbers, or specifier/version objects".into())
+                            }
+                        };
+                        if evidence {
+                            return Err("invalid pnpm-lock.yaml: importers declare registry dependencies but the packages inventory is missing".into());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(specifiers) = root
+            .specifiers
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+        {
+            for spec in specifiers.values() {
+                if !matches!(
+                    spec,
+                    serde_json::Value::String(_) | serde_json::Value::Number(_)
+                ) {
+                    return Err(
+                        "invalid pnpm-lock.yaml: specifier values must be strings or numbers"
+                            .into(),
+                    );
+                }
+                if registry_version_evidence(spec) {
+                    return Err("invalid pnpm-lock.yaml: specifiers declare registry dependencies but the packages inventory is missing".into());
+                }
+            }
+        }
+        if let Some(snapshots) = root
+            .snapshots
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+        {
+            if !snapshots.is_empty() {
+                return Err(
+                    "invalid pnpm-lock.yaml: snapshots exist but the packages inventory is missing"
+                        .into(),
+                );
+            }
+        }
+    }
     let mut out = Vec::new();
     if let Some(packages) = root.packages {
         for k in packages.keys() {
@@ -412,18 +643,35 @@ fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
                 .find(['@', '/'])
                 .map(|offset| name_start + offset)
             else {
-                continue;
+                return Err(format!(
+                    "invalid pnpm-lock.yaml: unreadable package coordinate {k:?}"
+                ));
             };
             let name = &coordinate[..separator];
+            // The `_` peer suffix is an install identity, not part of the
+            // version; split it before inspecting the version itself.
             let version = coordinate[separator + 1..].split('_').next().unwrap_or("");
-            if !name.is_empty() && !version.is_empty() {
-                out.push((name.to_string(), version.to_string()));
+            if name.is_empty() || version.is_empty() {
+                return Err(format!(
+                    "invalid pnpm-lock.yaml: unreadable package coordinate {k:?}"
+                ));
             }
+            // Git, link, and tarball resolutions keep their URL or path in
+            // the coordinate; the same skip as bun.lock's: local and remote
+            // sources have no registry version to query, and reporting the
+            // URL or commit as an installed version would fabricate an
+            // identity. These packages are excluded from the inventory and
+            // from OSV queries, not reported with a false version.
+            if version.contains(':') || version.contains('/') {
+                continue;
+            }
+            out.push((name.to_string(), version.to_string()));
         }
     }
-    if out.is_empty() {
-        return Err("no packages found in pnpm-lock.yaml".into());
-    }
+    // A supported lockfile that declares no registry packages (a project
+    // with no dependencies, or only local/git sources) is a complete empty
+    // inventory: it should yield zero OSV queries, not be recast as a
+    // parser failure.
     Ok(out)
 }
 
@@ -1215,6 +1463,7 @@ packages:
         let packages = lockfile_packages(
             "pnpm-lock.yaml",
             r#"
+lockfileVersion: 5.4
 packages:
   /some_pkg@1.2.3: {}
   /@my_scope/tool_name/2.3.4_@peer/lib@1.0.0: {}
@@ -1228,6 +1477,155 @@ packages:
                 ("@my_scope/tool_name".into(), "2.3.4".into()),
             ]
         );
+    }
+
+    #[test]
+    fn pnpm_git_and_link_coordinates_are_not_fabricated_versions() {
+        // Real pnpm v9 git coordinates keep the repository URL and commit in
+        // the key; reporting that as an installed version is a false identity.
+        let packages = lockfile_packages(
+            "pnpm-lock.yaml",
+            r#"
+lockfileVersion: '9.0'
+packages:
+  left-pad@git+https://git@github.com:stevemao/left-pad.git#2fca6157fcca165438e0f9495cf0e5a4e6f71349:
+    resolution: {commit: 2fca6157fcca165438e0f9495cf0e5a4e6f71349, repo: git@github.com:stevemao/left-pad.git, type: git}
+  express@4.19.2: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(packages, vec![("express".into(), "4.19.2".into())]);
+
+        // v5 path-like git coordinates are skipped for the same reason.
+        let packages = lockfile_packages(
+            "pnpm-lock.yaml",
+            "lockfileVersion: 5.4\npackages:\n  /github.com/stevemao/left-pad/2fca6157fcca: {}\n  /lodash/4.17.21: {}\n",
+        )
+        .unwrap();
+        assert_eq!(packages, vec![("lodash".into(), "4.17.21".into())]);
+    }
+
+    #[test]
+    fn pnpm_empty_and_local_only_inventories_are_complete() {
+        // A zero-dependency pnpm project omits the packages map entirely;
+        // local/git-only projects skip every coordinate. Neither is a parser
+        // failure: the registry inventory is complete and empty.
+        for content in [
+            "lockfileVersion: '9.0'\nsettings: {}\nimporters:\n  .: {}\n",
+            "lockfileVersion: '9.0'\npackages: {}\n",
+            "lockfileVersion: '9.0'\npackages:\n  left-pad@git+https://github.com/stevemao/left-pad.git#2fca6157fcca: {}\n",
+        ] {
+            assert!(
+                lockfile_packages("pnpm-lock.yaml", content)
+                    .unwrap()
+                    .is_empty(),
+                "{content}"
+            );
+        }
+    }
+
+    #[test]
+    fn pnpm_rejects_documents_that_are_not_lockfiles() {
+        for (content, expected) in [
+            ("name: just some yaml\n", "lockfileVersion"),
+            ("metadata: {}\n", "lockfileVersion"),
+            ("lockfileVersion: '9.0'\n", "inventory"),
+            ("lockfileVersion: wat\npackages: {}\n", "lockfileVersion"),
+            ("lockfileVersion: '9.0'\nimporters: false\n", "mapping"),
+            ("lockfileVersion: '9.0'\nsnapshots: false\n", "mapping"),
+            ("lockfileVersion: '9.0'\nspecifiers: false\n", "mapping"),
+        ] {
+            let error = lockfile_packages("pnpm-lock.yaml", content).unwrap_err();
+            assert!(error.contains(expected), "{content}: {error}");
+        }
+    }
+
+    #[test]
+    fn pnpm_inventory_declaring_registry_dependencies_without_packages_is_truncated() {
+        for content in [
+            "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      express:\n        specifier: ^4.18.0\n        version: 4.19.2\n",
+            "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      express:\n        specifier: ^4.18.0\n",
+            "lockfileVersion: 5.4\nspecifiers:\n  express: ^4.18.0\n",
+            "lockfileVersion: 5.4\nimporters:\n  .:\n    dependencies:\n      express: 4.19.2\n",
+            "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      my-alias:\n        specifier: npm:@aspect-test/a@5.0.2\n        version: '@aspect-test/a@5.0.2'\n",
+            "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      tb:\n        specifier: https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz\n        version: left-pad@1.3.0\n",
+            "lockfileVersion: '9.0'\nsnapshots:\n  express@4.19.2: {}\n",
+            "lockfileVersion: '9.0'\nimporters:\n  .: {}\npackages: {}\nsnapshots:\n  express@4.19.2: {}\n",
+        ] {
+            let error = lockfile_packages("pnpm-lock.yaml", content).unwrap_err();
+            assert!(error.contains("packages inventory"), "{content}: {error}");
+        }
+    }
+
+    #[test]
+    fn pnpm_importer_sections_and_entries_are_type_checked() {
+        for (content, expected) in [
+            (
+                "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies: false\n",
+                "sections must be mappings",
+            ),
+            (
+                "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      express:\n        version: {}\n",
+                "version must be a string or number",
+            ),
+            (
+                "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      express:\n        specifier: []\n",
+                "specifier must be a string or number",
+            ),
+            (
+                "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      express: {}\n",
+                "neither version nor specifier",
+            ),
+            (
+                "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      express: true\n",
+                "strings, numbers, or specifier/version objects",
+            ),
+            (
+                "lockfileVersion: '9.0'\nspecifiers:\n  express: {version: 1.0.0}\n",
+                "specifier values must be strings or numbers",
+            ),
+        ] {
+            let error = lockfile_packages("pnpm-lock.yaml", content).unwrap_err();
+            assert!(error.contains(expected), "{content}: {error}");
+        }
+    }
+
+    #[test]
+    fn pnpm_version_markers_accept_numeric_strings_and_legacy_versions() {
+        // Unquoted YAML floats deserialize as numbers; string markers quote
+        // '6.0'/'9.0'. All are the same marker and all must be readable,
+        // including the 5.2 era predating the v5+ slash format.
+        for content in [
+            "lockfileVersion: 5.2\npackages: {}\n",
+            "lockfileVersion: 5.4\npackages: {}\n",
+            "lockfileVersion: 6.0\npackages: {}\n",
+            "lockfileVersion: 9.0\npackages: {}\n",
+            "lockfileVersion: '6.0'\npackages: {}\n",
+            "lockfileVersion: '9.0'\npackages: {}\n",
+            "lockfileVersion: '6.1'\npackages: {}\n",
+            // Local-only importers are a complete empty inventory.
+            "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      ui:\n        specifier: workspace:*\n        version: link:../ui\n",
+            "lockfileVersion: 5.4\nspecifiers:\n  ui: workspace:*\n",
+            // The actual local resolution overrides a registry-looking
+            // specifier: the package is not a registry install.
+            "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      ui:\n        specifier: ^4.0.0\n        version: file:../ui\n",
+        ] {
+            assert!(
+                lockfile_packages("pnpm-lock.yaml", content)
+                    .unwrap()
+                    .is_empty(),
+                "{content}"
+            );
+        }
+    }
+
+    #[test]
+    fn pnpm_unreadable_package_coordinates_are_malformed_not_ignored() {
+        for coordinate in ["tool", "'@1.2.3'", "tool@", "/tool/", "'@scope@1.2.3'"] {
+            let content = format!("lockfileVersion: '9.0'\npackages:\n  {coordinate}: {{}}\n");
+            let error = lockfile_packages("pnpm-lock.yaml", &content).unwrap_err();
+            assert!(error.contains("coordinate"), "{content}: {error}");
+        }
     }
 
     #[test]
@@ -1570,6 +1968,66 @@ example==1.0+local \
                 ("inner".into(), "2.0.0".into()),
             ]
         );
+    }
+
+    #[test]
+    fn npm_v1_aliases_resolve_to_the_registry_package() {
+        // npm 6 writes aliases as "version": "npm:name@version"; the JSON
+        // key is the alias, not the registry identity.
+        let packages = parse_package_lock(
+            r#"{"lockfileVersion":1,"dependencies":{
+                "my-lodash":{"version":"npm:lodash@4.17.21"},
+                "my-scoped":{"version":"npm:@babel/core@7.0.0"},
+                "plain":{"version":"3.0.0"}
+            }}"#,
+        )
+        .expect("v1 aliases pin a registry version");
+        assert_eq!(
+            packages,
+            vec![
+                ("lodash".into(), "4.17.21".into()),
+                ("@babel/core".into(), "7.0.0".into()),
+                ("plain".into(), "3.0.0".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn npm_v1_non_registry_versions_are_skipped_not_fabricated() {
+        // npm 6 keeps git and file resolutions as "version" strings. They
+        // have no registry version to query.
+        let packages = parse_package_lock(
+            r#"{"lockfileVersion":1,"dependencies":{
+                "left-pad":{"version":"git+https://github.com/stevemao/left-pad.git#2fca6157fcca165438e0f9495cf0e5a4e6f71349"},
+                "locdep":{"version":"file:local"},
+                "regular":{"version":"1.2.3","dependencies":{"nested":{"version":"npm:lodash@2.0.0"}}}
+            }}"#,
+        )
+        .expect("non-registry v1 entries are skipped, not fabricated");
+        assert_eq!(
+            packages,
+            vec![
+                ("regular".into(), "1.2.3".into()),
+                ("lodash".into(), "2.0.0".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn npm_v1_unresolved_aliases_are_malformed_not_skipped() {
+        for version in [
+            "npm:",
+            "npm:lodash",
+            "npm:@babel/core",
+            "npm:@scope@1.0.0",
+            "npm:lodash@file:../local",
+        ] {
+            let error = parse_package_lock(&format!(
+                r#"{{"dependencies":{{"alias":{{"version":"{version}"}}}}}}"#
+            ))
+            .expect_err("an alias without a pinned registry version must not vanish");
+            assert!(error.contains("alias"), "{version}: {error}");
+        }
     }
 
     #[test]

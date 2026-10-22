@@ -1312,6 +1312,27 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --workspace --all-featu
 npm run tauri build      # produce a local bundle for this platform
 ```
 
+### Maintenance fixes — 2026-10-22
+
+- Scan and tool durations carry rounded seconds into the minute count rather
+  than displaying `1m 60s`. Unused path, truncation and pluralization helpers
+  were removed from the shared formatting module.
+- AI streaming accepts LF, CRLF and CR event framing, including line endings
+  split between network chunks, ignores one stream-leading UTF-8 BOM, and
+  preserves data-field whitespace after the single optional space defined by
+  the [SSE format](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation).
+- Dependency recovery retains the complete live inventory when durable history
+  still identifies the same run, but restores a genuinely newer run. Target
+  edits are local drafts: **Find lockfiles** or **Check dependencies** activates
+  and remembers the project, avoiding per-keystroke runtime updates and input
+  corruption. Failed activation clears runtime context and offers a retry.
+  Upgrade decision requests belong to saved-run lifetimes.
+- npm v1 registry aliases use the real package name and pinned version. npm v1
+  and pnpm git, file, link and tarball coordinates are excluded from registry
+  inventory and OSV queries rather than treated as package versions. A valid
+  empty pnpm inventory is accepted; malformed sections and registry declarations
+  without a readable packages inventory remain coverage errors.
+
 ### Choosing grammars at build time
 
 Each language grammar is an optional dependency behind a Cargo feature. The
@@ -1400,7 +1421,7 @@ docker build -t oxaudit/cve-bin-tool:3.4 docker/cve-bin-tool
 ```
 
 Lockfile scanning is deliberately **not** routed through it: **Dependencies** already
-parses ten lockfile formats natively and queries OSV directly.
+parses the supported lockfiles listed above natively and queries OSV directly.
 
 ## Security notes
 

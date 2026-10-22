@@ -157,7 +157,7 @@ it('a complete-decision failure cannot leave its error on the next restored rece
   await screen.findByText(/A decision failed/);
   const other = '/tmp/other-paging-fixture';
   backend.listCanonicalRuns.mockResolvedValue([{ ...run('dependencies'), id: 'other-receipt', targetLabel: other }]);
-  fireEvent.change(screen.getByLabelText('Project folder path'), { target: { value: other } });
+  await act(async () => useAppStore.getState().openProject(other, 'deps-scan'));
   const load = await screen.findByRole('button', { name: 'Load complete upgrade decisions' });
   expect(screen.queryByText(/A decision failed/)).not.toBeInTheDocument();
   expect(load).toBeEnabled();
@@ -176,7 +176,7 @@ it('a pending complete-decision action cannot disable another receipt or settle 
   const next = { ...result, summary: { ...result.summary, path: other } };
   backend.listCanonicalRuns.mockResolvedValue([{ ...run('dependencies'), id: 'other-receipt', targetLabel: other }]);
   backend.loadCanonicalProjection.mockResolvedValue(next);
-  fireEvent.change(screen.getByLabelText('Project folder path'), { target: { value: other } });
+  await act(async () => useAppStore.getState().openProject(other, 'deps-scan'));
   const load = await screen.findByRole('button', { name: 'Load complete upgrade decisions' });
   expect(load).toBeEnabled();
   backend.loadCanonicalProjection.mockImplementationOnce(() => new Promise<DependencyScanResult>(done => { newResolve = done; }));
@@ -186,4 +186,34 @@ it('a pending complete-decision action cannot disable another receipt or settle 
   expect(screen.queryByRole('region', { name: 'Dependency upgrade decisions' })).not.toBeInTheDocument();
   await act(async () => newResolve(next));
   expect(screen.getByRole('region', { name: 'Dependency upgrade decisions' })).toBeInTheDocument();
+});
+
+it('returning to the same saved run starts a new complete-decision request lifetime', async () => {
+  const result: DependencyScanResult = {
+    summary: { path: target, lockfilesFound: [], packagesFound: 1, packagesQueried: 1, vulnerabilitiesFound: 1, durationMs: 1, advisoryCoverage: 'complete' },
+    dependencies: [], vulnerabilities: [vulnerability(0)],
+  };
+  backend.listCanonicalRuns.mockResolvedValue([run('dependencies')]);
+  backend.loadCanonicalProjection.mockResolvedValue(result);
+  render(<DepsScanPage />);
+  await screen.findByRole('button', { name: 'Load complete upgrade decisions' });
+  let resolveOld!: (value: DependencyScanResult) => void;
+  backend.loadCanonicalProjection.mockImplementationOnce(() => new Promise<DependencyScanResult>(resolve => { resolveOld = resolve; }));
+  fireEvent.click(screen.getByRole('button', { name: 'Load complete upgrade decisions' }));
+
+  const other = '/tmp/other-paging-fixture';
+  backend.listCanonicalRuns.mockResolvedValue([{ ...run('dependencies'), id: 'other-receipt', targetLabel: other }]);
+  await act(async () => useAppStore.getState().openProject(other, 'deps-scan'));
+  await screen.findByRole('button', { name: 'Load complete upgrade decisions' });
+  backend.listCanonicalRuns.mockResolvedValue([run('dependencies')]);
+  await act(async () => useAppStore.getState().openProject(target, 'deps-scan'));
+  await screen.findByRole('button', { name: 'Load complete upgrade decisions' });
+
+  await act(async () => resolveOld({ ...result, vulnerabilities: [vulnerability(77)] }));
+  expect(screen.queryByRole('region', { name: 'Dependency upgrade decisions' })).not.toBeInTheDocument();
+  expect(screen.queryByText('package-77')).not.toBeInTheDocument();
+  const load = screen.getByRole('button', { name: 'Load complete upgrade decisions' });
+  expect(load).toBeEnabled();
+  fireEvent.click(load);
+  expect(await screen.findByRole('region', { name: 'Dependency upgrade decisions' })).toBeInTheDocument();
 });

@@ -44,8 +44,8 @@ export function fmtDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   const s = ms / 1000;
   if (s < 60) return `${s.toFixed(1)} s`;
-  const m = Math.floor(s / 60);
-  return `${m}m ${Math.round(s % 60)}s`;
+  const seconds = Math.round(s);
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 export function fmtDate(iso: string | null | undefined): string {
@@ -70,24 +70,4 @@ export function fmtDateTime(iso: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-export function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  return s.slice(0, n) + "…";
-}
-
-export function basename(p: string): string {
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1] || p;
-}
-
-export function dirname(p: string): string {
-  const parts = p.split(/[\\/]/);
-  parts.pop();
-  return parts.join("/") || "/";
-}
-
-export function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }

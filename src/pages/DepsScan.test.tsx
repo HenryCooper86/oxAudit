@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { DepsScanPage } from "./DepsScan";
-import type { CanonicalRun, DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
+import type { CanonicalProjectionMetadata, CanonicalRun, DependencyScanResult, LockfileInfo, Vulnerability } from "../lib/types";
 import { api } from "../lib/api";
 import { useAppStore, useToastStore } from "../lib/stores";
 import { reconcileBackendWork, useScanWorkStore } from "../features/project-home/coordinator";
@@ -44,6 +44,89 @@ test("typing a dependency target and pressing Enter never starts the scan or loc
   });
   expect(scan).not.toHaveBeenCalled();
   expect(find).not.toHaveBeenCalled();
+});
+
+test("editing the target is a local draft that never activates the native project", async () => {
+  const activate = vi.spyOn(api, "setActiveProject");
+  render(<DepsScanPage />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Project folder path" }), { target: { value: "/first" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Project folder path" }), { target: { value: "/pending" } });
+  await act(async () => {});
+  expect(activate).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox", { name: "Project folder path" })).toHaveValue("/pending");
+  expect(useAppStore.getState().activeProject).toBe("/repo");
+  expect(useAppStore.getState().selectedProject).toBeNull();
+});
+
+test("externally selecting the current draft restores its saved receipt", async () => {
+  vi.mocked(api.listCanonicalRuns).mockResolvedValueOnce([]).mockResolvedValue([{ ...savedDependencyRun, targetLabel: "/selected-draft" }]);
+  vi.spyOn(api, "loadCanonicalProjectionMetadata").mockResolvedValue({
+    kind: "pagedProjection", projectionKind: "dependencies",
+    projection: { ...savedDependencyResult, summary: { ...savedDependencyResult.summary, path: "/selected-draft" } },
+    sections: { vulnerabilities: 1 },
+  });
+  vi.spyOn(api, "loadCanonicalProjectionPage").mockResolvedValue(savedAdvisoryPage);
+  render(<DepsScanPage />);
+  await screen.findByText("No saved dependency results for this project.");
+  fireEvent.change(screen.getByRole("textbox", { name: "Project folder path" }), { target: { value: "/selected-draft" } });
+
+  await act(async () => useAppStore.getState().setActiveProject("/selected-draft"));
+  expect(await screen.findByRole("heading", { name: "leaf" })).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Project folder path" })).toHaveValue("/selected-draft");
+});
+
+test("discovery clears unavailable runtime context without persisting the draft, then retries the same target", async () => {
+  vi.mocked(api.setActiveProject).mockRejectedValueOnce(new Error("Project folder unavailable"));
+  vi.spyOn(api, "findLockfiles").mockResolvedValue([{ path: "/typed-project/package-lock.json", kind: "npm", packages: 2 }]);
+  render(<DepsScanPage />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Project folder path" }), { target: { value: "/typed-project" } });
+  fireEvent.click(screen.getByRole("button", { name: "Find lockfiles" }));
+  const retry = await screen.findByRole("button", { name: "Retry discovery" });
+  expect(useAppStore.getState().activeProject).toBeNull();
+  expect(useAppStore.getState().selectedProject).toBeNull();
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.tone).toBe("error");
+  expect(screen.getByRole("textbox", { name: "Project folder path" })).toHaveValue("/typed-project");
+
+  fireEvent.click(retry);
+  expect(await screen.findByLabelText("Detected lockfiles")).toHaveTextContent("(2 pkgs)");
+  expect(useAppStore.getState().activeProject).toBe("/typed-project");
+  expect(useAppStore.getState().selectedProject).toBe("/typed-project");
+  expect(screen.queryByRole("button", { name: "Retry discovery" })).not.toBeInTheDocument();
+});
+
+test("a failed explicit check clears unavailable runtime context and keeps its failure status", async () => {
+  vi.mocked(api.setActiveProject).mockRejectedValueOnce(new Error("Project folder unavailable"));
+  render(<DepsScanPage />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Project folder path" }), { target: { value: "/unavailable-project" } });
+  fireEvent.click(screen.getByRole("button", { name: "Check dependencies" }));
+  expect(await screen.findByRole("button", { name: "Retry dependency check" })).toBeEnabled();
+  expect(useAppStore.getState().activeProject).toBeNull();
+  expect(useAppStore.getState().selectedProject).toBeNull();
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.tone).toBe("error");
+  expect(useScanWorkStore.getState().active).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Project folder path" })).toHaveValue("/unavailable-project");
+});
+
+test("discovery of a newly typed target keeps fresh inventory instead of restoring an older saved projection", async () => {
+  const oldMetadata = deferred<CanonicalProjectionMetadata<DependencyScanResult>>();
+  vi.mocked(api.listCanonicalRuns).mockResolvedValueOnce([]).mockResolvedValue([{ ...savedDependencyRun, targetLabel: "/typed-project" }]);
+  vi.spyOn(api, "loadCanonicalProjectionMetadata").mockReturnValue(oldMetadata.promise);
+  vi.spyOn(api, "loadCanonicalProjectionPage").mockResolvedValue(savedAdvisoryPage);
+  vi.spyOn(api, "findLockfiles").mockResolvedValue([{ path: "/typed-project/package-lock.json", kind: "npm", packages: 12 }]);
+  render(<DepsScanPage />);
+  await screen.findByText("No saved dependency results for this project.");
+  fireEvent.change(screen.getByRole("textbox", { name: "Project folder path" }), { target: { value: "/typed-project" } });
+  fireEvent.click(screen.getByRole("button", { name: "Find lockfiles" }));
+  expect(await screen.findByLabelText("Detected lockfiles")).toHaveTextContent("(12 pkgs)");
+  await act(async () => reconcileBackendWork({ active: null, recent: [] }, true));
+
+  await act(async () => oldMetadata.resolve({
+    kind: "pagedProjection", projectionKind: "dependencies",
+    projection: { ...savedDependencyResult, summary: { ...savedDependencyResult.summary, path: "/typed-project" } },
+    sections: { vulnerabilities: 1 },
+  }));
+  expect(screen.getByLabelText("Detected lockfiles")).toHaveTextContent("(12 pkgs)");
+  expect(screen.getByLabelText("Detected lockfiles")).not.toHaveTextContent("Pipfile.lock");
 });
 
 test('malformed owned native progress cannot replace the current phase or crash the page', async () => {
@@ -277,4 +360,77 @@ test("retrying discovery keeps its fresh lockfiles instead of restoring older in
   expect(detected).toHaveTextContent("(12 pkgs)");
   expect(detected).not.toHaveTextContent("Pipfile.lock");
   expect(screen.queryByText("GHSA-pypi")).not.toBeInTheDocument();
+});
+
+test("a completed scan keeps its fresh full inventory when the backend terminal reconcile lands", async () => {
+  const full: DependencyScanResult = {
+    summary: {
+      path: "/repo", runId: "run-fresh", lockfilesFound: ["/repo/package-lock.json"],
+      packagesFound: 2, packagesQueried: 2, vulnerabilitiesFound: 0, durationMs: 4,
+    },
+    dependencies: [
+      { ecosystem: "npm", name: "a", version: "1.0.0", lockfile: "/repo/package-lock.json" },
+      { ecosystem: "npm", name: "b", version: "2.0.0", lockfile: "/repo/package-lock.json" },
+    ],
+    vulnerabilities: [],
+  };
+  const summaryOnly: DependencyScanResult = { ...full, dependencies: [], vulnerabilities: [] };
+  vi.mocked(api.listCanonicalRuns).mockResolvedValueOnce([]).mockResolvedValue([{ ...savedDependencyRun, id: "run-fresh" }]);
+  vi.spyOn(api, "loadCanonicalProjectionMetadata").mockResolvedValue({
+    kind: "pagedProjection", projectionKind: "dependencies", projection: summaryOnly, sections: { vulnerabilities: 0 },
+  });
+  vi.spyOn(api, "loadCanonicalProjectionPage").mockResolvedValue({ items: [], offset: 0, limit: 50, filteredTotal: 0, total: 0 });
+  vi.spyOn(api, "scanDependencies").mockResolvedValue(full);
+  render(<DepsScanPage />);
+  await screen.findByText("No saved dependency results for this project.");
+  fireEvent.click(screen.getByRole("button", { name: "Check dependencies" }));
+  expect(await screen.findByLabelText("Detected lockfiles")).toHaveTextContent("(2 pkgs)");
+
+  // The backend confirms this very run as terminal; the page must keep the
+  // fresh full inventory instead of swapping in the summary-only projection.
+  await act(async () => {
+    reconcileBackendWork({
+      active: null,
+      recent: [{ operationId: "op-fresh", kind: "dependencies", target: "/repo", status: "completed", runId: "run-fresh", startedAtMs: 1, updatedAtMs: 2 }],
+    });
+  });
+  expect(screen.getByLabelText("Detected lockfiles")).toHaveTextContent("(2 pkgs)");
+  expect(screen.queryByText("Load complete upgrade decisions")).not.toBeInTheDocument();
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.label).toContain("Dependencies checked");
+});
+
+test("a newer backend dependency run for the same target supersedes the in-memory receipt", async () => {
+  const full: DependencyScanResult = {
+    summary: {
+      path: "/repo", runId: "run-fresh", lockfilesFound: ["/repo/package-lock.json"],
+      packagesFound: 2, packagesQueried: 2, vulnerabilitiesFound: 0, durationMs: 4,
+    },
+    dependencies: [
+      { ecosystem: "npm", name: "a", version: "1.0.0", lockfile: "/repo/package-lock.json" },
+      { ecosystem: "npm", name: "b", version: "2.0.0", lockfile: "/repo/package-lock.json" },
+    ],
+    vulnerabilities: [],
+  };
+  vi.mocked(api.listCanonicalRuns).mockResolvedValueOnce([]).mockResolvedValue([{ ...savedDependencyRun, id: "run-newer" }]);
+  vi.spyOn(api, "loadCanonicalProjectionMetadata").mockResolvedValue({
+    kind: "pagedProjection", projectionKind: "dependencies",
+    projection: { ...full, dependencies: [], vulnerabilities: [], summary: { ...full.summary, runId: "run-newer" } },
+    sections: { vulnerabilities: 0 },
+  });
+  vi.spyOn(api, "loadCanonicalProjectionPage").mockResolvedValue({ items: [], offset: 0, limit: 50, filteredTotal: 0, total: 0 });
+  vi.spyOn(api, "scanDependencies").mockResolvedValue(full);
+  render(<DepsScanPage />);
+  await screen.findByText("No saved dependency results for this project.");
+  fireEvent.click(screen.getByRole("button", { name: "Check dependencies" }));
+  expect(await screen.findByLabelText("Detected lockfiles")).toHaveTextContent("(2 pkgs)");
+
+  // A newer completed run for the same target must replace the receipt.
+  await act(async () => {
+    reconcileBackendWork({
+      active: null,
+      recent: [{ operationId: "op-newer", kind: "dependencies", target: "/repo", status: "completed", runId: "run-newer", startedAtMs: 3, updatedAtMs: 4 }],
+    });
+  });
+  expect(await screen.findByText("Load complete upgrade decisions")).toBeInTheDocument();
+  expect(useAppStore.getState().pageStatus["deps-scan"]?.label).toContain("Saved dependency results");
 });

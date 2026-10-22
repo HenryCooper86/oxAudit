@@ -117,25 +117,6 @@ test("source page cancel during runtime preparation prevents the native scan fro
   expect(scan).not.toHaveBeenCalled();
 });
 
-test("dependency runtime reply preserves pending user path", async () => {
-  let finish!: () => void;
-  vi.mocked(api.setActiveProject).mockImplementationOnce(
-    () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-  );
-  render(<DepsScanPage />);
-  fireEvent.change(screen.getByLabelText("Project folder path"), {
-    target: { value: "/first" },
-  });
-  fireEvent.change(screen.getByLabelText("Project folder path"), {
-    target: { value: "/pending" },
-  });
-  await act(async () => finish());
-  expect(screen.getByLabelText("Project folder path")).toHaveValue("/pending");
-});
-
 test("dependency result handoff displays the check receipt instead of a newer unrelated history projection", async () => {
   const { dependencyResult } =
     await import("../../../tests/fixtures/projectHome");

@@ -54,6 +54,7 @@ export function DepsScanPage() {
   const activeWork = useScanWorkStore(state => state.active);
   const recoveryRevision = useScanWorkStore(state => state.recoveryRevision);
   const setActiveProjectStore = useCallback((value: string | null) => {
+    if (useAppStore.getState().activeProject === value) return;
     ownRuntimeUpdate.current = true;
     publishActiveProject(value);
     ownRuntimeUpdate.current = false;
@@ -64,6 +65,9 @@ export function DepsScanPage() {
   const push = useToastStore((state) => state.push);
 
   const [path, setPath] = useState(activeProject ?? useAppStore.getState().selectedProject ?? "");
+  // Draft edits suspend history reads. Checks and explicit project selections
+  // restore them; discovery keeps its fresh inventory instead of an older run.
+  const draftEditedRef = useRef(false);
   const [localRunning, setRunning] = useState(false);
   const running = localRunning || activeWork?.owner === "dependencies";
   const [discovering, setDiscovering] = useState(false);
@@ -74,7 +78,8 @@ export function DepsScanPage() {
   const [result, setResult] = useState<DependencyScanResult | null>(null);
   const [receipt, setReceipt] = useState<CanonicalRun | null>(null);
   const [savedVulnerabilityTotal, setSavedVulnerabilityTotal] = useState(0);
-  const decisionKey = JSON.stringify([path, receipt?.id]);
+  // Decisions load by saved run ID; target edits already clear the receipt.
+  const decisionKey = JSON.stringify(receipt?.id ?? null);
   const [decisionOwner, setDecisionOwner] = useState({ key: decisionKey, generation: 0 });
   let owner = decisionOwner;
   if (decisionOwner.key !== decisionKey) { owner = { key: decisionKey, generation: decisionOwner.generation + 1 }; setDecisionOwner(owner); }
@@ -105,7 +110,6 @@ export function DepsScanPage() {
 
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const discoveryRequestRef = useRef(0);
-  const pathRequestRef = useRef(0);
   const historyRequestRef = useRef(0);
   const advisoryLookupRef = useRef(0);
   const scanInvocationRef = useRef<{ ownership: number; requestId: number } | null>(null);
@@ -120,6 +124,9 @@ export function DepsScanPage() {
     const requestedPath = path.trim();
     const requestId = ++historyRequestRef.current;
     if (!requestedPath || running) return;
+    // A draft target performs no saved-history work: no fetches and no state
+    // transitions until an explicit action commits it.
+    if (draftEditedRef.current) return;
     if (handoffResult && handoffResult.summary.path === requestedPath && handoffRevisionRef.current === recoveryRevision) {
       setResult(handoffResult);
       setReceipt(null);
@@ -141,13 +148,22 @@ export function DepsScanPage() {
           setHistoryStatus("empty");
           return;
         }
+        setAttempt(runs.filter(run => run.kind === "dependencies" && normalizedTarget(run.targetLabel) === normalizedTarget(requestedPath)).sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id))[0] ?? null);
+        // Reconcile against durable history, but do not replace this run's
+        // complete live inventory with its summary-only saved projection.
+        if (handoffResult?.summary.runId === saved.id) {
+          setResult(handoffResult);
+          setReceipt(null);
+          setPreview(previewFromResult(handoffResult));
+          setHistoryStatus("ready");
+          return;
+        }
         const metadata = await api.loadCanonicalProjectionMetadata<DependencyScanResult>(saved.id);
         if (requestId !== historyRequestRef.current) return;
         const restored = metadata.projection;
         setResult(restored);
         setReceipt(saved);
         setSavedVulnerabilityTotal(metadata.sections.vulnerabilities ?? 0);
-        setAttempt(runs.filter(run => run.kind === "dependencies" && normalizedTarget(run.targetLabel) === normalizedTarget(requestedPath)).sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id))[0] ?? null);
         setPreview(previewFromResult(restored));
         setHistoryStatus("ready");
         if (!preserveOperationStatus.current) {
@@ -233,7 +249,7 @@ export function DepsScanPage() {
 
   const changePath = useCallback((nextPath: string) => {
     if (nextPath === path) return;
-    const activationId = ++pathRequestRef.current;
+    draftEditedRef.current = true;
     discoveryRequestRef.current += 1;
     historyRequestRef.current += 1;
     setHandoffResult(null);
@@ -252,25 +268,16 @@ export function DepsScanPage() {
     setPhase(null);
     setSelectedKey(null);
     setQuery("");
-    clearPageStatus("deps-scan");
-    void resolveRuntimeProject(nextPath || null, api.setActiveProject).then((outcome) => {
-      setActiveProjectStore(outcome.runtimePath);
-      if (activationId === pathRequestRef.current && outcome.runtimePath === nextPath) useAppStore.getState().setSelectedProject(nextPath);
-      if (
-        activationId === pathRequestRef.current &&
-        outcome.unavailablePath === nextPath &&
-        outcome.warning
-      ) {
-        push("error", outcome.warning);
-      }
-    });
-  }, [path, clearPageStatus, push, setActiveProjectStore]);
+    if (useAppStore.getState().pageStatus["deps-scan"]) clearPageStatus("deps-scan");
+    // Target edits stay local. Find/Check activate and persist the project.
+  }, [path, clearPageStatus]);
 
   useEffect(() => {
     const applyHandoff = () => {
       const handoff = useAppStore.getState().projectHandoff;
       if (handoff?.page === "deps-scan") {
         changePath(handoff.path);
+        draftEditedRef.current = false;
         handoffRevisionRef.current = useScanWorkStore.getState().recoveryRevision;
         setHandoffResult(handoff.dependencyResult ?? null);
         historyRequestRef.current += 1;
@@ -283,7 +290,12 @@ export function DepsScanPage() {
     applyHandoff();
     return useAppStore.subscribe((state, previous) => {
       if (state.projectHandoff !== previous.projectHandoff) applyHandoff();
-      else if (!ownRuntimeUpdate.current && state.activeProject !== previous.activeProject && state.activeProject) changePath(state.activeProject);
+      else if (!ownRuntimeUpdate.current && state.activeProject !== previous.activeProject && state.activeProject) {
+        // External selection is a commitment, not a draft.
+        changePath(state.activeProject);
+        draftEditedRef.current = false;
+        setHistoryReload(value => value + 1);
+      }
     });
   }, [changePath]);
 
@@ -305,13 +317,12 @@ export function DepsScanPage() {
         requestedPath,
         api.setActiveProject,
       );
+      if (requestId !== discoveryRequestRef.current) return;
       setActiveProjectStore(runtime.runtimePath);
-      if (
-        requestId !== discoveryRequestRef.current ||
-        runtime.runtimePath !== requestedPath
-      ) {
-        return;
+      if (runtime.runtimePath !== requestedPath) {
+        throw new Error(runtime.warning ?? "The selected project is unavailable.");
       }
+      useAppStore.getState().setSelectedProject(runtime.runtimePath);
       const foundLockfiles = await api.findLockfiles(requestedPath);
       if (requestId !== discoveryRequestRef.current) return;
       setPreview(foundLockfiles);
@@ -358,13 +369,13 @@ export function DepsScanPage() {
         requestedPath,
         api.setActiveProject,
       );
+      if (requestId !== discoveryRequestRef.current) return;
       setActiveProjectStore(runtime.runtimePath);
-      if (
-        requestId !== discoveryRequestRef.current ||
-        runtime.runtimePath !== requestedPath
-      ) {
-        return;
+      if (runtime.runtimePath !== requestedPath) {
+        throw new Error(runtime.warning ?? "The selected project is unavailable.");
       }
+      useAppStore.getState().setSelectedProject(runtime.runtimePath);
+      draftEditedRef.current = false;
       if (useScanWorkStore.getState().active?.cancelling) return;
       const advisoryDb = useAdvisoryDb && advisoryDbPath.trim() ? advisoryDbPath.trim() : null;
       const scanResult = await api.scanDependencies(requestedPath, offline, advisoryDb, scanOperationId(ownership));
