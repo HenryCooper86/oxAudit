@@ -687,8 +687,8 @@ export function SettingsPage() {
           <p className={sectionDescriptionCls}>
             If a scan fails, this gathers the version, platform, and recent log so a
             problem can be reproduced. Credentials and your home directory path are
-            removed before it reaches you. oxAudit sends nothing anywhere — you copy
-            it and choose who sees it.
+            removed before it reaches you. Nothing in this report is transmitted
+            automatically — you copy it and choose who sees it.
           </p>
 
           <div className="mt-3 flex items-center gap-2">
@@ -866,7 +866,10 @@ export function SettingsPage() {
             </Field>
           </div>
           <p className="mt-3 text-[11px] leading-relaxed text-text-muted">
-            Scanning stays on this machine. Keys are stored by the operating system credential manager and sent only to the services you configure.
+            Scanning stays on this machine. The optional external scanners below
+            (cve-bin-tool, grype) and advisory database refreshes do make network
+            calls. Keys are stored by the operating system credential manager and
+            sent only to the services you configure.
           </p>
         </section>
 

@@ -98,7 +98,7 @@ export function AssistantActivityPanel({
             </div>
           ) : (
             <p className="py-1 text-[12px] leading-relaxed text-text-muted">
-              Approved tool activity will be listed here as the assistant works.
+              Tool activity will be listed here as the assistant works.
             </p>
           )}
         </section>

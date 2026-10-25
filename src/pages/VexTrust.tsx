@@ -52,10 +52,6 @@ export function VexTrustPage() {
   }, []);
 
   const grant = async (contentSha256: string) => {
-    if (!grantedBy.trim()) {
-      push("error", "trust grants record who made them; enter your name first");
-      return;
-    }
     setBusy(contentSha256);
     try {
       await api.vexGrantTrust(contentSha256, grantedBy.trim(), note.trim() || undefined);
@@ -124,6 +120,11 @@ export function VexTrustPage() {
               onChange={(event) => setNote(event.target.value)}
             />
           </div>
+          {!grantedBy.trim() && (
+            <p className="mt-2 text-[12px] text-text-muted">
+              Enter who grants trust; the name is recorded with every grant.
+            </p>
+          )}
         </section>
 
         {claimSets === null ? (
@@ -154,7 +155,7 @@ export function VexTrustPage() {
                       Revoke trust
                     </Button>
                   ) : (
-                    <Button disabled={busy === set.contentSha256} onClick={() => void grant(set.contentSha256)}>
+                    <Button disabled={busy === set.contentSha256 || !grantedBy.trim()} onClick={() => void grant(set.contentSha256)}>
                       <BadgeCheck size={13} aria-hidden />
                       Trust this document
                     </Button>

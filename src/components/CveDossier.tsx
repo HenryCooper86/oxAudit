@@ -35,6 +35,7 @@ export function CveDossier({
     offline: "The saved AI endpoint is offline. Review Settings before generating a briefing.",
     ready: "",
     unavailable: "AI readiness could not be loaded. Review Settings before generating a briefing.",
+    unsupported: "AI is not available in the browser build; use the desktop app or CLI.",
   }[aiReadiness];
 
   useEffect(() => {
@@ -208,7 +209,7 @@ export function CveDossier({
           </button>
         </div>
         <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
-          Verified CVE fields above are normalized from NVD. The unmodified NVD
+          Fields above are normalized from NVD records. The unmodified NVD
           response remains available for inspection.
         </p>
         <RawRecord label="Show raw NVD record" value={detail.raw} />
@@ -227,8 +228,9 @@ export function CveDossier({
           </h3>
           <button
             type="button"
+            disabled={!detail.osv}
             onClick={() => void onOpenUrl(`https://osv.dev/vulnerability/${item.id}`)}
-            className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-active px-2.5 py-1.5 text-[11px] text-info hover:border-info"
+            className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-active px-2.5 py-1.5 text-[11px] text-info hover:border-info disabled:cursor-not-allowed disabled:text-text-muted disabled:hover:border-border"
           >
             <ExternalLink size={11} aria-hidden="true" /> Open OSV
           </button>
@@ -237,14 +239,15 @@ export function CveDossier({
           <>
             <p className="mt-2 text-[13px] leading-relaxed text-text-secondary">
               Raw OSV data is source material and is not merged into the
-              verified CVE fields.
+              normalized CVE fields.
             </p>
             <RawRecord label="Show raw OSV record" value={detail.osv} />
           </>
         ) : (
           <p className="mt-2 text-[12px] text-text-muted">
-            No OSV enrichment is available for this dossier. The source may not
-            have a matching record, or OSV could not be reached.
+            No OSV record is loaded for this dossier, so the OSV link is
+            disabled. The source may not have a matching record, or OSV could
+            not be reached.
           </p>
         )}
       </section>

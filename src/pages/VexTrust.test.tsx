@@ -68,14 +68,18 @@ test("claim documents list with trust state, and trust records who granted it", 
   expect(screen.getByText(/name-only claim applies to nothing/i)).toBeInTheDocument();
 });
 
-test("trust without a name is refused rather than recorded anonymously", async () => {
+test("trust without a name is disabled with an inline reason rather than recorded anonymously", async () => {
   vexClaimSets.mockResolvedValue([claimSet]);
   listCanonicalRuns.mockResolvedValue([]);
   render(<VexTrustPage />);
   await screen.findByText(/untrusted/);
-  await userEvent.click(screen.getByRole("button", { name: /trust this document/i }));
+  const trust = screen.getByRole("button", { name: /trust this document/i });
+  expect(trust).toBeDisabled();
+  expect(screen.getByText(/Enter who grants trust/)).toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText("Granted by"), "henry");
+  expect(trust).toBeEnabled();
   expect(vexGrantTrust).not.toHaveBeenCalled();
-  expect(toast).toHaveBeenCalledWith("error", expect.stringContaining("who made them"));
+  expect(toast).not.toHaveBeenCalled();
 });
 
 test("suggestions state that they are not decisions", async () => {

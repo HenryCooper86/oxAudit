@@ -113,3 +113,42 @@ describe("FindingDetail analysis evidence", () => {
     expect(screen.getAllByText("Accepted risk").length).toBeGreaterThan(0);
   });
 });
+
+describe("FindingDetail recheck affordance", () => {
+  test("states why recheck is disabled instead of failing silently", () => {
+    render(
+      <FindingDetail
+        projectId="project-1"
+        finding={finding()}
+        savingReview={false}
+        reviewError={null}
+        onSaveReview={vi.fn().mockResolvedValue(undefined)}
+        onCopy={vi.fn()}
+        onOpenFile={vi.fn()}
+        onRecheck={vi.fn()}
+        recheckDisabled
+        recheckDisabledReason="A scan is already running"
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Recheck finding" })).toBeDisabled();
+    expect(screen.getByText("A scan is already running")).toBeInTheDocument();
+  });
+
+  test("renders no reason text when the control carries none", () => {
+    render(
+      <FindingDetail
+        projectId="project-1"
+        finding={finding()}
+        savingReview={false}
+        reviewError={null}
+        onSaveReview={vi.fn().mockResolvedValue(undefined)}
+        onCopy={vi.fn()}
+        onOpenFile={vi.fn()}
+        onRecheck={vi.fn()}
+        recheckDisabled
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Recheck finding" })).toBeDisabled();
+    expect(screen.queryByText("A scan is already running")).not.toBeInTheDocument();
+  });
+});

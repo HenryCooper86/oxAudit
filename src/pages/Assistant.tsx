@@ -915,7 +915,20 @@ export function AssistantPage() {
     }
   };
 
+  /**
+   * Clear the transcript. Persisted sessions truncate first: if that write
+   * fails the in-memory view is left alone, so the UI never claims a cleared
+   * conversation whose turns are still on disk and would reappear on reload.
+   */
   const clearConversation = async () => {
+    if (activeSessionId) {
+      try {
+        await api.sessionTruncate(activeSessionId, 0);
+      } catch (error) {
+        push("error", `Could not clear the conversation: ${String(error)}`);
+        return;
+      }
+    }
     setMessages([]);
     setTodos([]);
     setConvUsage(null);
@@ -924,7 +937,6 @@ export function AssistantPage() {
     setToolRecords([]);
     turnToolsRef.current.clear();
     if (!activeSessionId) return;
-    await api.sessionTruncate(activeSessionId, 0).catch(() => undefined);
     const info = sessions.find((session) => session.id === activeSessionId);
     if (info) updateSessionInfo({ ...info, messageCount: 0 });
   };
@@ -1017,6 +1029,7 @@ export function AssistantPage() {
     offline: "AI endpoint unavailable",
     ready: "AI ready",
     unavailable: "AI readiness unavailable",
+    unsupported: "AI not available in this build",
   }[aiReadiness.status];
   const unavailableMessage = {
     loading:
@@ -1030,6 +1043,8 @@ export function AssistantPage() {
     ready: "",
     unavailable:
       "AI readiness could not be loaded from local settings. Messages remain available; review Settings before sending.",
+    unsupported:
+      "AI is not available in the browser build. Run the desktop app or the CLI.",
   }[aiReadiness.status];
   const composerPlaceholder = {
     loading: "Loading saved AI settings…",
@@ -1038,6 +1053,7 @@ export function AssistantPage() {
     offline: "The saved AI endpoint is offline",
     ready: "Ask a security question or describe what you want to analyze…",
     unavailable: "Review Settings to restore AI readiness",
+    unsupported: "AI is not available in the browser build",
   }[aiReadiness.status];
 
   return (
@@ -1064,16 +1080,28 @@ export function AssistantPage() {
             if (!busy && !sessionActivating) void createNewChat();
           }}
           onRename={(id, title) => {
+            // The list only adopts the new title after the write succeeds, so
+            // a failed rename leaves the old title instead of claiming one
+            // that was never persisted.
             api
               .sessionRename(id, title)
               .then(() => {
                 const info = sessions.find((session) => session.id === id);
                 if (info) updateSessionInfo({ ...info, title, autoTitle: false });
               })
-              .catch(() => undefined);
+              .catch((error) => {
+                push("error", `Could not rename the conversation: ${String(error)}`);
+              });
           }}
           onDelete={async (id) => {
-            await api.sessionDelete(id).catch(() => undefined);
+            // Drop the session from the list only after the delete persists;
+            // on failure it stays visible instead of vanishing until reload.
+            try {
+              await api.sessionDelete(id);
+            } catch (error) {
+              push("error", `Could not delete the conversation: ${String(error)}`);
+              return;
+            }
             setSessions((list) =>
               list.filter((session) => session.id !== id),
             );
@@ -1199,7 +1227,8 @@ export function AssistantPage() {
           <div
             role={
               aiReadiness.status === "offline" ||
-              aiReadiness.status === "unavailable"
+              aiReadiness.status === "unavailable" ||
+              aiReadiness.status === "unsupported"
                 ? "alert"
                 : "status"
             }
@@ -1208,14 +1237,16 @@ export function AssistantPage() {
             <p className="truncate text-[11px] text-warning">
               {unavailableMessage}
             </p>
-            <button
-              type="button"
-              onClick={() => setPage("settings")}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] font-medium text-warning hover:bg-surface-hover"
-            >
-              <Settings2 size={11} aria-hidden="true" />
-              Open Settings
-            </button>
+            {aiReadiness.status !== "unsupported" && (
+              <button
+                type="button"
+                onClick={() => setPage("settings")}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] font-medium text-warning hover:bg-surface-hover"
+              >
+                <Settings2 size={11} aria-hidden="true" />
+                Open Settings
+              </button>
+            )}
           </div>
         )}
 
@@ -1560,7 +1591,7 @@ export function AssistantPage() {
                   ? "Enter to steer the running turn · Shift+Enter for a new line"
                   : "Enter to send · Shift+Enter for a new line"}
               </span>
-              <span className="shrink-0">Tools require approval</span>
+              <span className="shrink-0">Project reads run without asking; other tools ask for approval</span>
             </div>
           </form>
           <p className="sr-only" aria-live="polite">

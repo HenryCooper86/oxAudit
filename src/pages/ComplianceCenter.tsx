@@ -136,7 +136,10 @@ function ControlReviewCard({
             <Textarea className="mt-1 min-h-20 resize-y" value={note} onChange={(event) => setNote(event.target.value)} maxLength={4000} placeholder="Explain the decision and point to authoritative evidence. Every save appends an audit event." />
           </label>
         </div>
-        <div className="mt-3 flex justify-end">
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-3">
+          {!saving && (note.trim().length < 4 || author.trim().length < 2) && (
+            <p className="text-[11px] text-text-muted">Record review needs a reviewer of 2+ characters and a note of 4+ characters.</p>
+          )}
           <Button variant="primary" size="md" disabled={saving || note.trim().length < 4 || author.trim().length < 2} onClick={() => void saveReview()}>
             <ClipboardCheck size={13} aria-hidden="true" />{saving ? "Recording…" : "Record review"}
           </Button>
@@ -255,7 +258,7 @@ export function ComplianceCenterPage(): JSX.Element {
       </section>
 
       <section className="rounded-sm border border-border bg-surface-secondary p-4">
-        <div className="flex items-center justify-between gap-3"><div><h2 className="text-[13px] font-semibold text-text-primary">2. Select frameworks</h2><p className="mt-1 text-[11px] text-text-muted">{selectedIds.length} of {profiles?.length ?? 0} selected. Each produces a separate immutable assessment.</p></div><Button variant="primary" disabled={!canRun || running} onClick={() => void runAssessment()}><Play size={13} aria-hidden="true" />{running ? "Assessing…" : "Run selected checks"}</Button></div>
+      <div className="flex items-center justify-between gap-3"><div><h2 className="text-[13px] font-semibold text-text-primary">2. Select frameworks</h2><p className="mt-1 text-[11px] text-text-muted">{selectedIds.length} of {profiles?.length ?? 0} selected. Each produces a separate immutable assessment.</p></div><Button variant="primary" disabled={!canRun || running} onClick={() => void runAssessment()}><Play size={13} aria-hidden="true" />{running ? "Collecting…" : "Collect selected evidence"}</Button></div>
         {!profiles && !error ? <div className="mt-3"><InlineState compact tone="running" title="Loading built-in profiles" /></div> : null}
         <div className="mt-4 grid gap-2 min-[720px]:grid-cols-2">
           {(profiles ?? []).map((profile) => {

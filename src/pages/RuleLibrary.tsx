@@ -57,7 +57,7 @@ export function RuleLibraryPage(): JSX.Element {
     setInstalling(true);
     try {
       const pack = await api.installRulePack(externalPath);
-      push("success", `Installed ${pack.name} — its enabled rules apply to every source scan.`);
+      push("success", `Installed ${pack.name} — its enabled source and secret regex rules apply to every source scan.`);
       await refreshInstalled();
     } catch (cause) {
       push("error", "The pack could not be installed.");

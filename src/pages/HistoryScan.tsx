@@ -180,7 +180,7 @@ export function HistoryScanPage(): JSX.Element {
   return (
     <ToolPage
       title="History Scan"
-      description="Was this credential ever committed — including in files deleted long ago? Reads every blob reachable from any ref; rotation, not deletion, closes a leaked credential."
+      description="Was this credential ever committed — including in files deleted long ago? Reads blobs reachable from any ref under stated budgets — blob count, blob size, total bytes, findings kept, wall clock — and a scan stopped by a budget says so; rotation, not deletion, closes a leaked credential."
       context={<span className="rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-text-muted">{running ? "Running" : result?.runId ? "Receipt available" : "Ready"}</span>}
     >
       <div className="mt-4 space-y-4">

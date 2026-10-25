@@ -48,8 +48,10 @@ test("onboarding, first scan, review, recheck, restart, reopen and SARIF export"
   await expect(check).toContainText("Project check completed", { timeout: 120_000 });
   await expect(check).toContainText("Source: completed");
   await expect(check).toContainText("Dependencies: not applicable");
-  // The workbench is fully functional without an AI provider.
-  await expect(page.locator("footer")).toContainText("AI not configured");
+  // The workbench is fully functional without an AI provider; the server
+  // build has no AI commands at all, so the status bar states that build
+  // limitation instead of blaming a configured endpoint.
+  await expect(page.locator("footer")).toContainText("AI not in this build");
   await home.getByRole("button", { name: "View source findings" }).click();
 
   const summary = page.locator('section[aria-label="Scan summary"]');

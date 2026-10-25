@@ -33,6 +33,7 @@ export function StatusBar(): JSX.Element {
     offline: "offline",
     ready: "ready",
     unavailable: "status unavailable",
+    unsupported: "not in this build",
   }[aiReadiness.status];
 
   return (

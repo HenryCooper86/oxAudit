@@ -24,6 +24,7 @@ export function ExportCenterPage(): JSX.Element {
   const push = useToastStore((state) => state.push);
   const [runs, setRuns] = useState<CanonicalRun[] | null>(null);
   const [runsError, setRunsError] = useState<string | null>(null);
+  const [runsCapped, setRunsCapped] = useState(false);
   const [runsRevision, setRunsRevision] = useState(0);
   const [runId, setRunId] = useState(() => useAppStore.getState().exportHandoff?.runId ?? "");
   const [format, setFormat] = useState<ExportFormat>("oxaudit-json");
@@ -93,6 +94,7 @@ export function ExportCenterPage(): JSX.Element {
       if (disposed) return;
       const completed = loaded.filter((run) => ["completed", "incomplete", "failed", "cancelled"].includes(run.state));
       setRuns(completed);
+      setRunsCapped(loaded.length >= 100);
       setRunId((current) => current || completed[0]?.id || "");
     }).catch((cause) => {
       if (!disposed) setRunsError(String(cause));
@@ -327,6 +329,7 @@ export function ExportCenterPage(): JSX.Element {
             </Select>
           </label>
         </div>
+        {runsCapped && <p className="mt-2 text-[11px] text-text-muted">The run list is limited to the latest 100 durable runs.</p>}
         <p className="mt-3 text-[12px] leading-relaxed text-text-muted">{selectedFormat.description}</p>
         {serverMode && (
           <div className="mt-4">
@@ -368,7 +371,11 @@ export function ExportCenterPage(): JSX.Element {
               <p className="mt-1 font-mono text-[10px] text-text-muted">{preview.mediaType} · {preview.artifacts} artifacts · {preview.components} components · {preview.observations} observations</p>
             </div>
             <div className="flex items-center gap-3">
-              <span className="inline-flex items-center gap-1 text-[11px] text-success"><CheckCircle2 size={12} aria-hidden="true" />Structure valid</span>
+              {preview.valid ? (
+                <span className="inline-flex items-center gap-1 text-[11px] text-success"><CheckCircle2 size={12} aria-hidden="true" />Structure valid</span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[11px] text-error"><TriangleAlert size={12} aria-hidden="true" />Structure invalid</span>
+              )}
               <Button type="button" onClick={() => void exportFile()} variant="primary" size="md" disabled={exportWorking || (serverMode && !serverExportPath.trim())}>
                 <Download size={13} aria-hidden="true" />
                 {exportWorking ? "Saving…" : serverMode ? "Save to server" : "Save export…"}

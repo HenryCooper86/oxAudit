@@ -203,6 +203,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             </div>
           ))}
         </div>
+        {projects.length > 0 && (
+          <p className="border-t border-border px-3 py-1.5 text-[10px] text-text-muted">
+            Only your 20 most recently opened projects are listed here.
+          </p>
+        )}
       </div>
     </div>
   );

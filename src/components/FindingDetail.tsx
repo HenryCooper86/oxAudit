@@ -5,6 +5,7 @@ import { diffLabel, reviewLabel, scopeLabel } from "../features/source-scan/Find
 import { FindingReviewForm } from "../features/source-scan/FindingReviewForm";
 import { fmtDateTime } from "../lib/format";
 import { useAppStore } from "../lib/stores";
+import { serverMode } from "../lib/transport";
 import type { CommandError, Finding, ReviewRequest } from "../lib/types";
 import { SeverityBadge } from "./SeverityBadge";
 import { Button } from "./ui";
@@ -20,9 +21,11 @@ export function FindingDetail({
   onOpenFile,
   onRecheck,
   recheckDisabled,
+  recheckDisabledReason,
 }: {
   onRecheck?: (finding: Finding) => void;
   recheckDisabled?: boolean;
+  recheckDisabledReason?: string;
   projectId: string;
   finding: Finding;
   savingReview: boolean;
@@ -116,7 +119,14 @@ export function FindingDetail({
               <ShieldCheck size={13} aria-hidden="true" />
               {finding.diffStatus === "resolved" ? "Resolved projection" : "Review finding"}
             </Button>
-            {onRecheck && <Button type="button" onClick={() => onRecheck(finding)} disabled={recheckDisabled} variant="outline" size="md">Recheck finding</Button>}
+            {onRecheck && (
+              <>
+                <Button type="button" onClick={() => onRecheck(finding)} disabled={recheckDisabled} variant="outline" size="md">Recheck finding</Button>
+                {recheckDisabled && recheckDisabledReason && (
+                  <span className="text-[12px] text-text-muted">{recheckDisabledReason}</span>
+                )}
+              </>
+            )}
             <Button type="button" onClick={discussFinding} variant="accent" size="md">
               <Bot size={13} aria-hidden="true" />
               Discuss in Assistant
@@ -125,10 +135,12 @@ export function FindingDetail({
               <Clipboard size={13} aria-hidden="true" />
               Copy finding
             </Button>
-            <Button type="button" onClick={() => onOpenFile(finding)} variant="primary" size="md">
-              <ExternalLink size={13} aria-hidden="true" />
-              Open file
-            </Button>
+            {!serverMode && (
+              <Button type="button" onClick={() => onOpenFile(finding)} variant="primary" size="md">
+                <ExternalLink size={13} aria-hidden="true" />
+                Open file
+              </Button>
+            )}
           </div>
         </div>
 

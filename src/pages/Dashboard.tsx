@@ -30,6 +30,7 @@ export function Dashboard() {
     offline: "AI assistant endpoint unavailable.",
     ready: "AI assistant ready.",
     unavailable: "AI assistant readiness could not be loaded.",
+    unsupported: "AI assistant is not available in the browser build.",
   }[aiReadiness.status];
   const aiDescription = {
     loading: "Loading the saved AI provider settings.",
@@ -38,6 +39,7 @@ export function Dashboard() {
     offline: "Configured but unreachable. Check the endpoint settings.",
     ready: "Connected and ready for security research.",
     unavailable: "Readiness could not be loaded from local settings. Review Settings and retry.",
+    unsupported: "The browser build has no AI features. Use the desktop app or CLI for AI research.",
   }[aiReadiness.status];
   const readinessPending =
     aiReadiness.status === "loading" || aiReadiness.status === "checking";

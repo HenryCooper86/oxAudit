@@ -188,7 +188,7 @@ export function ProjectHome() {
                 </p>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="primary"
                 disabled={Boolean(active)}
@@ -201,6 +201,11 @@ export function ProjectHome() {
               >
                 Check project
               </Button>
+              {active && (
+                <span className="text-[12px] text-text-muted">
+                  A scan is already running
+                </span>
+              )}
               <Button
                 variant="outline"
                 onClick={() =>

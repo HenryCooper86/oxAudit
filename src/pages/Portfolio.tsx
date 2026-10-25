@@ -162,6 +162,9 @@ export function PortfolioPage(): JSX.Element {
       )}
       {projects && projects.length > 0 && (
         <section aria-label="Projects" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+          {projects.length >= 50 && (
+            <p className="border-b border-border px-4 py-2 text-[11px] text-text-muted">Showing the first 50 projects.</p>
+          )}
           <ul className="divide-y divide-border">
             {projects.map((project) => {
               const schedule = scheduleByProject.get(project.projectId);

@@ -59,6 +59,7 @@ test("recheck respects shared scan ownership", async () => {
   acquireScan("project", "/other", "Scanning source");
   render(<SourceScanPage />);
   expect(await screen.findByRole("button", { name: "Recheck finding" })).toBeDisabled();
+  expect(screen.getByText("A scan is already running")).toBeInTheDocument();
 });
 test.each(["cancelled", "failed", "wrongProject", "unsaved"])("recheck %s cannot claim covered absence", async mode => {
   const response = mode === "wrongProject" ? { ...receipt, run: { ...receipt.run, projectId: "other" } } : mode === "unsaved" ? { ...receipt, run: { ...receipt.run, persistence: { status: "notSaved", retryToken: "retry" } as const } } : receipt;

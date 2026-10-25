@@ -824,6 +824,29 @@ export function SourceScanPage(): JSX.Element {
     filtered.find((finding) => finding.fingerprint === effectiveSelection) ?? null;
   const hasExplicitSelection =
     selectedFingerprint !== null && selectedFingerprint === effectiveSelection;
+  /** First condition that blocks a recheck, in the gate's own order, so the
+   * disabled control can state its actual reason instead of staying silent. */
+  const recheckBlockReason = run
+    ? activeWork
+      ? "A scan is already running"
+      : unsavedRecheck
+        ? "The previous recheck is still being saved"
+        : targetLoading
+          ? "The project target is still loading"
+          : retryingSave
+            ? "A run save is being retried"
+            : savingReview
+              ? "A review is being saved"
+              : project?.policy.status === "invalid"
+                ? "The project policy is invalid"
+                : run.status !== "completed"
+                  ? "Recheck needs a completed run"
+                  : run.persistence.status !== "saved"
+                    ? "Recheck needs a durably saved run"
+                    : selectedFinding && selectedFinding.observationRunId !== run.runId
+                      ? "The finding belongs to a different run than the displayed one"
+                      : undefined
+    : undefined;
   const localLanguages = useMemo(() => {
     const values = new Set<string>();
     for (const finding of findings) {
@@ -1108,7 +1131,8 @@ export function SourceScanPage(): JSX.Element {
                 detail={selectedFinding ? (
                   <FindingDetail
                     onRecheck={recheckFinding}
-                    recheckDisabled={Boolean(activeWork || unsavedRecheck || targetLoading || retryingSave || savingReview || project?.policy.status === "invalid" || run.status !== "completed" || run.persistence.status !== "saved" || selectedFinding.observationRunId !== run.runId)}
+                    recheckDisabled={Boolean(recheckBlockReason)}
+                    recheckDisabledReason={recheckBlockReason}
                     projectId={run.projectId}
                     finding={selectedFinding}
                     savingReview={savingReview}

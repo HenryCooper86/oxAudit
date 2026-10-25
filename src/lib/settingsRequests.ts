@@ -1,5 +1,6 @@
 import { api } from "./api";
 import { LatestRequestQueue, type RequestToken } from "./latestRequest";
+import { serverMode } from "./transport";
 import type {
   AiStatus,
   AppSettings,
@@ -25,7 +26,8 @@ export type AiReadinessStatus =
   | "unconfigured"
   | "offline"
   | "ready"
-  | "unavailable";
+  | "unavailable"
+  | "unsupported";
 
 export interface AiReadiness {
   status: AiReadinessStatus;
@@ -70,8 +72,10 @@ export class SerializedSettingsWrites {
 export const persistedSettingsSaveRequests = new SerializedSettingsWrites();
 
 /**
- * Publishes readiness for one persisted settings snapshot. Configured snapshots
- * synchronously enter `checking`, and stale snapshot completions are discarded.
+ * Publishes readiness for one persisted settings snapshot. Server-mode builds
+ * have no AI commands and publish `unsupported` without probing; configured
+ * snapshots synchronously enter `checking`, and stale snapshot completions are
+ * discarded.
  */
 export async function publishPersistedAiReadiness(
   settings: AppSettings,
@@ -82,6 +86,10 @@ export async function publishPersistedAiReadiness(
   const requests = dependencies.requests ?? persistedSettingsRequests;
   const testAi = dependencies.testAi ?? api.testAi;
   if (!requests.isCurrent(token)) return;
+  if (serverMode) {
+    publish({ status: "unsupported", version: token.generation });
+    return;
+  }
   if (!settings.ai.enabled || !settings.ai.baseUrl.trim()) {
     publish({ status: "unconfigured", version: token.generation });
     return;

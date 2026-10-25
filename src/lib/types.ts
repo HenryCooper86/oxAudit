@@ -191,7 +191,7 @@ export interface RulePackValidationPreview {
   validation: string;
 }
 
-/** A pack installed into the managed store; enabled packs apply to every source scan. */
+/** A pack installed into the managed store; its enabled text-engine rules apply to every source scan. */
 export interface ScanScheduleRecord {
   projectId: string;
   canonicalPath: string;
