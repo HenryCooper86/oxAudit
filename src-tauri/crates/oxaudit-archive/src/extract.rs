@@ -1106,7 +1106,14 @@ fn extract_zip(
         if budget_stop(budget, total, out) {
             return;
         }
-        let member = match member_path(file.name()) {
+        let name = match file.name() {
+            Ok(name) => name,
+            Err(_) => {
+                out.stats.skipped_unreadable += 1;
+                continue;
+            }
+        };
+        let member = match member_path(&name) {
             Some(member) => member,
             None => {
                 out.stats.skipped_markers += 1;
@@ -2031,6 +2038,28 @@ mod tests {
             .note("fw.tar")
             .unwrap()
             .contains("skipped 1"));
+    }
+
+    #[test]
+    fn zip_members_support_legacy_cp437_and_utf8_names() {
+        let mut archive = zip_with(&[("legacy-x.bin", busybox()), ("日本語.bin", busybox())]);
+        let name = b"legacy-x.bin";
+        let offsets: Vec<_> = archive
+            .windows(name.len())
+            .enumerate()
+            .filter_map(|(offset, bytes)| (bytes == name).then_some(offset))
+            .collect();
+        assert_eq!(offsets.len(), 2);
+        // Both headers use the legacy encoding flag; 0x82 is é in CP437.
+        for offset in offsets {
+            archive[offset + 7] = 0x82;
+        }
+        let extracted = extract("fw.zip", &archive, &budget());
+        assert_eq!(
+            paths(&extracted),
+            vec!["fw.zip!/legacy-é.bin", "fw.zip!/日本語.bin"]
+        );
+        assert_eq!(extracted.stats.skipped_unreadable, 0);
     }
 
     #[test]

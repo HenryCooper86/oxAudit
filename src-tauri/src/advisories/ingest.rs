@@ -234,7 +234,12 @@ where
             let mut member = archive.by_index(index).map_err(|error| {
                 format!("the {ecosystem} dump member {index} is unreadable: {error}")
             })?;
-            let name = member.name().to_string();
+            let name = member
+                .name()
+                .map_err(|error| {
+                    format!("the {ecosystem} dump member {index} has an unreadable name: {error}")
+                })?
+                .into_owned();
             let mut bytes = Vec::new();
             member
                 .by_ref()

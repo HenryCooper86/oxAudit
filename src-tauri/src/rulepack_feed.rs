@@ -156,12 +156,17 @@ fn unpack_pack(zip_bytes: &[u8], directory: &std::path::Path) -> Result<(), Stri
         let mut member = archive
             .by_index(index)
             .map_err(|error| format!("pack archive member {index} is unreadable: {error}"))?;
+        let name = member
+            .name()
+            .map_err(|error| {
+                format!("pack archive member {index} has an unreadable name: {error}")
+            })?
+            .into_owned();
         // enclosed_name refuses absolute paths and `..` — exactly the two
         // ways a zip path could escape the directory being written.
         let Some(relative) = member.enclosed_name() else {
             return Err(format!(
-                "pack archive member {:?} escapes its directory; refusing the archive",
-                member.name()
+                "pack archive member {name:?} escapes its directory; refusing the archive"
             ));
         };
         if member.is_dir() {
@@ -172,16 +177,10 @@ fn unpack_pack(zip_bytes: &[u8], directory: &std::path::Path) -> Result<(), Stri
             .by_ref()
             .take(MAX_MEMBER_BYTES)
             .read_to_end(&mut bytes)
-            .map_err(|error| {
-                format!(
-                    "pack archive member {:?} is unreadable: {error}",
-                    member.name()
-                )
-            })?;
+            .map_err(|error| format!("pack archive member {name:?} is unreadable: {error}"))?;
         if bytes.len() as u64 >= MAX_MEMBER_BYTES {
             return Err(format!(
-                "resource limit: pack archive member {:?} exceeds {MAX_MEMBER_BYTES} bytes",
-                member.name()
+                "resource limit: pack archive member {name:?} exceeds {MAX_MEMBER_BYTES} bytes"
             ));
         }
         let target = directory.join(relative);

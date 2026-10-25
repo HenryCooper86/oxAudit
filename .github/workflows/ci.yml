@@ -87,7 +87,9 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             build-essential \
             curl \
+            dbus \
             file \
+            gnome-keyring \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libssl-dev \
@@ -153,7 +155,16 @@ jobs:
 
       - name: Exercise browser workflows against the real backend
         if: runner.os == 'Linux'
-        run: npm run test:e2e
+        run: |
+          # The production Linux credential backend requires Secret Service.
+          # Use an isolated, disposable keyring for these fixture-only tests.
+          dbus-run-session -- bash -euo pipefail <<'SH'
+          export XDG_DATA_HOME="$(mktemp -d)"
+          export XDG_RUNTIME_DIR="$(mktemp -d)"
+          trap 'rm -rf "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"' EXIT
+          printf '%s' 'oxaudit-ci-fixtures' | gnome-keyring-daemon --daemonize --unlock --components=secrets
+          npm run test:e2e
+          SH
 
       - name: Retain browser smoke diagnostics
         if: always() && runner.os == 'Linux'

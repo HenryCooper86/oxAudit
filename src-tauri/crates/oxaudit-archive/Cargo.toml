@@ -14,7 +14,7 @@ zstd = "0.14.0"
 liblzma = "0.4.8"
 bzip2 = "0.5.2"
 tar = "0.4.46"
-zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 backhand = "0.25.3"
 memchr = "2.8.3"
 serde = { version = "1", features = ["derive"] }
