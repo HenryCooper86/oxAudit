@@ -251,12 +251,7 @@ pub fn respond_permission(
 }
 
 pub(crate) fn respond_permission_inner(state: &AppState, request_id: &str, approve: bool) {
-    if let Some(tx) = state
-        .pending_permissions
-        .lock()
-        .unwrap()
-        .remove(request_id)
-    {
+    if let Some(tx) = state.pending_permissions.lock().unwrap().remove(request_id) {
         let _ = tx.send(approve);
     }
 }

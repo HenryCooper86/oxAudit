@@ -501,9 +501,9 @@ mod tests {
             .unwrap()
             .contains("cancelled"));
         let state = registry.state.lock().unwrap();
-        assert!(state.cancelled_before_start.contains(
-            &uuid::Uuid::parse_str(&phantom).unwrap()
-        ));
+        assert!(state
+            .cancelled_before_start
+            .contains(&uuid::Uuid::parse_str(&phantom).unwrap()));
         assert!(!state
             .used_ids
             .contains(&uuid::Uuid::parse_str(&phantom).unwrap()));
@@ -521,7 +521,10 @@ mod tests {
         }
         {
             let state = registry.state.lock().unwrap();
-            assert_eq!(state.cancelled_before_start.len(), MAX_CANCELLED_BEFORE_START);
+            assert_eq!(
+                state.cancelled_before_start.len(),
+                MAX_CANCELLED_BEFORE_START
+            );
             assert_eq!(
                 state.cancelled_before_start_order.len(),
                 MAX_CANCELLED_BEFORE_START

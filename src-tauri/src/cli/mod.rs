@@ -114,6 +114,11 @@ enum Command {
     },
     /// Score against the OWASP Benchmark: ground truth oxAudit did not write.
     ExternalBenchmark(ExternalBenchmarkArgs),
+    /// Re-match stored dependency inventories against a local advisory
+    /// database and report advisories the stored runs did not report.
+    /// Built for cron: one honest delta, exit codes for gating, an optional
+    /// webhook digest. The stored runs are never modified.
+    Monitor(MonitorArgs),
 }
 
 #[derive(Args, Debug)]
@@ -133,6 +138,51 @@ struct ExternalBenchmarkArgs {
     /// Exit 1 if the Youden index over covered categories falls below this.
     #[arg(long, value_name = "INDEX")]
     min_score: Option<f64>,
+}
+
+#[derive(Args, Debug)]
+struct MonitorArgs {
+    /// Findings database holding the stored dependency runs to monitor.
+    #[arg(long)]
+    db: PathBuf,
+
+    /// Local advisory database to re-match against (built with
+    /// `oxaudit-cli advisory-db update`).
+    #[arg(long, value_name = "DB")]
+    advisory_db: PathBuf,
+
+    /// Refresh the advisory database first, for exactly the ecosystems the
+    /// monitored inventories use.
+    #[arg(long)]
+    update: bool,
+
+    /// Dump base for --update (a mirror, or a local test server). Ignored
+    /// without --update.
+    #[arg(long, value_name = "URL")]
+    source: Option<String>,
+
+    /// Monitor these run ids instead of the latest completed dependency run
+    /// per target. Every id must name a completed dependencies run.
+    #[arg(long = "run", value_name = "ID")]
+    runs: Vec<String>,
+
+    #[arg(long, default_value = "text")]
+    format: OutputFormat,
+
+    /// Write the report here instead of stdout.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// Exit 1 when newly-matching advisories reach this severity. The
+    /// default never fails: monitoring reports before anyone asks it to gate.
+    #[arg(long, value_name = "SEVERITY")]
+    fail_on: Option<FailOn>,
+
+    /// POST a Slack-compatible {"text": …} digest of the delta to this
+    /// webhook URL. A delivery failure fails the command: a monitor whose
+    /// alert never left the machine must not report success.
+    #[arg(long, value_name = "URL")]
+    webhook: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -751,6 +801,7 @@ pub fn run() -> i32 {
         Command::Languages => run_languages(),
         Command::Hook { command } => staged::run_hook(command),
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
+        Command::Monitor(args) => run_monitor(args, cli.quiet),
     };
 
     match result {
@@ -1952,6 +2003,261 @@ fn run_runs(args: &RunsArgs) -> CliResult {
     Ok(EXIT_OK)
 }
 
+// ------------------------------------------------------------------ monitor
+
+fn run_monitor(args: &MonitorArgs, quiet: bool) -> CliResult {
+    let repository = open_repository(&args.db)?;
+    let selected = crate::monitor::select_runs(&repository, &args.runs).map_err(usage)?;
+    if selected.is_empty() {
+        println!(
+            "No completed dependency runs stored in {}.",
+            args.db.display()
+        );
+        return Ok(EXIT_OK);
+    }
+    let note = |line: String| {
+        if !quiet {
+            eprintln!("{line}");
+        }
+    };
+    for run in &selected {
+        note(format!("monitoring {} (run {})", run.target_label, run.id));
+    }
+    let inventories = crate::monitor::load_inventories(&repository, &selected).map_err(failure)?;
+
+    if args.update {
+        let ecosystems = crate::monitor::ecosystems_used(&inventories);
+        if ecosystems.is_empty() {
+            note(
+                "advisory database update skipped: no monitored inventory declares registry-queryable packages"
+                    .into(),
+            );
+        } else {
+            if let Some(parent) = args
+                .advisory_db
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+            {
+                crate::private_storage::ensure_private_dir(parent)
+                    .map_err(|error| failure(error.to_string()))?;
+            }
+            let mut store =
+                crate::advisories::store::AdvisoryDb::open(&args.advisory_db).map_err(|error| {
+                    failure(format!(
+                        "cannot open {}: {error}",
+                        args.advisory_db.display()
+                    ))
+                })?;
+            let http = build_http_client()?;
+            let mut fetcher = match &args.source {
+                Some(base) => crate::advisories::ingest::HttpDumpFetcher::with_base(http, base),
+                None => crate::advisories::ingest::HttpDumpFetcher::new(http),
+            };
+            note(format!(
+                "updating advisory database for: {}",
+                ecosystems.join(", ")
+            ));
+            let report = block_on(crate::advisories::ingest::update(
+                &mut store,
+                &ecosystems,
+                &mut fetcher,
+                note,
+            ))
+            .map_err(failure)?;
+            note(format!(
+                "advisory database updated: {} advisories over {} packages",
+                report.total_advisories, report.total_packages
+            ));
+        }
+    }
+
+    let advisory_db =
+        crate::advisories::store::AdvisoryDb::open(&args.advisory_db).map_err(|error| {
+            failure(format!(
+                "cannot open {}: {error}",
+                args.advisory_db.display()
+            ))
+        })?;
+    let outcome = crate::monitor::monitor(&advisory_db, &inventories).map_err(failure)?;
+
+    let rendered = match args.format {
+        OutputFormat::Json => {
+            serde_json::to_vec_pretty(&outcome).map_err(|error| failure(error.to_string()))?
+        }
+        OutputFormat::Text => render_monitor_text(&outcome, &args.advisory_db),
+        other => {
+            return Err(usage(format!(
+                "monitor supports --format text or json, not {other:?}"
+            )))
+        }
+    };
+    write_output(args.output.as_deref(), &rendered)?;
+
+    if let Some(url) = &args.webhook {
+        let digest = monitor_webhook_text(&outcome);
+        let status = deliver_webhook(url, &digest).map_err(failure)?;
+        note(format!("webhook delivered: HTTP {status}"));
+    }
+
+    // Incomplete coverage dominates the gate: a delta computed without every
+    // ecosystem is not a trustworthy pass or a trustworthy clean result, so
+    // cron sees the same failure the report names.
+    if !outcome.coverage_errors().is_empty() {
+        for run in outcome.coverage_errors() {
+            note(format!(
+                "incomplete advisory coverage for {}: {}",
+                run.target,
+                run.coverage_error.as_deref().unwrap_or_default()
+            ));
+        }
+        return Ok(EXIT_FAILURE);
+    }
+    Ok(gate(
+        outcome
+            .runs
+            .iter()
+            .flat_map(|run| run.newly_matching.iter())
+            .map(|advisory| severity_rank(advisory.severity.as_deref().unwrap_or(""))),
+        args.fail_on.unwrap_or(FailOn::None),
+        quiet,
+    ))
+}
+
+fn render_monitor_text(
+    outcome: &crate::monitor::MonitorOutcome,
+    advisory_db_path: &Path,
+) -> Vec<u8> {
+    let mut out = String::new();
+    let built = outcome
+        .advisory_db_built_at_ms
+        .and_then(rfc3339)
+        .unwrap_or_else(|| "unknown".into());
+    out.push_str(&format!(
+        "Monitoring {} stored dependency run(s) against {} (advisory database built {}).\n",
+        outcome.runs.len(),
+        advisory_db_path.display(),
+        built
+    ));
+    for run in &outcome.runs {
+        out.push_str(&format!("\n{}\n", run.target));
+        out.push_str(&format!(
+            "  run {}, inventory as of {}; {} component(s), {} re-matched\n",
+            run.run_id,
+            rfc3339(run.updated_at_ms).unwrap_or_else(|| "unknown".into()),
+            run.components_total,
+            run.components_matched
+        ));
+        if run.newly_matching.is_empty() {
+            out.push_str("  no advisories beyond what the stored run reported\n");
+        } else {
+            out.push_str(&format!(
+                "  {} advisory/advisories not reported by the stored run:\n",
+                run.newly_matching.len()
+            ));
+            for advisory in &run.newly_matching {
+                let severity = advisory.severity.as_deref().unwrap_or("unknown");
+                let fixed = if advisory.fixed_versions.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (fixed: {})", advisory.fixed_versions.join(", "))
+                };
+                out.push_str(&format!(
+                    "    {:<8} {} {}@{} {} — {}{}\n",
+                    severity,
+                    advisory.ecosystem,
+                    advisory.package,
+                    advisory.installed_version,
+                    advisory.advisory_id,
+                    advisory.summary,
+                    fixed
+                ));
+            }
+        }
+        if let Some(error) = &run.coverage_error {
+            out.push_str(&format!("  coverage incomplete: {error}\n"));
+        }
+        for note in &run.notes {
+            out.push_str(&format!("  note: {note}\n"));
+        }
+    }
+    out.into_bytes()
+}
+
+/// A webhook digest bounded so a pathological delta cannot post an
+/// unbounded message; the count line says what was elided.
+fn monitor_webhook_text(outcome: &crate::monitor::MonitorOutcome) -> String {
+    const MAX_ROWS: usize = 25;
+    let built = outcome
+        .advisory_db_built_at_ms
+        .and_then(rfc3339)
+        .unwrap_or_else(|| "unknown".into());
+    let total = outcome.total_new();
+    let mut text = format!(
+        "oxAudit monitor: {total} advisories not reported by stored runs across {} run(s) (advisory database built {built})",
+        outcome.runs.len()
+    );
+    let mut rows = 0usize;
+    for run in &outcome.runs {
+        if let Some(error) = &run.coverage_error {
+            text.push_str(&format!(
+                "\ncoverage incomplete for {}: {error}",
+                run.target
+            ));
+        }
+        for advisory in &run.newly_matching {
+            if rows >= MAX_ROWS {
+                text.push_str(&format!(
+                    "\n… and {} more (see the full report)",
+                    total - MAX_ROWS
+                ));
+                return text;
+            }
+            let severity = advisory.severity.as_deref().unwrap_or("unknown");
+            text.push_str(&format!(
+                "\n[{severity}] {} {}@{} {} — {}",
+                advisory.ecosystem,
+                advisory.package,
+                advisory.installed_version,
+                advisory.advisory_id,
+                run.target
+            ));
+            rows += 1;
+        }
+    }
+    text
+}
+
+/// POST the digest as a Slack-compatible `{"text": …}` payload.
+///
+/// Failure messages deliberately never repeat the webhook URL: Slack-style
+/// webhook URLs embed a bearer token in the path, and these errors go to
+/// stderr and CI logs. reqwest's default error Display includes the URL, so
+/// the transport error is stripped with `without_url`; the non-2xx message
+/// reports only the status. The caller learns that delivery failed and how,
+/// never the secret.
+fn deliver_webhook(url: &str, text: &str) -> Result<reqwest::StatusCode, String> {
+    let client = build_http_client().map_err(|error| error.to_string())?;
+    let response = block_on(
+        client
+            .post(url)
+            .json(&serde_json::json!({ "text": text }))
+            .send(),
+    )
+    .map_err(|error| format!("webhook delivery failed: {}", error.without_url()))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "webhook delivery failed: the webhook answered HTTP {status}"
+        ));
+    }
+    Ok(status)
+}
+
+fn rfc3339(epoch_ms: u64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(epoch_ms as i64)
+        .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
 // ---------------------------------------------------------------- benchmark
 
 /// Report which grammars this build carries.
@@ -2213,8 +2519,12 @@ fn render_scan_text(
     let _ = writeln!(
         out,
         "\n{} finding(s): {} critical, {} high, {} medium, {} low, {} info",
-        summary.total_findings, summary.critical, summary.high, summary.medium,
-        summary.low, summary.info
+        summary.total_findings,
+        summary.critical,
+        summary.high,
+        summary.medium,
+        summary.low,
+        summary.info
     );
     out.into_bytes()
 }
@@ -2282,10 +2592,8 @@ fn github_workspace_prefix(scan_root: &Path) -> String {
     let Some(workspace) = std::env::var_os("GITHUB_WORKSPACE") else {
         return String::new();
     };
-    let (Ok(workspace), Ok(root)) = (
-        std::fs::canonicalize(workspace),
-        scan_root.canonicalize(),
-    ) else {
+    let (Ok(workspace), Ok(root)) = (std::fs::canonicalize(workspace), scan_root.canonicalize())
+    else {
         return String::new();
     };
     let Ok(relative) = root.strip_prefix(&workspace) else {
@@ -2952,7 +3260,12 @@ mod tests {
         assert_eq!(args.max_file_size.max(1), 1);
     }
 
-    fn test_finding(severity: &str, rule_id: &str, title: &str, file: &str) -> crate::models::Finding {
+    fn test_finding(
+        severity: &str,
+        rule_id: &str,
+        title: &str,
+        file: &str,
+    ) -> crate::models::Finding {
         crate::models::Finding {
             id: "test".into(),
             category: "secret".into(),
@@ -3006,10 +3319,13 @@ mod tests {
             "::error file=src/a%2Cb.rs,line=3,col=7,title=aws%3Akey::AWS key 100%25%0Alive"
         );
         // The SARIF grading carries over: medium warns, info notices.
-        assert!(github_annotation(&test_finding("medium", "r", "t", "f"), "f")
-            .starts_with("::warning "));
-        assert!(github_annotation(&test_finding("info", "r", "t", "f"), "f")
-            .starts_with("::notice "));
+        assert!(
+            github_annotation(&test_finding("medium", "r", "t", "f"), "f")
+                .starts_with("::warning ")
+        );
+        assert!(
+            github_annotation(&test_finding("info", "r", "t", "f"), "f").starts_with("::notice ")
+        );
     }
 
     #[test]
@@ -3069,5 +3385,54 @@ mod tests {
         let markdown = render_summary_markdown(&summary, &[]);
         assert!(markdown.contains("No findings."));
         assert!(!markdown.contains("### Findings"));
+    }
+
+    /// A Slack-style webhook URL is a bearer credential in the path. These
+    /// tests pin that no delivery failure message ever repeats it, because
+    /// those messages go to stderr and CI logs.
+    const WEBHOOK_SENTINEL: &str = "SENTINEL_WEBHOOK_BEARER_TOKEN";
+
+    fn assert_no_sentinel(message: &str) {
+        assert!(
+            !message.contains(WEBHOOK_SENTINEL),
+            "webhook failure message leaks the URL credential: {message}"
+        );
+        assert!(
+            message.starts_with("webhook delivery failed"),
+            "a delivery failure must still say what failed: {message}"
+        );
+    }
+
+    #[test]
+    fn a_refused_webhook_never_leaks_its_url() {
+        // Bind, note the port, then drop the listener so the port refuses.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let url = format!("http://127.0.0.1:{port}/hook?token={WEBHOOK_SENTINEL}");
+        let error = deliver_webhook(&url, "digest").unwrap_err();
+        assert_no_sentinel(&error);
+    }
+
+    #[test]
+    fn a_rejected_webhook_reports_only_the_status() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 8192];
+            let _ = std::io::Read::read(&mut stream, &mut buffer);
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let url = format!("http://127.0.0.1:{port}/hook?token={WEBHOOK_SENTINEL}");
+        let error = deliver_webhook(&url, "digest").unwrap_err();
+        assert_no_sentinel(&error);
+        assert!(
+            error.contains("403"),
+            "the status is the actionable fact and must stay: {error}"
+        );
     }
 }

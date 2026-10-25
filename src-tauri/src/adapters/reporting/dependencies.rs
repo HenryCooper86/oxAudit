@@ -156,7 +156,6 @@ pub(super) fn sarif_results(data: &ReportData) -> Result<Vec<serde_json::Value>,
     Ok(results)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

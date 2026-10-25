@@ -22,8 +22,8 @@ and a finding on a workstation are the same finding.
 
 Two real paths, and they are different builds:
 
-- **Published release.** [v0.1.0](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.1.0)
-  (2026-09-26) ships prebuilt `oxaudit-cli` binaries for Linux x86_64,
+- **Published release.** [v0.2.0](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.0)
+  (2026-10-25) ships prebuilt `oxaudit-cli` binaries for Linux x86_64,
   macOS x86_64/arm64, and Windows x86_64, plus unsigned Linux x86_64
   desktop packages. On macOS/Linux the installer verifies the release
   checksum before installing:
@@ -36,8 +36,7 @@ Two real paths, and they are different builds:
   release page, or use the [composite Action](action/action.yml) in CI.
 - **Build from source.** Needed for the desktop pilot (macOS/Windows
   bundles), the headless browser server, a Linux aarch64 CLI, and anything
-  newer than the v0.1.0 tag — `main` still declares 0.1.0 while being
-  newer code. The [Getting started guide](docs/getting-started.md) lists
+  newer than the v0.2.0 tag. The [Getting started guide](docs/getting-started.md) lists
   Node 22.22.2, the pinned Rust 1.97.1 toolchain, and platform-specific
   native prerequisites.
 
@@ -240,6 +239,7 @@ with a reason, an expiry, and a pull request.
 | **Editor integration** | A VS Code extension ([`editors/vscode/`](editors/vscode)) scans the open workspace with the same CLI and reports findings as native diagnostics, with severity mapping and a status-bar scan control |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
 | **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, designed to ship in the project's container image ([ADR 0004](docs/architecture/adr/0004-headless-server.md)); no public image is published yet |
+| **Inventory monitoring** | `oxaudit-cli monitor` re-matches stored dependency inventories against a refreshed advisory database and reports advisories the stored runs did not report — the overnight "which of my projects does this new CVE affect" loop as one cron line, with `--update` scoped to the ecosystems actually used, `--fail-on` gating, and an optional Slack-compatible webhook digest; stored runs are never modified |
 
 ## Screens
 
@@ -305,6 +305,17 @@ oxaudit-cli history . --baseline history.json --fail-on-new high
 # Complete dependency baseline and a new-only CI gate
 oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --format json --output deps-baseline.json
 oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --baseline deps-baseline.json --fail-on-new high
+
+# Overnight watch: refresh the advisory database, re-match every stored
+# dependency inventory, and report what the stored runs did not report.
+# One line in cron is the whole loop — deltas stay honest, runs stay untouched.
+oxaudit-cli monitor --db ~/.oxaudit/findings.sqlite3 --advisory-db ~/.oxaudit/advisories.sqlite3 --update
+
+# Same loop, gated for CI: fail only when something new reaches high
+oxaudit-cli monitor --db ~/.oxaudit/findings.sqlite3 --advisory-db ~/.oxaudit/advisories.sqlite3 --fail-on high
+
+# And post the morning digest to Slack (any {"text": …} webhook works)
+oxaudit-cli monitor --db ~/.oxaudit/findings.sqlite3 --advisory-db ~/.oxaudit/advisories.sqlite3 --update --webhook "$SLACK_WEBHOOK_URL"
 
 # Offline dependency scan from a complete receipt in the same database
 oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3 --offline --format cyclonedx
@@ -421,6 +432,33 @@ path can overwrite it. `--fail-on` still gates all current advisories independen
 `--kind` preserves the existing source-project summary format, whose
 `lastCompletedRunId` refers to source history. Use a canonical `id` with `export`.
 Dependency scans also accept the same standards output names as `scan`.
+
+### Monitoring stored inventories
+
+`oxaudit-cli monitor` answers the overnight question — *a new advisory was
+published; which of my stored inventories does it now affect?* — without
+re-scanning a single project. It selects the latest completed dependency run
+per target in `--db` (or exactly the runs named with `--run`), reloads each
+run's stored components, re-matches them against `--advisory-db` through the
+same local matcher as `deps --advisory-db`, and reports every advisory the
+stored run did not report. Stored runs are read-only: monitoring never
+rewrites evidence. `--update` refreshes the advisory database first, for
+exactly the ecosystems the monitored inventories use.
+
+A delta row means **the stored run did not report this advisory for this
+component** — the honest wording, because the cause may be a newly published
+advisory, updated range data, or the local comparator keeping an advisory it
+cannot order (counted in the run's notes). Aliases collapse: an advisory the
+stored run reported under any of its ids is not new. Only components that
+carried a purl were registry-queryable at scan time, so only those are
+re-matched; both counts are printed per run.
+
+Exit codes follow the rest of the CLI: `0` nothing new at or above
+`--fail-on`, `1` findings, `2` usage (an unknown or non-dependency `--run`
+id), `3` failure — including incomplete advisory coverage, which names the
+missing ecosystems, and a webhook that did not accept the digest. The report
+is written before any gate, so `--format json --output` always captures the
+full delta; `--webhook` posts a bounded Slack-compatible `{"text": …}` digest.
 
 ### Dependency paths and upgrade decisions
 

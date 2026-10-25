@@ -151,8 +151,9 @@ pub(crate) async fn refresh_data_source_inner(
         let mut body = Vec::new();
         let mut chunks = response.bytes_stream();
         while let Some(chunk) = chunks.next().await {
-            let chunk = chunk
-                .map_err(|error| format!("{} response could not be read: {error}", definition.name))?;
+            let chunk = chunk.map_err(|error| {
+                format!("{} response could not be read: {error}", definition.name)
+            })?;
             body.extend_from_slice(&chunk);
             if body.len() as u64 > MAX_PROVIDER_BYTES {
                 return Err("provider response exceeded the 32 MiB safety limit".into());
@@ -168,12 +169,14 @@ pub(crate) async fn refresh_data_source_inner(
         let set = crate::exploit::PoCSet::parse_csv(&text)
             .map_err(|error| format!("{} index is not a valid CSV: {error}", definition.name))?;
         if let Some(data_dir) = data_dir {
-            std::fs::create_dir_all(data_dir)
-                .map_err(|error| format!("{} cache could not be persisted: {error}", definition.name))?;
+            std::fs::create_dir_all(data_dir).map_err(|error| {
+                format!("{} cache could not be persisted: {error}", definition.name)
+            })?;
             let cache_path = crate::exploit::poc_cache_path(data_dir);
             let temporary = cache_path.with_extension("csv.tmp");
-            std::fs::write(&temporary, &bytes)
-                .map_err(|error| format!("{} cache could not be persisted: {error}", definition.name))?;
+            std::fs::write(&temporary, &bytes).map_err(|error| {
+                format!("{} cache could not be persisted: {error}", definition.name)
+            })?;
             if let Err(error) = std::fs::rename(&temporary, &cache_path) {
                 let _ = std::fs::remove_file(&temporary);
                 return Err(format!(

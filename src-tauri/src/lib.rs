@@ -19,6 +19,7 @@ mod history;
 mod licenses;
 mod migration;
 mod models;
+mod monitor;
 pub mod observability;
 mod presentation;
 pub mod private_storage;

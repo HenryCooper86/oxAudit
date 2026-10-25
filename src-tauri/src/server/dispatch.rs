@@ -1195,9 +1195,13 @@ mod tests {
     #[tokio::test]
     async fn todo_list_returns_empty_list_in_server_mode() {
         let (ctx, _dir) = test_context();
-        let result = dispatch(&ctx, "todo_list", serde_json::json!({ "conversationId": "c1" }))
-            .await
-            .expect("todo_list should succeed");
+        let result = dispatch(
+            &ctx,
+            "todo_list",
+            serde_json::json!({ "conversationId": "c1" }),
+        )
+        .await
+        .expect("todo_list should succeed");
         assert_eq!(result, serde_json::json!([]));
     }
 

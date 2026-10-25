@@ -64,7 +64,9 @@ pub(super) fn run_staged(args: &ScanArgs, quiet: bool) -> CliResult {
         ));
     }
     if args.db.is_some() {
-        return Err(usage("--staged runs in memory and stores nothing; drop --db"));
+        return Err(usage(
+            "--staged runs in memory and stores nothing; drop --db",
+        ));
     }
     if args.no_secrets {
         return Err(usage(
@@ -271,7 +273,10 @@ fn staged_summary(
             "low" => summary.low += 1,
             _ => summary.info += 1,
         }
-        *summary.rules_fired.entry(finding.rule_id.clone()).or_default() += 1;
+        *summary
+            .rules_fired
+            .entry(finding.rule_id.clone())
+            .or_default() += 1;
     }
     summary
 }
@@ -516,10 +521,7 @@ pub(super) fn run_hook(command: &HookCommand) -> CliResult {
     match command {
         HookCommand::Install => {
             let path = install_hook(&root)?;
-            println!(
-                "Installed `{HOOK_COMMAND}` in {}",
-                path.display()
-            );
+            println!("Installed `{HOOK_COMMAND}` in {}", path.display());
         }
         HookCommand::Uninstall => {
             if uninstall_hook(&root)? {
@@ -531,15 +533,9 @@ pub(super) fn run_hook(command: &HookCommand) -> CliResult {
         HookCommand::Status => {
             let (path, installed) = hook_status(&root)?;
             if installed {
-                println!(
-                    "Installed: {} runs `{HOOK_COMMAND}`",
-                    path.display()
-                );
+                println!("Installed: {} runs `{HOOK_COMMAND}`", path.display());
             } else {
-                println!(
-                    "Not installed: no oxaudit block in {}",
-                    path.display()
-                );
+                println!("Not installed: no oxaudit block in {}", path.display());
             }
         }
     }
@@ -592,10 +588,7 @@ fn install_hook(root: &Path) -> Result<PathBuf, CliError> {
         Ok(content) => Some(content),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
-            return Err(failure(format!(
-                "cannot read {}: {error}",
-                path.display()
-            )));
+            return Err(failure(format!("cannot read {}: {error}", path.display())));
         }
     };
     let block = managed_block();
@@ -628,9 +621,8 @@ fn install_hook(root: &Path) -> Result<PathBuf, CliError> {
         None => format!("{SHEBANG}\n{block}"),
     };
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            failure(format!("cannot create {}: {error}", parent.display()))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| failure(format!("cannot create {}: {error}", parent.display())))?;
     }
     std::fs::write(&path, content)
         .map_err(|error| failure(format!("cannot write {}: {error}", path.display())))?;
@@ -646,10 +638,7 @@ fn uninstall_hook(root: &Path) -> Result<bool, CliError> {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
-            return Err(failure(format!(
-                "cannot read {}: {error}",
-                path.display()
-            )));
+            return Err(failure(format!("cannot read {}: {error}", path.display())));
         }
     };
     let Some((start, stop)) = managed_block_span(&content) else {
@@ -675,10 +664,7 @@ fn hook_status(root: &Path) -> Result<(PathBuf, bool), CliError> {
         Ok(content) => managed_block_span(&content).is_some(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => {
-            return Err(failure(format!(
-                "cannot read {}: {error}",
-                path.display()
-            )));
+            return Err(failure(format!("cannot read {}: {error}", path.display())));
         }
     };
     Ok((path, installed))
@@ -687,8 +673,12 @@ fn hook_status(root: &Path) -> Result<(PathBuf, bool), CliError> {
 #[cfg(unix)]
 fn make_executable(path: &Path) -> Result<(), CliError> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .map_err(|error| failure(format!("cannot make {} executable: {error}", path.display())))
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|error| {
+        failure(format!(
+            "cannot make {} executable: {error}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(not(unix))]
@@ -782,14 +772,9 @@ mod tests {
 
     #[test]
     fn staged_mode_refuses_storage_dependent_combinations() {
-        let cli = super::super::Cli::try_parse_from([
-            "oxaudit",
-            "scan",
-            "--staged",
-            "--format",
-            "sarif",
-        ])
-        .expect("--staged makes the path optional");
+        let cli =
+            super::super::Cli::try_parse_from(["oxaudit", "scan", "--staged", "--format", "sarif"])
+                .expect("--staged makes the path optional");
         let super::super::Command::Scan(args) = &cli.command else {
             panic!("scan command expected");
         };
