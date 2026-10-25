@@ -411,8 +411,9 @@ jobs:
 
   # CLI-only builds for the platforms whose desktop bundles are currently
   # off (owner decision 2026-09-26: no Apple/Windows developer accounts).
-  # The CLI needs no native signing and no desktop dependencies, so it ships
-  # for every platform even while bundle-desktop is skipped.
+  # The CLI needs no native signing, but it links the same library as the
+  # desktop app — on Linux that means the same gtk/webkit build packages —
+  # so it ships for every platform even while bundle-desktop is skipped.
   bundle-cli:
     name: CLI (${{ matrix.platform }})
     needs: verify
@@ -432,6 +433,14 @@ jobs:
             platform: linux-aarch64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential curl file libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev wget
 
       - name: Install the pinned Rust toolchain
         run: rustup show active-toolchain
@@ -519,9 +528,15 @@ jobs:
 
       - name: Build and push the linux/${{ matrix.goarch }} image by digest
         run: |
-          # No --tag: the push is digest-only, and the merge job assembles the
-          # tagged multi-architecture index from the two digests.
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # buildx refuses --output push=true without a named reference,
+          # even though only the digest is consumed downstream: each arch
+          # pushes under its own version- and arch-suffixed tag, and the
+          # merge job assembles the public multi-architecture index from
+          # the two digests and the real tags.
           docker buildx build \
+            --tag "${IMAGE}:${GITHUB_REF_NAME}-${{ matrix.goarch }}" \
             --platform linux/${{ matrix.goarch }} \
             --build-arg VCS_REF="${GITHUB_SHA}" \
             --build-arg VERSION="${GITHUB_REF_NAME}" \
