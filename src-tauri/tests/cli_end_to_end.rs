@@ -54,8 +54,21 @@ fn project() -> tempfile::TempDir {
     directory
 }
 
+/// Run the CLI the way a user terminal sees it.
+///
+/// GitHub sets `GITHUB_ACTIONS` on its own runners, and inside that
+/// environment the CLI legitimately emits `::error` workflow annotations on
+/// stderr — a feature, not progress chatter. These tests measure the
+/// terminal contract (report on stdout, progress on stderr, `-q` silencing
+/// it), so the runner's variables are scrubbed to keep every assertion
+/// deterministic on a laptop and inside GitHub CI alike.
 fn run(arguments: &[&str]) -> Output {
-    cli().args(arguments).output().expect("cli runs")
+    cli()
+        .args(arguments)
+        .env_remove("GITHUB_ACTIONS")
+        .env_remove("GITHUB_WORKSPACE")
+        .output()
+        .expect("cli runs")
 }
 
 fn stdout(output: &Output) -> String {
