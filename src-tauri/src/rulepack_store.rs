@@ -172,18 +172,18 @@ impl RulePackStore {
         Ok(installed)
     }
 
-    pub fn list(&self) -> Vec<InstalledRulePack> {
-        let Ok(connection) = self.connection.lock() else {
-            return Vec::new();
-        };
-        let mut statement = match connection.prepare(
-            "SELECT id, name, version, toml_sha256, content_sha256, rule_count,
+    pub fn list(&self) -> Result<Vec<InstalledRulePack>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "the rule-pack store is locked".to_owned())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, name, version, toml_sha256, content_sha256, rule_count,
                     engines, enabled, installed_at FROM rule_packs
              ORDER BY installed_at DESC, id",
-        ) {
-            Ok(statement) => statement,
-            Err(_) => return Vec::new(),
-        };
+            )
+            .map_err(|error| format!("cannot read installed rule packs: {error}"))?;
         let rows = statement
             .query_map([], |row| {
                 Ok(InstalledRulePack {
@@ -192,15 +192,25 @@ impl RulePackStore {
                     version: row.get(2)?,
                     toml_sha256: row.get(3)?,
                     content_sha256: row.get(4)?,
-                    rule_count: row.get::<_, i64>(5)? as usize,
-                    engines: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+                    rule_count: {
+                        let count = row.get::<_, i64>(5)?;
+                        usize::try_from(count)
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(5, count))?
+                    },
+                    engines: serde_json::from_str(&row.get::<_, String>(6)?).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
                     enabled: row.get::<_, i64>(7)? != 0,
                     installed_at: row.get(8)?,
                 })
             })
-            .map(|rows| rows.filter_map(Result::ok).collect())
-            .unwrap_or_default();
-        rows
+            .map_err(|error| format!("cannot read installed rule packs: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot read installed rule packs: {error}"))
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
@@ -240,37 +250,50 @@ impl RulePackStore {
     /// Compile every enabled pack for a scan, re-validating each snapshot.
     /// A pack that fails its re-validation is skipped with the reason; the
     /// scan runs with the packs that still hold.
-    pub fn resolve_enabled(&self) -> ResolvedPacks {
-        let mut resolved = ResolvedPacks::default();
-        let Ok(connection) = self.connection.lock() else {
-            return resolved;
-        };
-        let Ok(mut statement) =
-            connection.prepare("SELECT id, toml FROM rule_packs WHERE enabled != 0 ORDER BY id")
-        else {
-            return resolved;
-        };
+    pub fn resolve_enabled(&self) -> Result<ResolvedPacks, String> {
+        let rows = self.read_snapshots(
+            "SELECT id, toml FROM rule_packs WHERE enabled != 0 ORDER BY id",
+            [],
+        )?;
+        Ok(compile_snapshots(rows))
+    }
+
+    fn read_snapshots(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<(String, String)>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "the rule-pack store is locked".to_owned())?;
+        let mut statement = connection
+            .prepare(sql)
+            .map_err(|error| format!("cannot read rule-pack snapshots: {error}"))?;
         let rows = statement
-            .query_map([], |row| {
+            .query_map(params, |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
-            .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
-            .unwrap_or_default();
-        drop(statement);
-        drop(connection);
-        for (id, toml_text) in rows {
-            match RulePack::parse_toml(&toml_text)
-                .map_err(|error| error.to_string())
-                .and_then(|pack| {
-                    pack.validate().map_err(|error| error.to_string())?;
-                    CompiledRulePack::compile(pack).map_err(|error| error.to_string())
-                }) {
-                Ok(compiled) => resolved.packs.push(Arc::new(compiled)),
-                Err(reason) => resolved.skipped.push((id, reason)),
-            }
-        }
-        resolved
+            .map_err(|error| format!("cannot read rule-pack snapshots: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot read rule-pack snapshots: {error}"))
     }
+}
+
+fn compile_snapshots(rows: Vec<(String, String)>) -> ResolvedPacks {
+    let mut resolved = ResolvedPacks::default();
+    for (id, toml_text) in rows {
+        match RulePack::parse_toml(&toml_text)
+            .map_err(|error| error.to_string())
+            .and_then(|pack| {
+                pack.validate().map_err(|error| error.to_string())?;
+                CompiledRulePack::compile(pack).map_err(|error| error.to_string())
+            }) {
+            Ok(compiled) => resolved.packs.push(Arc::new(compiled)),
+            Err(reason) => resolved.skipped.push((id, reason)),
+        }
+    }
+    resolved
 }
 
 /// The managed Tauri state: the store when its database opened, or the
@@ -341,39 +364,25 @@ impl RulePackStore {
     /// Explicit selection applies the pack as stored; the enabled flag only
     /// governs default application (the desktop's every-scan behavior).
     pub fn resolve_selected(&self, ids: &[String]) -> ResolvedPacks {
-        let mut resolved = ResolvedPacks::default();
-        let Ok(connection) = self.connection.lock() else {
-            return resolved;
-        };
+        if ids.is_empty() {
+            return ResolvedPacks::default();
+        }
         let placeholders = std::iter::repeat("?")
             .take(ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!("SELECT id, toml FROM rule_packs WHERE id IN ({placeholders})");
-        let Ok(mut statement) = connection.prepare(&sql) else {
-            return resolved;
-        };
-        let rows = statement
-            .query_map(rusqlite::params_from_iter(ids.iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
-            .unwrap_or_default();
-        drop(statement);
-        drop(connection);
-        let mut found = std::collections::BTreeSet::new();
-        for (id, toml_text) in &rows {
-            found.insert(id.clone());
-            match RulePack::parse_toml(toml_text)
-                .map_err(|error| error.to_string())
-                .and_then(|pack| {
-                    pack.validate().map_err(|error| error.to_string())?;
-                    CompiledRulePack::compile(pack).map_err(|error| error.to_string())
-                }) {
-                Ok(compiled) => resolved.packs.push(std::sync::Arc::new(compiled)),
-                Err(reason) => resolved.skipped.push((id.clone(), reason)),
+        let rows = match self.read_snapshots(&sql, rusqlite::params_from_iter(ids.iter())) {
+            Ok(rows) => rows,
+            Err(error) => {
+                return ResolvedPacks {
+                    packs: Vec::new(),
+                    skipped: ids.iter().map(|id| (id.clone(), error.clone())).collect(),
+                };
             }
-        }
+        };
+        let found: std::collections::BTreeSet<_> = rows.iter().map(|(id, _)| id.clone()).collect();
+        let mut resolved = compile_snapshots(rows);
         for id in ids {
             if !found.contains(id) {
                 resolved
@@ -462,6 +471,50 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_pack_metadata_is_reported_instead_of_hidden() {
+        for damage in [
+            "DROP TABLE rule_packs",
+            "UPDATE rule_packs SET name = X'FF'",
+            "UPDATE rule_packs SET engines = 'broken json'",
+            "UPDATE rule_packs SET rule_count = -1",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let text = write_pack(directory.path());
+            let store = RulePackStore::open_in_memory().unwrap();
+            store
+                .install(&text, directory.path(), "2026-09-24T00:00:00Z")
+                .unwrap();
+            store
+                .connection
+                .lock()
+                .unwrap()
+                .execute_batch(damage)
+                .unwrap();
+            let state = RulePacksState::available(store);
+            assert!(
+                crate::commands::quality::list_installed_rule_packs_inner(&state).is_err(),
+                "damage must surface: {damage}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicitly_selected_packs_report_database_failures() {
+        let store = RulePackStore::open_in_memory().unwrap();
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE rule_packs")
+            .unwrap();
+        let resolved = store.resolve_selected(&["rulepack.required".into()]);
+        assert!(resolved.packs.is_empty());
+        assert_eq!(resolved.skipped.len(), 1);
+        assert_eq!(resolved.skipped[0].0, "rulepack.required");
+        assert!(resolved.skipped[0].1.contains("cannot read"));
+    }
+
+    #[test]
     fn install_validates_listens_and_resolves_enabled_packs() {
         let directory = tempfile::tempdir().unwrap();
         let toml_text = write_pack(directory.path());
@@ -474,21 +527,21 @@ mod tests {
         assert_eq!(installed.rule_count, 1);
         assert!(installed.enabled);
 
-        let list = store.list();
+        let list = store.list().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].engines, vec!["source_regex".to_string()]);
 
-        let resolved = store.resolve_enabled();
+        let resolved = store.resolve_enabled().unwrap();
         assert_eq!(resolved.packs.len(), 1);
         assert!(resolved.skipped.is_empty());
         assert_eq!(resolved.packs[0].metadata().id.to_string(), "rulepack.test");
 
         store.set_enabled("rulepack.test", false).unwrap();
-        assert!(!store.list()[0].enabled);
-        assert!(store.resolve_enabled().packs.is_empty());
+        assert!(!store.list().unwrap()[0].enabled);
+        assert!(store.resolve_enabled().unwrap().packs.is_empty());
 
         store.remove("rulepack.test").unwrap();
-        assert!(store.list().is_empty());
+        assert!(store.list().unwrap().is_empty());
         assert!(store.remove("rulepack.test").is_err());
     }
 
@@ -509,7 +562,7 @@ mod tests {
                 .execute("UPDATE rule_packs SET toml = 'not toml at all'", [])
                 .unwrap();
         }
-        let resolved = store.resolve_enabled();
+        let resolved = store.resolve_enabled().unwrap();
         assert!(resolved.packs.is_empty());
         assert_eq!(resolved.skipped.len(), 1);
         assert!(resolved.skipped[0].0 == "rulepack.test");
@@ -523,6 +576,6 @@ mod tests {
         let error = store
             .install("[pack]\n", directory.path(), "2026-09-24T00:00:00Z")
             .unwrap_err();
-        assert!(store.list().is_empty(), "nothing stored: {error}");
+        assert!(store.list().unwrap().is_empty(), "nothing stored: {error}");
     }
 }

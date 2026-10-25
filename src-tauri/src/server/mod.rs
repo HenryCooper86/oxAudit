@@ -159,7 +159,13 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
             let Ok(store) = ticker_ctx.schedules.store() else {
                 continue;
             };
-            let schedules = store.list();
+            let schedules = match store.list() {
+                Ok(schedules) => schedules,
+                Err(error) => {
+                    tracing::warn!(%error, "scheduled rescans skipped: schedules could not be read");
+                    continue;
+                }
+            };
             let due = crate::schedule_store::due(&schedules, chrono::Utc::now());
             for schedule in due {
                 tracing::info!(project = %schedule.project_id, "scheduled rescan starting");

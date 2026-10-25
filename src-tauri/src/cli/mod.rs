@@ -866,7 +866,7 @@ fn run_rule_pack(command: &RulePackCommand, quiet: bool) -> CliResult {
         }
         RulePackCommand::List { db, json } => {
             let store = RulePackStore::open(db).map_err(failure)?;
-            let packs = store.list();
+            let packs = store.list().map_err(failure)?;
             if *json {
                 let rendered = serde_json::to_vec_pretty(&packs)
                     .map_err(|error| failure(error.to_string()))?;

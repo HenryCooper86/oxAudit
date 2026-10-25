@@ -12,7 +12,7 @@ resolver = "2"
 
 [package]
 name = "oxaudit"
-version = "0.2.2"
+version = "0.2.3"
 description = "oxAudit — security research workbench"
 authors = ["Henry Cooper"]
 license = "Apache-2.0"

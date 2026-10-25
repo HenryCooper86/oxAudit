@@ -251,7 +251,7 @@ where
     }
 
     let installed: std::collections::HashMap<String, bool> = store
-        .list()
+        .list()?
         .into_iter()
         .map(|pack| (pack.id, pack.enabled))
         .collect();
@@ -261,7 +261,7 @@ where
         if !only.is_empty() && !only.iter().any(|id| id == &pack.id) {
             continue;
         }
-        if let Some(installed) = store.list().iter().find(|row| row.id == pack.id) {
+        if let Some(installed) = store.list()?.iter().find(|row| row.id == pack.id) {
             if installed.version == pack.version {
                 note(format!(
                     "{} {} already installed; skipping",
@@ -433,7 +433,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.contains("digest"), "{error}");
-        assert!(store.list().is_empty());
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[tokio::test]

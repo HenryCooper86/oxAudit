@@ -770,9 +770,8 @@ pub(crate) async fn scan_source_engine_scoped(
     // lie. A pack whose snapshot no longer validates is skipped with its
     // reason logged — the scan proceeds with the packs that hold.
     let mut coverage_warnings = Vec::new();
-    let installed_packs = match rule_packs.store() {
-        Ok(store) => {
-            let resolved = store.resolve_enabled();
+    let installed_packs = match rule_packs.store().and_then(|store| store.resolve_enabled()) {
+        Ok(resolved) => {
             for (id, reason) in &resolved.skipped {
                 tracing::warn!(pack = %id, reason = %reason, "enabled rule pack skipped");
                 coverage_warnings.push(format!("Enabled rule pack {id} was not applied: {reason}"));

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { PortfolioPage } from "./Portfolio";
@@ -54,6 +54,50 @@ const schedule = (overrides: Partial<ScanScheduleStatus> = {}): ScanScheduleStat
   lastStartedAt: "2026-09-23T10:00:00Z",
   nextDueAt: "2026-09-24T10:00:00Z",
   ...overrides,
+});
+
+test("each project stays busy until its own schedule write completes", async () => {
+  listSourceProjects.mockResolvedValue([project(), project({ projectId: "p2", displayName: "service-b", canonicalPath: "/work/service-b" })]);
+  listScanSchedules.mockResolvedValue([]);
+  const pending = new Map<string, () => void>();
+  setScanSchedule.mockImplementation((id: string) => new Promise<void>(resolve => { pending.set(id, resolve); }));
+  render(<PortfolioPage />);
+  await screen.findByText("service-a");
+  const [first, second] = screen.getAllByRole("listitem").map(row => within(row));
+  await userEvent.click(first.getByRole("button", { name: /schedule daily/i }));
+  expect(first.getByRole("button", { name: /schedule daily/i })).toBeDisabled();
+  expect(second.getByRole("button", { name: /schedule daily/i })).toBeEnabled();
+  await userEvent.click(second.getByRole("button", { name: /schedule daily/i }));
+  expect(first.getByRole("button", { name: /schedule daily/i })).toBeDisabled();
+  expect(second.getByRole("button", { name: /schedule daily/i })).toBeDisabled();
+  await act(async () => pending.get("p2")!());
+  expect(first.getByRole("button", { name: /schedule daily/i })).toBeDisabled();
+  expect(second.getByRole("button", { name: /schedule daily/i })).toBeEnabled();
+  await act(async () => pending.get("p1")!());
+  expect(first.getByRole("button", { name: /schedule daily/i })).toBeEnabled();
+});
+
+test("a superseded schedule refresh keeps controls locked until fresh values arrive", async () => {
+  const secondProject = project({ projectId: "p2", displayName: "service-b", canonicalPath: "/work/service-b" });
+  listSourceProjects.mockResolvedValue([project(), secondProject]);
+  let resolveFirst!: (value: ScanScheduleStatus[]) => void;
+  let resolveSecond!: (value: ScanScheduleStatus[]) => void;
+  listScanSchedules.mockResolvedValueOnce([schedule()])
+    .mockReturnValueOnce(new Promise<ScanScheduleStatus[]>(done => { resolveFirst = done; }))
+    .mockReturnValueOnce(new Promise<ScanScheduleStatus[]>(done => { resolveSecond = done; }))
+    .mockResolvedValue([schedule({ intervalHours: 168, enabled: false })]);
+  setScanSchedule.mockReset().mockResolvedValue({});
+  render(<PortfolioPage />);
+  await screen.findByText("service-a");
+  const [first, second] = screen.getAllByRole("listitem").map(row => within(row));
+  await userEvent.selectOptions(first.getByRole("combobox"), "168");
+  await userEvent.click(second.getByRole("button", { name: /schedule daily/i }));
+  await act(async () => resolveFirst([schedule({ intervalHours: 168 })]));
+  expect(first.getByRole("switch", { name: /rescheduling/i })).toBeDisabled();
+  await act(async () => resolveSecond([schedule({ intervalHours: 168 }), schedule({ projectId: "p2" })]));
+  expect(first.getByRole("combobox")).toHaveValue("168");
+  await userEvent.click(first.getByRole("switch", { name: /rescheduling/i }));
+  expect(setScanSchedule).toHaveBeenLastCalledWith("p1", "/work/service-a", "service-a", 168, false);
 });
 
 test("the portfolio shows evidence and staleness per project", async () => {

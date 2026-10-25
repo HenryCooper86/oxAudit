@@ -151,7 +151,13 @@ pub fn run() {
                     let Ok(store) = state.store() else {
                         continue;
                     };
-                    let schedules = store.list();
+                    let schedules = match store.list() {
+                        Ok(schedules) => schedules,
+                        Err(error) => {
+                            tracing::warn!(%error, "scheduled rescans skipped: schedules could not be read");
+                            continue;
+                        }
+                    };
                     let due = crate::schedule_store::due(&schedules, chrono::Utc::now());
                     for schedule in due {
                         tracing::info!(

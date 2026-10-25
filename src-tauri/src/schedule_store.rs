@@ -148,18 +148,19 @@ impl ScheduleStore {
         })
     }
 
-    pub fn list(&self) -> Vec<ScheduleRecord> {
-        let Ok(connection) = self.connection.lock() else {
-            return Vec::new();
-        };
-        let Ok(mut statement) = connection.prepare(
-            "SELECT project_id, canonical_path, display_name, interval_hours,
+    pub fn list(&self) -> Result<Vec<ScheduleRecord>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "the schedule store is locked".to_owned())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT project_id, canonical_path, display_name, interval_hours,
                     enabled, last_started_at FROM scan_schedules
              ORDER BY display_name, project_id",
-        ) else {
-            return Vec::new();
-        };
-        statement
+            )
+            .map_err(|error| format!("cannot read schedules: {error}"))?;
+        let rows = statement
             .query_map([], |row| {
                 Ok(ScheduleRecord {
                     project_id: row.get(0)?,
@@ -173,8 +174,9 @@ impl ScheduleStore {
                     last_started_at: row.get(5)?,
                 })
             })
-            .map(|rows| rows.filter_map(Result::ok).collect())
-            .unwrap_or_default()
+            .map_err(|error| format!("cannot read schedules: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot read schedules: {error}"))
     }
 
     /// Record that a scan for this project actually started now.
@@ -322,10 +324,10 @@ mod tests {
             MAX_INTERVAL_HOURS
         );
 
-        assert_eq!(store.list().len(), 3);
+        assert_eq!(store.list().unwrap().len(), 3);
         store.mark_started("p1", "2026-09-24T00:00:00Z").unwrap();
         assert_eq!(
-            store.list()[0].last_started_at.as_deref(),
+            store.list().unwrap()[0].last_started_at.as_deref(),
             Some("2026-09-24T00:00:00Z")
         );
         // Updating a schedule keeps the recorded start, so re-tuning an
@@ -342,12 +344,12 @@ mod tests {
             "2026-09-24T12:00:00+00:00"
         );
         assert_eq!(
-            store.list()[0].last_started_at.as_deref(),
+            store.list().unwrap()[0].last_started_at.as_deref(),
             Some("2026-09-24T00:00:00Z")
         );
 
         store.remove("p1").unwrap();
         assert!(store.remove("p1").is_err());
-        assert_eq!(store.list().len(), 2);
+        assert_eq!(store.list().unwrap().len(), 2);
     }
 }

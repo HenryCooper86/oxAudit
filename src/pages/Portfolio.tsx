@@ -29,23 +29,36 @@ export function PortfolioPage(): JSX.Element {
   const [projects, setProjects] = useState<RecentProject[] | null>(null);
   const [schedules, setSchedules] = useState<ScanScheduleStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busyProject, setBusyProject] = useState<string | null>(null);
+  const [busyProjects, setBusyProjects] = useState<Set<string>>(() => new Set());
+  const activeProjects = useRef(new Set<string>());
   const mounted = useRef(true);
   const refreshGeneration = useRef(0);
+  const latestRefresh = useRef<Promise<void> | null>(null);
 
   const refresh = async () => {
     const generation = ++refreshGeneration.current;
-    try {
-      const [nextProjects, nextSchedules] = await Promise.all([
-        api.listSourceProjects(50),
-        api.listScanSchedules(),
-      ]);
-      if (!mounted.current || generation !== refreshGeneration.current) return;
-      setProjects(nextProjects);
-      setSchedules(nextSchedules);
-      setError(null);
-    } catch (cause) {
-      if (mounted.current && generation === refreshGeneration.current) setError(String(cause));
+    const request = (async () => {
+      try {
+        const [nextProjects, nextSchedules] = await Promise.all([
+          api.listSourceProjects(50),
+          api.listScanSchedules(),
+        ]);
+        if (!mounted.current || generation !== refreshGeneration.current) return;
+        setProjects(nextProjects);
+        setSchedules(nextSchedules);
+        setError(null);
+      } catch (cause) {
+        if (mounted.current && generation === refreshGeneration.current) setError(String(cause));
+      }
+    })();
+    latestRefresh.current = request;
+    // A discarded response cannot unlock controls still showing old values.
+    // Mutation callers wait for the newer read that owns the displayed state.
+    let pending: Promise<void> | null = request;
+    while (pending) {
+      await pending;
+      if (!mounted.current || pending === latestRefresh.current) return;
+      pending = latestRefresh.current;
     }
   };
 
@@ -58,13 +71,12 @@ export function PortfolioPage(): JSX.Element {
       "schedule://completed",
       (event) => {
         if (disposed) return;
-        const { projectId, ok, findings, error: failure } = event.payload;
+        const { ok, findings, error: failure } = event.payload;
         if (ok) {
           push("success", `Scheduled scan finished — ${findings ?? 0} finding(s).`);
         } else {
           push("error", `Scheduled scan failed${failure ? `: ${failure}` : "."}`);
         }
-        void projectId;
         void refresh();
       },
     ).then((stop) => {
@@ -88,12 +100,24 @@ export function PortfolioPage(): JSX.Element {
     return map;
   }, [schedules]);
 
+  const beginProjectOperation = (projectId: string) => {
+    if (activeProjects.current.has(projectId)) return false;
+    activeProjects.current.add(projectId);
+    setBusyProjects(new Set(activeProjects.current));
+    return true;
+  };
+
+  const finishProjectOperation = (projectId: string) => {
+    activeProjects.current.delete(projectId);
+    if (mounted.current) setBusyProjects(new Set(activeProjects.current));
+  };
+
   const saveSchedule = async (
     project: RecentProject,
     intervalHours: number,
     enabled: boolean,
   ) => {
-    setBusyProject(project.projectId);
+    if (!beginProjectOperation(project.projectId)) return;
     try {
       await api.setScanSchedule(
         project.projectId,
@@ -107,12 +131,12 @@ export function PortfolioPage(): JSX.Element {
       push("error", "The schedule could not be saved.");
       setError(String(cause));
     } finally {
-      setBusyProject(null);
+      finishProjectOperation(project.projectId);
     }
   };
 
   const removeSchedule = async (project: RecentProject) => {
-    setBusyProject(project.projectId);
+    if (!beginProjectOperation(project.projectId)) return;
     try {
       await api.removeScanSchedule(project.projectId);
       await refresh();
@@ -120,12 +144,12 @@ export function PortfolioPage(): JSX.Element {
       push("error", "The schedule could not be removed.");
       setError(String(cause));
     } finally {
-      setBusyProject(null);
+      finishProjectOperation(project.projectId);
     }
   };
 
   const scanNow = async (project: RecentProject) => {
-    setBusyProject(project.projectId);
+    if (!beginProjectOperation(project.projectId)) return;
     push("info", `Scanning ${project.displayName}…`);
     try {
       const detail = await api.runScanNow(project.projectId, project.canonicalPath);
@@ -140,7 +164,7 @@ export function PortfolioPage(): JSX.Element {
     } catch (cause) {
       push("error", `${project.displayName}: scan failed — ${String(cause)}`);
     } finally {
-      setBusyProject(null);
+      finishProjectOperation(project.projectId);
     }
   };
 
@@ -168,7 +192,7 @@ export function PortfolioPage(): JSX.Element {
           <ul className="divide-y divide-border">
             {projects.map((project) => {
               const schedule = scheduleByProject.get(project.projectId);
-              const busy = busyProject === project.projectId;
+              const busy = busyProjects.has(project.projectId);
               return (
                 <li key={project.projectId} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                   <div className="min-w-0">

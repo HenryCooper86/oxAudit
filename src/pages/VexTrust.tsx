@@ -5,6 +5,7 @@ import type { CanonicalRun, VexClaimSet, VexSuggestions } from "../lib/types";
 import { useToastStore } from "../lib/stores";
 import { Button, SectionLabel } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
+import { normalizeCommandError } from "../lib/commandError";
 
 function shortSha(sha: string): string {
   return sha.slice(0, 12);
@@ -19,21 +20,31 @@ export function VexTrustPage() {
   const [runId, setRunId] = useState("");
   const [suggestions, setSuggestions] = useState<VexSuggestions | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [claimsError, setClaimsError] = useState<string | null>(null);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const activeOperation = useRef<string | null>(null);
+  const suggestionRequest = useRef(0);
+  const claimsRequest = useRef(0);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      suggestionRequest.current += 1;
+      claimsRequest.current += 1;
     };
   }, []);
 
   const refreshClaims = async () => {
+    const request = ++claimsRequest.current;
     try {
       const next = await api.vexClaimSets();
-      if (mounted.current) setClaimSets(next);
+      if (mounted.current && request === claimsRequest.current) {
+        setClaimSets(next);
+        setClaimsError(null);
+      }
     } catch (cause) {
-      if (mounted.current) setError(String(cause));
+      if (mounted.current && request === claimsRequest.current) setClaimsError(normalizeCommandError(cause).message);
     }
   };
 
@@ -51,45 +62,54 @@ export function VexTrustPage() {
     void refreshRuns();
   }, []);
 
-  const grant = async (contentSha256: string) => {
-    setBusy(contentSha256);
-    try {
-      await api.vexGrantTrust(contentSha256, grantedBy.trim(), note.trim() || undefined);
-      if (!mounted.current) return;
-      push("success", `trusted ${shortSha(contentSha256)}; its not_affected claims can now surface as suggestions`);
-      await refreshClaims();
-    } catch (cause) {
-      if (mounted.current) push("error", String(cause));
-    } finally {
-      if (mounted.current) setBusy(null);
+  const invalidateSuggestions = () => {
+    suggestionRequest.current += 1;
+    setSuggestions(null);
+    setSuggestionError(null);
+    if (activeOperation.current === "suggest") {
+      activeOperation.current = null;
+      setBusy(null);
     }
   };
 
-  const revoke = async (contentSha256: string) => {
+  const changeTrust = async (contentSha256: string, trusted: boolean) => {
+    if (activeOperation.current || (trusted && !grantedBy.trim())) return;
+    invalidateSuggestions();
+    activeOperation.current = contentSha256;
     setBusy(contentSha256);
     try {
-      await api.vexRevokeTrust(contentSha256);
+      if (trusted) await api.vexGrantTrust(contentSha256, grantedBy.trim(), note.trim() || undefined);
+      else await api.vexRevokeTrust(contentSha256);
       if (!mounted.current) return;
-      push("success", `trust revoked for ${shortSha(contentSha256)}`);
+      push("success", trusted
+        ? `trusted ${shortSha(contentSha256)}; its not_affected claims can now surface as suggestions`
+        : `trust revoked for ${shortSha(contentSha256)}`);
       await refreshClaims();
     } catch (cause) {
-      if (mounted.current) push("error", String(cause));
+      if (mounted.current) push("error", normalizeCommandError(cause).message);
     } finally {
+      activeOperation.current = null;
       if (mounted.current) setBusy(null);
     }
   };
 
   const suggest = async () => {
-    if (!runId) return;
+    if (!runId || activeOperation.current) return;
+    const request = ++suggestionRequest.current;
+    activeOperation.current = "suggest";
     setBusy("suggest");
     setSuggestions(null);
+    setSuggestionError(null);
     try {
       const next = await api.vexSuggest(runId);
-      if (mounted.current) setSuggestions(next);
+      if (mounted.current && request === suggestionRequest.current) setSuggestions(next);
     } catch (cause) {
-      if (mounted.current) setError(String(cause));
+      if (mounted.current && request === suggestionRequest.current) setSuggestionError(normalizeCommandError(cause).message);
     } finally {
-      if (mounted.current) setBusy(null);
+      if (mounted.current && request === suggestionRequest.current) {
+        activeOperation.current = null;
+        setBusy(null);
+      }
     }
   };
 
@@ -127,7 +147,13 @@ export function VexTrustPage() {
           )}
         </section>
 
-        {claimSets === null ? (
+        {claimsError && (
+          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-warning">
+            <p>{claimsError}</p>
+            <Button variant="outline" onClick={() => void refreshClaims()}>Retry claim documents</Button>
+          </section>
+        )}
+        {claimSets === null ? !claimsError && (
           <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-text-secondary">Loading claim documents…</section>
         ) : claimSets.length === 0 ? (
           <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-text-secondary">
@@ -150,12 +176,12 @@ export function VexTrustPage() {
                     <p className="text-[11px] text-text-muted">{set.claims} claim(s) · imported as run {set.runId.slice(0, 12)}</p>
                   </div>
                   {set.trusted ? (
-                    <Button variant="outline" disabled={busy === set.contentSha256} onClick={() => void revoke(set.contentSha256)}>
+                    <Button variant="outline" disabled={busy !== null} onClick={() => void changeTrust(set.contentSha256, false)}>
                       <ShieldOff size={13} aria-hidden />
                       Revoke trust
                     </Button>
                   ) : (
-                    <Button disabled={busy === set.contentSha256 || !grantedBy.trim()} onClick={() => void grant(set.contentSha256)}>
+                    <Button disabled={busy !== null || !grantedBy.trim()} onClick={() => void changeTrust(set.contentSha256, true)}>
                       <BadgeCheck size={13} aria-hidden />
                       Trust this document
                     </Button>
@@ -173,7 +199,10 @@ export function VexTrustPage() {
               aria-label="Dependency run"
               className="min-w-[280px] rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
               value={runId}
-              onChange={(event) => setRunId(event.target.value)}
+              onChange={(event) => {
+                invalidateSuggestions();
+                setRunId(event.target.value);
+              }}
             >
               <option value="">select a completed dependency run…</option>
               {runs.map((run) => (
@@ -182,7 +211,7 @@ export function VexTrustPage() {
                 </option>
               ))}
             </select>
-            <Button disabled={!runId || busy === "suggest"} onClick={suggest}>
+            <Button disabled={!runId || busy !== null} onClick={suggest}>
               <Wand2 size={13} aria-hidden />
               Suggest
             </Button>
@@ -229,8 +258,8 @@ export function VexTrustPage() {
           </section>
         )}
 
-        {error && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-warning">{error}</section>
+        {suggestionError && (
+          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-warning">{suggestionError}</section>
         )}
 
         <p className="border-t border-border px-4 py-3 text-[11px] text-text-muted">

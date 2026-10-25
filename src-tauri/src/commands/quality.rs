@@ -56,7 +56,7 @@ pub fn list_installed_rule_packs(
 pub(crate) fn list_installed_rule_packs_inner(
     rule_packs: &crate::rulepack_store::RulePacksState,
 ) -> Result<Vec<crate::rulepack_store::InstalledRulePack>, String> {
-    Ok(rule_packs.store()?.list())
+    rule_packs.store()?.list()
 }
 
 #[tauri::command]

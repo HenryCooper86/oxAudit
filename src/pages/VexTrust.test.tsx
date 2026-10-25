@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { VexTrustPage } from "./VexTrust";
+import type { VexSuggestions } from "../lib/types";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -52,6 +53,114 @@ const run = {
   updatedAtMs: 1,
   engineIds: [],
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+const suggestions: VexSuggestions = {
+  suggestions: [{
+    advisoryId: "GHSA-stale", ecosystem: "npm", packageName: "left-pad",
+    installedVersion: "1.3.0", status: "not_affected",
+    justification: "vulnerable_code_not_present", documentSha256: "a".repeat(64),
+    grantedBy: "henry",
+  }],
+  unmapped: [], untrusted: [], runTarget: "/repo",
+};
+
+test("changing dependency runs clears completed suggestions", async () => {
+  vexClaimSets.mockResolvedValue([]);
+  listCanonicalRuns.mockResolvedValue([run, { ...run, id: "run-deps-2", targetLabel: "/other" }]);
+  vexSuggest.mockResolvedValue(suggestions);
+  render(<VexTrustPage />);
+  await screen.findByRole("option", { name: /\/repo/ });
+  await userEvent.selectOptions(screen.getByLabelText("Dependency run"), run.id);
+  await userEvent.click(screen.getByRole("button", { name: "Suggest" }));
+  await screen.findByText(/GHSA-stale/);
+  await userEvent.selectOptions(screen.getByLabelText("Dependency run"), "run-deps-2");
+  expect(screen.queryByText(/GHSA-stale/)).not.toBeInTheDocument();
+});
+
+test.each(["success", "failure"])("a late suggestion %s cannot leak across an A to B to A selection", async outcome => {
+  const pending = deferred<VexSuggestions>();
+  vexClaimSets.mockResolvedValue([]);
+  listCanonicalRuns.mockResolvedValue([run, { ...run, id: "run-deps-2", targetLabel: "/other" }]);
+  vexSuggest.mockReturnValue(pending.promise);
+  render(<VexTrustPage />);
+  await screen.findByRole("option", { name: /\/repo/ });
+  await userEvent.selectOptions(screen.getByLabelText("Dependency run"), run.id);
+  await userEvent.click(screen.getByRole("button", { name: "Suggest" }));
+  await userEvent.selectOptions(screen.getByLabelText("Dependency run"), "run-deps-2");
+  await userEvent.selectOptions(screen.getByLabelText("Dependency run"), run.id);
+  await act(async () => {
+    if (outcome === "success") pending.resolve(suggestions);
+    else pending.reject("Old run request failed");
+  });
+  expect(screen.queryByText(/GHSA-stale|Old run request failed/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Suggest" })).toBeEnabled();
+});
+
+test("revoking trust clears suggestions derived from that trust", async () => {
+  vexClaimSets.mockResolvedValue([{ ...claimSet, trusted: true, grantedBy: "henry" }]);
+  listCanonicalRuns.mockResolvedValue([run]);
+  vexSuggest.mockResolvedValue(suggestions);
+  vexRevokeTrust.mockResolvedValue(undefined);
+  render(<VexTrustPage />);
+  await screen.findByRole("option", { name: /\/repo/ });
+  await userEvent.selectOptions(screen.getByLabelText("Dependency run"), run.id);
+  await userEvent.click(screen.getByRole("button", { name: "Suggest" }));
+  await screen.findByText(/GHSA-stale/);
+  await userEvent.click(screen.getByRole("button", { name: "Revoke trust" }));
+  await waitFor(() => expect(vexRevokeTrust).toHaveBeenCalled());
+  expect(screen.queryByText(/GHSA-stale/)).not.toBeInTheDocument();
+});
+
+test("trust changes cannot overlap each other or suggestion reads", async () => {
+  const pending = deferred<void>();
+  vexClaimSets.mockResolvedValue([claimSet, { ...claimSet, contentSha256: "b".repeat(64) }]);
+  listCanonicalRuns.mockResolvedValue([run]);
+  vexGrantTrust.mockReturnValue(pending.promise);
+  render(<VexTrustPage />);
+  await screen.findAllByText("untrusted");
+  await userEvent.type(screen.getByLabelText("Granted by"), "henry");
+  await userEvent.selectOptions(screen.getByLabelText("Dependency run"), run.id);
+  await userEvent.click(screen.getAllByRole("button", { name: "Trust this document" })[0]);
+  for (const button of screen.getAllByRole("button", { name: "Trust this document" })) {
+    expect(button).toBeDisabled();
+  }
+  expect(screen.getByRole("button", { name: "Suggest" })).toBeDisabled();
+  await act(async () => pending.resolve());
+  expect(screen.getByRole("button", { name: "Suggest" })).toBeEnabled();
+});
+
+test("retrying suggestions removes the previous error when it succeeds", async () => {
+  vexClaimSets.mockResolvedValue([]);
+  listCanonicalRuns.mockResolvedValue([run]);
+  vexSuggest.mockRejectedValueOnce({ code: "notFound", message: "Run unavailable", detail: null, retryable: false })
+    .mockResolvedValue(suggestions);
+  render(<VexTrustPage />);
+  await screen.findByRole("option", { name: /\/repo/ });
+  await userEvent.selectOptions(screen.getByLabelText("Dependency run"), run.id);
+  await userEvent.click(screen.getByRole("button", { name: "Suggest" }));
+  expect(await screen.findByText("Run unavailable")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Suggest" }));
+  await screen.findByText(/GHSA-stale/);
+  expect(screen.queryByText("Run unavailable")).not.toBeInTheDocument();
+});
+
+test("a failed claim load ends loading and can recover without leaving the page", async () => {
+  vexClaimSets.mockRejectedValueOnce("Claim database unavailable").mockResolvedValue([claimSet]);
+  listCanonicalRuns.mockResolvedValue([]);
+  render(<VexTrustPage />);
+  await screen.findByText("Claim database unavailable");
+  expect(screen.queryByText("Loading claim documents…")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Retry claim documents" }));
+  await screen.findByText("untrusted");
+  expect(screen.queryByText("Claim database unavailable")).not.toBeInTheDocument();
+});
 
 test("claim documents list with trust state, and trust records who granted it", async () => {
   vexClaimSets.mockResolvedValue([claimSet]);

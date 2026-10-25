@@ -720,6 +720,7 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
             Ok(serde_json::to_value(
                 store
                     .list()
+                    .map_err(st_err)?
                     .into_iter()
                     .map(|record| crate::commands::schedule::ScanScheduleStatus {
                         next_due_at: crate::schedule_store::next_due(&record)
@@ -1190,6 +1191,30 @@ mod tests {
             web_root: None,
         };
         (ctx, dir)
+    }
+
+    #[tokio::test]
+    async fn schedule_read_failures_are_errors_not_empty_or_partial_lists() {
+        for damage in [
+            "DROP TABLE scan_schedules",
+            "UPDATE scan_schedules SET last_started_at = X'FF' WHERE project_id = 'broken'",
+        ] {
+            let (mut ctx, dir) = test_context();
+            let path = dir.path().join("schedules.sqlite3");
+            let store = crate::schedule_store::ScheduleStore::open(&path).unwrap();
+            store.upsert("healthy", "/healthy", "A", 24, true).unwrap();
+            store.upsert("broken", "/broken", "B", 24, true).unwrap();
+            ctx.schedules = crate::schedule_store::ScheduleState::available(store);
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute_batch(damage)
+                .unwrap();
+            let result = dispatch(&ctx, "list_scan_schedules", serde_json::json!({})).await;
+            assert!(
+                result.is_err(),
+                "schedule storage damage must be visible: {result:?}"
+            );
+        }
     }
 
     #[tokio::test]

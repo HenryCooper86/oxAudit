@@ -69,7 +69,7 @@ pub fn list_scan_schedules(
 ) -> Result<Vec<ScanScheduleStatus>, String> {
     Ok(schedules
         .store()?
-        .list()
+        .list()?
         .into_iter()
         .map(|record| ScanScheduleStatus {
             next_due_at: crate::schedule_store::next_due(&record).map(|when| when.to_rfc3339()),
@@ -195,9 +195,8 @@ pub(crate) async fn run_scheduled_scan_engine(
 
     let mut coverage_warnings = Vec::new();
     let packs = match rule_packs {
-        Some(rule_packs) => match rule_packs.store() {
-            Ok(store) => {
-                let resolved = store.resolve_enabled();
+        Some(rule_packs) => match rule_packs.store().and_then(|store| store.resolve_enabled()) {
+            Ok(resolved) => {
                 for (id, reason) in &resolved.skipped {
                     tracing::warn!(pack = %id, reason = %reason, "enabled rule pack skipped");
                     coverage_warnings
@@ -334,6 +333,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scheduled_scans_report_unreadable_installed_rule_packs() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::write(project.join("app.js"), "const safe = 1;\n").unwrap();
+        let path = directory.path().join("packs.sqlite3");
+        let store = crate::rulepack_store::RulePackStore::open(&path).unwrap();
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch("DROP TABLE rule_packs")
+            .unwrap();
+        let packs = crate::rulepack_store::RulePacksState::available(store);
+        let app = AppState::new();
+        let findings =
+            crate::initialize_findings_state(&directory.path().join("data"), chrono::Utc::now());
+        let cve = CveState::new(app.http.clone());
+        *cve.kev.lock().unwrap() = Some((std::time::Instant::now(), Default::default()));
+        let result = run_scheduled_scan_engine(
+            &app,
+            &findings,
+            &cve,
+            Some(&packs),
+            &NoEvents,
+            &|_| {},
+            ScheduledScanTarget {
+                canonical_path: project.to_str().unwrap(),
+                project_id: "p1",
+                schedules: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status, crate::findings::domain::RunStatus::Completed);
+        assert!(result
+            .summary
+            .coverage_warnings
+            .iter()
+            .any(|warning| warning.contains("Installed rule packs could not be loaded")));
+    }
+
+    #[tokio::test]
     async fn scheduled_scans_honor_saved_ignored_directories() {
         let directory = tempfile::tempdir().unwrap();
         let project = directory.path().join("project");
@@ -381,7 +421,7 @@ mod tests {
         assert_eq!(payload["findings"], 0);
         assert_eq!(payload["runId"], result.run_id);
         assert!(
-            store.list()[0].last_started_at.is_some(),
+            store.list().unwrap()[0].last_started_at.is_some(),
             "real launches must advance the schedule, including Scan now"
         );
         let mut unsaved = result.clone();
@@ -454,7 +494,7 @@ mod tests {
         .await
         .is_err());
         assert_eq!(
-            store.list()[0].last_started_at.as_deref(),
+            store.list().unwrap()[0].last_started_at.as_deref(),
             Some("2026-10-01T00:00:00Z")
         );
     }
