@@ -540,12 +540,18 @@ jobs:
             --platform linux/${{ matrix.goarch }} \
             --build-arg VCS_REF="${GITHUB_SHA}" \
             --build-arg VERSION="${GITHUB_REF_NAME}" \
-            --output "type=image,push=true,digest-file=/tmp/digest.txt" \
+            --output "type=image,push=true" \
             --cache-from "type=gha,scope=container-${{ matrix.goarch }}" \
             --cache-to "type=gha,mode=min,scope=container-${{ matrix.goarch }}" \
             --provenance=false \
             .
-          echo "Pushed linux/${{ matrix.goarch }} as $(cat /tmp/digest.txt)"
+          # The pushed manifest's own bytes are the digest; read them back
+          # from the registry instead of trusting buildx's digest-file,
+          # which the driver does not reliably write. The merge job pins
+          # its index the same way.
+          DIGEST="sha256:$(docker buildx imagetools inspect --raw \
+            "${IMAGE}:${GITHUB_REF_NAME}-${{ matrix.goarch }}" | sha256sum | cut -d' ' -f1)"
+          echo "${DIGEST}" | tee /tmp/digest.txt
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
