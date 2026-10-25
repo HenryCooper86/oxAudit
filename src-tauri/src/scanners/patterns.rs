@@ -442,6 +442,25 @@ pub fn scan_content_bounded(
     language: &str,
     limit: usize,
 ) -> (Vec<PatternHit>, bool) {
+    scan_content_bounded_with_syntax(
+        content,
+        language,
+        limit,
+        &super::syntax::SyntaxSpans::default(),
+    )
+}
+
+pub(super) fn scan_content_bounded_with_syntax(
+    content: &str,
+    language: &str,
+    limit: usize,
+    spans: &super::syntax::SyntaxSpans,
+) -> (Vec<PatternHit>, bool) {
+    // Only Rust SQL construction uses the masked view. Other rules need
+    // literal values (algorithm names, configuration, etc.) in their matches.
+    // No grammar means no masking: retain the existing text-only fallback.
+    let rust_code =
+        (language == "rust" && spans.analyzed()).then(|| spans.mask_non_code_ascii(content));
     let mut hits = Vec::new();
     for (i, rule) in SOURCE_RULES.iter().enumerate() {
         if !rule.languages.is_empty() && !rule.languages.contains(&language) {
@@ -463,7 +482,7 @@ pub fn scan_content_bounded(
             hits.push(PatternHit {
                 rule_index: i,
                 offset: span.start(),
-                match_text: span.as_str().to_string(),
+                match_text: content[span.range()].to_string(),
             });
             false
         };
@@ -472,7 +491,8 @@ pub fn scan_content_bounded(
             // Consider every sink start; rejecting the outer span must not
             // consume and hide the independently unsafe inner statement.
             let mut next_start = 0;
-            while let Some(captures) = rule.regex.captures_at(content, next_start) {
+            let search_content = rust_code.as_deref().unwrap_or(content);
+            while let Some(captures) = rule.regex.captures_at(search_content, next_start) {
                 let Some(whole) = captures.get(0) else { break };
                 // This rule starts with an ASCII query/execute identifier.
                 next_start = whole.start() + 1;

@@ -79,9 +79,10 @@ impl FileSyntax {
         Some(match_end <= argument.end_byte())
     }
 
-    /// `"secret" : "Vulnerability"` across two ternary branches is a pair
-    /// of labels, while a credential object inside one branch is an assignment.
-    pub fn crosses_conditional_branches(&self, start: usize, value_offset: usize) -> bool {
+    /// Ternary branches and Rust alternative patterns can contain pairs of
+    /// labels. They do not assign the second label as the first one's secret.
+    /// Credentials inside a single branch must still be reported.
+    pub fn crosses_label_branches(&self, start: usize, value_offset: usize) -> bool {
         // Identifier-based fallbacks such as password ? password : "..."
         // still contain a hardcoded credential. Only quoted labels qualify.
         if self.spans.context_at(start) != Context::StringLiteral {
@@ -97,6 +98,22 @@ impl FileSyntax {
             return false;
         };
         loop {
+            if node.kind() == "or_pattern" {
+                let mut key_branch = None;
+                let mut value_branch = None;
+                let mut cursor = node.walk();
+                for (index, branch) in node.named_children(&mut cursor).enumerate() {
+                    if branch.byte_range().contains(&start) {
+                        key_branch = Some(index);
+                    }
+                    if branch.byte_range().contains(&value_offset) {
+                        value_branch = Some(index);
+                    }
+                }
+                if key_branch.is_some() && value_branch.is_some() && key_branch != value_branch {
+                    return true;
+                }
+            }
             if matches!(node.kind(), "ternary_expression" | "conditional_expression") {
                 let branches = ["condition", "consequence", "alternative"];
                 let key_branch = branches.iter().position(|field| {
@@ -318,6 +335,22 @@ pub struct SyntaxSpans {
 }
 
 impl SyntaxSpans {
+    /// Mask ASCII inside known comments/literals for the Rust SQL rule's
+    /// ASCII construction markers, including in macro token trees. Preserve
+    /// non-ASCII bytes so both byte offsets and bounded regex character counts
+    /// stay unchanged. This is not a general-purpose code-only representation.
+    pub(super) fn mask_non_code_ascii(&self, content: &str) -> String {
+        let mut bytes = content.as_bytes().to_vec();
+        for span in self.comments.iter().chain(&self.strings) {
+            for byte in &mut bytes[span.clone()] {
+                if byte.is_ascii() {
+                    *byte = b' ';
+                }
+            }
+        }
+        String::from_utf8(bytes).expect("replacing only ASCII preserves UTF-8")
+    }
+
     /// Whether a grammar was available and the file parsed.
     pub fn analyzed(&self) -> bool {
         self.analyzed

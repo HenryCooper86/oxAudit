@@ -1,0 +1,176 @@
+{
+  "beforeCliSha256": "e1e8fee74b3e89e5081bd0f70e8e0a49396d37c515ab653fc57a0180e8c205bf",
+  "afterCliSha256": "4112ea5a405ec0a0c4c82618599568367b78512014158300346a4c007a3a5884",
+  "repositoryCommit": "7b5e1b85e1891ecdf94611d3f1395ac140cd346c",
+  "targetHashes": {
+    "src-tauri/src/binscan/native/enrich.rs": "d2925ec2be22b50d08e25b8f39504da1090ac27e186eb6b13ea6b9b0ac9b38fb",
+    "src-tauri/src/secrets_validation.rs": "10fc2b313312ace0b617c37ce936d18db0782795e45ba0756da3c85216e6ac46",
+    "src-tauri/src/adapters/scanners/source.rs": "3b61019d2ee52aa4f4ad4f0040472413982d8fc707444036fd7fdfaa0c212f8f"
+  },
+  "commands": [
+    {
+      "label": "before",
+      "args": [
+        "$BEFORE_EVIDENCE/oxaudit-cli",
+        "scan",
+        "$EVIDENCE/targets",
+        "--format",
+        "json",
+        "--output",
+        "$EVIDENCE/before.json"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.453
+    },
+    {
+      "label": "after",
+      "args": [
+        "$EVIDENCE/oxaudit-cli",
+        "scan",
+        "$EVIDENCE/targets",
+        "--format",
+        "json",
+        "--output",
+        "$EVIDENCE/after.json"
+      ],
+      "exit": 0,
+      "wallSeconds": 1.706
+    },
+    {
+      "label": "corpus",
+      "args": [
+        "$EVIDENCE/oxaudit-cli",
+        "benchmark",
+        "--json",
+        "--output",
+        "$EVIDENCE/corpus.json"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.61
+    },
+    {
+      "label": "owasp-record",
+      "args": [
+        "node",
+        "tools/record-quality-benchmark.mjs",
+        "--cli",
+        "$EVIDENCE/oxaudit-cli",
+        "--corpus",
+        "benchmarks/external/owasp-benchmark",
+        "--output",
+        "$EVIDENCE/owasp"
+      ],
+      "exit": 0,
+      "wallSeconds": 14.711
+    },
+    {
+      "label": "owasp-compare",
+      "args": [
+        "node",
+        "tools/compare-quality-benchmark.mjs",
+        "--result",
+        "$EVIDENCE/owasp/result.json",
+        "--baseline",
+        "benchmarks/baselines/owasp-java-550021e9.json",
+        "--output",
+        "$EVIDENCE/owasp-comparison"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.041
+    },
+    {
+      "label": "pilot-smoke",
+      "args": [
+        "node",
+        "tools/pilot-smoke.mjs",
+        "--cli",
+        "$EVIDENCE/oxaudit-cli"
+      ],
+      "exit": 0,
+      "wallSeconds": 2.033
+    }
+  ],
+  "pairedSource": {
+    "beforeFindings": 21,
+    "afterFindings": 18,
+    "removed": [
+      [
+        "enrich.rs",
+        1096,
+        "rs-sql-format"
+      ],
+      [
+        "enrich.rs",
+        1119,
+        "rs-sql-format"
+      ],
+      [
+        "secrets_validation.rs",
+        131,
+        "generic-api-key"
+      ]
+    ],
+    "added": [],
+    "ambiguousRedactionLabelRetained": true
+  },
+  "corpus": {
+    "fixtures": 234,
+    "passedFixtures": 234,
+    "truePositives": 116,
+    "falsePositives": 0,
+    "falseNegatives": 0,
+    "precision": 1.0,
+    "recall": 1.0
+  },
+  "owasp": {
+    "provenance": {
+      "benchmarkCommit": "550021e915c06cbcf994d97bc258128b78d890db",
+      "evaluator": "owasp-java-cwe-v1",
+      "expectationsSha256": "1809f6a690c6cf7dd6685df6ebe2eef8fe3ca93d19a7ca0ce45987ca4f5d78e1",
+      "toolCommit": "7b5e1b85e1891ecdf94611d3f1395ac140cd346c",
+      "toolWorkingTreeDirty": true,
+      "cliSha256": "4112ea5a405ec0a0c4c82618599568367b78512014158300346a4c007a3a5884",
+      "measuredAt": "2026-10-25T22:10:31.559Z"
+    },
+    "cases": 2740,
+    "coveredTotals": {
+      "truePositives": 1346,
+      "falsePositives": 689,
+      "trueNegatives": 636,
+      "falseNegatives": 69
+    }
+  },
+  "comparisonStatus": "passed",
+  "rawEvidenceSha256": {
+    "before.json": "65dbe76f4e1a7ad915bcea45f72e68461aaab2297b9af359a18c6f6403f1cf1a",
+    "after.json": "3a4abcf2f460266eee5ea118438ea1136a66ef00f0ab798cd64f379ef4786872",
+    "corpus.json": "b04da06d1bd91ee467dac497ab1277f44369e4ab63369a4f796cfc0b26e62a54",
+    "owasp/result.json": "6c003b1a799c82310f00198b30f12d92fe5c5e5ec49418512aaac2d635411eef",
+    "owasp-comparison/comparison.json": "9aa2fabed8dbc51fd89478bea5a9f41bac318dd118274f25bf1965714ca76aae",
+    "pilot-smoke.stdout": "f08525a205e3a15e1bb75ff0b2cad0e18c59d2258c6a5630171a434b0efe2bf9"
+  },
+  "verification": {
+    "rustPassed": 1456,
+    "rustFailed": 0,
+    "rustIgnored": 1,
+    "nodePassed": 172,
+    "frontendPassed": 502,
+    "clippy": "passed",
+    "review": "No remaining actionable findings after Unicode correction",
+    "remainingAmbiguity": "Generic password detection retains the redaction-label call; no project-specific allowlist."
+  },
+  "implementationSha256": {
+    "src-tauri/src/scanners/mod.rs": "9cfa1f9f0900f10b4c07552e0d6c303a90af2d0052d3069465a044bfefe14aac",
+    "src-tauri/src/scanners/patterns.rs": "5fe8b1e28dd9853f22423a00234c2b0bc7cfd02162b4a88603462930d2bb370c",
+    "src-tauri/src/scanners/syntax.rs": "b76103a106a37c8626607932e4a21169fd79fd71be8696765fa5909a9163d648"
+  },
+  "rawLogsSha256": {
+    "oxaudit-alert-quality-red.log": "479f3d4efb7b6a583895f2ad3f1296f2c6d4657f9730d24c91effa0458699ef9",
+    "oxaudit-alert-quality-unicode-red.log": "d44091ff5a8fca8143a4d445aead6fc0624d28a9ddb2a2e1817ca9b18264bf29",
+    "oxaudit-alert-quality-final-tests.log": "557ce8eaba3a1b6f635b0d1aa1b0e7c823c70e3b0d20b6305cb1fb86c8c63899",
+    "oxaudit-alert-quality-frontend.log": "f6cf03459cfe91b774431c5e6a10ff61ca88afbd4729356e4bb0b9c64f9f0ac6",
+    "oxaudit-alert-quality-clippy.log": "5e97c0e8a199544a0bfe68846b8fd8cdef9c1d8521caf4f9ba042d26481c0a59",
+    "oxaudit-alert-quality-build.log": "00b22dc5ca2e1512322eb5e40b4ad8ffe6f891a93cba6d56cb2f3f721668e7fd"
+  },
+  "scope": "Matched unchanged source files; scanner regression verification, not participant usability evidence"
+}

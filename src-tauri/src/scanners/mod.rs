@@ -30,7 +30,8 @@ pub fn benchmark_observations(
     let parsed = syntax::parse(content, language);
     let spans = parsed.spans();
     if source_patterns {
-        let mut hits = patterns::scan_content(content, language);
+        let (mut hits, _) =
+            patterns::scan_content_bounded_with_syntax(content, language, usize::MAX, spans);
         hits.retain(|hit| pattern_hit_stays_in_sink(&parsed, hit));
         parsed.drop_nested_duplicates(&mut hits);
         observations.extend(
@@ -64,7 +65,7 @@ fn secret_hit_is_reportable(parsed: &syntax::FileSyntax, hit: &secrets::SecretHi
         && (!matches!(
             secrets::SECRET_RULES[hit.rule_index].id,
             "generic-password" | "generic-api-key" | "json-credential"
-        ) || !parsed.crosses_conditional_branches(hit.offset, hit.secret_offset))
+        ) || !parsed.crosses_label_branches(hit.offset, hit.secret_offset))
 }
 
 fn pattern_hit_stays_in_sink(parsed: &syntax::FileSyntax, hit: &patterns::PatternHit) -> bool {
@@ -602,8 +603,12 @@ fn scan_file_in_project_and_limit(
     if scan_vulnerabilities {
         if let Some(lang) = fs_utils::detect_language(path) {
             covered_families.push("vulnerability".to_string());
-            let (mut hits, pattern_hit_overflow) =
-                patterns::scan_content_bounded(&content, lang, max_findings.saturating_add(1));
+            let (mut hits, pattern_hit_overflow) = patterns::scan_content_bounded_with_syntax(
+                &content,
+                lang,
+                max_findings.saturating_add(1),
+                spans,
+            );
             if pattern_hit_overflow {
                 return ScanFileOutcome {
                     findings: Vec::new(),
@@ -725,6 +730,117 @@ mod tests {
     };
 
     const CANARY: &str = "oxaudit-secret-canary-7D4zP9q2";
+
+    #[cfg(feature = "grammar-rust")]
+    #[test]
+    fn rust_sql_markers_inside_literals_and_comments_are_not_construction() {
+        for source in [
+            r#"fn f() { let values = vec![query(Some("Debian:12"), "libc6", "2.36-9+deb12u3")]; }"#,
+            r##"fn f() { vec![query(r#"version+format!write!"#)]; }"##,
+            r#"fn f() { vec![query("escaped \"+\" version")]; }"#,
+            r#"fn f() { vec![query(value /* + format! write! */)]; }"#,
+        ] {
+            assert!(
+                !super::benchmark_observations(source, "rust", true, false)
+                    .iter()
+                    .any(|(rule, _)| *rule == "rs-sql-format"),
+                "literal/comment marker was reported: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_sql_real_construction_after_literal_markers_is_retained() {
+        for source in [
+            r#"fn f(input: &str) { vec![query("SELECT 'a+b' WHERE id=".to_owned() + input)]; }"#,
+            r##"fn f(input: &str) { vec![query(r#"SELECT '+' WHERE id="#.to_owned() + input)]; }"##,
+            r#"fn f(input: &str) { vec![query(/* + */ format!("SELECT {input}"))]; }"#,
+            r#"fn f(input: &str) { vec![query(format!("SELECT '+' WHERE id={input}"))]; }"#,
+            r#"fn f(conn: Connection, input: &str) { conn.execute("SELECT '+'", [conn.execute(&format!("SELECT {input}"), [])?]); }"#,
+        ] {
+            assert!(
+                super::benchmark_observations(source, "rust", true, false)
+                    .iter()
+                    .any(|(rule, _)| *rule == "rs-sql-format"),
+                "actual SQL construction was missed: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_sql_unicode_literals_preserve_the_rule_character_budget() {
+        let source = format!(
+            "fn f(input: &str) {{ query(&(\"SELECT {} WHERE id=\".to_owned() + input)); }}",
+            "猫".repeat(60)
+        );
+        assert!(super::benchmark_observations(&source, "rust", true, false)
+            .iter()
+            .any(|(rule, _)| *rule == "rs-sql-format"));
+    }
+
+    #[cfg(feature = "grammar-rust")]
+    #[test]
+    fn rust_sql_masking_keeps_original_match_text_and_byte_location() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("query.rs");
+        std::fs::write(
+            &path,
+            "fn f(input: &str) {\n    vec![query(\"SELECT '猫+' WHERE id=\".to_owned() + input)];\n}",
+        )
+        .unwrap();
+        let findings = scan_file_with_relative_path(&path, "query.rs", 64, false, true).findings;
+        let sql: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.rule_id == "rs-sql-format")
+            .collect();
+        assert_eq!(sql.len(), 1);
+        assert_eq!((sql[0].line, sql[0].column), (2, 10));
+        assert_eq!(
+            sql[0].match_text,
+            "query(\"SELECT '猫+' WHERE id=\".to_owned() +"
+        );
+    }
+
+    #[test]
+    fn rust_sql_without_syntax_retains_text_only_candidates() {
+        let source = r#"fn f() { vec![query("version+suffix")]; }"#;
+        let parsed = super::syntax::parse(source, "unsupported");
+        let (hits, overflow) =
+            super::patterns::scan_content_bounded_with_syntax(source, "rust", 10, parsed.spans());
+        assert!(!overflow);
+        assert!(hits
+            .iter()
+            .any(|hit| { super::patterns::SOURCE_RULES[hit.rule_index].id == "rs-sql-format" }));
+    }
+
+    #[cfg(feature = "grammar-rust")]
+    #[test]
+    fn rust_match_pattern_labels_are_not_credential_assignments() {
+        let source = r#"fn provider(rule: &str) {
+            match rule {
+                "github-token" | "github-fine-grained-token" => (),
+                _ => (),
+            }
+        }"#;
+        assert!(super::benchmark_observations(source, "rust", false, true).is_empty());
+    }
+
+    #[test]
+    fn rust_match_arm_credentials_and_call_arguments_remain_reported() {
+        for source in [
+            r#"fn f(rule: &str) { match rule { "github-token" | "another-label" => { let token = "7Gk9Qz2Mp4Xt8Va6"; }, _ => () } }"#,
+            r#"fn f() { set_password("7Gk9Qz2Mp4Xt8Va6"); }"#,
+            r#"fn f() { Secret::secret("7Gk9Qz2Mp4Xt8Va6"); }"#,
+            r#"fn f() { let password = "credential material"; }"#,
+            r#"fn f(value: &str) { match value { "token = '7Gk9Qz2Mp4Xt8Va6'" | "other" => (), _ => () } }"#,
+            r#"fn f(value: &str) { match value { "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890" | "other" => (), _ => () } }"#,
+        ] {
+            assert!(
+                !super::benchmark_observations(source, "rust", false, true).is_empty(),
+                "hardcoded credential was missed: {source}"
+            );
+        }
+    }
 
     #[test]
     fn rust_sql_formatting_must_occur_in_the_statement_argument() {

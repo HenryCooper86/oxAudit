@@ -11,6 +11,12 @@ No AI setup, live credentials, or fixture execution is required. This protocol
 collects manual feedback only; oxAudit adds no telemetry. Prepared forms and
 automated browser receipts are not external participant feedback.
 
+For a week of real AppSec work, use the [daily workbench pilot](daily-workbench-pilot.md)
+and its [blank scorecard](daily-workbench-scorecard.template.md). They add current-tool
+comparisons, first-20 finding triage, developer handoff and return-use observations.
+This protocol remains the fixture/workflow acceptance check; its JSON schema and
+acceptance result do not measure productivity or establish adoption.
+
 ## Deterministic command-line smoke
 
 Build the current CLI, then run from the checkout:

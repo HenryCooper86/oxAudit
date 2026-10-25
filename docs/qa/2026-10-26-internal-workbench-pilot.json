@@ -1,0 +1,1154 @@
+{
+  "schemaVersion": 1,
+  "studyType": "agent-run technical rehearsal",
+  "participantObservations": 0,
+  "dateLocal": "2026-10-26",
+  "timezone": "Asia/Shanghai",
+  "initialCommandBatchStartedAt": "2026-10-25T22:02:05.745472+00:00",
+  "initialCommandBatchEndedAt": "2026-10-25T22:03:07.700494+00:00",
+  "note": "Browser tests, static review, reproduction and unchanged-source check followed the initial command batch; durations are machine observations, not participant task times.",
+  "repositoryCommit": "7b5e1b85e1891ecdf94611d3f1395ac140cd346c",
+  "repositoryStatusAtBuild": "M docs/pilot-validation.md\n?? docs/daily-workbench-pilot.md\n?? docs/daily-workbench-scorecard.template.md",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "build": {
+    "profile": "debug",
+    "features": [
+      "default",
+      "server"
+    ],
+    "cliVersion": "oxaudit 0.2.4",
+    "cliSha256": "e1e8fee74b3e89e5081bd0f70e8e0a49396d37c515ab653fc57a0180e8c205bf",
+    "serverSha256": "b1bea2daca1f061adb7e76135e515b8e7bfcb6f424733e65816e57a342795401",
+    "frontendFiles": {
+      "assets/AdvisoryDatabase-DpfNKDWE.js": "08638cdca69f08dcb67915716248653a2d3fba8e7d4be9ec7df8c5e68770be96",
+      "assets/Assistant-BjpCbJLG.js": "7d8863867d6c328ea160b9d09df9742ea720d64cf9d9c1101ab78bee37dcc014",
+      "assets/BinaryScan-CMrQs9Pp.js": "557a20582c164f1336039eb0f2a7da370cd32216da215f23347689125b20dac2",
+      "assets/ComplianceCenter-lLhruYR8.js": "8919acf9c61029f4ea25a1250aca406f82750388d53826b308fec46503825789",
+      "assets/CveResearch-DhX-ejIR.js": "37461c50333bea58bfbabebb68f57a262373235f7b8d00b815046c608ab28d0e",
+      "assets/DataSources-ChgOOXxl.js": "af6377d8ea969c82b5b4d2674874f316da796d0009d30772e5a6d68cd5877d6d",
+      "assets/DepsScan-BQkHw3wX.js": "757ec503698b343355588e61146debd26d4c409479345942713caaac584e1484",
+      "assets/ExportCenter-DBGnBdBv.js": "d26e80802849ba24d5a5bca3af63644530db376d04a6b7495060ac4eb5be37d2",
+      "assets/Field-DEZMw0_k.js": "08b62446477596b06cd832e47597fb2b1af1a3cd9c192d7839c95e7bbf69de5e",
+      "assets/HistoryScan-Bb2lnSvx.js": "f3dd16148756ef467951386a34bd2ab89fab361dc6e93e1dae3acb372cbce6dd",
+      "assets/ImageScanPage-CInlNDGG.js": "a6b41c93b73d3839d950262aa53fad68659117f8dd68b1a209a08296c64d7d7d",
+      "assets/InlineState-B1bg7tSK.js": "f2a46adc8fe44bfa3dd73b0abdc555bf06bb2c5917d254aaa4c83962b0a36f07",
+      "assets/Inventory-xTfcNI1h.js": "70f0c715ee6e7b2611d8cb54358825e9cf5892f7da8ded4b060bb38baa0db963",
+      "assets/Portfolio-Gfvh_k5-.js": "6583f2376833f14cf604448c0204c54992101bc696ff4a2eeb502bf69bb08bea",
+      "assets/QualityLab-BTtQgMNA.js": "5cfd40096a4b7b255facd645afb6c91d3d92643e9327118160bc78c74ff90b87",
+      "assets/ReportStudio-CNvz67YQ.js": "63a4f033a5d19a7754a7d01fd21e547735b06a0438790991562d9842bb54eddc",
+      "assets/ResultPagination-p24hGAXS.js": "79bea394be49e2207c3ed29c970f92437072a4c613994e27d226d910a9cfced1",
+      "assets/ResultsToolbar-BWwsOaNZ.js": "7a2290587c6db88146f7cf9d1ed4623c06e972cc72b228c9cfe96f0360fa647b",
+      "assets/RuleLibrary-Dz1JXq16.js": "b4651d1a1ca58c7882c6f83643fa0fbcc90a00b7569fe76a96d2ecbc95f4a2fe",
+      "assets/RunTimeline-HuNsiJOa.js": "d229fb322a29e67497eab04131e99bb19a72279d6770f302ab467d7a03dc97a6",
+      "assets/ServerPageState-LRbPRdvV.js": "28dec403888dbf0513247975e3f9579e7bdf710364b3902cf3d754e75fc783b3",
+      "assets/SettingsPage-C9MKHKcV.js": "8114c8d024582e3dac0a4d63b476a50e1d9aa1b32b7619d9cdd4516a6680827e",
+      "assets/SeverityBadge-DHnoWKuo.js": "cff2bd9c3f2cdcbc83844fe5b9f9976794e21f58d996222c21b834e04e6e1fe3",
+      "assets/SourceScan-CGgGp_pG.js": "7f3e554855d962ad985ad5169b152e274eb26e2ae7b0d426dde451a95db64312",
+      "assets/SplitWorkspace-BCK-ddVZ.js": "494d39e90af4a0536335e98fe1d5a4567d1db516e0524ff7de0ddc25ddedcdbe",
+      "assets/Switch-CqmDqyBm.js": "8295cb8e037a45af4882d8bb714e377ac3dc58676cdb3d587c283992087ab21e",
+      "assets/TargetBar-BCB564Sc.js": "6ad680ea4da09c0542f866c728ebc6e47cf774083b0236bfa635fd9fe64a63f4",
+      "assets/Verification-BEP5rLkD.js": "6dff9000f1892246bd0e8e04b127f5857f6b60c2fb2346f5f196c5f0c3305c1f",
+      "assets/VexTrust-C-zY5mML.js": "54a49d00bb2f912b2b2509f7eadc785cb1d8dcc090effde4d6eadf97b3612405",
+      "assets/ban-BIZNAJPx.js": "44c4154d6859e24ae15020453f4a96b556d4d43a568d039c89ab0405b9f1baf3",
+      "assets/chevron-down-D4bxR9Qj.js": "403ecca73d87a2215114e2cdbefcce746540c5600d045805ab7ccb3e53504f94",
+      "assets/chevron-right-DpX23GSm.js": "f491122e242b456964602807346a5282120b1b9f9bb6aea969aa1c7048e8ad3c",
+      "assets/circle-x-By-YLDon.js": "6fdb5e3981677412904af548fb0537399f17f0cc6dea3fb7370a147d94795bcb",
+      "assets/clipboard-B9szigro.js": "fb76bc78d8c72f9091b71d837c5864842534666bd245d4c6210780e2abf1010f",
+      "assets/clock-3-BzPeoquc.js": "b2595c13748e9e4121ce70be6a1d30910c0ac396cd5c6dec8e7a7d4337f14b31",
+      "assets/dialog-C_cbDz5L.js": "3ba8496492ac802590baa438e7fbf8e0f567f18a35990cef23a917cf8d4dee25",
+      "assets/download-BNt2go7x.js": "f7383eba217b463e15c413736f165b2e3aacb014eded13c283ece97bbe1a5256",
+      "assets/durableRuns-CTz_JVHD.js": "284eb2a2b7213f6ad6b86ea60925a24560b3d6ffda6372a1151c399cbc19933b",
+      "assets/external-link-Brg2ySOE.js": "ff14daaf48789063ac9541bffe654d6e357903f40091204985cbb471161744a0",
+      "assets/file-check-2-QRsJLc-n.js": "de8cfce81a3b661837d75e6ae8aaa01af4ebf8ce5c46bba5308b9cf565848332",
+      "assets/file-code-2-CrOdd85Q.js": "3a5cbaf795e50dd475b03ed1717a9c76fb0e5886fcf9fb2e2fbe95daba524148",
+      "assets/index-CQB-zor4.js": "d3aa39824dbe5eec6378074990c0ca459304e5e2e2caa54410552555a0aaebeb",
+      "assets/index-CcrUFOAR.js": "36c5fc2adb4066737d4325decf5c68b284b4e36b54415d35fa97c2c4a5a70f4d",
+      "assets/index-DxmLaL3s.css": "842776c145ed44fc9475f8f397f52da633ed17ee426f947b81386c857f04b854",
+      "assets/nativeProgress-BB1sCjZo.js": "857c9c8298c54d2945d0cb3502e85742aa7e433517c2f26486f38f6ee1f780fa",
+      "assets/opener-CuhchzfS.js": "2286d7249c7573da27da05668617fa8501a414948ee244927c26f6c0b86cb1a6",
+      "assets/pagination-DmZvW48J.js": "f25e52f937e2c433bb5145881e617a5b814894f0cab5b83d29e6675f19b8f6af",
+      "assets/play-BFa6SbcD.js": "e467e1f7106cbfd6daef891075fe926eed3d1763cb8c250de6a4be5a11c4e470",
+      "assets/savedScanReceipt-B_fSyj8g.js": "20bf8b135da4ac7853bec0cba784bba7a26277594be3fb3f025fa12a6c2a6540",
+      "assets/shield-alert-B83EVI45.js": "c8882b67c4f6c2b2fd38e2b93708ae353ae9cfe5441929f9a1262a15c41a2154",
+      "assets/trash-2-Cybtro-T.js": "55339b1259dfb59d20fca040ef4cfa4e9984dbda555de865bc07f4332f75fef3",
+      "assets/usePanelCollapsed-LhbaCQkc.js": "e92678741e4eefb61ff46651de2ebaa476963916bf51560ef46130f18e18f183",
+      "favicon.svg": "551859ab90f865de188c704474c61126c8603bdadcea40c3ad147e9924cf8f6d",
+      "index.html": "acf0a8b8c9aa95b83d05dcb33e038d7af308a90437a5650e07dcd061c48ef9ed"
+    }
+  },
+  "source": {
+    "summary": {
+      "bytesScanned": 9876722,
+      "critical": 1,
+      "durationMs": 855,
+      "filesScanned": 585,
+      "filesSkipped": 27,
+      "gitContext": {
+        "after": {
+          "branch": "main",
+          "head": "7b5e1b85e1891ecdf94611d3f1395ac140cd346c",
+          "indexDigest": "aec7353bc30fa2fc5dcb89fe64fc6f02efe471105fba2b1b9d2549b2b9a26b67"
+        },
+        "before": {
+          "branch": "main",
+          "head": "7b5e1b85e1891ecdf94611d3f1395ac140cd346c",
+          "indexDigest": "aec7353bc30fa2fc5dcb89fe64fc6f02efe471105fba2b1b9d2549b2b9a26b67"
+        },
+        "contextChanged": false
+      },
+      "high": 56,
+      "info": 0,
+      "low": 0,
+      "medium": 10,
+      "path": "$REPO",
+      "rulesFired": {
+        "anthropic-api-key": 2,
+        "aws-access-key-id": 12,
+        "basic-auth-url": 2,
+        "datadog-api-key": 1,
+        "generic-api-key": 7,
+        "generic-password": 9,
+        "github-token": 15,
+        "gitlab-pat": 1,
+        "google-api-key": 1,
+        "json-credential": 3,
+        "jwt-token": 1,
+        "openai-api-key": 3,
+        "private-key": 1,
+        "rs-sql-format": 2,
+        "slack-token": 3,
+        "slack-webhook": 1,
+        "stripe-key": 3
+      },
+      "secretsFound": 65,
+      "totalFindings": 67,
+      "vulnerabilitiesFound": 2
+    },
+    "scopeCounts": {
+      "test": 63,
+      "documentation": 2,
+      "production": 2
+    },
+    "first20RawCliOrder": [
+      {
+        "position": 1,
+        "ruleId": "private-key",
+        "filePath": "src-tauri/src/findings/redaction.rs",
+        "line": 61,
+        "fingerprint": "3b9bfbdfbdd4e36b3b85030d7f6fd0db430750fbc72f34a7676caf9d689cd79d",
+        "scope": "test",
+        "severity": "critical",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Generated multiline private-key canary in a redaction test.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 2,
+        "ruleId": "github-token",
+        "filePath": "docs/superpowers/plans/2026-08-20-oxaudit-durable-scan-foundation.md",
+        "line": 85,
+        "fingerprint": "cfe31ee5abe0fb38d1e297b6a85e9293342d8d5d313bef5627c1f900bc948d71",
+        "scope": "documentation",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Documented source_fixture helper writes inert scan inputs.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 3,
+        "ruleId": "generic-api-key",
+        "filePath": "docs/superpowers/plans/2026-08-20-oxaudit-durable-scan-foundation.md",
+        "line": 85,
+        "fingerprint": "f0cc923fad0a7f444a5b03b4f0d668c8e727f44099988cf524466dfb95b13f07",
+        "scope": "documentation",
+        "severity": "high",
+        "actionability": "duplicate",
+        "duplicateOfPosition": 2,
+        "reason": "Second detector on the same documented fixture as position 2.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 4,
+        "ruleId": "basic-auth-url",
+        "filePath": "src-tauri/src/agent/egress.rs",
+        "line": 450,
+        "fingerprint": "906207e173ce441a8694d7ae916b3aee7fde44dcd2b4733aeb17a970037357a2",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "URL user-info fixture in egress-policy unit test.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 5,
+        "ruleId": "github-token",
+        "filePath": "src-tauri/src/agent/tools.rs",
+        "line": 1488,
+        "fingerprint": "d9df16ac9acdee4e162bf1b6751bed960c56e0ea7bf1be0e09caae63500b9640",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Synthetic source file written in a TempDir by an alias-root scanner test.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 6,
+        "ruleId": "generic-api-key",
+        "filePath": "src-tauri/src/agent/tools.rs",
+        "line": 1488,
+        "fingerprint": "d16f21866f26a308f783925f84d302f76b78db94a362d06896da29b582082eca",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "duplicate",
+        "duplicateOfPosition": 5,
+        "reason": "Second detector on the same fixture as position 5.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 7,
+        "ruleId": "github-token",
+        "filePath": "src-tauri/src/agent/tools.rs",
+        "line": 1532,
+        "fingerprint": "d9df16ac9acdee4e162bf1b6751bed960c56e0ea7bf1be0e09caae63500b9640:1",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Synthetic source file written by the collection-relative alias test.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 8,
+        "ruleId": "generic-api-key",
+        "filePath": "src-tauri/src/agent/tools.rs",
+        "line": 1532,
+        "fingerprint": "d16f21866f26a308f783925f84d302f76b78db94a362d06896da29b582082eca:1",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "duplicate",
+        "duplicateOfPosition": 7,
+        "reason": "Second detector on the same fixture as position 7.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 9,
+        "ruleId": "rs-sql-format",
+        "filePath": "src-tauri/src/binscan/native/enrich.rs",
+        "line": 1096,
+        "fingerprint": "63d527a9e1325615e7846f7de9bd6f9dfe0ee147f6813dfe681402347308124b",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Non-SQL ComponentQuery helper; plus character is inside a version string.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 10,
+        "ruleId": "rs-sql-format",
+        "filePath": "src-tauri/src/binscan/native/enrich.rs",
+        "line": 1119,
+        "fingerprint": "f1f22825a524d839d1448bad38df51f6e952f8f1df0cda23e1752f18330dea6d",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Same non-SQL helper; plus character is inside a version string.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 11,
+        "ruleId": "aws-access-key-id",
+        "filePath": "src-tauri/src/cli/mod.rs",
+        "line": 2884,
+        "fingerprint": "423efe3e49d3fc6107c17c19a7d881963609121d74c1d177ca4a005eaca01671",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Synthetic credential planted into a temporary Git repository by history CLI test.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 12,
+        "ruleId": "aws-access-key-id",
+        "filePath": "src-tauri/src/cli/mod.rs",
+        "line": 2928,
+        "fingerprint": "f0fc4e18d281f51865e593292f80e5111179dc2f762506b86963121fac98e660",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Negative assertion checking the same history fixture is absent from an export.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 13,
+        "ruleId": "aws-access-key-id",
+        "filePath": "src-tauri/src/cli/staged.rs",
+        "line": 709,
+        "fingerprint": "fe1d1d4f314f307af25d069e1e743f24dd6286adee53095bdf4238a6e87e0787",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Synthetic staged-secret fixture in a temporary repository.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 14,
+        "ruleId": "aws-access-key-id",
+        "filePath": "src-tauri/src/cli/staged.rs",
+        "line": 741,
+        "fingerprint": "a03b9c6f6d39f38b6a96af3a030b1d9e9f792f07cda8c1012befa8f99ef038f2",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Negative assertion checking staged fixture material is absent from report JSON.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 15,
+        "ruleId": "aws-access-key-id",
+        "filePath": "src-tauri/src/commands/history_tests.rs",
+        "line": 5,
+        "fingerprint": "4df8a4d7a67b430a74eb2037cb80770439755861f50668577798b52f424a429b",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "LEAK constant used by temporary history-test repository builder.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 16,
+        "ruleId": "openai-api-key",
+        "filePath": "src-tauri/src/findings/policy_tests.rs",
+        "line": 385,
+        "fingerprint": "e185f745569797c5f6a666561270dfee3bd9676c11041fdf08fdea7a46e48498",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Example token among structured credential text rejected by policy tests.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 17,
+        "ruleId": "github-token",
+        "filePath": "src-tauri/src/findings/service_tests.rs",
+        "line": 821,
+        "fingerprint": "62618c0eeb34024b437474b2dccc750c182bad82d99c4d3af576761d87bf594b",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Synthetic source text used by failed-save/retry test.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 18,
+        "ruleId": "generic-api-key",
+        "filePath": "src-tauri/src/findings/service_tests.rs",
+        "line": 821,
+        "fingerprint": "981e9f5f4b2267008c70598c9fe9eef198c9650e2414c34cf17a10c4ce31805a",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "duplicate",
+        "duplicateOfPosition": 17,
+        "reason": "Second detector on the same fixture as position 17.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 19,
+        "ruleId": "github-token",
+        "filePath": "src-tauri/src/findings/service_tests.rs",
+        "line": 856,
+        "fingerprint": "1e0b901b0075953805b30d4462d14b380e1c7780d3f8e5772311c042db060563",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Negative assertion checking fixture material is absent from pending-save serialization.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      },
+      {
+        "position": 20,
+        "ruleId": "aws-access-key-id",
+        "filePath": "src-tauri/src/history.rs",
+        "line": 655,
+        "fingerprint": "bfc504d4038fd169f6b800a7de9ec797ab64598a8f2f959f5384270bcccfc4dc",
+        "scope": "test",
+        "severity": "high",
+        "actionability": "non-actionable",
+        "duplicateOfPosition": null,
+        "reason": "Explicitly documented synthetic AWS key used by history tests.",
+        "assessment": "agent static review; no credential validation or participant timing"
+      }
+    ],
+    "first20DecisionCounts": {
+      "non-actionable": 16,
+      "duplicate": 4
+    },
+    "unchangedBaseline": {
+      "exit": 0,
+      "new": 0,
+      "preExisting": 67,
+      "sameFingerprints": true
+    },
+    "productionScopeReview": [
+      {
+        "ruleId": "generic-api-key",
+        "filePath": "src-tauri/src/secrets_validation.rs",
+        "line": 131,
+        "fingerprint": "e4c3e933f984a9837e202282ddd48a1042c3ccdd37b8a94749a86068b1793c57",
+        "actionability": "non-actionable",
+        "reason": "Rule-id string and public provider URL, not a credential."
+      },
+      {
+        "ruleId": "generic-password",
+        "filePath": "src-tauri/src/adapters/scanners/source.rs",
+        "line": 64,
+        "fingerprint": "bfe1f3aa1e37b503c4ef2a7866fc34380ec50a89761387f01dd6dbdee2ccb25b",
+        "actionability": "non-actionable",
+        "reason": "Literal redaction label credential material, not a password."
+      }
+    ],
+    "optionalEnrichment": {
+      "mode": "refused proxy; not public provider evidence",
+      "requests": [
+        "www.cisa.gov:443"
+      ]
+    },
+    "sarifCount": 67,
+    "sarifRunIdentityVerified": true
+  },
+  "dependencies": {
+    "onlineSummary": {
+      "advisoryCoverage": "complete",
+      "advisoryFetchedAtMs": 1792965770200,
+      "advisorySource": "online",
+      "durationMs": 40006,
+      "enrichment": {
+        "checkedAtMs": null,
+        "pocCacheUpdatedAtMs": null,
+        "status": "notApplicable",
+        "warnings": [
+          "license lookup is bounded at 500 packages; 691 requested, the rest stay unknown",
+          "license lookup failed: registry answered 404 Not Found",
+          "license lookup failed: registry answered 404 Not Found",
+          "license lookup failed: registry answered 404 Not Found",
+          "license lookup failed: registry answered 404 Not Found"
+        ]
+      },
+      "lockfilesFound": [
+        "$REPO/editors/vscode/package-lock.json",
+        "$REPO/package-lock.json",
+        "$REPO/src-tauri/Cargo.lock",
+        "$REPO/src-tauri/fuzz/Cargo.lock"
+      ],
+      "packagesFound": 1249,
+      "packagesQueried": 1136,
+      "path": "$REPO",
+      "runId": "run_1d7117b6-f25b-46f0-86f6-2eab8193316f",
+      "vulnerabilitiesFound": 23
+    },
+    "offlineSummary": {
+      "advisoryCoverage": "complete",
+      "advisoryFetchedAtMs": 1792965770200,
+      "advisorySource": "cache",
+      "durationMs": 591,
+      "enrichment": {
+        "checkedAtMs": null,
+        "pocCacheUpdatedAtMs": null,
+        "status": "notApplicable",
+        "warnings": []
+      },
+      "lockfilesFound": [
+        "$REPO/editors/vscode/package-lock.json",
+        "$REPO/package-lock.json",
+        "$REPO/src-tauri/Cargo.lock",
+        "$REPO/src-tauri/fuzz/Cargo.lock"
+      ],
+      "packagesFound": 1249,
+      "packagesQueried": 1136,
+      "path": "$REPO",
+      "runId": "run_ec3b5dca-30c0-4752-81df-141443b4d213",
+      "vulnerabilitiesFound": 23
+    },
+    "offlineIdentityAndFreshnessMatch": true,
+    "matches": [
+      {
+        "id": "GHSA-6fj4-rcr3-r7rr",
+        "aliases": [
+          "RUSTSEC-2026-0187"
+        ],
+        "packageName": "lopdf",
+        "installedVersion": "0.35.0",
+        "ecosystem": "crates.io",
+        "severity": "high",
+        "fixedVersions": [
+          "0.42.0"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0187",
+        "aliases": [
+          "GHSA-6fj4-rcr3-r7rr"
+        ],
+        "packageName": "lopdf",
+        "installedVersion": "0.35.0",
+        "ecosystem": "crates.io",
+        "severity": "high",
+        "fixedVersions": [
+          "0.42.0"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0340",
+        "aliases": [
+          "GHSA-3g6h-r5qx-f6hq"
+        ],
+        "packageName": "quinn-proto",
+        "installedVersion": "0.11.16",
+        "ecosystem": "crates.io",
+        "severity": "high",
+        "fixedVersions": [
+          "0.11.18"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0341",
+        "aliases": [
+          "GHSA-qfwj-vfxf-92j2"
+        ],
+        "packageName": "quinn-proto",
+        "installedVersion": "0.11.16",
+        "ecosystem": "crates.io",
+        "severity": "high",
+        "fixedVersions": [
+          "0.11.17"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "GHSA-wrw7-89jp-8q8g",
+        "aliases": [
+          "RUSTSEC-2024-0429"
+        ],
+        "packageName": "glib",
+        "installedVersion": "0.18.5",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [
+          "0.20.0"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2024-0429",
+        "aliases": [
+          "GHSA-wrw7-89jp-8q8g"
+        ],
+        "packageName": "glib",
+        "installedVersion": "0.18.5",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [
+          "0.20.0"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2024-0370",
+        "aliases": [],
+        "packageName": "proc-macro-error",
+        "installedVersion": "1.0.4",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0338",
+        "aliases": [
+          "GHSA-465w-v9q3-7j98"
+        ],
+        "packageName": "quinn-proto",
+        "installedVersion": "0.11.16",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [
+          "0.11.18"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0339",
+        "aliases": [
+          "GHSA-hmxj-32vh-65vr"
+        ],
+        "packageName": "quinn-proto",
+        "installedVersion": "0.11.16",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [
+          "0.11.17"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0342",
+        "aliases": [
+          "GHSA-2hv7-gw8g-gpq5"
+        ],
+        "packageName": "quinn-proto",
+        "installedVersion": "0.11.16",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [
+          "0.11.17"
+        ],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0206",
+        "aliases": [],
+        "packageName": "rustybuzz",
+        "installedVersion": "0.20.1",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0192",
+        "aliases": [],
+        "packageName": "ttf-parser",
+        "installedVersion": "0.25.1",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2025-0081",
+        "aliases": [],
+        "packageName": "unic-char-property",
+        "installedVersion": "0.9.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2025-0075",
+        "aliases": [],
+        "packageName": "unic-char-range",
+        "installedVersion": "0.9.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2025-0080",
+        "aliases": [],
+        "packageName": "unic-common",
+        "installedVersion": "0.9.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2025-0100",
+        "aliases": [],
+        "packageName": "unic-ucd-ident",
+        "installedVersion": "0.9.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2025-0098",
+        "aliases": [],
+        "packageName": "unic-ucd-version",
+        "installedVersion": "0.9.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0371",
+        "aliases": [],
+        "packageName": "zbus_names",
+        "installedVersion": "3.0.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0371",
+        "aliases": [],
+        "packageName": "zbus_names",
+        "installedVersion": "4.3.4",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0370",
+        "aliases": [],
+        "packageName": "zvariant",
+        "installedVersion": "4.2.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0370",
+        "aliases": [],
+        "packageName": "zvariant",
+        "installedVersion": "5.14.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0372",
+        "aliases": [],
+        "packageName": "zvariant_derive",
+        "installedVersion": "4.2.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      },
+      {
+        "id": "RUSTSEC-2026-0372",
+        "aliases": [],
+        "packageName": "zvariant_derive",
+        "installedVersion": "5.14.0",
+        "ecosystem": "crates.io",
+        "severity": null,
+        "fixedVersions": [],
+        "lockfile": "$REPO/src-tauri/Cargo.lock",
+        "directUsage": {
+          "referenced": false,
+          "referencedFiles": 0
+        }
+      }
+    ],
+    "selectedHandoff": {
+      "package": "lopdf",
+      "installedVersion": "0.35.0",
+      "advisoryIds": [
+        "GHSA-6fj4-rcr3-r7rr",
+        "RUSTSEC-2026-0187"
+      ],
+      "dependencyChain": [
+        "oxaudit 0.2.4",
+        "printpdf 0.8.2",
+        "lopdf 0.35.0"
+      ],
+      "disposition": "dependency remediation review; application exploitability unresolved",
+      "patchedVersionFromAdvisory": "0.42.0",
+      "counterevidence": "Inspected report code constructs/saves a PDF; no attacker-controlled PDF parse path established.",
+      "primarySource": "https://rustsec.org/advisories/RUSTSEC-2026-0187.html"
+    }
+  },
+  "corpus": {
+    "fixtures": 234,
+    "passedFixtures": 234,
+    "truePositives": 116,
+    "falsePositives": 0,
+    "falseNegatives": 0,
+    "precision": 1.0,
+    "recall": 1.0
+  },
+  "owasp": {
+    "provenance": {
+      "benchmarkCommit": "550021e915c06cbcf994d97bc258128b78d890db",
+      "evaluator": "owasp-java-cwe-v1",
+      "expectationsSha256": "1809f6a690c6cf7dd6685df6ebe2eef8fe3ca93d19a7ca0ce45987ca4f5d78e1",
+      "toolCommit": "7b5e1b85e1891ecdf94611d3f1395ac140cd346c",
+      "toolWorkingTreeDirty": true,
+      "cliSha256": "e1e8fee74b3e89e5081bd0f70e8e0a49396d37c515ab653fc57a0180e8c205bf",
+      "measuredAt": "2026-10-25T22:03:07.629Z"
+    },
+    "cases": 2740,
+    "confusionMatrix": {
+      "truePositives": 1346,
+      "falsePositives": 689,
+      "trueNegatives": 636,
+      "falseNegatives": 69
+    },
+    "precision": 0.6614250614250614,
+    "recall": 0.9512367491166078,
+    "falsePositiveRate": 0.52,
+    "baselineComparisonStatus": "passed"
+  },
+  "browser": {
+    "command": "npm run test:e2e",
+    "exit": 0,
+    "passed": 5,
+    "durationSeconds": 21.2,
+    "scope": "Chromium against freshly built real server; isolated inert fixtures; no native or human UX acceptance"
+  },
+  "sqlNoiseReproduction": {
+    "findingCount": 1,
+    "ruleId": "rs-sql-format",
+    "scope": "production",
+    "source": "struct ComponentQuery;\nfn query(_: Option<&str>, _: &str, _: &str) -> ComponentQuery { ComponentQuery }\nfn main() { let _queries = vec![query(Some(\"Debian:12\"), \"libc6\", \"2.36-9+deb12u3\")]; }\n"
+  },
+  "commands": [
+    {
+      "label": "version",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "--version"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.827
+    },
+    {
+      "label": "languages",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "languages"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.012
+    },
+    {
+      "label": "source",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "scan",
+        "$REPO",
+        "--db",
+        "$EVIDENCE/source.sqlite",
+        "--format",
+        "json",
+        "--output",
+        "$EVIDENCE/source.json",
+        "--ignore-dir",
+        "benchmarks",
+        "--ignore-dir",
+        "pilot",
+        "--ignore-dir",
+        "node_modules",
+        "--ignore-dir",
+        "target",
+        "--ignore-dir",
+        "dist",
+        "--ignore-dir",
+        ".git"
+      ],
+      "exit": 0,
+      "wallSeconds": 1.062
+    },
+    {
+      "label": "source-history",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "runs",
+        "--db",
+        "$EVIDENCE/source.sqlite",
+        "--kind",
+        "source",
+        "--json"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.025
+    },
+    {
+      "label": "source-sarif",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "export",
+        "--db",
+        "$EVIDENCE/source.sqlite",
+        "--run",
+        "779f9898-0e7d-45e6-8164-28a475980ccb",
+        "--format",
+        "sarif",
+        "--output",
+        "$EVIDENCE/source.sarif"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.46
+    },
+    {
+      "label": "fixture-smoke",
+      "argv": [
+        "node",
+        "tools/pilot-smoke.mjs",
+        "--cli",
+        "$EVIDENCE/oxaudit-cli",
+        "--keep"
+      ],
+      "exit": 0,
+      "wallSeconds": 2.076
+    },
+    {
+      "label": "dependencies-live",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "deps",
+        "$REPO",
+        "--db",
+        "$EVIDENCE/deps.sqlite",
+        "--format",
+        "json",
+        "--output",
+        "$EVIDENCE/deps.json",
+        "--ignore-dir",
+        "benchmarks",
+        "--ignore-dir",
+        "pilot",
+        "--ignore-dir",
+        "node_modules",
+        "--ignore-dir",
+        "target",
+        "--ignore-dir",
+        "dist",
+        "--ignore-dir",
+        ".git"
+      ],
+      "exit": 0,
+      "wallSeconds": 40.375
+    },
+    {
+      "label": "dependencies-offline",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "deps",
+        "$REPO",
+        "--db",
+        "$EVIDENCE/deps.sqlite",
+        "--offline",
+        "--format",
+        "json",
+        "--output",
+        "$EVIDENCE/deps-offline.json",
+        "--ignore-dir",
+        "benchmarks",
+        "--ignore-dir",
+        "pilot",
+        "--ignore-dir",
+        "node_modules",
+        "--ignore-dir",
+        "target",
+        "--ignore-dir",
+        "dist",
+        "--ignore-dir",
+        ".git"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.941
+    },
+    {
+      "label": "corpus",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "benchmark",
+        "--json",
+        "--output",
+        "$EVIDENCE/corpus.json"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.606
+    },
+    {
+      "label": "owasp-record",
+      "argv": [
+        "node",
+        "tools/record-quality-benchmark.mjs",
+        "--cli",
+        "$EVIDENCE/oxaudit-cli",
+        "--corpus",
+        "benchmarks/external/owasp-benchmark",
+        "--output",
+        "$EVIDENCE/owasp"
+      ],
+      "exit": 0,
+      "wallSeconds": 15.107
+    },
+    {
+      "label": "owasp-compare",
+      "argv": [
+        "node",
+        "tools/compare-quality-benchmark.mjs",
+        "--result",
+        "$EVIDENCE/owasp/result.json",
+        "--baseline",
+        "benchmarks/baselines/owasp-java-550021e9.json",
+        "--output",
+        "$EVIDENCE/owasp-comparison"
+      ],
+      "exit": 0,
+      "wallSeconds": 0.041
+    },
+    {
+      "label": "source-unchanged",
+      "argv": [
+        "$EVIDENCE/oxaudit-cli",
+        "scan",
+        "$REPO",
+        "--db",
+        "$EVIDENCE/source.sqlite",
+        "--format",
+        "json",
+        "--output",
+        "$EVIDENCE/source-unchanged.json",
+        "--ignore-dir",
+        "benchmarks",
+        "--ignore-dir",
+        "pilot",
+        "--ignore-dir",
+        "node_modules",
+        "--ignore-dir",
+        "target",
+        "--ignore-dir",
+        "dist",
+        "--ignore-dir",
+        ".git",
+        "--baseline",
+        "$EVIDENCE/source.json",
+        "--fail-on-new",
+        "high"
+      ],
+      "exit": 0,
+      "wallSeconds": 1.337,
+      "timingScope": "includes refusing-proxy shutdown"
+    }
+  ],
+  "rawEvidenceSha256": {
+    "receipt.json": "6c873452c062fef5f3f59bb5effe28f689a4779ca066e8ce8319d3dc5d19f6bd",
+    "source.json": "a163a9492a45f2bd61872baca51fe69968f6eb54b77ab54c470a49c8fd1c375d",
+    "source-unchanged.json": "b0c3fe2ee94eb78b989029620dae5223dc60265801b31c45fdc4085a76646313",
+    "source.sarif": "2d2ae4516e474390bf40c8e0f8bd0d5d3440796678c05624d0e002ec2c4473bb",
+    "source-history.stdout": "3ae072fc2b302fd4968e7209e91cc66288726370c0bcf6133186d4e821e8937e",
+    "deps.json": "2a4da0a2a9c96dc599fb5f11411b3f5193ad29eed720537d6c776d749827f5e4",
+    "deps-offline.json": "b7f6d40bb095d485579e82a161462be239690a5e00c4745e36489301144d6f9f",
+    "corpus.json": "83f19b253bd72345977de4d14fdd9a7c7a4da4200bbbf9889b695a4e91c70a12",
+    "owasp/result.json": "9ed04a3bd5e6211679faa2f4dc7b42bd69284e589e2eb29b0cf0aef0cdfd092b",
+    "owasp-comparison/comparison.json": "845e7cf7bca1f8e83098e239380ced9382c5a4d43c5a1006f03259cae684ee6a",
+    "fixture-smoke.stdout": "7a7c1fcf2037e222628af0d5abec7e4451189cbd31d0481a7126a398cadecdcb",
+    "browser-e2e.log": "482a896110946b281dacd4a025384cc4448a0585bf1731445088601707c57f82",
+    "sql-noise-repro.json": "f50105b95d2f8fe3e073af83826ab67fc20ccb75cf48dfbcf7f08a90c0f8951c"
+  },
+  "notEvaluated": [
+    "external engineer adoption",
+    "participant active time or savings",
+    "voluntary return over a week",
+    "native app installation and dialogs",
+    "other operating systems",
+    "full exploitability of all advisory matches",
+    "developer acceptance of handoff"
+  ]
+}
