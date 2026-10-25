@@ -23,10 +23,14 @@ FROM ${NODE_IMAGE} AS frontend
 WORKDIR /web
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY tsconfig.json tsconfig.node.json vite.config.ts index.html ./
+COPY tsconfig.json tsconfig.node.json tsconfig.build.json vite.config.ts index.html ./
 COPY src ./src
 COPY public ./public
-RUN npm run build
+# The full tsconfig type-checks src's component tests too, and those import
+# fixtures from tests/, which is deliberately outside this build context.
+# The production type-check excludes tests; CI's npm run check still covers
+# them on the full checkout.
+RUN npx tsc -p tsconfig.build.json && npx vite build
 
 # --- build -------------------------------------------------------------
 #
