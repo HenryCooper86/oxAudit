@@ -26,7 +26,7 @@ use crate::findings::domain::ResultPageQuery;
 use crate::findings::inventory::InventoryComponentView;
 use crate::findings::repository::FindingsRepository;
 use crate::models::{Dependency, DependencyOccurrence};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 
 /// The page ceiling the inventory read model allows; the loader walks pages
 /// at this size until every component of the run is loaded.
@@ -133,27 +133,13 @@ pub fn select_runs(
     if !explicit.is_empty() {
         return explicit.iter().map(|id| load(id)).collect();
     }
-    let listed = repository
-        .canonical_list_runs(Some("dependencies"), 100)
-        .map_err(|error| error.to_string())?;
-    let mut latest: BTreeMap<String, oxaudit_domain::Run> = BTreeMap::new();
-    for run in listed {
-        if run.state != oxaudit_domain::RunState::Completed {
-            continue;
-        }
-        let updated_at_ms = run.updated_at_ms;
-        match latest.entry(run.target_label.clone()) {
-            std::collections::btree_map::Entry::Vacant(slot) => {
-                slot.insert(run);
-            }
-            std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if slot.get().updated_at_ms < updated_at_ms {
-                    slot.insert(run);
-                }
-            }
-        }
-    }
-    Ok(latest.into_values().collect())
+    // The whole table, one row per target: `canonical_list_runs` is capped
+    // at a hundred rows for listings, and a cap here would silently stop
+    // monitoring every target whose latest run fell outside the newest
+    // page while the command still reported success.
+    repository
+        .canonical_latest_completed_runs_per_target("dependencies")
+        .map_err(|error| error.to_string())
 }
 
 fn kind_name(run: &oxaudit_domain::Run) -> String {
@@ -664,6 +650,7 @@ mod tests {
         let repository_other = FindingsRepository::open_in_memory().unwrap();
         let mut source = Run::queued(RunKind::Source, "/project/s".to_string(), 1);
         source.state = RunState::Completed;
+
         repository_other.canonical_create_run(&source).unwrap();
         let wrong_kind = select_runs(&repository_other, &[source.id.to_string()]).unwrap_err();
         assert!(wrong_kind.contains("dependencies run"), "{wrong_kind}");
@@ -673,6 +660,33 @@ mod tests {
         let not_completed =
             select_runs(&repository_other, &[unfinished.id.to_string()]).unwrap_err();
         assert!(not_completed.contains("not completed"), "{not_completed}");
+    }
+
+    #[test]
+    fn selection_reaches_targets_beyond_the_listing_page_cap() {
+        // `canonical_list_runs` clamps to one hundred rows; a monitor that
+        // selected through it would silently drop every target whose only
+        // run sits outside the newest page and still report success. This
+        // fixture puts one hundred and twenty runs on /project/many and a
+        // single old run on /project/quiet, then requires both targets.
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        for n in 1..=120u64 {
+            stored_run(&repository, "/project/many", n);
+        }
+        stored_run(&repository, "/project/quiet", 5);
+        let runs = select_runs(&repository, &[]).unwrap();
+        let selected: Vec<(String, u64)> = runs
+            .into_iter()
+            .map(|run| (run.target_label, run.updated_at_ms))
+            .collect();
+        assert_eq!(
+            selected,
+            vec![
+                ("/project/many".to_string(), 120),
+                ("/project/quiet".to_string(), 5),
+            ],
+            "every target's latest completed run must be monitored, page cap or not"
+        );
     }
 
     #[test]

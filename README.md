@@ -22,7 +22,7 @@ and a finding on a workstation are the same finding.
 
 Two real paths, and they are different builds:
 
-- **Published release.** [v0.2.0](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.0)
+- **Published release.** [v0.2.1](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.1)
   (2026-10-25) ships prebuilt `oxaudit-cli` binaries for Linux x86_64,
   macOS x86_64/arm64, and Windows x86_64, plus unsigned Linux x86_64
   desktop packages. On macOS/Linux the installer verifies the release
@@ -36,7 +36,7 @@ Two real paths, and they are different builds:
   release page, or use the [composite Action](action/action.yml) in CI.
 - **Build from source.** Needed for the desktop pilot (macOS/Windows
   bundles), the headless browser server, a Linux aarch64 CLI, and anything
-  newer than the v0.2.0 tag. The [Getting started guide](docs/getting-started.md) lists
+  newer than the v0.2.1 tag. The [Getting started guide](docs/getting-started.md) lists
   Node 22.22.2, the pinned Rust 1.97.1 toolchain, and platform-specific
   native prerequisites.
 

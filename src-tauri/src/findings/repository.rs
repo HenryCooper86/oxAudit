@@ -1075,6 +1075,43 @@ impl FindingsRepository {
             .collect()
     }
 
+    /// The latest completed run of `kind` for every target label, computed
+    /// in one pass over the whole table.
+    ///
+    /// `canonical_list_runs` is deliberately capped at a hundred rows for
+    /// UI-style listings; anything that must not silently lose targets —
+    /// the monitor loop's default selection — needs this instead, which
+    /// returns one row per target no matter how many runs are stored. Ties
+    /// on `updated_at_ms` resolve by run id so the pick is deterministic.
+    pub(crate) fn canonical_latest_completed_runs_per_target(
+        &self,
+        kind: &str,
+    ) -> Result<Vec<oxaudit_domain::Run>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let mut statement = connection
+            .prepare(
+                r#"SELECT payload_json FROM (
+                       SELECT payload_json, target_label,
+                              ROW_NUMBER() OVER (
+                                PARTITION BY target_label
+                                ORDER BY updated_at_ms DESC, id DESC
+                              ) AS position
+                       FROM canonical_runs
+                       WHERE kind = ?1 AND state = 'completed'
+                   )
+                   WHERE position = 1
+                   ORDER BY target_label"#,
+            )
+            .map_err(persistence_error)?;
+        let rows = statement
+            .query_map([kind], |row| row.get::<_, String>(0))
+            .map_err(persistence_error)?;
+        rows.map(|row| {
+            serde_json::from_str(&row.map_err(persistence_error)?).map_err(persistence_error)
+        })
+        .collect()
+    }
+
     pub(crate) fn provider_save_snapshot(
         &self,
         snapshot: &ProviderSnapshotRecord,
