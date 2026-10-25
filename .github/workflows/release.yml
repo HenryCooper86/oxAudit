@@ -636,8 +636,18 @@ jobs:
         run: |
           cargo install cargo-cyclonedx --version 0.5.9 --locked
           cargo cyclonedx --manifest-path src-tauri/Cargo.toml --format json --all-features
-          find src-tauri -name '*.cdx.json' -print -quit | xargs -I{} cp {} oxaudit-rust.cdx.json
-          test -s oxaudit-rust.cdx.json
+          # cargo-cyclonedx emits one SBOM per workspace package. Select the
+          # application explicitly; a recursive first match can pick a helper.
+          cp src-tauri/oxaudit.cdx.json oxaudit-rust.cdx.json
+          node -e '
+            const assert = require("node:assert/strict");
+            const bom = require("./oxaudit-rust.cdx.json");
+            const pkg = require("./package.json");
+            assert.equal(bom.bomFormat, "CycloneDX");
+            assert.equal(bom.metadata.component.name, pkg.name);
+            assert.equal(bom.metadata.component.version, pkg.version);
+            assert.ok(bom.components.length > 0, "application SBOM has no dependencies");
+          '
 
       - name: Generate the JavaScript SBOM
         run: |

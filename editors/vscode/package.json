@@ -2,7 +2,7 @@
   "name": "oxaudit-vscode",
   "displayName": "oxAudit",
   "description": "Static security scanning for your workspace, powered by the oxAudit CLI",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "publisher": "oxaudit",
   "license": "Apache-2.0",
   "engines": {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6
+
+- Align with the corrected oxAudit release, which selects and verifies the application
+  Rust SBOM. Includes the scanner precision fixes documented below.
+
 ## 0.2.5
 
 - Align the extension version with the oxAudit 0.2.5 patch release. The CLI fixes
