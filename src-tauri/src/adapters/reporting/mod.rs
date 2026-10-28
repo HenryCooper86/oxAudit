@@ -4,6 +4,7 @@ use oxaudit_domain::{Artifact, Component, Evidence, Run};
 pub mod compliance;
 mod dependencies;
 pub mod import;
+mod schema;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportFormat {
@@ -138,7 +139,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
         return generate_ticket_csv(data, format);
     }
     let mut warnings = coverage_warnings(data);
-    let value = match format {
+    let mut value = match format {
         ReportFormat::OxAuditJson => serde_json::json!({
             "schemaVersion": 1,
             "run": data.run,
@@ -179,7 +180,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                             .map(|location| {
                                 vec![serde_json::json!({
                                     "physicalLocation": {
-                                        "artifactLocation": { "uri": location.normalized_path },
+                                        "artifactLocation": { "uri": sarif_artifact_uri(&location.normalized_path) },
                                         "region": {
                                             "startLine": location.start_line.unwrap_or(1),
                                             "startColumn": location.start_column.unwrap_or(1)
@@ -190,7 +191,6 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                             .unwrap_or_default();
                         let rule_id = record.observation.rule_id.as_deref();
                         let mut result = serde_json::json!({
-                            "ruleId": record.observation.rule_id,
                             // Consumers that show a severity read `level`, not
                             // our own vocabulary. Without it every finding
                             // arrives as an undifferentiated warning.
@@ -204,6 +204,9 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                                 "severity": rule_severity(rule_id).unwrap_or("unknown")
                             }
                         });
+                        if let Some(rule_id) = &record.observation.rule_id {
+                            result["ruleId"] = serde_json::json!(rule_id);
+                        }
                         if let Some(suppression) = findings_by_observation
                             .get(record.observation.id.as_str())
                             .and_then(|finding| sarif_suppression(finding.review.as_ref()))
@@ -257,34 +260,28 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             "version": 1,
             "metadata": { "tools": { "components": [{ "type": "application", "name": "oxAudit", "version": env!("CARGO_PKG_VERSION") }] }, "properties": lifecycle_properties(data) },
             "components": data.components.iter().map(cyclonedx_component).collect::<Vec<_>>(),
-            "dependencies": data
-                .components
-                .iter()
-                .filter(|component| !component.depends_on.is_empty())
-                .map(|component| serde_json::json!({
-                    "ref": component.id.as_str(),
-                    "dependsOn": component.depends_on,
-                }))
-                .collect::<Vec<_>>()
+
         }),
         ReportFormat::Spdx => serde_json::json!({
             "spdxVersion": "SPDX-2.3",
             "dataLicense": "CC0-1.0",
             "SPDXID": "SPDXRef-DOCUMENT",
             "name": format!("oxAudit run {}", data.run.id.as_str()),
-            "documentComment": lifecycle_text(data),
+            "comment": lifecycle_text(data),
             "documentNamespace": format!("https://oxaudit.local/spdx/{}", uuid::Uuid::new_v4()),
             "creationInfo": { "creators": [format!("Tool: oxAudit-{}", env!("CARGO_PKG_VERSION"))], "created": chrono::Utc::now().to_rfc3339() },
             "packages": data.components.iter().enumerate().map(|(index, component)| {
                 let mut package = serde_json::json!({
                     "SPDXID": format!("SPDXRef-Package-{index}"),
                     "name": component.name,
-                    "versionInfo": component.version,
                     "supplier": component.supplier.as_ref().map(|supplier| format!("Organization: {supplier}")).unwrap_or_else(|| "NOASSERTION".into()),
                     "downloadLocation": "NOASSERTION",
                     "filesAnalyzed": false,
-                    "externalRefs": component.purl.as_ref().map(|purl| vec![serde_json::json!({ "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": purl })]).unwrap_or_default()
+                    "externalRefs": component.purl.as_ref().map(|purl| vec![serde_json::json!({ "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": standard_purl(purl) })]).unwrap_or_default()
                 });
+                if let Some(version) = &component.version {
+                    package["versionInfo"] = serde_json::json!(version);
+                }
                 // Declared license only when the lockfile stated one; absent
                 // stays absent rather than asserting NOASSERTION per field.
                 if let Some(license) = &component.license {
@@ -296,7 +293,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
         ReportFormat::OpenVex => {
             let statements = vex_statements(data);
             if statements.is_empty() {
-                warnings.push("No advisory observations are available for VEX statements.".into());
+                return Err("OpenVEX requires at least one advisory statement; no advisory observations are available for this run.".into());
             }
             serde_json::json!({
                 "@context": "https://openvex.dev/ns/v0.2.0",
@@ -331,6 +328,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             unreachable!("ticket CSV formats never build a JSON value")
         }
     };
+    preserve_inventory_metadata(data, format, &mut value, &mut warnings)?;
     validate(&value, format)?;
     let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
     Ok(GeneratedReport { bytes, warnings })
@@ -447,17 +445,58 @@ fn generate_ticket_csv(data: &ReportData, format: ReportFormat) -> Result<Genera
     })
 }
 
+// Older canonical inventories used `pkg/` as the package URL prefix.
+// Export that known representation using the standard URI scheme without
+// rewriting retained evidence or inventing identities from component names.
+fn standard_purl(purl: &str) -> String {
+    purl.strip_prefix("pkg/")
+        .map(|rest| format!("pkg:{rest}"))
+        .unwrap_or_else(|| purl.to_owned())
+}
+
+pub(super) fn sarif_artifact_uri(path: &str) -> String {
+    const PATH: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'/')
+        .remove(b'.')
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'~')
+        .remove(b':')
+        .remove(b'!')
+        .remove(b'$')
+        .remove(b'&')
+        .remove(b'\'')
+        .remove(b'(')
+        .remove(b')')
+        .remove(b'*')
+        .remove(b'+')
+        .remove(b',')
+        .remove(b';')
+        .remove(b'=')
+        .remove(b'@');
+    percent_encoding::utf8_percent_encode(path, PATH).to_string()
+}
+
 fn cyclonedx_component(component: &Component) -> serde_json::Value {
     let mut value = serde_json::json!({
         "type": "library",
         "bom-ref": component.id.as_str(),
         "name": component.name,
-        "version": component.version,
-        "supplier": component.supplier.as_ref().map(|name| serde_json::json!({ "name": name })),
-        "purl": component.purl,
-        "cpe": component.cpes.first(),
         "properties": [{ "name": "oxaudit:identityConfidence", "value": component.identities.iter().map(|identity| identity.confidence).fold(0.0_f32, f32::max).to_string() }]
     });
+    // Optional CycloneDX fields accept their declared type, never JSON null.
+    if let Some(version) = &component.version {
+        value["version"] = serde_json::json!(version);
+    }
+    if let Some(supplier) = &component.supplier {
+        value["supplier"] = serde_json::json!({ "name": supplier });
+    }
+    if let Some(purl) = &component.purl {
+        value["purl"] = serde_json::json!(standard_purl(purl));
+    }
+    if let Some(cpe) = component.cpes.first() {
+        value["cpe"] = serde_json::json!(cpe);
+    }
     // Unknown licenses are omitted, not null — an absent field reads as
     // unknown; a null array would not.
     if let Some(license) = &component.license {
@@ -466,15 +505,127 @@ fn cyclonedx_component(component: &Component) -> serde_json::Value {
     value
 }
 
+/// Restore source-format license details that exceed the canonical summary,
+/// and translate graph IDs only after checking that every edge is resolvable.
+fn preserve_inventory_metadata(
+    data: &ReportData,
+    format: ReportFormat,
+    value: &mut serde_json::Value,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    let target = match format {
+        ReportFormat::CycloneDx | ReportFormat::CycloneDxVex => "cyclonedx",
+        ReportFormat::Spdx => "spdx",
+        _ => return Ok(()),
+    };
+    let indices = data
+        .components
+        .iter()
+        .enumerate()
+        .map(|(index, component)| (component.id.as_str(), index))
+        .collect::<std::collections::HashMap<_, _>>();
+    if indices.len() != data.components.len() {
+        return Err("Cannot export inventory with duplicate component IDs.".into());
+    }
+    let mut relationships = Vec::new();
+    for (index, component) in data.components.iter().enumerate() {
+        for dependency in &component.depends_on {
+            let dependency_index = indices.get(dependency.as_str()).ok_or_else(|| {
+                format!(
+                    "Cannot export unresolved dependency from {} to {dependency}.",
+                    component.id
+                )
+            })?;
+            relationships.push(serde_json::json!({
+                "spdxElementId": format!("SPDXRef-Package-{index}"),
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": format!("SPDXRef-Package-{dependency_index}"),
+            }));
+        }
+    }
+    if target == "spdx" {
+        value["relationships"] = serde_json::json!(relationships);
+    } else {
+        value["dependencies"] = serde_json::json!(data.components.iter()
+            .filter(|component| !component.depends_on.is_empty())
+            .map(|component| serde_json::json!({"ref": component.id.as_str(), "dependsOn": component.depends_on}))
+            .collect::<Vec<_>>());
+    }
+    let Some(projection) = &data.projection else {
+        return Ok(());
+    };
+    let source = projection
+        .get("sourceLicenseFormat")
+        .and_then(serde_json::Value::as_str);
+    let entries = projection
+        .get("componentMetadata")
+        .and_then(serde_json::Value::as_array);
+    if source == Some(target) {
+        if target == "spdx" {
+            for field in ["hasExtractedLicensingInfos", "externalDocumentRefs"] {
+                if let Some(original) = projection.get(field).filter(|v| !v.is_null()) {
+                    value[field] = original.clone();
+                }
+            }
+        }
+        for entry in entries.into_iter().flatten() {
+            let Some(index) = entry
+                .get("componentId")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| indices.get(id))
+            else {
+                continue;
+            };
+            let fields: &[&str] = if target == "cyclonedx" {
+                &["licenses"]
+            } else {
+                &[
+                    "licenseDeclared",
+                    "licenseConcluded",
+                    "licenseInfoFromFiles",
+                    "licenseComments",
+                    "copyrightText",
+                    "attributionTexts",
+                ]
+            };
+            let destination = if target == "cyclonedx" {
+                &mut value["components"][*index]
+            } else {
+                &mut value["packages"][*index]
+            };
+            for field in fields {
+                if let Some(original) = entry.get(*field) {
+                    destination[*field] = original.clone();
+                }
+            }
+        }
+    } else if source.is_some_and(|source| source != "oxaudit-json")
+        && (entries.into_iter().flatten().any(|entry| {
+            entry.as_object().is_some_and(|object| {
+                object
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "componentId" | "sourceRef"))
+            })
+        }) || projection
+            .get("hasExtractedLicensingInfos")
+            .is_some_and(|v| v.as_array().is_some_and(|v| !v.is_empty())))
+    {
+        warnings.push(format!("Imported {} license metadata cannot be represented completely in {target}; only canonical license summaries are exported. Export the original format to retain full license records.", source.unwrap_or("source")));
+    }
+    Ok(())
+}
+
 fn vex_statements(data: &ReportData) -> Vec<serde_json::Value> {
     let components = dependencies::ComponentIndex::new(data);
     data.observations
         .iter()
         .filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch)
         .map(|record| serde_json::json!({
+            "@id": format!("https://oxaudit.local/vex/{}/statements/{}", data.run.id, record.observation.id),
             "vulnerability": { "name": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()) },
-            "products": components.affected_components(record).iter().map(|component| serde_json::json!({ "@id": component.purl.clone().unwrap_or_else(|| format!("pkg:generic/{}@{}", component.name, component.version.clone().unwrap_or_else(|| "unknown".into()))) })).collect::<Vec<_>>(),
+            "products": components.affected_components(record).iter().map(|component| serde_json::json!({ "@id": component.purl.as_deref().map(standard_purl).unwrap_or_else(|| format!("urn:oxaudit:component:{}", component.id)) })).collect::<Vec<_>>(),
             "status": "affected",
+            "action_statement": "Review the affected-range match and the advisory's remediation guidance before selecting an upgrade or mitigation; oxAudit has not verified a remediation.",
             "status_notes": "Affected-range match observed; no analyst disposition was inferred."
         }))
         .collect()
@@ -487,28 +638,11 @@ fn validate(value: &serde_json::Value, format: ReportFormat) -> Result<(), Strin
         ReportFormat::OxAuditJson => {
             value.get("schemaVersion") == Some(&serde_json::json!(1)) && value.get("run").is_some()
         }
-        ReportFormat::Sarif => {
-            value.get("version") == Some(&serde_json::json!("2.1.0"))
-                && value
-                    .get("runs")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|runs| !runs.is_empty())
-        }
-        ReportFormat::CycloneDx | ReportFormat::CycloneDxVex => {
-            value.get("bomFormat") == Some(&serde_json::json!("CycloneDX"))
-                && value.get("specVersion").is_some()
-        }
-        ReportFormat::Spdx => {
-            value.get("spdxVersion") == Some(&serde_json::json!("SPDX-2.3"))
-                && value.get("documentNamespace").is_some()
-        }
-        ReportFormat::OpenVex => {
-            value.get("@context").is_some()
-                && value
-                    .get("statements")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some()
-        }
+        ReportFormat::Sarif
+        | ReportFormat::CycloneDx
+        | ReportFormat::CycloneDxVex
+        | ReportFormat::Spdx
+        | ReportFormat::OpenVex => return schema::validate(value, format),
     };
     valid
         .then_some(())
@@ -551,14 +685,8 @@ mod tests {
                 code: "history_coverage".into(),
                 message: "Some blobs were not inspected.".into(),
             });
-            let data = ReportData {
-                run,
-                artifacts: Vec::new(),
-                components: Vec::new(),
-                observations: Vec::new(),
-                findings: Vec::new(),
-                projection: None,
-            };
+            let mut data = advisory_report();
+            data.run = run;
             let state = serde_json::to_value(terminal).unwrap();
             for format in [
                 ReportFormat::Sarif,
@@ -596,7 +724,7 @@ mod tests {
                             .as_str()
                             .is_some_and(|text| text.contains("Some blobs were not inspected."))));
                     }
-                    ReportFormat::Spdx => assert!(value["documentComment"]
+                    ReportFormat::Spdx => assert!(value["comment"]
                         .as_str()
                         .unwrap()
                         .contains("Some blobs were not inspected.")),
@@ -647,8 +775,54 @@ mod tests {
     }
 
     #[test]
-    fn every_standard_writer_produces_structurally_valid_json() {
+    fn cyclonedx_optional_component_fields_are_omitted_when_unknown() {
+        let mut component = Component {
+            id: oxaudit_domain::ComponentId::parse("component_minimal").unwrap(),
+            name: "minimal".into(),
+            version: None,
+            supplier: None,
+            ecosystem: None,
+            purl: None,
+            cpes: Vec::new(),
+            aliases: Vec::new(),
+            identities: Vec::new(),
+            depends_on: Vec::new(),
+            license: None,
+        };
         let data = ReportData {
+            run: completed_run(),
+            artifacts: Vec::new(),
+            components: vec![component.clone()],
+            observations: Vec::new(),
+            findings: Vec::new(),
+            projection: None,
+        };
+        for format in [ReportFormat::CycloneDx, ReportFormat::CycloneDxVex] {
+            let report: serde_json::Value =
+                serde_json::from_slice(&generate(&data, format).unwrap().bytes).unwrap();
+            for field in ["version", "supplier", "purl", "cpe"] {
+                assert!(
+                    report["components"][0].get(field).is_none(),
+                    "unknown {field} must be omitted, not null"
+                );
+            }
+        }
+        component.version = Some("1".into());
+        component.supplier = Some("Example".into());
+        component.purl = Some("pkg:generic/minimal@1".into());
+        component
+            .cpes
+            .push("cpe:2.3:a:example:minimal:1:*:*:*:*:*:*:*".into());
+        let value = cyclonedx_component(&component);
+        assert_eq!(value["version"], "1");
+        assert_eq!(value["supplier"]["name"], "Example");
+        assert_eq!(value["purl"], "pkg:generic/minimal@1");
+        assert_eq!(value["cpe"], "cpe:2.3:a:example:minimal:1:*:*:*:*:*:*:*");
+    }
+
+    #[test]
+    fn spdx_retains_coverage_in_the_standard_document_comment_field() {
+        let mut data = ReportData {
             run: completed_run(),
             artifacts: Vec::new(),
             components: Vec::new(),
@@ -656,6 +830,254 @@ mod tests {
             findings: Vec::new(),
             projection: None,
         };
+        data.run.warnings.push(oxaudit_domain::RunWarning {
+            code: "provider-unavailable".into(),
+            message: "Advisory coverage unavailable offline.".into(),
+        });
+        let report: serde_json::Value =
+            serde_json::from_slice(&generate(&data, ReportFormat::Spdx).unwrap().bytes).unwrap();
+        assert!(report["comment"]
+            .as_str()
+            .is_some_and(|comment| comment.contains("Advisory coverage unavailable offline.")));
+        assert!(report.get("documentComment").is_none());
+    }
+
+    #[test]
+    fn spdx_omits_unknown_package_versions_and_preserves_known_versions() {
+        let mut data = ReportData {
+            run: completed_run(),
+            artifacts: Vec::new(),
+            components: vec![Component {
+                id: oxaudit_domain::ComponentId::parse("component_spdx_minimal").unwrap(),
+                name: "minimal".into(),
+                version: None,
+                supplier: None,
+                ecosystem: None,
+                purl: None,
+                cpes: Vec::new(),
+                aliases: Vec::new(),
+                identities: Vec::new(),
+                depends_on: Vec::new(),
+                license: None,
+            }],
+            observations: Vec::new(),
+            findings: Vec::new(),
+            projection: None,
+        };
+        let report: serde_json::Value =
+            serde_json::from_slice(&generate(&data, ReportFormat::Spdx).unwrap().bytes).unwrap();
+        assert!(report["packages"][0].get("versionInfo").is_none());
+        data.components[0].version = Some("1.2.3".into());
+        let report: serde_json::Value =
+            serde_json::from_slice(&generate(&data, ReportFormat::Spdx).unwrap().bytes).unwrap();
+        assert_eq!(report["packages"][0]["versionInfo"], "1.2.3");
+    }
+
+    fn advisory_report() -> ReportData {
+        use oxaudit_domain::*;
+        let run = completed_run();
+        let component = Component {
+            id: ComponentId::parse("component_example").unwrap(),
+            name: "example".into(),
+            version: Some("1.0".into()),
+            supplier: Some("Example".into()),
+            ecosystem: None,
+            purl: Some("pkg:generic/example@1.0".into()),
+            cpes: vec![],
+            aliases: vec![],
+            identities: vec![],
+            depends_on: vec![],
+            license: Some("MIT".into()),
+        };
+        let evidence = EvidenceRecord {
+            id: EvidenceId::parse("evidence_advisory").unwrap(),
+            evidence: Evidence::AdvisoryMatch(AdvisoryMatchEvidence {
+                install_path: None,
+                component_id: component.id.clone(),
+                provider_snapshot_id: ProviderSnapshotId::parse("provider_fixture").unwrap(),
+                advisory_id: "CVE-2026-1234".into(),
+                affected: true,
+                rationale: "affected range".into(),
+            }),
+        };
+        let observation = Observation {
+            id: ObservationId::parse("observation_advisory").unwrap(),
+            run_id: run.id.clone(),
+            artifact_id: ArtifactId::parse("artifact_fixture").unwrap(),
+            kind: ObservationKind::AdvisoryMatch,
+            detector_id: "fixture".into(),
+            detector_version: "1".into(),
+            rule_id: Some("CVE-2026-1234".into()),
+            title: "advisory".into(),
+            summary: "affected range".into(),
+            evidence_ids: vec![evidence.id.clone()],
+        };
+        ReportData {
+            run,
+            components: vec![component],
+            observations: vec![ObservationRecord {
+                observation,
+                evidence: vec![evidence],
+            }],
+            artifacts: vec![],
+            findings: vec![],
+            projection: None,
+        }
+    }
+
+    #[test]
+    fn openvex_without_advisories_is_rejected_instead_of_emitting_invalid_empty_statements() {
+        let mut data = advisory_report();
+        data.observations.clear();
+        assert!(generate(&data, ReportFormat::OpenVex).is_err());
+    }
+
+    #[test]
+    fn same_format_exports_restore_complete_imported_license_records() {
+        let mut data = advisory_report();
+        let licenses = serde_json::json!([
+            {"license":{"id":"MIT", "url":"https://opensource.org/license/mit"}},
+            {"license":{"name":"Example Commercial License", "text":{"content":"Full license text"}}}
+        ]);
+        data.projection = Some(
+            serde_json::json!({"sourceLicenseFormat":"cyclonedx", "componentMetadata":[{"componentId":"component_example", "licenses":licenses}]}),
+        );
+        let output = generate(&data, ReportFormat::CycloneDx).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert_eq!(value["components"][0]["licenses"], licenses);
+        let cross_format = generate(&data, ReportFormat::Spdx).unwrap();
+        assert!(cross_format
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("license")));
+
+        let extracted = serde_json::json!([{"licenseId":"LicenseRef-Example", "extractedText":"Example license", "name":"Example"}]);
+        data.projection = Some(
+            serde_json::json!({"sourceLicenseFormat":"spdx", "hasExtractedLicensingInfos":extracted,
+            "componentMetadata":[{"componentId":"component_example", "licenseDeclared":"MIT", "licenseConcluded":"LicenseRef-Example", "licenseComments":"Reviewed by supplier", "copyrightText":"Copyright Example"}]}),
+        );
+        let output = generate(&data, ReportFormat::Spdx).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert_eq!(value["packages"][0]["licenseDeclared"], "MIT");
+        assert_eq!(
+            value["packages"][0]["licenseConcluded"],
+            "LicenseRef-Example"
+        );
+        assert_eq!(
+            value["packages"][0]["licenseComments"],
+            "Reviewed by supplier"
+        );
+        assert_eq!(value["packages"][0]["copyrightText"], "Copyright Example");
+        assert_eq!(value["hasExtractedLicensingInfos"], extracted);
+        assert!(generate(&data, ReportFormat::CycloneDx)
+            .unwrap()
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("license")));
+    }
+
+    #[test]
+    fn spdx_dependencies_reference_exported_package_ids_and_reject_dangling_edges() {
+        let mut data = advisory_report();
+        let mut child = data.components[0].clone();
+        child.id = oxaudit_domain::ComponentId::parse("component_child").unwrap();
+        child.name = "child".into();
+        data.components[0].depends_on.push(child.id.to_string());
+        data.components.push(child);
+        let output = generate(&data, ReportFormat::Spdx).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert!(value["relationships"].as_array().unwrap().contains(&serde_json::json!({
+            "spdxElementId":"SPDXRef-Package-0", "relationshipType":"DEPENDS_ON", "relatedSpdxElement":"SPDXRef-Package-1"
+        })));
+        for format in [ReportFormat::CycloneDx, ReportFormat::CycloneDxVex] {
+            let output = generate(&data, format).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+            assert_eq!(
+                value["dependencies"],
+                serde_json::json!([{"ref":"component_example", "dependsOn":["component_child"]}])
+            );
+        }
+        data.components.pop();
+        assert!(generate(&data, ReportFormat::Spdx).is_err());
+        assert!(generate(&data, ReportFormat::CycloneDx).is_err());
+    }
+
+    #[test]
+    fn sarif_encodes_paths_as_uri_references() {
+        let mut data = advisory_report();
+        data.observations[0].observation.kind = oxaudit_domain::ObservationKind::SourceWeakness;
+        data.observations[0].evidence[0].evidence =
+            Evidence::FileLocation(oxaudit_domain::FileLocationEvidence {
+                artifact_id: data.observations[0].observation.artifact_id.clone(),
+                normalized_path: "src/my file#1.ts".into(),
+                start_line: Some(5),
+                start_column: Some(2),
+                end_line: None,
+                end_column: None,
+                context_sha256: None,
+            });
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert_eq!(
+            value["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]
+                ["uri"],
+            "src/my%20file%231.ts"
+        );
+    }
+
+    #[test]
+    fn sarif_omits_absent_rule_ids_instead_of_emitting_null() {
+        let mut data = advisory_report();
+        data.observations[0].observation.kind = oxaudit_domain::ObservationKind::SourceWeakness;
+        data.observations[0].observation.rule_id = None;
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert!(value["runs"][0]["results"][0].get("ruleId").is_none());
+    }
+
+    #[test]
+    fn schemas_reject_malformed_nested_records() {
+        let cases = [
+            (
+                ReportFormat::Sarif,
+                serde_json::json!({"version":"2.1.0","runs":[{"tool":{"driver":{"name":"oxAudit"}},"results":[{"message":{"text":42}}]}]}),
+            ),
+            (
+                ReportFormat::CycloneDx,
+                serde_json::json!({"bomFormat":"CycloneDX","specVersion":"1.6","version":1,"components":[{"type":"library","name":"example","hashes":[{"alg":"SHA-256","content":12}]}]}),
+            ),
+            (
+                ReportFormat::CycloneDxVex,
+                serde_json::json!({"bomFormat":"CycloneDX","specVersion":"1.6","version":1,"vulnerabilities":[{"id":"CVE-2026-1234","analysis":{"state":"made-up"}}]}),
+            ),
+            (
+                ReportFormat::Spdx,
+                serde_json::json!({"spdxVersion":"SPDX-2.3","dataLicense":"CC0-1.0","SPDXID":"SPDXRef-DOCUMENT","name":"fixture","documentNamespace":"https://example.com/spdx/fixture","creationInfo":{"creators":["Tool: oxAudit"],"created":"2026-10-28T00:00:00Z"},"packages":[{"SPDXID":"SPDXRef-Package","name":"example","downloadLocation":"NOASSERTION","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER","referenceType":"purl","referenceLocator":42}]}]}),
+            ),
+            (
+                ReportFormat::OpenVex,
+                serde_json::json!({"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://example.com/vex/1","author":"oxAudit","timestamp":"2026-10-28T00:00:00Z","version":1,"statements":[{"vulnerability":{"name":"CVE-2026-1234"},"products":[{"@id":42}],"status":"affected","action_statement":"Review the advisory."}]}),
+            ),
+        ];
+        for (format, value) in cases {
+            assert!(
+                validate(&value, format).is_err(),
+                "{format:?} accepted malformed nested evidence"
+            );
+        }
+    }
+
+    #[test]
+    fn every_standard_writer_produces_structurally_valid_json() {
+        let mut data = advisory_report();
+        let mut source = data.observations[0].clone();
+        source.observation.id = oxaudit_domain::ObservationId::parse("observation_source").unwrap();
+        source.observation.kind = oxaudit_domain::ObservationKind::SourceWeakness;
+        source.observation.rule_id = Some("js-eval".into());
+        source.observation.summary = "Untrusted input reaches eval".into();
+        source.evidence.clear();
+        source.observation.evidence_ids.clear();
+        data.observations.push(source);
         for format in [
             ReportFormat::OxAuditJson,
             ReportFormat::Sarif,

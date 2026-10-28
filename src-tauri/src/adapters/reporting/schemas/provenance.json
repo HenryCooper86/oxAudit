@@ -1,0 +1,52 @@
+[
+  {
+    "file": "sarif-2.1.0.json",
+    "source": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/1742a253eb654bf8a4ed7c60eaef7412b2c23553/sarif-2.1/schema/sarif-schema-2.1.0.json",
+    "sha256": "c3b4bb2d6093897483348925aaa73af03b3e3f4bd4ca38cef26dcb4212a2682e"
+  },
+  {
+    "file": "LICENSE-sarif.md",
+    "source": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/1742a253eb654bf8a4ed7c60eaef7412b2c23553/LICENSE.md",
+    "sha256": "1ee371a08c4bc2a64cf4382990271676835c3d75bc984560a181de54c88471c5"
+  },
+  {
+    "file": "cyclonedx-1.6.json",
+    "source": "https://raw.githubusercontent.com/CycloneDX/specification/e833d732337dd33aceb45ff1991f896796f1e5e7/schema/bom-1.6.schema.json",
+    "sha256": "18f57f7482593bad9f21b4feed09084640cbeff419d62ad5090c5ceccca5b37d"
+  },
+  {
+    "file": "cyclonedx-spdx.json",
+    "source": "https://raw.githubusercontent.com/CycloneDX/specification/e833d732337dd33aceb45ff1991f896796f1e5e7/schema/spdx.schema.json",
+    "sha256": "c41917196639055e9f9670811bac23ef777732144f3ff5a2f39686f61580dbe6"
+  },
+  {
+    "file": "cyclonedx-jsf-0.82.json",
+    "source": "https://raw.githubusercontent.com/CycloneDX/specification/e833d732337dd33aceb45ff1991f896796f1e5e7/schema/jsf-0.82.schema.json",
+    "sha256": "8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae"
+  },
+  {
+    "file": "LICENSE-cyclonedx",
+    "source": "https://raw.githubusercontent.com/CycloneDX/specification/e833d732337dd33aceb45ff1991f896796f1e5e7/LICENSE",
+    "sha256": "6c29f22a4a7385285c6f579ec9f33c5e989f00739d6b257243a0b082ec9447ae"
+  },
+  {
+    "file": "spdx-2.3.json",
+    "source": "https://raw.githubusercontent.com/spdx/spdx-spec/aadf3b0b8dbbabdb4d880b0fc714255fea436ff7/schemas/spdx-schema.json",
+    "sha256": "239208b7ac287b3cf5d9a9af23f9d69863971102a5e1587a27a398b43490b89b"
+  },
+  {
+    "file": "LICENSE-spdx",
+    "source": "https://raw.githubusercontent.com/spdx/spdx-spec/aadf3b0b8dbbabdb4d880b0fc714255fea436ff7/LICENSE",
+    "sha256": "017e38491cccbd2bdb6da0a32a33db9ec245b5dab30fdcd09f2c742c975e5b35"
+  },
+  {
+    "file": "openvex-0.2.0.json",
+    "source": "https://raw.githubusercontent.com/openvex/spec/61b5f885d0f481f48683c93345e49ef1a6e9fdff/openvex_json_schema.json",
+    "sha256": "9373597734ed1d3ea5161a8b46d3866c4a8cfe76fd632fdd16aef01fb34b3238"
+  },
+  {
+    "file": "LICENSE-openvex",
+    "source": "https://raw.githubusercontent.com/openvex/spec/61b5f885d0f481f48683c93345e49ef1a6e9fdff/LICENSE",
+    "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+  }
+]

@@ -96,8 +96,8 @@ export const api = {
     invoke<HistoryScanResult>("scan_history_secrets", { path, validateSecrets, ...(operationId ? { operationId } : {}) }),
   inspectSourceProject: (path: string) =>
     invoke<ProjectContext>("inspect_source_project", { path }),
-  listSourceProjects: (limit = 12) =>
-    invoke<RecentProject[]>("list_source_projects", { limit }),
+  listSourceProjects: (limit = 12, offset = 0) =>
+    invoke<RecentProject[]>("list_source_projects", { limit, offset }),
   listSourceRuns: (projectId: string, limit = 50) =>
     invoke<ScanRunSummary[]>("list_source_runs", { projectId, limit }),
   compareSourceRuns: (currentRunId: string, baselineRunId: string, requireValidPolicy = false) =>

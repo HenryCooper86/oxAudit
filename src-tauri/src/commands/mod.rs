@@ -1061,9 +1061,17 @@ pub(crate) fn list_source_projects_inner(
     findings: &impl FindingsServiceAccess,
     limit: u32,
 ) -> Result<Vec<RecentProject>, CommandError> {
+    list_source_projects_page_inner(findings, limit, 0)
+}
+
+pub(crate) fn list_source_projects_page_inner(
+    findings: &impl FindingsServiceAccess,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<RecentProject>, CommandError> {
     findings
         .findings_service()?
-        .list_recent_projects(limit.clamp(1, 100) as usize)
+        .list_recent_projects_page(limit.clamp(1, 100) as usize, offset as usize)
 }
 
 pub(crate) fn list_source_runs_inner(
@@ -1137,8 +1145,12 @@ pub fn inspect_source_project(
 pub fn list_source_projects(
     state: State<'_, FindingsState>,
     limit: u32,
+    offset: Option<u32>,
 ) -> Result<Vec<RecentProject>, CommandError> {
-    list_source_projects_inner(&*state, limit)
+    match offset {
+        Some(offset) if offset > 0 => list_source_projects_page_inner(&*state, limit, offset),
+        _ => list_source_projects_inner(&*state, limit),
+    }
 }
 
 #[tauri::command]
@@ -1444,6 +1456,13 @@ mod source_finding_command_tests {
         let service = FindingsService::new(repository);
 
         assert_eq!(list_source_projects_inner(&service, 0).unwrap().len(), 1);
+        let later = super::list_source_projects_page_inner(&service, 50, 100).unwrap();
+        assert_eq!(later.len(), 2);
+        assert_eq!(later[0].project_id, "project-001");
+        assert_eq!(later[1].project_id, "project-000");
+        assert!(super::list_source_projects_page_inner(&service, 50, 102)
+            .unwrap()
+            .is_empty());
         assert_eq!(
             list_source_projects_inner(&service, u32::MAX)
                 .unwrap()

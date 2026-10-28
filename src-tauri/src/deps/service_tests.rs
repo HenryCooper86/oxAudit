@@ -436,7 +436,7 @@ async fn execute(
     provider: &dyn DependencyProviders,
     offline: bool,
     cancel: &AtomicBool,
-    events: &Events,
+    events: &dyn ScanEventSink,
 ) -> Result<DependencyScanResult, String> {
     scan(ScanRequest {
         project_root: root,
@@ -670,6 +670,48 @@ async fn malformed_osv_batch_cannot_complete_or_persist_a_receipt() {
 }
 
 #[tokio::test]
+async fn malformed_registry_inventory_cannot_complete_or_persist_a_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("packages.lock.json"),
+        r#"{
+        "version":1,"dependencies":{"net8.0":{
+            "Good":{"type":"Direct","resolved":"1.0.0"},
+            "Broken":{"type":"Transitive"}
+        }}
+    }"#,
+    )
+    .unwrap();
+    let repository = FindingsRepository::open_in_memory().unwrap();
+    let events = events();
+    let error = execute(
+        directory.path(),
+        &repository,
+        &provider(),
+        false,
+        &AtomicBool::new(false),
+        &events,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("incomplete"), "{error}");
+    assert!(repository
+        .provider_latest_snapshot("osv-query")
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        repository.canonical_list_runs(None, 10).unwrap()[0].state,
+        oxaudit_domain::RunState::Failed
+    );
+    assert!(!events
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event == "deps://done"));
+}
+
+#[tokio::test]
 async fn cancellation_before_discovery_and_after_provider_never_completes() {
     let directory = tempfile::tempdir().unwrap();
     project(directory.path());
@@ -706,6 +748,60 @@ async fn cancellation_before_discovery_and_after_provider_never_completes() {
             .is_none(),
         "cancelled provider work must stop before writing a receipt"
     );
+}
+
+#[tokio::test]
+async fn cancellation_during_final_stages_never_completes() {
+    struct CancelAtStage<'a> {
+        cancel: &'a AtomicBool,
+        stage: &'a str,
+        events: Events,
+    }
+    impl ScanEventSink for CancelAtStage<'_> {
+        fn emit(
+            &self,
+            event: &str,
+            payload: serde_json::Value,
+        ) -> Result<(), crate::findings::error::CommandError> {
+            if event == "run://event" && payload["event"]["state"] == self.stage {
+                self.cancel.store(true, Ordering::SeqCst);
+            }
+            self.events.emit(event, payload)
+        }
+    }
+    for stage in ["assessing", "persisting"] {
+        let directory = tempfile::tempdir().unwrap();
+        project(directory.path());
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        let cancel = AtomicBool::new(false);
+        let events = CancelAtStage {
+            cancel: &cancel,
+            stage,
+            events: events(),
+        };
+        let error = execute(
+            directory.path(),
+            &repository,
+            &provider(),
+            false,
+            &cancel,
+            &events,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(
+            repository.canonical_list_runs(None, 10).unwrap()[0].state,
+            oxaudit_domain::RunState::Cancelled
+        );
+        assert!(!events
+            .events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "deps://done"));
+    }
 }
 #[tokio::test]
 async fn projection_persistence_failure_is_not_reported_as_saved_or_done() {

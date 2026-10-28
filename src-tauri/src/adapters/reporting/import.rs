@@ -14,6 +14,11 @@ pub struct ImportedComponent {
     pub cpes: Vec<String>,
     pub aliases: Vec<String>,
     pub confidence: f32,
+    pub source_ref: Option<String>,
+    /// Indices in this analysis, resolved only for unambiguous source references.
+    pub depends_on: Vec<usize>,
+    pub license: Option<String>,
+    pub license_metadata: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,8 +121,17 @@ pub fn inspect(bytes: &[u8]) -> Result<ImportAnalysis, String> {
 }
 
 fn inspect_oxaudit(value: &Value, content_sha256: String) -> Result<ImportAnalysis, String> {
-    let mut unmapped = Vec::new();
-    let components = parse_components(
+    // Keep earlier mapping losses visible when a native export is used as an
+    // intermediary. These are imported limitations, not trusted review results.
+    let mut unmapped = value
+        .pointer("/projection/unmappedRecords")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut components = parse_components(
         value
             .get("components")
             .and_then(Value::as_array)
@@ -125,6 +139,55 @@ fn inspect_oxaudit(value: &Value, content_sha256: String) -> Result<ImportAnalys
         ComponentDialect::OxAudit,
         &mut unmapped,
     );
+    map_dependencies(
+        value,
+        ComponentDialect::OxAudit,
+        &mut components,
+        &mut unmapped,
+    );
+    if let Some(projection) = native_license_projection(value) {
+        let dialect = if projection["sourceLicenseFormat"] == "spdx" {
+            ComponentDialect::Spdx
+        } else {
+            ComponentDialect::CycloneDx
+        };
+        // Native exports retain rich source licenses in the projection, keyed
+        // by the previous canonical ID. Never join these records by name/purl.
+        let mut entries = std::collections::BTreeMap::new();
+        for entry in projection
+            .get("componentMetadata")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(id) = entry.get("componentId").and_then(Value::as_str) {
+                entries
+                    .entry(id)
+                    .and_modify(|value| *value = None)
+                    .or_insert(Some(entry));
+            }
+        }
+        let mut counts = std::collections::BTreeMap::new();
+        for component in value["components"].as_array().into_iter().flatten() {
+            if let Some(id) = source_reference(component, ComponentDialect::OxAudit) {
+                *counts.entry(id).or_insert(0) += 1;
+            }
+        }
+        for component in &mut components {
+            let Some(id) = component.source_ref.as_deref() else {
+                continue;
+            };
+            match entries.get(id) {
+                Some(Some(entry)) if counts.get(id) == Some(&1) => {
+                    component.license_metadata = license_metadata(entry, dialect);
+                }
+                Some(_) => unmapped.push(format!(
+                    "native license metadata for {id:?} is ambiguous and was not mapped"
+                )),
+                None => (),
+            }
+        }
+    }
     let finding_records = value
         .get("observations")
         .and_then(Value::as_array)
@@ -144,6 +207,19 @@ fn inspect_oxaudit(value: &Value, content_sha256: String) -> Result<ImportAnalys
     })
 }
 
+/// Recognized source-license projection from a native inventory export. These
+/// records remain imported evidence; they do not create local review decisions.
+pub fn native_license_projection(document: &Value) -> Option<&Value> {
+    let projection = document.get("projection")?;
+    matches!(
+        projection
+            .get("sourceLicenseFormat")
+            .and_then(Value::as_str),
+        Some("spdx" | "cyclonedx")
+    )
+    .then_some(projection)
+}
+
 fn inspect_cyclonedx(value: &Value, content_sha256: String) -> Result<ImportAnalysis, String> {
     let spec = value
         .get("specVersion")
@@ -155,11 +231,24 @@ fn inspect_cyclonedx(value: &Value, content_sha256: String) -> Result<ImportAnal
         ));
     }
     let mut unmapped = Vec::new();
-    let components = value
+    let mut components = value
         .get("components")
         .and_then(Value::as_array)
         .map(|items| parse_components(items, ComponentDialect::CycloneDx, &mut unmapped))
         .unwrap_or_default();
+    if let Some(root) = value.pointer("/metadata/component") {
+        components.extend(parse_components(
+            std::slice::from_ref(root),
+            ComponentDialect::CycloneDx,
+            &mut unmapped,
+        ));
+    }
+    map_dependencies(
+        value,
+        ComponentDialect::CycloneDx,
+        &mut components,
+        &mut unmapped,
+    );
     let vulnerabilities = value
         .get("vulnerabilities")
         .and_then(Value::as_array)
@@ -202,7 +291,13 @@ fn inspect_spdx(value: &Value, content_sha256: String) -> Result<ImportAnalysis,
         .and_then(Value::as_array)
         .ok_or_else(|| "SPDX packages must be an array".to_string())?;
     let mut unmapped = Vec::new();
-    let components = parse_components(packages, ComponentDialect::Spdx, &mut unmapped);
+    let mut components = parse_components(packages, ComponentDialect::Spdx, &mut unmapped);
+    map_dependencies(
+        value,
+        ComponentDialect::Spdx,
+        &mut components,
+        &mut unmapped,
+    );
     Ok(ImportAnalysis {
         format: "spdx",
         media_type: "application/spdx+json",
@@ -614,16 +709,22 @@ fn parse_components(
     dialect: ComponentDialect,
     unmapped: &mut Vec<String>,
 ) -> Vec<ImportedComponent> {
-    values
-        .iter()
-        .enumerate()
-        .filter_map(|(index, value)| {
-            parse_component(value, dialect).or_else(|| {
-                unmapped.push(format!("component/package {index} has no usable name"));
-                None
-            })
-        })
-        .collect()
+    let mut components = Vec::new();
+    for (index, value) in values.iter().enumerate() {
+        if let Some(component) = parse_component(value, dialect) {
+            components.push(component);
+        } else {
+            unmapped.push(format!("component/package {index} has no usable name"));
+        }
+        // A CycloneDX component may contain a complete nested inventory. A
+        // malformed parent must not hide independently usable descendants.
+        if matches!(dialect, ComponentDialect::CycloneDx) {
+            if let Some(children) = value.get("components").and_then(Value::as_array) {
+                components.extend(parse_components(children, dialect, unmapped));
+            }
+        }
+    }
+    components
 }
 
 fn parse_component(value: &Value, dialect: ComponentDialect) -> Option<ImportedComponent> {
@@ -714,7 +815,224 @@ fn parse_component(value: &Value, dialect: ComponentDialect) -> Option<ImportedC
         cpes,
         aliases,
         confidence,
+        source_ref: source_reference(value, dialect),
+        depends_on: Vec::new(),
+        license: match dialect {
+            ComponentDialect::OxAudit => string_field(value, "license"),
+            ComponentDialect::Spdx => string_field(value, "licenseDeclared"),
+            ComponentDialect::CycloneDx => value
+                .get("licenses")
+                .and_then(Value::as_array)
+                .filter(|licenses| licenses.len() == 1)
+                .and_then(|licenses| {
+                    string_field(&licenses[0], "expression").or_else(|| {
+                        licenses[0].get("license").and_then(|license| {
+                            string_field(license, "id").or_else(|| string_field(license, "name"))
+                        })
+                    })
+                }),
+        },
+        license_metadata: license_metadata(value, dialect),
     })
+}
+
+fn license_metadata(value: &Value, dialect: ComponentDialect) -> Value {
+    let fields: &[&str] = match dialect {
+        ComponentDialect::CycloneDx => &["licenses"],
+        ComponentDialect::Spdx => &[
+            "licenseDeclared",
+            "licenseConcluded",
+            "licenseInfoFromFiles",
+            "licenseComments",
+            "copyrightText",
+            "attributionTexts",
+        ],
+        ComponentDialect::OxAudit => &["license"],
+    };
+    Value::Object(
+        fields
+            .iter()
+            .filter_map(|key| {
+                value
+                    .get(*key)
+                    .map(|value| ((*key).to_string(), value.clone()))
+            })
+            .collect(),
+    )
+}
+
+fn source_reference(value: &Value, dialect: ComponentDialect) -> Option<String> {
+    let key = match dialect {
+        ComponentDialect::CycloneDx => "bom-ref",
+        ComponentDialect::Spdx => "SPDXID",
+        ComponentDialect::OxAudit => "id",
+    };
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn map_dependencies(
+    document: &Value,
+    dialect: ComponentDialect,
+    components: &mut [ImportedComponent],
+    unmapped: &mut Vec<String>,
+) {
+    use std::collections::{BTreeMap, BTreeSet};
+    // Count source references before filtering malformed components: even an
+    // unusable record makes a duplicate reference ambiguous.
+    fn count_refs(value: &Value, dialect: ComponentDialect, counts: &mut BTreeMap<String, usize>) {
+        if let Some(reference) = source_reference(value, dialect) {
+            *counts.entry(reference).or_default() += 1;
+        }
+        if matches!(dialect, ComponentDialect::CycloneDx) {
+            if let Some(children) = value.get("components").and_then(Value::as_array) {
+                for child in children {
+                    count_refs(child, dialect, counts);
+                }
+            }
+        }
+    }
+    let mut counts = BTreeMap::new();
+    let component_key = if matches!(dialect, ComponentDialect::Spdx) {
+        "packages"
+    } else {
+        "components"
+    };
+    if let Some(values) = document.get(component_key).and_then(Value::as_array) {
+        for value in values {
+            count_refs(value, dialect, &mut counts);
+        }
+    }
+    if matches!(dialect, ComponentDialect::CycloneDx) {
+        if let Some(root) = document.pointer("/metadata/component") {
+            count_refs(root, dialect, &mut counts);
+        }
+    }
+    for (reference, count) in &counts {
+        if *count > 1 {
+            unmapped.push(format!("duplicate component reference {reference:?}; dependent relationships are ambiguous and were not mapped"));
+        }
+    }
+    let refs = components
+        .iter()
+        .enumerate()
+        .filter_map(|(index, component)| {
+            let reference = component.source_ref.as_ref()?;
+            (counts.get(reference) == Some(&1)).then(|| (reference.clone(), index))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut edges = Vec::<(String, String)>::new();
+    match dialect {
+        ComponentDialect::CycloneDx => {
+            if let Some(dependencies) = document.get("dependencies") {
+                if let Some(dependencies) = dependencies.as_array() {
+                    let mut sources = BTreeSet::new();
+                    for (index, dependency) in dependencies.iter().enumerate() {
+                        let Some(source) = dependency.get("ref").and_then(Value::as_str) else {
+                            unmapped.push(format!("dependency {index} has no string ref"));
+                            continue;
+                        };
+                        if !sources.insert(source) {
+                            unmapped.push(format!("duplicate dependency record for {source:?}; valid edges were merged"));
+                        }
+                        if !refs.contains_key(source) {
+                            unmapped.push(format!(
+                                "dependency source {source:?} is dangling or ambiguous"
+                            ));
+                        }
+                        if let Some(targets) = dependency.get("dependsOn") {
+                            if let Some(targets) = targets.as_array() {
+                                for target in targets {
+                                    if let Some(target) = target.as_str() {
+                                        edges.push((source.into(), target.into()));
+                                    } else {
+                                        unmapped.push(format!("dependency {source:?} has a non-string dependsOn reference"));
+                                    }
+                                }
+                            } else {
+                                unmapped.push(format!(
+                                    "dependency {source:?} dependsOn is not an array"
+                                ));
+                            }
+                        }
+                        if dependency.get("provides").is_some() {
+                            unmapped.push(format!("dependency {source:?} provides relationships have no canonical equivalent"));
+                        }
+                    }
+                } else {
+                    unmapped.push("CycloneDX dependencies is not an array".into());
+                }
+            }
+        }
+        ComponentDialect::Spdx => {
+            if let Some(relationships) = document.get("relationships") {
+                if let Some(relationships) = relationships.as_array() {
+                    for (index, relationship) in relationships.iter().enumerate() {
+                        let kind = relationship.get("relationshipType").and_then(Value::as_str);
+                        let source = relationship.get("spdxElementId").and_then(Value::as_str);
+                        let target = relationship
+                            .get("relatedSpdxElement")
+                            .and_then(Value::as_str);
+                        match (kind, source, target) {
+                            (Some("DEPENDS_ON"), Some(source), Some(target)) => edges.push((source.into(), target.into())),
+                            (Some("DEPENDENCY_OF"), Some(source), Some(target)) => edges.push((target.into(), source.into())),
+                            // Document membership is not a dependency assertion.
+                            (Some("DESCRIBES"), Some("SPDXRef-DOCUMENT"), Some(_)) => (),
+                            _ => unmapped.push(format!("SPDX relationship {index} ({}) has no canonical dependency mapping", kind.unwrap_or("missing type"))),
+                        }
+                    }
+                } else {
+                    unmapped.push("SPDX relationships is not an array".into());
+                }
+            }
+        }
+        ComponentDialect::OxAudit => {
+            for component in document
+                .get("components")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(targets) = component.get("dependsOn") {
+                    if let (Some(source), Some(targets)) =
+                        (source_reference(component, dialect), targets.as_array())
+                    {
+                        for target in targets {
+                            if let Some(target) = target.as_str() {
+                                edges.push((source.clone(), target.into()));
+                            } else {
+                                unmapped.push(format!(
+                                    "dependency {source:?} has a non-string reference"
+                                ));
+                            }
+                        }
+                    } else {
+                        unmapped.push("component dependencies have no source id or array".into());
+                    }
+                }
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for (source, target) in edges {
+        match (refs.get(&source), refs.get(&target)) {
+            (Some(&source_index), Some(&target_index)) => {
+                if seen.insert((source_index, target_index)) {
+                    components[source_index].depends_on.push(target_index);
+                } else {
+                    unmapped.push(format!(
+                        "duplicate dependency edge {source:?} -> {target:?}; retained once"
+                    ));
+                }
+            }
+            _ => unmapped.push(format!(
+                "dependency {source:?} -> {target:?} is dangling or ambiguous and was not mapped"
+            )),
+        }
+    }
 }
 
 fn string_field(value: &Value, key: &str) -> Option<String> {
@@ -731,6 +1049,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cyclonedx_import_retains_nested_components_even_under_an_unmapped_parent() {
+        let analysis = inspect(br#"{
+          "bomFormat":"CycloneDX","specVersion":"1.6",
+          "components":[
+            {"bom-ref":"parent","name":"parent","components":[
+              {"bom-ref":"child","name":"child","version":"2","components":[
+                {"bom-ref":"leaf","name":"leaf","version":"3"}
+              ]}
+            ]},
+            {"bom-ref":"nameless","components":[{"bom-ref":"orphan","name":"orphan"}]}
+          ],
+          "dependencies":[{"ref":"parent","dependsOn":["child"]},{"ref":"child","dependsOn":["leaf"]}]
+        }"#).unwrap();
+        assert_eq!(
+            analysis
+                .components
+                .iter()
+                .map(|component| component.name.as_str())
+                .collect::<Vec<_>>(),
+            ["parent", "child", "leaf", "orphan"]
+        );
+        assert_eq!(analysis.unmapped_records.len(), 1);
+        assert_eq!(analysis.components[0].depends_on, [1]);
+        assert_eq!(analysis.components[1].depends_on, [2]);
+    }
+
+    #[test]
     fn cyclonedx_inventory_and_vex_are_detected_without_applying_reviews() {
         let bytes = br#"{
           "bomFormat":"CycloneDX","specVersion":"1.6",
@@ -744,6 +1089,87 @@ mod tests {
         assert_eq!(analysis.external_claims[0].trust, "external-unverified");
         assert!(analysis.can_import_inventory());
         assert!(analysis.warnings[0].contains("never overwrite"));
+    }
+
+    #[test]
+    fn dependency_mapping_refuses_ambiguous_and_dangling_refs_and_deduplicates_edges() {
+        let analysis = inspect(br#"{
+            "bomFormat":"CycloneDX","specVersion":"1.6",
+            "metadata":{"component":{"bom-ref":"root","name":"root"}},
+            "components":[{"bom-ref":"child","name":"child"},{"bom-ref":"dup","name":"a"},{"bom-ref":"dup"}],
+            "dependencies":[
+                {"ref":"root","dependsOn":["child","child","missing","dup"]},
+                {"ref":"root","dependsOn":["child"]},
+                {"ref":"missing","dependsOn":[]}
+            ]
+        }"#).unwrap();
+        let root = analysis
+            .components
+            .iter()
+            .find(|component| component.name == "root")
+            .unwrap();
+        assert_eq!(root.depends_on, [0]);
+        for diagnostic in [
+            "duplicate component reference",
+            "duplicate dependency edge",
+            "duplicate dependency record",
+            "dangling or ambiguous",
+            "no usable name",
+        ] {
+            assert!(
+                analysis
+                    .unmapped_records
+                    .iter()
+                    .any(|record| record.contains(diagnostic)),
+                "missing {diagnostic}"
+            );
+        }
+    }
+
+    #[test]
+    fn spdx_dependencies_preserve_direction_and_license_assertions() {
+        let analysis = inspect(br#"{
+            "spdxVersion":"SPDX-2.3","documentNamespace":"https://example.test/bom",
+            "packages":[
+                {"SPDXID":"SPDXRef-a","name":"a","licenseDeclared":"MIT OR Apache-2.0","licenseConcluded":"NOASSERTION"},
+                {"SPDXID":"SPDXRef-b","name":"b","licenseDeclared":"NONE"},
+                {"SPDXID":"SPDXRef-c","name":"c","licenseConcluded":"BSD-3-Clause"}
+            ],
+            "relationships":[
+                {"spdxElementId":"SPDXRef-a","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-b"},
+                {"spdxElementId":"SPDXRef-c","relationshipType":"DEPENDENCY_OF","relatedSpdxElement":"SPDXRef-b"},
+                {"spdxElementId":"SPDXRef-a","relationshipType":"DEPENDS_ON","relatedSpdxElement":"SPDXRef-missing"},
+                {"spdxElementId":"SPDXRef-a","relationshipType":"OPTIONAL_DEPENDENCY_OF","relatedSpdxElement":"SPDXRef-b"}
+            ]
+        }"#).unwrap();
+        assert_eq!(analysis.components[0].depends_on, [1]);
+        assert_eq!(analysis.components[1].depends_on, [2]);
+        assert_eq!(
+            analysis.components[0].license.as_deref(),
+            Some("MIT OR Apache-2.0")
+        );
+        assert_eq!(analysis.components[1].license.as_deref(), Some("NONE"));
+        // A conclusion must never be relabeled as a declaration.
+        assert_eq!(analysis.components[2].license, None);
+        assert_eq!(
+            analysis.components[2].license_metadata["licenseConcluded"],
+            "BSD-3-Clause"
+        );
+        assert_eq!(analysis.unmapped_records.len(), 2);
+    }
+
+    #[test]
+    fn native_import_remaps_forward_references_and_cycles_without_purl_guessing() {
+        let analysis = inspect(br#"{
+            "schemaVersion":1,"run":{},"components":[
+                {"id":"old-a","name":"same","purl":"pkg:generic/same@1","license":"MIT","dependsOn":["old-b"]},
+                {"id":"old-b","name":"same","purl":"pkg:generic/same@1","dependsOn":["old-a"]}
+            ]
+        }"#).unwrap();
+        assert_eq!(analysis.components[0].depends_on, [1]);
+        assert_eq!(analysis.components[1].depends_on, [0]);
+        assert_eq!(analysis.components[0].license.as_deref(), Some("MIT"));
+        assert!(analysis.unmapped_records.is_empty());
     }
 
     #[test]

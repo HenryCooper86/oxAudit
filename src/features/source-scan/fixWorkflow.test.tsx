@@ -55,6 +55,24 @@ test("recheck retains original evidence and links covered observation using orig
   expect(screen.getByText("eval(input)", { selector: "pre" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Open recheck run next" })).toBeEnabled();
 });
+test("automatic project hydration preserves the original and outcome after recheck becomes the latest saved run", async () => {
+  let latest = "s";
+  vi.mocked(api.inspectSourceProject).mockImplementation(async path => ({ ...projectContext(path), lastCompletedRunId: latest }));
+  vi.mocked(api.loadSourceRun).mockImplementation(async id => id === "next" ? receipt.run : original);
+  vi.spyOn(api, "recheckSourceRun").mockImplementation(async () => {
+    latest = "next";
+    return receipt;
+  });
+  vi.spyOn(api, "compareSourceRuns").mockResolvedValue([{ ...finding, diffStatus: "resolved", resolvedByRunId: "next" }]);
+  render(<SourceScanPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Recheck finding" }));
+  await screen.findByText(/No longer detected in the covered file/);
+  // Allow the post-scan target hydration debounce and its saved-run load to settle.
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 450)); });
+  expect(screen.getByLabelText("Finding recheck outcome")).toHaveTextContent("No longer detected in the covered file");
+  expect(screen.getByText("eval(input)", { selector: "pre" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Open recheck run next" })).toBeEnabled();
+});
 test("recheck respects shared scan ownership", async () => {
   acquireScan("project", "/other", "Scanning source");
   render(<SourceScanPage />);

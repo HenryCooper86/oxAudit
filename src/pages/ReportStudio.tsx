@@ -120,7 +120,7 @@ export function ReportStudioPage(): JSX.Element {
       if (!destination || requestedRevision !== revision.current) return;
       const receipt = await api.writeComplianceReport(request, destination);
       if (mounted.current) {
-        setSavedPath(receipt.outputPath);
+        if (requestedRevision === revision.current) setSavedPath(receipt.outputPath);
         push("success", `Saved ${receipt.outputPath} · SHA-256 ${receipt.contentSha256.slice(0, 12)}…`);
       }
     } catch (cause) {

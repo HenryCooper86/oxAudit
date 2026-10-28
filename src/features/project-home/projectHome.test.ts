@@ -231,6 +231,7 @@ test("a failed retry preserves last results without upgrading failed state to co
   await startProjectCheck("/real/project", settings);
   const check = useScanWorkStore.getState().check!;
   expect(check.status).toBe("failed");
+  expect(check.source).toBe("failed");
   expect(check.sourceResult?.runId).toBe("s");
   expect(check.dependencyResult).toBeDefined();
   expect(check.error).toContain("disk unavailable");

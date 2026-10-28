@@ -4,7 +4,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import { save } from "../lib/dialog";
 import { useToastStore } from "../lib/stores";
-import type { ComplianceAssessment, ComplianceReportPreview } from "../lib/types";
+import type { ComplianceAssessment, ComplianceReportPreview, ComplianceReportReceipt } from "../lib/types";
 import { ReportStudioPage } from "./ReportStudio";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -89,6 +89,33 @@ test("server write failures are visible and a retry announces the saved path", a
   expect(screen.queryByText("Destination directory does not exist")).not.toBeInTheDocument();
   expect(screen.getByRole("status")).toHaveTextContent("/reports/current.pdf");
 });
+
+test.each(["assessment", "metadata", "A to B to A"])(
+  "a submitted save does not mark changed %s inputs as saved", async (change) => {
+    const pending = deferred<ComplianceReportReceipt>();
+    vi.mocked(save).mockResolvedValue("/reports/a.pdf");
+    vi.mocked(api.writeComplianceReport).mockReturnValueOnce(pending.promise);
+    render(<ReportStudioPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Save…" }));
+    await waitFor(() => expect(api.writeComplianceReport).toHaveBeenCalledTimes(1));
+    const [request] = vi.mocked(api.writeComplianceReport).mock.calls[0];
+    if (change === "metadata") {
+      fireEvent.change(screen.getByLabelText("Report title"), { target: { value: "Unsaved title" } });
+    } else {
+      await userEvent.selectOptions(screen.getByLabelText("Durable assessment"), "B");
+      if (change === "A to B to A") await userEvent.selectOptions(screen.getByLabelText("Durable assessment"), "A");
+    }
+    await act(async () => pending.resolve({
+      id: "receipt-a", ...request, outputPath: "/reports/a.pdf",
+      contentSha256: "abcdef0123456789", createdAtMs: 1,
+    }));
+    expect(screen.queryByText("Saved report to /reports/a.pdf")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save…" })).toBeEnabled();
+    expect(useToastStore.getState().toasts).toContainEqual(expect.objectContaining({
+      kind: "success", message: expect.stringContaining("/reports/a.pdf"),
+    }));
+  },
+);
 
 test.each(["assessment", "format", "metadata", "disclosure", "A to B to A"])(
   "a pending preview cannot publish after changing %s", async (change) => {

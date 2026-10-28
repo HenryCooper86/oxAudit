@@ -160,6 +160,14 @@ pub fn run() {
                     };
                     let due = crate::schedule_store::due(&schedules, chrono::Utc::now());
                     for schedule in due {
+                        let schedule = match store.current_due(&schedule.project_id, chrono::Utc::now()) {
+                            Ok(Some(current)) => current,
+                            Ok(None) => continue,
+                            Err(error) => {
+                                tracing::warn!(%error, "scheduled rescan skipped: schedule could not be revalidated");
+                                continue;
+                            }
+                        };
                         tracing::info!(
                             project = %schedule.project_id,
                             "scheduled rescan starting"

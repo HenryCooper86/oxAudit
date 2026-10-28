@@ -250,6 +250,7 @@ export async function startProjectCheck(
     source: "pending",
     dependencies: "pending",
   };
+  let receivedSourceResult = false;
   const publish = () => {
     const state = useScanWorkStore.getState();
     if (state.active?.id !== id && state.checkOwnerId !== id) return;
@@ -316,6 +317,7 @@ export async function startProjectCheck(
     result.source = "running";
     stage("Scanning source", true);
     result.sourceResult = await api.scanProject(options, scanOperationId(id));
+    receivedSourceResult = true;
     assertCurrent();
     if (result.sourceResult.status !== "completed")
       throw new Error(
@@ -354,7 +356,7 @@ export async function startProjectCheck(
     result.status = interrupted ? "incomplete" : cancelled ? "cancelled" : "failed";
     result.error = normalizeCommandError(error).message;
     if (result.source === "running")
-      result.source = result.sourceResult?.status === "completed" ? (result.sourceResult.persistence.status === "saved" ? "completed" : "completed, not saved") : interrupted ? "interrupted" : cancelled ? "cancelled" : "failed";
+      result.source = receivedSourceResult && result.sourceResult?.status === "completed" ? (result.sourceResult.persistence.status === "saved" ? "completed" : "completed, not saved") : interrupted ? "interrupted" : cancelled ? "cancelled" : "failed";
     if (result.dependencies === "running")
       result.dependencies = interrupted ? "interrupted" : cancelled ? "cancelled" : "failed";
     else if (result.dependencies === "pending") result.dependencies = "not run";

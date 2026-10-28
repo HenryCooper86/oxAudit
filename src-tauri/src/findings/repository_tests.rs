@@ -1082,6 +1082,37 @@ fn recent_projects_report_latest_completed_open_counts() {
 }
 
 #[test]
+fn recent_project_pages_reach_all_projects_with_stable_tie_ordering() {
+    let repository = FindingsRepository::open_in_memory().unwrap();
+    for index in 0..123 {
+        repository
+            .upsert_project(
+                &format!("project-{index:03}"),
+                &format!("/project/{index}"),
+                &format!("Project {index}"),
+                "2026-10-28T00:00:00Z",
+                None,
+            )
+            .unwrap();
+    }
+    let mut ids = Vec::new();
+    for offset in [0, 50, 100] {
+        let page = repository.list_recent_projects_page(50, offset).unwrap();
+        ids.extend(page.into_iter().map(|project| project.project_id));
+    }
+    assert_eq!(
+        ids,
+        (0..123)
+            .map(|index| format!("project-{index:03}"))
+            .collect::<Vec<_>>()
+    );
+    assert!(repository
+        .list_recent_projects_page(50, 123)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn recent_open_counts_exclude_nonproduction_candidates_but_include_confirmed() {
     let repository = FindingsRepository::open_in_memory().expect("open repository");
     prepare_run(&repository, "scope-count-run");

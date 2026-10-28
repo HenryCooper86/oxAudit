@@ -932,6 +932,9 @@ fn dependency_runs_are_durable_discoverable_and_exportable() {
         "openvex",
         "cyclonedx-vex",
     ] {
+        // This fixture has no advisories. OpenVEX requires a nonempty set of
+        // statements; refuse that format rather than emitting an invalid file.
+        let expected_code = if format == "openvex" { 3 } else { 0 };
         let exported = run(&[
             "export",
             "--db",
@@ -943,11 +946,17 @@ fn dependency_runs_are_durable_discoverable_and_exportable() {
         ]);
         assert_eq!(
             code(&exported),
-            0,
+            expected_code,
             "{format}: {}",
             String::from_utf8_lossy(&exported.stderr)
         );
-        let _: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+        if format == "openvex" {
+            assert!(String::from_utf8_lossy(&exported.stderr)
+                .contains("at least one advisory statement"));
+            assert!(exported.stdout.is_empty());
+        } else {
+            let _: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+        }
         let direct = run(&[
             "deps",
             &project.path().to_string_lossy(),
@@ -957,11 +966,18 @@ fn dependency_runs_are_durable_discoverable_and_exportable() {
         ]);
         assert_eq!(
             code(&direct),
-            0,
+            expected_code,
             "{format}: {}",
             String::from_utf8_lossy(&direct.stderr)
         );
-        let _: serde_json::Value = serde_json::from_slice(&direct.stdout).unwrap();
+        if format == "openvex" {
+            assert!(
+                String::from_utf8_lossy(&direct.stderr).contains("at least one advisory statement")
+            );
+            assert!(direct.stdout.is_empty());
+        } else {
+            let _: serde_json::Value = serde_json::from_slice(&direct.stdout).unwrap();
+        }
     }
 }
 

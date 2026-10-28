@@ -699,9 +699,15 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             .expect("managed dependency run exists")
             .transition(oxaudit_domain::RunState::Persisting, epoch_millis())
             .map_err(|error| error.to_string())?;
+        if request.cancel.load(Ordering::SeqCst) {
+            return Err("dependency scan cancelled".into());
+        }
         request.repository
             .canonical_save_projection(&run_id, "dependencies", 1, &result)
             .map_err(|error| error.to_string())?;
+        if request.cancel.load(Ordering::SeqCst) {
+            return Err("dependency scan cancelled".into());
+        }
         Ok(result)
     }
     .await;

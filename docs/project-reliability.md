@@ -1,5 +1,12 @@
 # Scan reliability and recovery
 
+Portfolio pages through saved projects in groups of 50 in both desktop and
+server modes. Older projects retain their schedule controls. A failed initial
+or later page can be retried in place; a failed later page also permits returning
+to the previous page. Scheduled entries are rechecked immediately before launch,
+so disabling or removing an entry while an earlier scan runs takes effect for
+the queued entry.
+
 [Validation evidence and limits](project-reliability-validation.md) records the
 automated checks, live lifecycle probes and measured workloads for this change.
 

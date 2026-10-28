@@ -138,7 +138,7 @@ pub(super) fn sarif_results(data: &ReportData) -> Result<Vec<serde_json::Value>,
                 "ruleId": advisory.advisory_id,
                 "level": super::sarif_level(severity),
                 "message": {"text": format!("{} {}: {}", component.name, component.version.as_deref().unwrap_or("unknown"), record.observation.summary)},
-                "locations": [{"physicalLocation": {"artifactLocation": {"uri": artifact.location.normalized_path}}}],
+                "locations": [{"physicalLocation": {"artifactLocation": {"uri": super::sarif_artifact_uri(&artifact.location.normalized_path)}}}],
                 "properties": {
                     "observationId": record.observation.id,
                     "componentId": component.id,

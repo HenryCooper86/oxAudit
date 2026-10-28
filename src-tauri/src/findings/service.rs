@@ -442,7 +442,19 @@ impl FindingsService {
     }
 
     pub fn list_recent_projects(&self, limit: usize) -> Result<Vec<RecentProject>, CommandError> {
-        let mut projects = self.repository.list_recent_projects(limit)?;
+        self.list_recent_projects_page(limit, 0)
+    }
+
+    pub fn list_recent_projects_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RecentProject>, CommandError> {
+        let mut projects = if offset == 0 {
+            self.repository.list_recent_projects(limit)?
+        } else {
+            self.repository.list_recent_projects_page(limit, offset)?
+        };
         let now = Utc::now();
         for project in &mut projects {
             // A missing project is distinct from an accessible project with no policy.

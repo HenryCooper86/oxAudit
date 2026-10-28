@@ -271,8 +271,12 @@ export function SourceScanPage(): JSX.Element {
       const check = useScanWorkStore.getState().check;
       const unsaved = run?.summary.path === candidate && run.persistence.status === "notSaved" && (!handoffRunId || handoffRunId === run.runId) ? run
         : check?.path === candidate && check.sourceResult?.runId === handoffRunId && check.sourceResult?.persistence.status === "notSaved" ? check.sourceResult : null;
+      // A recheck becomes the latest completed run, but its assessment belongs
+      // beside the original evidence until the reviewer explicitly opens it.
+      const recheckOriginalId = recheck?.originalRunId === run?.runId && run?.summary.path === candidate
+        ? run.runId : undefined;
       void loaderRef.current
-        .load(candidate, unsaved ? undefined : handoffRunId)
+        .load(candidate, unsaved ? undefined : handoffRunId ?? recheckOriginalId)
         .then(async (loaded) => {
           if (disposed || !loaded) return;
           setProject(loaded.context);

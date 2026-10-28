@@ -168,6 +168,14 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
             };
             let due = crate::schedule_store::due(&schedules, chrono::Utc::now());
             for schedule in due {
+                let schedule = match store.current_due(&schedule.project_id, chrono::Utc::now()) {
+                    Ok(Some(current)) => current,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(%error, "scheduled rescan skipped: schedule could not be revalidated");
+                        continue;
+                    }
+                };
                 tracing::info!(project = %schedule.project_id, "scheduled rescan starting");
                 let hub_events = ticker_ctx.events();
                 let hub = ticker_ctx.hub.clone();
@@ -434,6 +442,41 @@ mod tests {
         assert!(!token_matches("secret-toke", "secret-token"));
         assert!(!token_matches("secret-token-longer", "secret-token"));
         assert!(!token_matches("", "secret-token"));
+    }
+
+    #[tokio::test]
+    async fn project_listing_dispatch_preserves_offset_and_legacy_default() {
+        let (ctx, _directory) = test_context();
+        let repository = ctx.findings.service().unwrap().repository();
+        for index in 0..55 {
+            repository
+                .upsert_project(
+                    &format!("project-{index:03}"),
+                    &format!("/unavailable/{index}"),
+                    "Fixture",
+                    "2026-10-28T00:00:00Z",
+                    None,
+                )
+                .unwrap();
+        }
+        let first = dispatch::dispatch(
+            &ctx,
+            "list_source_projects",
+            serde_json::json!({"limit": 50}),
+        )
+        .await
+        .unwrap();
+        let next = dispatch::dispatch(
+            &ctx,
+            "list_source_projects",
+            serde_json::json!({"limit": 50, "offset": 50}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.as_array().unwrap().len(), 50);
+        assert_eq!(first[0]["projectId"], "project-000");
+        assert_eq!(next.as_array().unwrap().len(), 5);
+        assert_eq!(next[0]["projectId"], "project-050");
     }
 
     #[test]

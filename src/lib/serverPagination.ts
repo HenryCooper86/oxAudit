@@ -10,14 +10,16 @@ export function useServerPage<T, P extends ResultPage<T> = ResultPage<T>>(
   totalHint = 0, revision = 0, pageSize = 50, scope = "",
 ) {
   const key = JSON.stringify([runId, query, revision, pageSize, scope]);
-  const [position, setPosition] = useState({ key, generation: 0, page: 0, retry: 0 });
+  const [position, setPosition] = useState({ key, generation: 0, page: 0, retry: 0, visit: 0 });
   let current = position;
   if (position.key !== key) {
-    current = { key, generation: position.generation + 1, page: 0, retry: 0 };
+    current = { key, generation: position.generation + 1, page: 0, retry: 0, visit: 0 };
     setPosition(current);
   }
-  const { generation, page, retry } = current;
-  const request = JSON.stringify([key, generation, page, retry]);
+  const { generation, page, retry, visit } = current;
+  // Returning to the same offset is a new request, even if the intervening
+  // page never settled. Keep totals for the query, but do not revive old rows.
+  const request = JSON.stringify([key, generation, page, retry, visit]);
   const [response, setResponse] = useState<{ request: string; key: string; generation: number; total?: number; data?: P; error?: string } | null>(null);
   useEffect(() => {
     if (!runId) return;
@@ -43,13 +45,16 @@ export function useServerPage<T, P extends ResultPage<T> = ResultPage<T>>(
   const total = owned?.total ?? totalHint;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const boundedPage = Math.min(page, pageCount - 1);
-  if (boundedPage !== page) setPosition({ ...current, page: boundedPage });
+  if (boundedPage !== page) setPosition({ ...current, page: boundedPage, visit: visit + 1 });
   const start = boundedPage * pageSize;
   return {
     page: boundedPage, pageCount, pageSize, total, start, end: Math.min(start + pageSize, total),
     items: boundedPage === page ? data?.items ?? [] : [], data: boundedPage === page ? data : undefined,
     loading: Boolean(runId && !settled), error: settled?.error ?? null,
-    setPage: (next: number) => { setPosition({ ...current, page: Math.max(0, Math.min(pageCount - 1, Math.trunc(next) || 0)) }); },
+    setPage: (next: number) => {
+      const nextPage = Math.max(0, Math.min(pageCount - 1, Math.trunc(next) || 0));
+      if (nextPage !== page) setPosition({ ...current, page: nextPage, visit: visit + 1 });
+    },
     retry: () => setPosition({ ...current, retry: retry + 1 }),
   };
 }

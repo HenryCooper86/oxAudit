@@ -85,11 +85,14 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
             struct Args {
                 #[serde(default = "default_u32_limit")]
                 limit: u32,
+                #[serde(default)]
+                offset: u32,
             }
             let a: Args = from_args(&args)?;
-            ok_ce(crate::commands::list_source_projects_inner(
+            ok_ce(crate::commands::list_source_projects_page_inner(
                 &ctx.findings,
                 a.limit,
+                a.offset,
             ))
         }
         "list_source_runs" => {

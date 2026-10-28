@@ -6,6 +6,23 @@ import type { ResultPage, ResultPageQuery } from "./types";
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 const page = (items: string[], filteredTotal = 300, offset = 0): ResultPage<string> => ({ items, total: 300, filteredTotal, offset, limit: 50 });
 
+test('returning to a page while navigation is pending waits for fresh rows', async () => {
+  const requests: Array<ReturnType<typeof deferred<ResultPage<string>>>> = [];
+  const load = () => { const pending = deferred<ResultPage<string>>(); requests.push(pending); return pending.promise; };
+  const hook = renderHook(() => useServerPage<string>('run', {}, load));
+  await act(async () => requests[0].resolve(page(['old first page'], 120)));
+  act(() => hook.result.current.setPage(1));
+  act(() => hook.result.current.setPage(0));
+  expect(hook.result.current.loading).toBe(true);
+  expect(hook.result.current.items).toEqual([]);
+  expect(hook.result.current.total).toBe(120);
+  await act(async () => requests[1].resolve(page(['late second page'], 120, 50)));
+  expect(hook.result.current.items).toEqual([]);
+  await act(async () => requests[2].resolve(page(['fresh first page'], 120)));
+  expect(hook.result.current.items).toEqual(['fresh first page']);
+  expect(hook.result.current.loading).toBe(false);
+});
+
 test('authoritative filter totals cannot strand navigation on a page beyond the result set', async () => {
   const filtered = deferred<ResultPage<string>>();
   const load = vi.fn(async (_: string, query: ResultPageQuery) => query.search ? filtered.promise : page(['original']));

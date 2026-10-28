@@ -2010,6 +2010,14 @@ impl FindingsRepository {
     }
 
     pub fn list_recent_projects(&self, limit: usize) -> Result<Vec<RecentProject>, CommandError> {
+        self.list_recent_projects_page(limit, 0)
+    }
+
+    pub fn list_recent_projects_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RecentProject>, CommandError> {
         struct StoredProject {
             id: String,
             canonical_path: String,
@@ -2022,18 +2030,24 @@ impl FindingsRepository {
             let mut statement = connection
                 .prepare(
                     r#"SELECT id, canonical_path, display_name, last_opened_at
-                       FROM projects ORDER BY last_opened_at DESC, id LIMIT ?1"#,
+                       FROM projects ORDER BY last_opened_at DESC, id LIMIT ?1 OFFSET ?2"#,
                 )
                 .map_err(persistence_error)?;
             let rows = statement
-                .query_map([limit as i64], |row| {
-                    Ok(StoredProject {
-                        id: row.get(0)?,
-                        canonical_path: row.get(1)?,
-                        display_name: row.get(2)?,
-                        last_opened_at: row.get(3)?,
-                    })
-                })
+                .query_map(
+                    [
+                        limit.min(i64::MAX as usize) as i64,
+                        offset.min(i64::MAX as usize) as i64,
+                    ],
+                    |row| {
+                        Ok(StoredProject {
+                            id: row.get(0)?,
+                            canonical_path: row.get(1)?,
+                            display_name: row.get(2)?,
+                            last_opened_at: row.get(3)?,
+                        })
+                    },
+                )
                 .map_err(persistence_error)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(persistence_error)?;

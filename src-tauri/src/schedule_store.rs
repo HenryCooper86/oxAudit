@@ -179,6 +179,20 @@ impl ScheduleStore {
             .map_err(|error| format!("cannot read schedules: {error}"))
     }
 
+    /// Revalidate a queued candidate just before launch. Earlier scans can take
+    /// long enough for users to disable, remove, or reschedule later entries.
+    pub fn current_due(
+        &self,
+        project_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<ScheduleRecord>, String> {
+        let schedules = self.list()?;
+        Ok(due(&schedules, now)
+            .into_iter()
+            .find(|record| record.project_id == project_id)
+            .cloned())
+    }
+
     /// Record that a scan for this project actually started now.
     pub fn mark_started(&self, project_id: &str, now: &str) -> Result<(), String> {
         let connection = self
@@ -249,6 +263,41 @@ impl ScheduleState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queued_schedules_are_revalidated_after_another_scan_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ScheduleStore::open(&directory.path().join("schedules.sqlite3")).unwrap();
+        let now = chrono::Utc::now();
+        for id in ["disabled", "removed", "started", "changed", "ready"] {
+            store.upsert(id, "/original", id, 1, true).unwrap();
+        }
+        let queued = store.list().unwrap();
+        assert_eq!(due(&queued, now).len(), 5);
+        store
+            .upsert("disabled", "/original", "disabled", 1, false)
+            .unwrap();
+        store.remove("removed").unwrap();
+        store.mark_started("started", &now.to_rfc3339()).unwrap();
+        store
+            .upsert("changed", "/new-target", "changed", 1, true)
+            .unwrap();
+        for id in ["disabled", "removed", "started"] {
+            assert!(
+                store.current_due(id, now).unwrap().is_none(),
+                "{id} must not launch from the old queue"
+            );
+        }
+        assert_eq!(
+            store
+                .current_due("changed", now)
+                .unwrap()
+                .unwrap()
+                .canonical_path,
+            "/new-target"
+        );
+        assert!(store.current_due("ready", now).unwrap().is_some());
+    }
 
     fn schedule(
         project: &str,

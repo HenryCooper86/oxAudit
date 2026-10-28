@@ -684,16 +684,20 @@ fn parse_cargo_lock(content: &str) -> Result<Vec<(String, String)>, String> {
             let name = pkg
                 .get("name")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "invalid Cargo.lock package: name must be a nonempty string".to_string()
+                })?
                 .to_string();
             let version = pkg
                 .get("version")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!("invalid Cargo.lock package {name}: version must be a nonempty string")
+                })?
                 .to_string();
-            if !name.is_empty() && !version.is_empty() {
-                out.push((name, version));
-            }
+            out.push((name, version));
         }
     }
     if out.is_empty() {
@@ -855,9 +859,9 @@ fn parse_pubspec_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         .ok_or_else(|| "pubspec.lock has no packages map".to_string())?;
     let mut out = Vec::new();
     for (name, entry) in packages {
-        let Some(entry) = entry.as_object() else {
-            continue;
-        };
+        let entry = entry
+            .as_object()
+            .ok_or_else(|| format!("invalid pubspec.lock package {name}: expected an object"))?;
         let source = entry
             .get("source")
             .and_then(serde_json::Value::as_str)
@@ -868,10 +872,14 @@ fn parse_pubspec_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         let version = entry
             .get("version")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        if !version.is_empty() {
-            out.push((name.to_string(), version.to_string()));
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                format!("invalid pubspec.lock package {name}: version must be a nonempty string")
+            })?;
+        if name.trim().is_empty() {
+            return Err("invalid pubspec.lock package: name must be nonempty".into());
         }
+        out.push((name.to_string(), version.to_string()));
     }
     if out.is_empty() {
         return Err("no packages found in pubspec.lock".into());
@@ -985,21 +993,26 @@ fn parse_composer_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         serde_json::from_str(content).map_err(|e| format!("invalid composer.lock: {e}"))?;
     let mut out = Vec::new();
     for section in ["packages", "packages-dev"] {
-        if let Some(arr) = root.get(section).and_then(|v| v.as_array()) {
+        if let Some(value) = root.get(section) {
+            let arr = value
+                .as_array()
+                .ok_or_else(|| format!("invalid composer.lock: {section} must be an array"))?;
             for pkg in arr {
                 let name = pkg
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        "invalid composer.lock package: name must be a nonempty string".to_string()
+                    })?
                     .to_string();
                 let version = pkg
                     .get("version")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.trim_start_matches('v').to_string())
-                    .unwrap_or_default();
-                if !name.is_empty() && !version.is_empty() {
-                    out.push((name, version));
-                }
+                    .filter(|value| !value.trim_start_matches('v').trim().is_empty())
+                    .ok_or_else(|| format!("invalid composer.lock package {name}: version must be a nonempty string"))?
+                    .trim_start_matches('v').to_string();
+                out.push((name, version));
             }
         }
     }
@@ -1236,11 +1249,14 @@ fn parse_packages_lock_json(content: &str) -> Result<Vec<(String, String)>, Stri
             return Err("invalid packages.lock.json: framework inventory must be an object".into());
         };
         for (name, details) in packages {
-            let Some(version) = details.get("resolved").and_then(|v| v.as_str()) else {
+            if details.get("type").and_then(|value| value.as_str()) == Some("Project") {
                 continue;
-            };
-            if name.trim().is_empty() || version.trim().is_empty() {
-                continue;
+            }
+            let version = details.get("resolved").and_then(|v| v.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("invalid packages.lock.json package {name}: resolved must be a nonempty string"))?;
+            if name.trim().is_empty() {
+                return Err("invalid packages.lock.json package: name must be nonempty".into());
             }
             if seen.insert((name.clone(), version.to_string())) {
                 out.push((name.clone(), version.to_string()));
@@ -1265,16 +1281,20 @@ fn parse_poetry_lock(content: &str) -> Result<Vec<(String, String)>, String> {
             let name = pkg
                 .get("name")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "invalid poetry.lock package: name must be a nonempty string".to_string()
+                })?
                 .to_string();
             let version = pkg
                 .get("version")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!("invalid poetry.lock package {name}: version must be a nonempty string")
+                })?
                 .to_string();
-            if !name.is_empty() && !version.is_empty() {
-                out.push((name, version));
-            }
+            out.push((name, version));
         }
     }
     if out.is_empty() {
@@ -2342,6 +2362,32 @@ example==1.0+local \
     }
 
     // ---------------------------------------------------------- poetry.lock
+
+    #[test]
+    fn malformed_registry_records_cannot_be_silently_dropped() {
+        let cases = [
+            ("packages.lock.json", r#"{"version":1,"dependencies":{"net8.0":{"Good":{"type":"Direct","resolved":"1.0.0"},"Broken":{"type":"Transitive"}}}}"#),
+            ("packages.lock.json", r#"{"version":1,"dependencies":{"net8.0":{"Good":{"resolved":"1.0.0"},"Broken":null}}}"#),
+            ("Cargo.lock", "[[package]]\nname = \"good\"\nversion = \"1.0.0\"\n[[package]]\nname = \"broken\"\n"),
+            ("poetry.lock", "[[package]]\nname = \"good\"\nversion = \"1.0.0\"\n[[package]]\nname = \"broken\"\nversion = 123\n"),
+            ("composer.lock", r#"{"packages":[{"name":"vendor/good","version":"1.0.0"},{"name":"vendor/broken"}]}"#),
+            ("composer.lock", r#"{"packages":[{"name":"vendor/good","version":"1.0.0"}],"packages-dev":{}}"#),
+            ("pubspec.lock", "packages:\n  good:\n    source: hosted\n    version: '1.0.0'\n  broken:\n    source: hosted\n"),
+            ("pubspec.lock", "packages:\n  good:\n    source: hosted\n    version: '1.0.0'\n  broken: null\n"),
+        ];
+        let failures = cases
+            .into_iter()
+            .filter_map(|(name, content)| {
+                lockfile_packages(name, content)
+                    .ok()
+                    .map(|packages| format!("{name}: {packages:?}"))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            failures.is_empty(),
+            "malformed inventories were accepted: {failures:?}"
+        );
+    }
 
     #[test]
     fn poetry_lock_parses_packages_and_ignores_metadata() {

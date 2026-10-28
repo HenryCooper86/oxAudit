@@ -2,7 +2,69 @@
 
 Status: prepared study, **zero participant observations**. This is a small
 directional study of daily AppSec work, not a detection benchmark or proof of
-general usability. Participant and repository selection is pending.
+general usability. The first session is selected: the maintainer will test
+oxAudit itself. External participant and repository selection remains pending.
+
+## Next human session: ready-to-run first pass
+
+The first session is human-run by the maintainer, using the oxAudit repository
+(`/Users/admin/oxAudit` in the current workspace). No human acceptance or
+time-saving result is recorded.
+Use the inert `examples/pilot` fixtures for setup, then a repository the
+participant is authorized to review. Do not treat work on the fixtures as a
+real-world productivity result.
+
+Allow 45 minutes for the initial session:
+
+1. **5 minutes — record the baseline.** Copy the blank scorecard outside this
+   checkout. Record participant pseudonym, role, repository revision, current
+   tools, and where private notes may be stored. Leave unknowns blank.
+2. **5 minutes — freeze the build.** Record `git rev-parse HEAD`,
+   `git status --short`, OS, client mode and artifact hashes. The fixes on an
+   uncommitted working tree are not identified by the commit hash alone; retain
+   the patch with the private session evidence. Build using the getting-started
+   guide, then run `npm run pilot:smoke -- --cli ./src-tauri/target/debug/oxaudit-cli`.
+   Its result is technical preflight evidence, not a participant observation.
+3. **20 minutes — observe actual work.** Ask the participant to review one
+   finding, prepare a developer handoff, recheck an authorized change, and
+   recover the saved evidence after a restart. Use the neutral prompts below.
+   Record assistance, failures, skipped work, active time and machine wait
+   separately. If the timebox expires, record the attempt as blocked.
+4. **10 minutes — check the exported evidence.** Have the participant inspect
+   the report in their normal downstream tool. Check finding/run identity,
+   qualifications, non-ASCII names and paths, and any imported license or
+   dependency information relevant to their task. Record the exact tool and
+   format. A structurally valid file is not proof that the recipient found it
+   useful.
+5. **5 minutes — debrief.** Ask what was hard, what information was missing,
+   and whether they would use oxAudit for the next similar task. Record the
+   answer verbatim as self-report; do not infer adoption from task completion.
+
+After the session, link its private scorecard and artifacts from the team's
+approved record, triage observed blockers, and decide whether to proceed with
+the five-day comparison below. A single maintainer session remains a
+maintainer session, not external acceptance. Recruitment and sending any
+invitations are separate human actions; this preparation does not send them.
+
+For this first session, start the current working-tree desktop build with
+`npm run tauri dev`, open `/Users/admin/oxAudit`, and use **Check project**.
+Record effective exclusions: this repository contains deliberately vulnerable
+benchmark fixtures, which must not be mistaken for production defects. Keep
+test/documentation findings distinct from production findings. For the edit
+and recheck exercise, use a disposable copy of `examples/pilot` rather than
+changing the application merely to make a finding disappear. For exported
+evidence, use the newly built application, not an older installed release.
+
+The first-session acceptance record stays pending until the maintainer records:
+
+- Whether setup and the first scan completed without assistance, with actual
+  elapsed/active time or an explicit unknown.
+- One triage decision and its evidence, or a recorded reason none was possible.
+- One handoff report opened in the intended downstream viewer, with any
+  missing/corrupted content recorded.
+- A fixture recheck and post-restart recovery result, including exact run IDs.
+- The most important blocker and whether another real task would justify
+  reopening oxAudit. This answer is self-report, not adoption measurement.
 
 An [agent-run technical rehearsal on oxAudit](qa/2026-10-26-internal-workbench-pilot.md)
 is complete, with fresh scans, benchmarks and browser integration checks. It

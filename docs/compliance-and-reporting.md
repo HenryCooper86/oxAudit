@@ -49,3 +49,34 @@ Automated status remains immutable. Human reviews are separate append-only event
 ## Report contents
 
 Professional reports contain document identity and classification, executive summary, assessment scope and collection method, evidence-readiness metrics, a control matrix, detailed objectives and evidence, optional latest review decisions, official source links, and a prominent non-certification disclaimer. PDF output includes repeating headers, footers, assessment identity, and page numbering.
+
+CSV includes the evidence-readiness/non-certification qualification in a
+`claim_boundary` column on every control row, preserving ordinary CSV parsing.
+Excluded reviewer decisions, names and notes are not emitted. JSON also honors
+the source-reference disclosure option.
+
+PDFs embed a licensed font rather than relying on installed system fonts. Latin
+text with precomposed accents and supported Chinese characters remain searchable
+and extractable; wrapping uses measured glyph widths. Characters the font or
+renderer cannot faithfully represent cause an explicit error before a report is
+saved. Use HTML or JSON for those inputs. See the
+[font provenance and coverage](../src-tauri/assets/fonts/README.md) for the exact
+limits; PDF support is not a claim of universal Unicode shaping.
+
+## Standards exports and imported inventories
+
+SARIF 2.1.0, CycloneDX 1.6, SPDX 2.3 and OpenVEX 0.2 reports are validated against
+bundled, versioned official schemas, including nested records, before delivery.
+Validation runs offline and refuses unbundled schema references. Source hashes,
+licenses and provenance are retained beside the schemas. A schema-valid document
+does not establish the truth or completeness of its findings, nor compatibility
+with every receiving product. OpenVEX requires at least one advisory statement;
+an inventory without advisory statements should be exported as an SBOM instead.
+
+Inventory import maps unambiguous source component references to the new run's
+canonical IDs and retains dependency edges. Detailed original license metadata
+is retained alongside the canonical license summary for same-format re-export.
+Duplicate or dangling references and relationship types without a canonical
+equivalent are disclosed; their source records are retained as evidence instead
+of being silently turned into different dependency assertions. Cross-format
+exports disclose metadata they cannot represent faithfully.

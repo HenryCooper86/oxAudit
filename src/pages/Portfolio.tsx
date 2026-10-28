@@ -29,6 +29,10 @@ export function PortfolioPage(): JSX.Element {
   const [projects, setProjects] = useState<RecentProject[] | null>(null);
   const [schedules, setSchedules] = useState<ScanScheduleStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const currentPage = useRef(0);
+  const [hasNext, setHasNext] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [busyProjects, setBusyProjects] = useState<Set<string>>(() => new Set());
   const activeProjects = useRef(new Set<string>());
   const mounted = useRef(true);
@@ -37,18 +41,22 @@ export function PortfolioPage(): JSX.Element {
 
   const refresh = async () => {
     const generation = ++refreshGeneration.current;
+    setRefreshing(true);
     const request = (async () => {
       try {
         const [nextProjects, nextSchedules] = await Promise.all([
-          api.listSourceProjects(50),
+          api.listSourceProjects(51, currentPage.current * 50),
           api.listScanSchedules(),
         ]);
         if (!mounted.current || generation !== refreshGeneration.current) return;
-        setProjects(nextProjects);
+        setProjects(nextProjects.slice(0, 50));
+        setHasNext(nextProjects.length > 50);
         setSchedules(nextSchedules);
         setError(null);
       } catch (cause) {
         if (mounted.current && generation === refreshGeneration.current) setError(String(cause));
+      } finally {
+        if (mounted.current && generation === refreshGeneration.current) setRefreshing(false);
       }
     })();
     latestRefresh.current = request;
@@ -60,6 +68,14 @@ export function PortfolioPage(): JSX.Element {
       if (!mounted.current || pending === latestRefresh.current) return;
       pending = latestRefresh.current;
     }
+  };
+
+  const changePage = (next: number) => {
+    currentPage.current = next;
+    setPage(next);
+    setProjects(null);
+    setError(null);
+    void refresh();
   };
 
   useEffect(() => {
@@ -174,21 +190,19 @@ export function PortfolioPage(): JSX.Element {
       description="Every project oxAudit knows, its latest evidence, and a re-scan cadence to keep it fresh."
     >
       {error && (
-        <InlineState tone="error" title="The portfolio could not be loaded" description={error} />
+        <InlineState tone="error" title="The portfolio could not be loaded" description={error}
+          action={<Button disabled={refreshing} onClick={() => void refresh()}>Retry loading portfolio</Button>} />
       )}
       {!projects && !error && <InlineState tone="running" title="Loading portfolio" />}
       {projects && projects.length === 0 && (
         <InlineState
           tone="empty"
-          title="No projects yet"
+          title={page === 0 ? "No projects yet" : "No projects on this page"}
           description="Scan a folder and it appears here with its evidence and staleness."
         />
       )}
       {projects && projects.length > 0 && (
         <section aria-label="Projects" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
-          {projects.length >= 50 && (
-            <p className="border-b border-border px-4 py-2 text-[11px] text-text-muted">Showing the first 50 projects.</p>
-          )}
           <ul className="divide-y divide-border">
             {projects.map((project) => {
               const schedule = scheduleByProject.get(project.projectId);
@@ -286,6 +300,13 @@ export function PortfolioPage(): JSX.Element {
           </p>
         </section>
       )}
+      {(page > 0 || hasNext) && <nav aria-label="Pagination for projects" className="flex items-center justify-between gap-3">
+        <span className="text-xs text-text-muted">Page {page + 1}{projects?.length ? ` · Projects ${page * 50 + 1}–${page * 50 + projects.length}` : ""}</span>
+        <div className="flex gap-2">
+          <Button aria-label="Previous page of projects" disabled={refreshing || page === 0} onClick={() => changePage(page - 1)}>Previous</Button>
+          <Button aria-label="Next page of projects" disabled={refreshing || !hasNext || Boolean(error)} onClick={() => changePage(page + 1)}>Next</Button>
+        </div>
+      </nav>}
     </ToolPage>
   );
 }

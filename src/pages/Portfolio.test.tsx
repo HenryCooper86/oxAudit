@@ -56,6 +56,51 @@ const schedule = (overrides: Partial<ScanScheduleStatus> = {}): ScanScheduleStat
   ...overrides,
 });
 
+test("projects beyond the first fifty remain accessible and schedulable", async () => {
+  const projects = Array.from({ length: 53 }, (_, index) => project({ projectId: `p${index}`, displayName: `service-${index}`, canonicalPath: `/work/service-${index}` }));
+  listSourceProjects.mockImplementation((limit: number, offset = 0) => Promise.resolve(projects.slice(offset, offset + limit)));
+  listScanSchedules.mockResolvedValue([]);
+  setScanSchedule.mockResolvedValue({});
+  render(<PortfolioPage />);
+  await screen.findByText('service-0');
+  expect(screen.queryByText('service-50')).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Next page of projects' }));
+  await screen.findByText('service-52');
+  expect(screen.queryByText('service-0')).not.toBeInTheDocument();
+  const row = screen.getByText('service-52').closest('li')!;
+  await userEvent.click(within(row).getByRole('button', { name: /schedule daily/i }));
+  await waitFor(() => expect(setScanSchedule).toHaveBeenCalledWith('p52', '/work/service-52', 'service-52', 24, true));
+  await userEvent.click(screen.getByRole('button', { name: 'Previous page of projects' }));
+  await screen.findByText('service-0');
+});
+
+test("a failed initial portfolio load can be retried in place", async () => {
+  listSourceProjects.mockRejectedValueOnce(new Error('Temporary outage')).mockResolvedValue([project()]);
+  listScanSchedules.mockResolvedValue([]);
+  render(<PortfolioPage />);
+  await screen.findByText(/Temporary outage/);
+  await userEvent.click(screen.getByRole('button', { name: 'Retry loading portfolio' }));
+  await screen.findByText('service-a');
+  expect(screen.queryByText(/Temporary outage/)).not.toBeInTheDocument();
+});
+
+test("a failed later portfolio page retries the same offset without showing earlier projects", async () => {
+  const first = Array.from({ length: 51 }, (_, index) => project({ projectId: `p${index}`, displayName: `first-${index}` }));
+  listSourceProjects.mockResolvedValueOnce(first)
+    .mockRejectedValueOnce(new Error('Page temporarily unavailable'))
+    .mockResolvedValue([project({ projectId: 'older', displayName: 'older-project' })]);
+  listScanSchedules.mockResolvedValue([]);
+  render(<PortfolioPage />);
+  await screen.findByText('first-0');
+  await userEvent.click(screen.getByRole('button', { name: 'Next page of projects' }));
+  await screen.findByText(/Page temporarily unavailable/);
+  expect(screen.queryByText('first-0')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Previous page of projects' })).toBeEnabled();
+  await userEvent.click(screen.getByRole('button', { name: 'Retry loading portfolio' }));
+  await screen.findByText('older-project');
+  expect(listSourceProjects).toHaveBeenLastCalledWith(51, 50);
+});
+
 test("each project stays busy until its own schedule write completes", async () => {
   listSourceProjects.mockResolvedValue([project(), project({ projectId: "p2", displayName: "service-b", canonicalPath: "/work/service-b" })]);
   listScanSchedules.mockResolvedValue([]);
