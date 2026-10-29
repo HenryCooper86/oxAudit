@@ -150,6 +150,24 @@ describe('ecosystem version comparators (ported from advisories/versioning.rs)',
     ]);
     for (const bad of ['','dev-main','1.0.x']) expect(compareVersions('loose',bad,'1.0.0')).toBeNull();
   });
+  it('rpm follows rpmvercmp over epoch, version and release',()=>{
+    table('rpm',[
+      ['1.0','2.0',-1],['2.0.1a','2.0.1',1],['5.5p1','5.5p10',-1],['xyz.4','8',-1],['6.0.rc1','6.0',1],
+      ['10.0001','10.1',0],['2.0','2_0',0],['1.0~rc1','1.0',-1],['1.0^git1','1.0',1],['1.0^git1','1.01',-1],
+      ['1:1.0-1','2.0-1',1],['0:4.15-11.el9_8','4.15-11.el9_8',0],['1.0-2','1.0-10',-1],['1.0','1.0-1',-1],
+      ['6.2.8-bp156.2.3.1','6.2.8-bp156',1],['1.99999999999999999999999','1.100000000000000000000000',-1],
+    ]);
+    for (const bad of ['','1.0-','1.0-1-1','a:1.0','1.0 beta','1.é']) expect(compareVersions('rpm',bad,'1.0')).toBeNull();
+  });
+  it('apk follows apk-tools: pre-release suffixes below the release, snapshots above',()=>{
+    table('apk',[
+      ['1.2.3_rc1','1.2.3',-1],['1.2.3','1.2.3_p1',-1],['1.2.3_alpha','1.2.3_beta',-1],['1.2.3_git','1.2.3_hg',-1],
+      ['2.40.1_rc1-r0','2.40.1-r0',-1],['1.2.3_p20230101-r1','1.2.3-r5',1],['0.9.3_git20231101-r0','0.9.3-r0',1],
+      ['1.36.1-r29','1.36.1-r3',1],['8.2.0','8.2.001',-1],['1.0~1234-r1','1.0~1234-r0',1],['1.2.3a','1.2.3.1',-1],
+      ['1.2.3','1.2.3-r0',-1],
+    ]);
+    for (const bad of ['','0.1bc','0.1_foobar','0.1-r2-r3','1.9.5p2','v1.2.3']) expect(compareVersions('apk',bad,'1.0')).toBeNull();
+  });
   it('debian follows policy 5.6.12 epochs, tilde and revisions',()=>{
     table('debian',[
       ['1.0','1.0.0',-1],['1.0','1.0~rc1',1],['1.0~rc1','1.0~rc2',-1],['1.0~','1.0',-1],
@@ -168,11 +186,14 @@ describe('ecosystem version comparators (ported from advisories/versioning.rs)',
     expect(versionFamilyForEcosystem('NuGet')).toBe('loose');
     expect(versionFamilyForEcosystem('Packagist')).toBe('loose');
     expect(versionFamilyForEcosystem('Debian:12')).toBe('debian');
-    expect(versionFamilyForEcosystem('Alpine:v3.20')).toBe('debian');
+    expect(versionFamilyForEcosystem('Alpine:v3.20')).toBe('apk');
     expect(versionFamilyForEcosystem('Hex')).toBe('semver');
     expect(versionFamilyForEcosystem('Pub')).toBe('pub');
-    for (const ecosystem of ['Wolfi','Chainguard','Debian','Ubuntu:22.04:LTS']) expect(versionFamilyForEcosystem(ecosystem)).toBe('debian');
-    for (const ecosystem of ['Rocky Linux','AlmaLinux:9','Debianish','Wolfi:1']) expect(versionFamilyForEcosystem(ecosystem)).toBeNull();
+    for (const ecosystem of ['Debian','Ubuntu:22.04:LTS']) expect(versionFamilyForEcosystem(ecosystem)).toBe('debian');
+    for (const ecosystem of ['Alpine','Wolfi','Chainguard','MinimOS','Alpaquita:23']) expect(versionFamilyForEcosystem(ecosystem)).toBe('apk');
+    for (const ecosystem of ['Rocky Linux','Rocky Linux:9','AlmaLinux:9','Red Hat:enterprise_linux:9::appstream','SUSE:Linux Enterprise Server 15 SP5','openSUSE:Leap 15.5','Mageia','Photon OS','Azure Linux:3','openEuler:22.03-LTS-SP4']) expect(versionFamilyForEcosystem(ecosystem)).toBe('rpm');
+    // Map lookups never reach Object.prototype names.
+    for (const ecosystem of ['Debianish','Rocky Linuxish','Linux','Echo','constructor','toString:1','__proto__']) expect(versionFamilyForEcosystem(ecosystem)).toBeNull();
   });
   it('agrees with the Rust comparators on every shared vector',()=>{
     type Comparison = { family?: string; ecosystem?: string; a: string; b: string; expected: number | null };
@@ -217,14 +238,27 @@ describe('ecosystem-wide upgrade candidates',()=>{
     expect(upgradeGroups([ecosystemVuln('PyPI',[{introduced:'0'},{fixed:'0.9.0'}])])[0].candidate).toBeNull();
   });
   it('stays undetermined for ecosystems without a comparator',()=>{
-    const rocky=ecosystemVuln('Rocky Linux:9',[{introduced:'0'},{fixed:'1.0.1'}]);
-    expect(affectedBy(rocky,'1.0.0')).toBeNull();
-    expect(upgradeGroups([rocky])[0].candidate).toBeNull();
+    const kernel=ecosystemVuln('Linux',[{introduced:'0'},{fixed:'1.0.1'}]);
+    expect(affectedBy(kernel,'1.0.0')).toBeNull();
+    expect(upgradeGroups([kernel])[0].candidate).toBeNull();
   });
-  it('evaluates Wolfi ranges with the apk/Debian comparator and Maven ranges past unknown qualifiers',()=>{
+  it('evaluates RPM ranges with rpm ordering and offers the lowest clearing fix',()=>{
+    const rocky=ecosystemVuln('Rocky Linux:9',[{introduced:'0'},{fixed:'0:4.15-11.el9_8'}],{installedVersion:'4.15-10.el9_8'});
+    expect(affectedBy(rocky,'4.15-10.el9_8')).toBe(true);
+    expect(affectedBy(rocky,'4.15~rc1-20.el9')).toBe(true);
+    expect(affectedBy(rocky,'4.15-11.el9_8')).toBe(false);
+    expect(affectedBy(rocky,'1:1.0-1')).toBe(false);
+    expect(upgradeGroups([rocky])[0].candidate).toBe('0:4.15-11.el9_8');
+  });
+  it('evaluates apk ranges with apk-tools ordering, a release candidate of the fix still affected',()=>{
     const wolfi=ecosystemVuln('Wolfi',[{introduced:'0'},{fixed:'1.2.3-r1'}]);
     expect(affectedBy(wolfi,'1.2.3-r0')).toBe(true);
     expect(affectedBy(wolfi,'1.2.3-r1')).toBe(false);
+    const alpine=ecosystemVuln('Alpine:v3.20',[{introduced:'0'},{fixed:'2.40.1-r0'}]);
+    expect(affectedBy(alpine,'2.40.1_rc1-r0')).toBe(true);
+    expect(affectedBy(alpine,'2.40.1_p20230101-r1')).toBe(false);
+  });
+  it('evaluates Maven ranges past unknown qualifiers',()=>{
     const guava=ecosystemVuln('Maven',[{introduced:'0'},{fixed:'32.0.0-android'}],{installedVersion:'31.1-jre'});
     expect(affectedBy(guava,'31.1-jre')).toBe(true);
     expect(affectedBy(guava,'32.0.0-jre')).toBe(false);

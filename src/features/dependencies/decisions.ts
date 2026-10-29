@@ -23,7 +23,7 @@ export type VersionOrdering = -1 | 0 | 1;
  * vectors in src-tauri/tests/fixtures/version-ordering-vectors.json, which
  * both test suites run.
  */
-export type VersionFamily = 'semver' | 'pep440' | 'debian' | 'maven' | 'gem' | 'loose' | 'pub';
+export type VersionFamily = 'semver' | 'pep440' | 'debian' | 'maven' | 'gem' | 'loose' | 'pub' | 'rpm' | 'apk';
 
 /**
  * Pick the comparator for an OSV range. Mirrors `versioning::family_for`:
@@ -42,11 +42,10 @@ export function versionFamilyFor(rangeType: string, ecosystem: string): VersionF
  * Pick the comparator for an ecosystem's native (OSV `ECOSYSTEM`) versions.
  * Mirrors the `ECOSYSTEM` arm of `versioning::family_for`; `null` when
  * matching would be a guess. Hex is SemVer 2.0 (build metadata ignored); Pub
- * is SemVer with build metadata ordered after the release. Wolfi, Chainguard
- * and the distro ecosystems (Debian, Ubuntu, Alpine — with or without a
- * `:release`) use the epoch-based Debian policy comparator. RPM distributions
- * (Rocky Linux, AlmaLinux, Red Hat, SUSE) need rpmvercmp, which neither side
- * implements, so they stay undetermined.
+ * is SemVer with build metadata ordered after the release. Distribution
+ * ecosystems (with or without a `:release`) take their package manager's
+ * comparator: Debian policy for Debian and Ubuntu, apk-tools for Alpine and
+ * the apk-based distributions, rpm for the RPM-based ones.
  */
 export function versionFamilyForEcosystem(ecosystem: string): VersionFamily | null {
   switch (ecosystem) {
@@ -56,16 +55,24 @@ export function versionFamilyForEcosystem(ecosystem: string): VersionFamily | nu
     case 'npm': case 'crates.io': case 'Go': case 'Hex': return 'semver';
     case 'Pub': return 'pub';
     case 'Packagist': case 'NuGet': return 'loose';
-    case 'Wolfi': case 'Chainguard': return 'debian';
     default: {
       // The release never changes the version scheme, so only the name
       // before the first `:` decides.
       const colon = ecosystem.indexOf(':');
-      const distro = colon === -1 ? ecosystem : ecosystem.slice(0, colon);
-      return distro === 'Debian' || distro === 'Ubuntu' || distro === 'Alpine' ? 'debian' : null;
+      return DISTRIBUTION_FAMILIES.get(colon === -1 ? ecosystem : ecosystem.slice(0, colon)) ?? null;
     }
   }
 }
+
+/** Mirrors `versioning::distribution_family`: OSV's own RPM and apk ecosystem
+ * lists, plus Photon OS (built with rpm, listed by OSV without a comparator). */
+const DISTRIBUTION_FAMILIES = new Map<string, VersionFamily>([
+  ...['Debian', 'Ubuntu'].map((name): [string, VersionFamily] => [name, 'debian']),
+  ...['Alpine', 'Alpaquita', 'BellSoft Hardened Containers', 'Chainguard', 'CleanStart', 'MinimOS', 'Wolfi']
+    .map((name): [string, VersionFamily] => [name, 'apk']),
+  ...['AlmaLinux', 'Azure Linux', 'Mageia', 'openEuler', 'openSUSE', 'Photon OS', 'Red Hat', 'Rocky Linux', 'SUSE']
+    .map((name): [string, VersionFamily] => [name, 'rpm']),
+]);
 
 export function compareVersions(family: VersionFamily, a: string, b: string): VersionOrdering | null {
   switch (family) {
@@ -76,6 +83,8 @@ export function compareVersions(family: VersionFamily, a: string, b: string): Ve
     case 'gem': return compareGem(a, b);
     case 'loose': return compareLoose(a, b);
     case 'pub': return comparePub(a, b);
+    case 'rpm': return compareRpm(a, b);
+    case 'apk': return compareApk(a, b);
   }
 }
 
@@ -397,6 +406,209 @@ function compareDebian(a: string, b: string): VersionOrdering | null {
   const [epochA, upstreamA, revisionA] = splitDebian(a);
   const [epochB, upstreamB, revisionB] = splitDebian(b);
   return cmpNum(epochA, epochB) || compareDebianFragment(upstreamA, upstreamB) || compareDebianFragment(revisionA, revisionB);
+}
+
+// --- rpm: [epoch:]version[-release] by rpmverCmp over rpmvercmp ---
+//
+// Mirrors `versioning::rpm`. Epoch (default 0), version and release compare
+// in turn with rpmvercmp; a missing release sorts below any release. Runs of
+// characters other than ASCII letters, digits, `~` and `^` only separate
+// segments; `~` sorts before everything (the end included), `^` after the
+// end but before anything else; digit runs compare numerically at any width,
+// letter runs as bytes, and a digit run beats a letter run. Non-ASCII,
+// whitespace, a `:` outside the epoch, or more than one `-` is refused.
+
+type RpmEvr = { epoch: string; version: string; release: string | null };
+
+function parseRpm(raw: string): RpmEvr | null {
+  if (!/^[\x21-\x7e]+$/.test(raw)) return null;
+  const digits = /^[0-9]*/.exec(raw)![0];
+  let epoch = '0', rest = raw;
+  if (raw[digits.length] === ':') {
+    epoch = digits || '0';
+    rest = raw.slice(digits.length + 1);
+  }
+  if (rest.includes(':')) return null;
+  const dash = rest.indexOf('-');
+  if (dash === -1) return rest ? { epoch, version: rest, release: null } : null;
+  const version = rest.slice(0, dash), release = rest.slice(dash + 1);
+  if (!version || !release || release.includes('-')) return null;
+  return { epoch, version, release };
+}
+
+const isAsciiDigit = (c: string | undefined): boolean => c !== undefined && c >= '0' && c <= '9';
+const isAsciiLetter = (c: string | undefined): boolean => c !== undefined && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+
+/** rpmvercmp, step for step. Inputs are printable ASCII (parseRpm checks), so
+ * string comparison is byte comparison. */
+function rpmvercmp(a: string, b: string): VersionOrdering {
+  if (a === b) return 0;
+  const isSeparator = (c: string) => !isAsciiDigit(c) && !isAsciiLetter(c) && c !== '~' && c !== '^';
+  let one = 0, two = 0;
+  while (one < a.length || two < b.length) {
+    while (one < a.length && isSeparator(a[one])) one++;
+    while (two < b.length && isSeparator(b[two])) two++;
+    const headA: string | undefined = a[one], headB: string | undefined = b[two];
+    // The tilde sorts before everything else.
+    if (headA === '~' || headB === '~') {
+      if (headA !== '~') return 1;
+      if (headB !== '~') return -1;
+      one++; two++;
+      continue;
+    }
+    // The caret is like the tilde, except that the end of the other string
+    // (the base version) sorts below it.
+    if (headA === '^' || headB === '^') {
+      if (headA === undefined) return -1;
+      if (headB === undefined) return 1;
+      if (headA !== '^') return 1;
+      if (headB !== '^') return -1;
+      one++; two++;
+      continue;
+    }
+    if (headA === undefined || headB === undefined) break;
+    // A completely numeric or completely alphabetic segment.
+    const numeric = isAsciiDigit(headA);
+    const inSegment = numeric ? isAsciiDigit : isAsciiLetter;
+    let endA = one, endB = two;
+    while (endA < a.length && inSegment(a[endA])) endA++;
+    while (endB < b.length && inSegment(b[endB])) endB++;
+    // Different segment types: numeric is newer than alphabetic.
+    if (endB === two) return numeric ? 1 : -1;
+    let segmentA = a.slice(one, endA), segmentB = b.slice(two, endB);
+    if (numeric) {
+      segmentA = segmentA.replace(/^0+/, '');
+      segmentB = segmentB.replace(/^0+/, '');
+      // Whichever number has more digits wins.
+      if (segmentA.length !== segmentB.length) return cmpNum(segmentA.length, segmentB.length);
+    }
+    const order = cmpStr(segmentA, segmentB);
+    if (order !== 0) return order;
+    one = endA; two = endB;
+  }
+  // Every segment compared equal; whichever side has characters left is newer.
+  if (one >= a.length && two >= b.length) return 0;
+  return one >= a.length ? -1 : 1;
+}
+
+function compareRpm(a: string, b: string): VersionOrdering | null {
+  const pa = parseRpm(a), pb = parseRpm(b);
+  if (!pa || !pb) return null;
+  const order = rpmvercmp(pa.epoch, pb.epoch) || rpmvercmp(pa.version, pb.version);
+  if (order !== 0) return order;
+  if (pa.release === null || pb.release === null) {
+    return pa.release === pb.release ? 0 : pa.release === null ? -1 : 1;
+  }
+  return rpmvercmp(pa.release, pb.release);
+}
+
+// --- apk-tools apk_version_compare: digit{.digit}...{letter}{_suf{#}}...{~hash}{-r#} ---
+//
+// Mirrors `versioning::apk`. Tokens compare pairwise while both sides have
+// the same kind (numbers numerically, a `.` number with a leading zero on
+// either side as a string, letters by character, suffixes by rank
+// `alpha < beta < pre < rc < (none) < cvs < svn < git < hg < p`, the commit
+// hash as a string). When the kinds diverge, a pre-release suffix makes its
+// side older; otherwise the side whose next token comes earlier in the
+// grammar is newer, the end coming last. Invalid versions are refused.
+
+/** Token kinds in grammar order; a token may only follow the kinds before it. */
+const ApkKind = { InitialDigit: 0, Digit: 1, Letter: 2, Suffix: 3, SuffixNumber: 4, CommitHash: 5, Revision: 6, End: 7 } as const;
+type ApkKind = (typeof ApkKind)[keyof typeof ApkKind];
+/** `''` is no suffix; everything before it is a pre-release. */
+const APK_SUFFIXES = ['alpha', 'beta', 'pre', 'rc', '', 'cvs', 'svn', 'git', 'hg', 'p'];
+const APK_NO_SUFFIX = 4;
+type ApkToken = { kind: ApkKind; value: string; suffix: number };
+
+function tokenizeApk(raw: string): ApkToken[] | null {
+  const span = (start: number, accept: (c: string) => boolean): number => {
+    let end = start;
+    while (end < raw.length && accept(raw[end])) end++;
+    return end;
+  };
+  const isLower = (c: string) => c >= 'a' && c <= 'z';
+  const isHex = (c: string) => isAsciiDigit(c) || (c >= 'a' && c <= 'f');
+  const initialEnd = span(0, isAsciiDigit);
+  if (initialEnd === 0) return null;
+  const tokens: ApkToken[] = [{ kind: ApkKind.InitialDigit, value: raw.slice(0, initialEnd), suffix: APK_NO_SUFFIX }];
+  let position = initialEnd;
+  while (position < raw.length) {
+    const last = tokens[tokens.length - 1].kind;
+    const c = raw[position];
+    let kind: ApkKind, start: number, end: number, suffix = APK_NO_SUFFIX;
+    if (isLower(c)) {
+      if (last > ApkKind.Digit) return null;
+      kind = ApkKind.Letter; start = position; end = position + 1;
+    } else if (c === '.' || isAsciiDigit(c)) {
+      if (c === '.' && last > ApkKind.Digit) return null;
+      start = c === '.' ? position + 1 : position;
+      if (last === ApkKind.InitialDigit || last === ApkKind.Digit) kind = ApkKind.Digit;
+      else if (last === ApkKind.Suffix) kind = ApkKind.SuffixNumber;
+      else return null;
+      end = span(start, isAsciiDigit);
+    } else if (c === '_') {
+      if (last > ApkKind.SuffixNumber) return null;
+      start = position + 1;
+      end = span(start, isLower);
+      const name = raw.slice(start, end);
+      suffix = name === '' ? -1 : APK_SUFFIXES.indexOf(name);
+      if (suffix === -1) return null;
+      kind = ApkKind.Suffix;
+    } else if (c === '~') {
+      if (last >= ApkKind.CommitHash) return null;
+      start = position + 1;
+      end = span(start, isHex);
+      kind = ApkKind.CommitHash;
+    } else if (c === '-') {
+      if (last >= ApkKind.Revision || raw[position + 1] !== 'r') return null;
+      start = position + 2;
+      end = span(start, isAsciiDigit);
+      kind = ApkKind.Revision;
+    } else {
+      return null;
+    }
+    // Every token but a suffix name (checked above) needs content.
+    if (end === start) return null;
+    tokens.push({ kind, value: raw.slice(start, end), suffix });
+    position = end;
+  }
+  return tokens;
+}
+
+function compareApkTokens(a: ApkToken, b: ApkToken): VersionOrdering {
+  switch (a.kind) {
+    case ApkKind.Digit:
+      // A leading zero on either side makes it a string comparison, as in
+      // Gentoo's version specification.
+      if (a.value.startsWith('0') || b.value.startsWith('0')) return cmpStr(a.value, b.value);
+      return compareDigitStrings(a.value, b.value);
+    case ApkKind.InitialDigit: case ApkKind.SuffixNumber: case ApkKind.Revision:
+      return compareDigitStrings(a.value.replace(/^0+/, ''), b.value.replace(/^0+/, ''));
+    case ApkKind.Suffix:
+      return cmpNum(a.suffix, b.suffix);
+    default:
+      return cmpStr(a.value, b.value);
+  }
+}
+
+function compareApk(a: string, b: string): VersionOrdering | null {
+  const ta = tokenizeApk(a), tb = tokenizeApk(b);
+  if (!ta || !tb) return null;
+  const end: ApkToken = { kind: ApkKind.End, value: '', suffix: APK_NO_SUFFIX };
+  let index = 0, nextA: ApkToken, nextB: ApkToken;
+  for (;;) {
+    nextA = ta[index] ?? end; nextB = tb[index] ?? end;
+    if (nextA.kind !== nextB.kind || nextA.kind === ApkKind.End) break;
+    const order = compareApkTokens(nextA, nextB);
+    if (order !== 0) return order;
+    index++;
+  }
+  if (nextA.kind === nextB.kind) return 0;
+  // The leading tokens are equal. The side that goes on is newer, unless what
+  // it goes on with is a pre-release suffix.
+  if (nextA.kind === ApkKind.Suffix && nextA.suffix < APK_NO_SUFFIX) return -1;
+  if (nextB.kind === ApkKind.Suffix && nextB.suffix < APK_NO_SUFFIX) return 1;
+  return cmpNum(nextB.kind, nextA.kind);
 }
 
 // --- Maven ComparableVersion, as the POM version order specification describes it ---

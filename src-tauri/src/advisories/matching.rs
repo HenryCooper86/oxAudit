@@ -427,12 +427,12 @@ mod tests {
         let advisory = serde_json::json!({
             "id": "OSV-1",
             "affected": [{
-                "package": { "ecosystem": "Rocky Linux:9", "name": "zlib" },
+                "package": { "ecosystem": "Linux", "name": "Kernel" },
                 "ranges": [{ "type": "ECOSYSTEM", "events": [{"introduced": "0"}] }]
             }]
         });
         assert_eq!(
-            affects(advisory, "Rocky Linux:9", "zlib", "1.0.0"),
+            affects(advisory, "Linux", "Kernel", "1.0.0"),
             Verdict::Undetermined
         );
     }
@@ -490,6 +490,69 @@ mod tests {
                 Verdict::NotAffected,
                 "{ecosystem}"
             );
+        }
+    }
+
+    #[test]
+    fn apk_pre_releases_sit_below_the_release_that_fixes_them() {
+        // apk orders `_rc1` below the release, so a release candidate of the
+        // fixed version is still affected; `_p`/`_git` snapshots sort above.
+        let advisory = ecosystem_range(
+            "Alpine:v3.20",
+            "busybox",
+            serde_json::json!([{"introduced": "0"}, {"fixed": "2.40.1-r0"}]),
+        );
+        for (version, expected) in [
+            ("2.40.0-r9", Verdict::Affected),
+            ("2.40.1_rc1-r0", Verdict::Affected),
+            ("2.40.1-r0", Verdict::NotAffected),
+            ("2.40.1_p20230101-r1", Verdict::NotAffected),
+            ("2.40.1_git20231101-r0", Verdict::NotAffected),
+        ] {
+            assert_eq!(
+                affects(advisory.clone(), "Alpine:v3.20", "busybox", version),
+                expected,
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn rpm_distributions_evaluate_epoch_version_release_ranges() {
+        // Rocky Linux and Red Hat fixes carry an explicit `0:` epoch;
+        // AlmaLinux, SUSE and Mageia fixes carry none.
+        for (ecosystem, fixed) in [
+            ("Rocky Linux:9", "0:4.15-11.el9_8"),
+            ("Red Hat:enterprise_linux:9::appstream", "0:4.15-11.el9_8"),
+            ("AlmaLinux:9", "4.15-11.el9_8"),
+            ("SUSE:Linux Enterprise Server 15 SP5", "4.15-11.el9_8"),
+        ] {
+            let advisory = ecosystem_range(
+                ecosystem,
+                "libreswan",
+                serde_json::json!([{"introduced": "0"}, {"fixed": fixed}]),
+            );
+            for (version, expected) in [
+                ("4.15-10.el9_8", Verdict::Affected),
+                ("4.15-11.el9_7", Verdict::Affected),
+                ("4.9-1.el9", Verdict::Affected),
+                ("4.15-11.el9_8", Verdict::NotAffected),
+                ("0:4.15-11.el9_8", Verdict::NotAffected),
+                ("4.15-12.el9", Verdict::NotAffected),
+                ("4.16~rc1-1.el9", Verdict::NotAffected),
+                ("4.15~rc1-20.el9", Verdict::Affected),
+                // A higher epoch outranks any version.
+                ("1:1.0-1", Verdict::NotAffected),
+                // A version without a release sorts below every release.
+                ("4.15", Verdict::Affected),
+                ("not a version", Verdict::Undetermined),
+            ] {
+                assert_eq!(
+                    affects(advisory.clone(), ecosystem, "libreswan", version),
+                    expected,
+                    "{ecosystem} {version}"
+                );
+            }
         }
     }
 

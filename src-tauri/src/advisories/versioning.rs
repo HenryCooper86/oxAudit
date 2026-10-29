@@ -9,8 +9,8 @@
 //! A comparator returns `None` when it refuses to guess — an unparseable
 //! version, or a construct the spec leaves to implementations (`dev-` branch
 //! names); `family_for` likewise has no family for a scheme without a
-//! comparator here (RPM). Callers treat `None` as *undetermined*, which keeps
-//! the advisory (never silently drops it) and says so.
+//! comparator here. Callers treat `None` as *undetermined*, which keeps the
+//! advisory (never silently drops it) and says so.
 
 use std::cmp::Ordering;
 
@@ -28,6 +28,12 @@ pub enum VersionFamily {
     /// SemVer with build metadata ordered after the release, as Dart's
     /// `pub_semver` (and OSV's Pub ecosystem) compare it.
     Pub,
+    /// rpm's `[epoch:]version[-release]` ordering (`rpmverCmp` over
+    /// `rpmvercmp`), for the RPM-based distributions.
+    Rpm,
+    /// apk-tools' `apk_version_compare`, for Alpine and the apk-based
+    /// distributions.
+    Apk,
 }
 
 /// Pick the comparator for an OSV range. `range_type` is the OSV range type
@@ -45,21 +51,34 @@ pub fn family_for(range_type: &str, ecosystem: &str) -> Option<VersionFamily> {
             "npm" | "crates.io" | "Go" | "Hex" => Some(VersionFamily::SemVer),
             "Pub" => Some(VersionFamily::Pub),
             "Packagist" | "NuGet" => Some(VersionFamily::Loose),
-            // apk-versioned distributions OSV names without a release. They
-            // take the comparator Alpine uses.
-            "Wolfi" | "Chainguard" => Some(VersionFamily::Debian),
-            other => {
-                // Distro ecosystems (Debian:*, Ubuntu:*, Alpine:*) all use
-                // epoch-based comparison over the same character rules. The
-                // release never changes the version scheme, so the bare names
-                // ELF package notes carry (`Debian`, no release) share it.
-                // RPM distributions (Rocky Linux, AlmaLinux, Red Hat, SUSE)
-                // need rpmvercmp, which this module does not implement, so
-                // they stay undetermined.
-                let distro = other.split_once(':').map_or(other, |(name, _)| name);
-                matches!(distro, "Debian" | "Ubuntu" | "Alpine").then_some(VersionFamily::Debian)
-            }
+            // Distribution ecosystems name the distribution, optionally
+            // followed by `:release` (`Debian:12`, `Alpine:v3.20`,
+            // `Rocky Linux:9`, `Red Hat:enterprise_linux:9::appstream`). The
+            // release never changes the version scheme, so only the name
+            // before the first `:` decides, and the bare names ELF package
+            // notes carry (`Debian`, no release) share it.
+            other => distribution_family(other.split_once(':').map_or(other, |(name, _)| name)),
         },
+        _ => None,
+    }
+}
+
+/// The comparator a distribution's packages use, by the distribution name
+/// OSV gives it. The RPM and apk lists follow OSV's own ecosystem table
+/// (`osv/ecosystems/_ecosystems.py`), plus Photon OS, which builds with rpm
+/// but which OSV lists without a comparator.
+fn distribution_family(name: &str) -> Option<VersionFamily> {
+    match name {
+        "Debian" | "Ubuntu" => Some(VersionFamily::Debian),
+        "Alpine"
+        | "Alpaquita"
+        | "BellSoft Hardened Containers"
+        | "Chainguard"
+        | "CleanStart"
+        | "MinimOS"
+        | "Wolfi" => Some(VersionFamily::Apk),
+        "AlmaLinux" | "Azure Linux" | "Mageia" | "openEuler" | "openSUSE" | "Photon OS"
+        | "Red Hat" | "Rocky Linux" | "SUSE" => Some(VersionFamily::Rpm),
         _ => None,
     }
 }
@@ -103,6 +122,8 @@ pub fn compare(family: VersionFamily, a: &str, b: &str) -> Option<Ordering> {
         VersionFamily::Gem => gem::compare(a, b),
         VersionFamily::Loose => loose::compare(a, b),
         VersionFamily::Pub => semver::compare_pub(a, b),
+        VersionFamily::Rpm => rpm::compare(a, b),
+        VersionFamily::Apk => apk::compare(a, b),
     }
 }
 
@@ -963,6 +984,400 @@ pub mod loose {
     }
 }
 
+pub mod rpm {
+    //! rpm's version order, ported from rpm's `rpmio/rpmvercmp.cc`
+    //! (`rpmvercmp`) and `rpmio/rpmver.cc` (`parseEVR`, `rpmverCmp`).
+    //!
+    //! A version is `[epoch:]version[-release]`. The epoch is the leading
+    //! digits before a `:` and defaults to `0`; the release follows the `-`.
+    //! Epoch, version and release compare in turn with `rpmvercmp`; a missing
+    //! release sorts below any release, as `rpmverCmp` orders it (OSV's RPM
+    //! comparator agrees). `rpmvercmp` walks both strings segment by segment:
+    //!
+    //! - any run of characters other than ASCII letters, digits, `~` and `^`
+    //!   is a separator, and separators only delimit segments;
+    //! - `~` sorts before everything, the end of the string included, so
+    //!   `1.0~rc1 < 1.0`;
+    //! - `^` sorts after the end of the string but before anything else, so
+    //!   `1.0 < 1.0^git1 < 1.0.1`;
+    //! - a segment is a run of digits or a run of letters; digits compare
+    //!   numerically with leading zeros ignored (at any width), letters
+    //!   compare as bytes, and a numeric segment is newer than an alphabetic
+    //!   one;
+    //! - when every segment matched, the side with characters left is newer.
+    //!
+    //! RPM versions are ASCII without whitespace, and rpm rejects `:` inside a
+    //! version and `-` inside a version or release when it builds a package;
+    //! a string outside that shape is refused rather than split one of the
+    //! ways rpm and OSV disagree on.
+
+    use std::cmp::Ordering;
+
+    struct Evr<'a> {
+        epoch: &'a str,
+        version: &'a str,
+        release: Option<&'a str>,
+    }
+
+    fn parse(raw: &str) -> Option<Evr<'_>> {
+        if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return None;
+        }
+        let digits_end = raw
+            .bytes()
+            .position(|byte| !byte.is_ascii_digit())
+            .unwrap_or(raw.len());
+        let (epoch, rest) = if raw.as_bytes().get(digits_end) == Some(&b':') {
+            let epoch = &raw[..digits_end];
+            (
+                if epoch.is_empty() { "0" } else { epoch },
+                &raw[digits_end + 1..],
+            )
+        } else {
+            ("0", raw)
+        };
+        if rest.contains(':') {
+            return None;
+        }
+        let (version, release) = match rest.split_once('-') {
+            None => (rest, None),
+            Some((_, release)) if release.is_empty() || release.contains('-') => return None,
+            Some((version, release)) => (version, Some(release)),
+        };
+        if version.is_empty() {
+            return None;
+        }
+        Some(Evr {
+            epoch,
+            version,
+            release,
+        })
+    }
+
+    pub fn compare(a: &str, b: &str) -> Option<Ordering> {
+        let (a, b) = (parse(a)?, parse(b)?);
+        Some(
+            rpmvercmp(a.epoch, b.epoch)
+                .then_with(|| rpmvercmp(a.version, b.version))
+                .then_with(|| match (a.release, b.release) {
+                    (Some(x), Some(y)) => rpmvercmp(x, y),
+                    (Some(_), None) => Ordering::Greater,
+                    (None, Some(_)) => Ordering::Less,
+                    (None, None) => Ordering::Equal,
+                }),
+        )
+    }
+
+    fn is_separator(byte: u8) -> bool {
+        !byte.is_ascii_alphanumeric() && byte != b'~' && byte != b'^'
+    }
+
+    /// `rpmvercmp`, step for step.
+    pub fn rpmvercmp(a: &str, b: &str) -> Ordering {
+        if a == b {
+            return Ordering::Equal;
+        }
+        let (a, b) = (a.as_bytes(), b.as_bytes());
+        let (mut one, mut two) = (0, 0);
+        while one < a.len() || two < b.len() {
+            while one < a.len() && is_separator(a[one]) {
+                one += 1;
+            }
+            while two < b.len() && is_separator(b[two]) {
+                two += 1;
+            }
+            let (head_a, head_b) = (a.get(one).copied(), b.get(two).copied());
+
+            // The tilde sorts before everything else.
+            if head_a == Some(b'~') || head_b == Some(b'~') {
+                if head_a != Some(b'~') {
+                    return Ordering::Greater;
+                }
+                if head_b != Some(b'~') {
+                    return Ordering::Less;
+                }
+                one += 1;
+                two += 1;
+                continue;
+            }
+
+            // The caret is like the tilde, except that the end of the other
+            // string (the base version) sorts below it.
+            if head_a == Some(b'^') || head_b == Some(b'^') {
+                if head_a.is_none() {
+                    return Ordering::Less;
+                }
+                if head_b.is_none() {
+                    return Ordering::Greater;
+                }
+                if head_a != Some(b'^') {
+                    return Ordering::Greater;
+                }
+                if head_b != Some(b'^') {
+                    return Ordering::Less;
+                }
+                one += 1;
+                two += 1;
+                continue;
+            }
+
+            if head_a.is_none() || head_b.is_none() {
+                break;
+            }
+
+            // A completely numeric or completely alphabetic segment.
+            let numeric = a[one].is_ascii_digit();
+            let in_segment = |byte: &&u8| {
+                if numeric {
+                    byte.is_ascii_digit()
+                } else {
+                    byte.is_ascii_alphabetic()
+                }
+            };
+            let end_a = one + a[one..].iter().take_while(in_segment).count();
+            let end_b = two + b[two..].iter().take_while(in_segment).count();
+
+            // Different segment types: numeric is newer than alphabetic.
+            if end_b == two {
+                return if numeric {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                };
+            }
+
+            let (mut segment_a, mut segment_b) = (&a[one..end_a], &b[two..end_b]);
+            if numeric {
+                while let [b'0', rest @ ..] = segment_a {
+                    segment_a = rest;
+                }
+                while let [b'0', rest @ ..] = segment_b {
+                    segment_b = rest;
+                }
+                // Whichever number has more digits wins.
+                match segment_a.len().cmp(&segment_b.len()) {
+                    Ordering::Equal => {}
+                    order => return order,
+                }
+            }
+            match segment_a.cmp(segment_b) {
+                Ordering::Equal => {}
+                order => return order,
+            }
+            one = end_a;
+            two = end_b;
+        }
+
+        // Every segment compared equal; whichever side has characters left
+        // (only the separators differed otherwise) is newer.
+        match (one >= a.len(), two >= b.len()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Less,
+            (false, _) => Ordering::Greater,
+        }
+    }
+}
+
+pub mod apk {
+    //! apk-tools' version order, ported from its `src/version.c`
+    //! (`apk_version_validate`, `apk_version_compare`). The grammar is
+    //! `digit{.digit}...{letter}{_suffix{#}}...{~hash}{-r#}`:
+    //!
+    //! - the version is a token stream — the initial number, further
+    //!   `.`-separated numbers, at most one lowercase letter, any number of
+    //!   `_suffix` tokens each optionally followed by a number, an optional
+    //!   `~` commit hash (lowercase hex), and an optional `-rN` revision —
+    //!   and a token may only follow the kinds before it in that list;
+    //! - tokens compare pairwise while both sides have the same kind:
+    //!   numbers numerically, except that a `.` number with a leading zero on
+    //!   either side compares as a string (`8.2.0 < 8.2.001`); letters by
+    //!   character; suffixes by rank
+    //!   `alpha < beta < pre < rc < (none) < cvs < svn < git < hg < p`; the
+    //!   commit hash as a string;
+    //! - when the kinds diverge, a pre-release suffix (`alpha`, `beta`, `pre`,
+    //!   `rc`) makes its side older — `1.2.3_rc1 < 1.2.3 < 1.2.3_p1` — and
+    //!   otherwise the side whose next token comes earlier in the grammar is
+    //!   newer, the end of the version coming last (`1.2.3 < 1.2.3-r0`,
+    //!   `1.2.3a < 1.2.3.1`).
+    //!
+    //! apk orders invalid versions too, by where they stop parsing; this port
+    //! refuses them instead, as OSV's APK comparator does. Numbers compare at
+    //! any width rather than wrapping at 64 bits as apk's parser does.
+
+    use std::cmp::Ordering;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum Kind {
+        InitialDigit,
+        Digit,
+        Letter,
+        Suffix,
+        SuffixNumber,
+        CommitHash,
+        Revision,
+        End,
+    }
+
+    /// Suffixes in order; `""` is no suffix. Everything before it is a
+    /// pre-release of the version it suffixes.
+    const SUFFIXES: [&str; 10] = [
+        "alpha", "beta", "pre", "rc", "", "cvs", "svn", "git", "hg", "p",
+    ];
+    const NO_SUFFIX: usize = 4;
+
+    struct Token<'a> {
+        kind: Kind,
+        value: &'a str,
+        suffix: usize,
+    }
+
+    /// The end of the run starting at `start` whose bytes `accept` admits.
+    fn span(raw: &str, start: usize, accept: impl Fn(u8) -> bool) -> usize {
+        start
+            + raw.as_bytes()[start..]
+                .iter()
+                .take_while(|byte| accept(**byte))
+                .count()
+    }
+
+    /// The token stream, or `None` when apk would reject the version.
+    fn tokenize(raw: &str) -> Option<Vec<Token<'_>>> {
+        let bytes = raw.as_bytes();
+        let end = span(raw, 0, |byte| byte.is_ascii_digit());
+        if end == 0 {
+            return None;
+        }
+        let mut tokens = vec![Token {
+            kind: Kind::InitialDigit,
+            value: &raw[..end],
+            suffix: NO_SUFFIX,
+        }];
+        let mut position = end;
+        while position < bytes.len() {
+            let last = tokens[tokens.len() - 1].kind;
+            let (kind, start, end, suffix) = match bytes[position] {
+                b'a'..=b'z' => {
+                    if last > Kind::Digit {
+                        return None;
+                    }
+                    (Kind::Letter, position, position + 1, NO_SUFFIX)
+                }
+                b'.' | b'0'..=b'9' => {
+                    let start = if bytes[position] == b'.' {
+                        if last > Kind::Digit {
+                            return None;
+                        }
+                        position + 1
+                    } else {
+                        position
+                    };
+                    let kind = match last {
+                        Kind::InitialDigit | Kind::Digit => Kind::Digit,
+                        Kind::Suffix => Kind::SuffixNumber,
+                        _ => return None,
+                    };
+                    let end = span(raw, start, |byte| byte.is_ascii_digit());
+                    (kind, start, end, NO_SUFFIX)
+                }
+                b'_' => {
+                    if last > Kind::SuffixNumber {
+                        return None;
+                    }
+                    let start = position + 1;
+                    let end = span(raw, start, |byte| byte.is_ascii_lowercase());
+                    let name = &raw[start..end];
+                    let suffix = SUFFIXES
+                        .iter()
+                        .position(|known| !known.is_empty() && *known == name)?;
+                    (Kind::Suffix, start, end, suffix)
+                }
+                b'~' => {
+                    if last >= Kind::CommitHash {
+                        return None;
+                    }
+                    let start = position + 1;
+                    let end = span(raw, start, |byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+                    (Kind::CommitHash, start, end, NO_SUFFIX)
+                }
+                b'-' => {
+                    if last >= Kind::Revision || bytes.get(position + 1) != Some(&b'r') {
+                        return None;
+                    }
+                    let start = position + 2;
+                    let end = span(raw, start, |byte| byte.is_ascii_digit());
+                    (Kind::Revision, start, end, NO_SUFFIX)
+                }
+                _ => return None,
+            };
+            // Every token but a suffix name (checked above) needs content.
+            if end == start {
+                return None;
+            }
+            tokens.push(Token {
+                kind,
+                value: &raw[start..end],
+                suffix,
+            });
+            position = end;
+        }
+        Some(tokens)
+    }
+
+    /// Digit strings by numeric value, at any width.
+    fn compare_numbers(a: &str, b: &str) -> Ordering {
+        let (a, b) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
+        a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+    }
+
+    /// Two tokens of the same kind.
+    fn compare_tokens(a: &Token, b: &Token) -> Ordering {
+        match a.kind {
+            // A leading zero on either side makes it a string comparison,
+            // as in Gentoo's version specification.
+            Kind::Digit if a.value.starts_with('0') || b.value.starts_with('0') => {
+                a.value.cmp(b.value)
+            }
+            Kind::InitialDigit | Kind::Digit | Kind::SuffixNumber | Kind::Revision => {
+                compare_numbers(a.value, b.value)
+            }
+            Kind::Suffix => a.suffix.cmp(&b.suffix),
+            Kind::Letter | Kind::CommitHash | Kind::End => a.value.cmp(b.value),
+        }
+    }
+
+    pub fn compare(a: &str, b: &str) -> Option<Ordering> {
+        let (a, b) = (tokenize(a)?, tokenize(b)?);
+        let end = Token {
+            kind: Kind::End,
+            value: "",
+            suffix: NO_SUFFIX,
+        };
+        let mut index = 0;
+        let (next_a, next_b) = loop {
+            let (x, y) = (a.get(index).unwrap_or(&end), b.get(index).unwrap_or(&end));
+            if x.kind != y.kind || x.kind == Kind::End {
+                break (x, y);
+            }
+            match compare_tokens(x, y) {
+                Ordering::Equal => index += 1,
+                order => return Some(order),
+            }
+        };
+        if next_a.kind == next_b.kind {
+            return Some(Ordering::Equal);
+        }
+        // The leading tokens are equal. The side that goes on is newer,
+        // unless what it goes on with is a pre-release suffix.
+        if next_a.kind == Kind::Suffix && next_a.suffix < NO_SUFFIX {
+            return Some(Ordering::Less);
+        }
+        if next_b.kind == Kind::Suffix && next_b.suffix < NO_SUFFIX {
+            return Some(Ordering::Greater);
+        }
+        Some(next_b.kind.cmp(&next_a.kind))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1225,7 +1640,11 @@ mod tests {
         );
         assert_eq!(
             family_for("ECOSYSTEM", "Alpine:v3.20"),
-            Some(VersionFamily::Debian)
+            Some(VersionFamily::Apk)
+        );
+        assert_eq!(
+            family_for("ECOSYSTEM", "Rocky Linux:9"),
+            Some(VersionFamily::Rpm)
         );
         assert_eq!(family_for("ECOSYSTEM", "NuGet"), Some(VersionFamily::Loose));
         assert_eq!(
@@ -1245,41 +1664,242 @@ mod tests {
 
     #[test]
     fn distro_ecosystems_map_only_where_a_comparator_fits() {
-        // apk-versioned distributions share the Alpine comparator choice.
-        for ecosystem in ["Wolfi", "Chainguard", "Alpine", "Alpine:v3.20"] {
-            assert_eq!(
-                family_for("ECOSYSTEM", ecosystem),
-                Some(VersionFamily::Debian),
-                "{ecosystem}"
-            );
+        // The comparator follows the distribution's package manager, bare or
+        // release-qualified, in the spellings OSV uses.
+        let cases: [(VersionFamily, &[&str]); 3] = [
+            (
+                VersionFamily::Debian,
+                &["Debian", "Debian:12", "Ubuntu", "Ubuntu:22.04:LTS"],
+            ),
+            (
+                VersionFamily::Apk,
+                &[
+                    "Alpine",
+                    "Alpine:v3.20",
+                    "Wolfi",
+                    "Chainguard",
+                    "MinimOS",
+                    "CleanStart",
+                    "Alpaquita:23",
+                    "BellSoft Hardened Containers:23",
+                ],
+            ),
+            (
+                VersionFamily::Rpm,
+                &[
+                    "Rocky Linux",
+                    "Rocky Linux:9",
+                    "AlmaLinux",
+                    "AlmaLinux:9",
+                    "Red Hat",
+                    "Red Hat:enterprise_linux:9::appstream",
+                    "SUSE",
+                    "SUSE:Linux Enterprise Server 15 SP5",
+                    "openSUSE",
+                    "openSUSE:Leap 15.5",
+                    "Mageia:9",
+                    "Photon OS",
+                    "Photon OS:5.0",
+                    "Azure Linux:3",
+                    "openEuler:22.03-LTS-SP4",
+                ],
+            ),
+        ];
+        for (family, ecosystems) in cases {
+            for ecosystem in ecosystems {
+                assert_eq!(
+                    family_for("ECOSYSTEM", ecosystem),
+                    Some(family),
+                    "{ecosystem}"
+                );
+            }
         }
-        // dpkg comparison does not depend on the release, so the bare names
-        // ELF package notes produce get the same comparator.
-        for ecosystem in ["Debian", "Ubuntu", "Ubuntu:22.04:LTS"] {
-            assert_eq!(
-                family_for("ECOSYSTEM", ecosystem),
-                Some(VersionFamily::Debian),
-                "{ecosystem}"
-            );
-        }
-        // RPM ordering (rpmvercmp) is not implemented, so RPM distributions
-        // stay undetermined rather than borrowing a near-miss comparator.
         for ecosystem in [
-            "Rocky Linux",
-            "Rocky Linux:9",
-            "AlmaLinux",
-            "AlmaLinux:9",
-            "Red Hat",
-            "openSUSE",
-            "SUSE",
-            "Mageia",
-            "Photon OS",
-            // A prefix that merely starts like a known name is not it.
+            // A name that merely starts like a known one is not it.
             "Debianish",
-            "Wolfi:1",
+            "Rocky Linuxish",
+            "Rocky Linux 9",
+            "rocky linux",
+            "Alpine3",
+            // Schema ecosystems without a comparator, and Echo's own scheme.
+            "Linux",
+            "Android",
+            "Echo",
+            ":9",
+            "",
         ] {
             assert_eq!(family_for("ECOSYSTEM", ecosystem), None, "{ecosystem}");
         }
+    }
+
+    #[test]
+    fn rpm_ordering_follows_rpmvercmp() {
+        table(
+            VersionFamily::Rpm,
+            &[
+                // rpm's own suite, tests/rpmvercmp.at.
+                ("1.0", "1.0", Equal),
+                ("1.0", "2.0", Less),
+                ("2.0", "2.0.1", Less),
+                ("2.0.1a", "2.0.1", Greater),
+                ("5.5p1", "5.5p2", Less),
+                ("5.5p1", "5.5p10", Less),
+                ("10xyz", "10.1xyz", Less),
+                ("xyz10", "xyz10.1", Less),
+                ("xyz.4", "8", Less),
+                ("xyz.4", "2", Less),
+                ("5.5p2", "5.6p1", Less),
+                ("6.0.rc1", "6.0", Greater),
+                ("10b2", "10a1", Greater),
+                ("1.0a", "1.0aa", Less),
+                ("10.0001", "10.1", Equal),
+                ("10.0001", "10.0039", Less),
+                ("4.999.9", "5.0", Less),
+                ("20101121", "20101122", Less),
+                ("2.0", "2_0", Equal),
+                ("a+", "a_", Equal),
+                ("+", "_", Equal),
+                ("1.0~rc1", "1.0", Less),
+                ("1.0~rc1", "1.0~rc2", Less),
+                ("1.0~rc1~git123", "1.0~rc1", Less),
+                ("1.0^", "1.0", Greater),
+                ("1.0^git1", "1.0", Greater),
+                ("1.0^git1", "1.0^git2", Less),
+                ("1.0^git1", "1.01", Less),
+                ("1.0^20160101", "1.0.1", Less),
+                ("1.0^20160102", "1.0^20160101^git1", Greater),
+                ("1.0~rc1^git1", "1.0~rc1", Greater),
+                ("1.0^git1~pre", "1.0^git1", Less),
+                // Epoch, then version, then release.
+                ("1:1.0-1", "2.0-1", Greater),
+                ("0:4.15-11.el9_8", "4.15-11.el9_8", Equal),
+                ("00:1.0-1", "0:1.0-1", Equal),
+                ("1.0-2", "1.0-10", Less),
+                ("1.0-10", "1.1-1", Less),
+                // A missing release sorts below any release (rpmverCmp).
+                ("1.0", "1.0-1", Less),
+                // Shapes from real OSV records: Red Hat and AlmaLinux module
+                // builds, SUSE, openSUSE, Mageia and openEuler releases.
+                (
+                    "0:0.2.6-20.module+el8.9.0+1420+91577025",
+                    "0:0.0.99.4-5.module+el8.9.0+1445+07728297",
+                    Greater,
+                ),
+                (
+                    "3:2.1.10-1.module_el8.10.0+3858+6ad51f9f",
+                    "3:2.1.10-1.module_el8.10.0+3845+87b84552",
+                    Greater,
+                ),
+                (
+                    "20230404-117.git2e92a49f.el8_8.alma.1",
+                    "20240111-121.gitb3132c18.el8",
+                    Less,
+                ),
+                ("2.0.8_k4.12.14_10.118-4.8.2", "2.0.8-4.8.2", Greater),
+                ("6.2.8-bp156.2.3.1", "6.2.8-bp156", Greater),
+                ("3.2.7-1.2.mga9", "3.2.7-1.mga9", Greater),
+                ("1:1.8.11-1.mga9", "0:1.9.1-2.mga9", Greater),
+                ("1.10.2-1.oe2203", "1.2.2-1.oe2203", Greater),
+                ("2.38.5-150400.4.34.2", "2.37.5-150400.4.34.2", Greater),
+                // Digit runs compare at any width.
+                (
+                    "1.99999999999999999999999",
+                    "1.100000000000000000000000",
+                    Less,
+                ),
+            ],
+        );
+        unparseable(
+            VersionFamily::Rpm,
+            &[
+                "", "1.0-", "-1", "1.0-1-1", "a:1.0", "1:2:3", "1.0 beta", "1.\u{e9}",
+            ],
+        );
+    }
+
+    #[test]
+    fn apk_ordering_follows_apk_tools() {
+        table(
+            VersionFamily::Apk,
+            &[
+                // apk-tools' own suite, test/unit/version.data.
+                ("0.1.0_alpha", "0.1.3_alpha", Less),
+                ("0.1.0_alpha2", "0.1.0_alpha", Greater),
+                ("1.1", "1.1_alpha1", Greater),
+                ("0.8_beta1", "0.8_beta2", Less),
+                ("3.1_p16", "3.1_p17", Less),
+                ("4.5_p1-r1", "4.5_p1", Greater),
+                ("2.9.11_pre20051101-r3", "2.9.11_pre20051101", Greater),
+                ("1.6.8_p12-r1", "1.6.8_p9-r2", Greater),
+                ("0.1.0_alpha_pre2", "0.1.0_alpha", Less),
+                (
+                    "1.0.0_pre20191002222144-r0",
+                    "1.0.0_pre20210530193627-r0",
+                    Less,
+                ),
+                ("6.0_pre1", "6.0", Less),
+                ("6.0_p1", "6.0", Greater),
+                ("8.2.0", "8.2.001", Less),
+                ("8.2.0015", "8.2.002", Less),
+                ("1.0~1234", "1.0~2345", Less),
+                ("1.0~1234-r1", "1.0~2345-r0", Less),
+                ("1.0~1234-r1", "1.0~1234-r0", Greater),
+                ("4.5_p1", "0.9.8c-r1", Greater),
+                // Suffix ranks: pre-releases below the release, the rest
+                // above it.
+                ("1.2.3_alpha", "1.2.3_beta", Less),
+                ("1.2.3_beta", "1.2.3_pre", Less),
+                ("1.2.3_pre", "1.2.3_rc", Less),
+                ("1.2.3_rc1", "1.2.3", Less),
+                ("1.2.3", "1.2.3_cvs", Less),
+                ("1.2.3_cvs", "1.2.3_svn", Less),
+                ("1.2.3_svn", "1.2.3_git", Less),
+                ("1.2.3_git", "1.2.3_hg", Less),
+                ("1.2.3_hg", "1.2.3_p", Less),
+                // Real-world apk versions.
+                ("1.2.5-r0", "1.2.5-r1", Less),
+                ("3.0.13-r0", "3.0.9-r5", Greater),
+                ("1.36.1-r29", "1.36.1-r3", Greater),
+                ("2.40.1_rc1-r0", "2.40.1-r0", Less),
+                ("2.40.1_rc1-r0", "2.40.0-r9", Greater),
+                ("1.2.3_p20230101-r1", "1.2.3-r5", Greater),
+                ("1.2.3_p20230101-r1", "1.2.4-r0", Less),
+                ("0.9.3_git20231101-r0", "0.9.3-r0", Greater),
+                ("0.9.3_git20231101-r0", "0.9.3_git20231201-r0", Less),
+                ("1.2.3", "1.2.3-r0", Less),
+                ("1.2.3a", "1.2.3.1", Less),
+                ("1.2.3a", "1.2.3", Greater),
+                ("1.3-r4", "1.3.1-r0", Less),
+                (
+                    "1.99999999999999999999999",
+                    "1.100000000000000000000000",
+                    Less,
+                ),
+            ],
+        );
+        // Invalid in apk-tools' suite, plus shapes apk never produces.
+        unparseable(
+            VersionFamily::Apk,
+            &[
+                "",
+                "0.1bc",
+                "0.1a1",
+                "0.1_pre2~",
+                "0.1_foobar",
+                "0.1-pre1.1",
+                "0.1-r",
+                "0.1-r2_pre1",
+                "0.1-r2-r3",
+                ".1",
+                "a",
+                "0.1_",
+                "0.1__alpha",
+                "1.9.5p2",
+                "v1.2.3",
+                "1.2.3-1",
+                "1.2.3_RC1",
+            ],
+        );
     }
 
     #[test]
@@ -1341,6 +1961,8 @@ mod tests {
             "gem" => VersionFamily::Gem,
             "loose" => VersionFamily::Loose,
             "pub" => VersionFamily::Pub,
+            "rpm" => VersionFamily::Rpm,
+            "apk" => VersionFamily::Apk,
             other => panic!("unknown family {other:?} in the shared vectors"),
         };
 

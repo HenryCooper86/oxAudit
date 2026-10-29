@@ -508,7 +508,9 @@ A combined candidate must be an advisory-reported fixed version that clears ever
 supplied supported range and explicit affected-version list. Comparison follows
 each ecosystem's own ordering — npm/crates.io/Go/Hex-style `SEMVER`, Pub's
 `pub_semver` build-metadata order, PyPI's PEP 440, Maven qualifiers, RubyGems
-segments, NuGet revisions, and Debian policy epoch/upstream/revision — ported from the same comparator the advisory database
+segments, NuGet revisions, Debian policy epoch/upstream/revision, apk-tools
+ordering for Alpine and the apk-based distributions, and rpm's `rpmvercmp` for
+the RPM-based ones — ported from the same comparator the advisory database
 uses. Ecosystems whose ranges or versions cannot be compared with certainty stay
 manual, as do ambiguous versions and historical flattened strings. A candidate is
 the lowest advisory-reported fixed version strictly above the installed one.

@@ -102,14 +102,34 @@ been downloaded, PyPI queries still fail as uncovered.
   (Pub: build metadata is significant and sorts after the release it
   annotates, so `1.0.0-pre < 1.0.0-pre+build < 1.0.0 < 1.0.0+build`), PEP 440
   (PyPI), the Debian-style epoch/upstream/revision comparator of policy
-  §5.6.12 (`Debian:*`, `Ubuntu:*`, `Alpine:*`, the bare `Debian`, `Ubuntu`
-  and `Alpine` names, and the apk-versioned Wolfi and Chainguard), Maven
-  `ComparableVersion` (Maven), RubyGems (RubyGems), and
-  dotted-numeric-with-prerelease (NuGet, Packagist).
-- **RPM distributions stay unmatched.** Rocky Linux, AlmaLinux, Red Hat and
-  SUSE versions need `rpmvercmp`, which oxAudit does not implement, so their
-  ranges are undetermined rather than guessed, and the advisory is kept as
-  described below.
+  §5.6.12 (Debian and Ubuntu), apk-tools' `apk_version_compare` (Alpine,
+  Wolfi, Chainguard, MinimOS, CleanStart, Alpaquita and BellSoft Hardened
+  Containers), rpm's `rpmvercmp` over `[epoch:]version[-release]` (Rocky
+  Linux, AlmaLinux, Red Hat, SUSE, openSUSE, Mageia, Photon OS, Azure Linux
+  and openEuler), Maven `ComparableVersion` (Maven), RubyGems (RubyGems),
+  and dotted-numeric-with-prerelease (NuGet, Packagist). A distribution
+  ecosystem takes its comparator bare or release-qualified (`Debian`,
+  `Alpine:v3.20`, `Rocky Linux:9`, `Red Hat:enterprise_linux:9::appstream`,
+  `SUSE:Linux Enterprise Server 15 SP5`); the release never changes the
+  version scheme.
+- **apk pre-releases sort below their release.** `1.2.3_rc1` (likewise
+  `_alpha`, `_beta`, `_pre`) is older than `1.2.3`, while `_cvs`, `_svn`,
+  `_git`, `_hg` and `_p` snapshots are newer, and `-rN` revisions order
+  after the version, so a release candidate of a fixed version is still
+  reported as affected. Versions apk itself rejects (`1.9.5p2`, `v1.2.3`,
+  uppercase suffixes) are refused.
+- **RPM epochs default to 0 and a missing release sorts first.** A fix
+  recorded as `0:4.15-11.el9_8` (Rocky Linux and Red Hat spell the epoch)
+  equals an installed `4.15-11.el9_8`, `~` sorts before the end of a
+  version and `^` after it, and a version without a release sorts below the
+  same version with one, as rpm's `rpmverCmp` orders them. Non-ASCII or
+  whitespace, a `:` outside the epoch, or more than one `-` is refused —
+  rpm never builds such a version, and rpm and OSV split it differently.
+- **Ecosystems without a comparator stay unmatched.** `Linux`, `Android`,
+  Echo and any other scheme not listed above have their ranges reported as
+  undetermined rather than guessed, and the advisory is kept as described
+  below. (OSV itself lists Photon OS without a comparator; oxAudit compares
+  it with rpm's ordering, which Photon's packages use.)
 - **`GIT` ranges are skipped.** They name commits, not releases; those
   advisories match only through their explicit affected-versions lists. The
   skip is counted and surfaced.
