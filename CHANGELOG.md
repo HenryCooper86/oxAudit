@@ -18,6 +18,23 @@ lists what each release ships.
 
 Changes on `main` after the v0.2.6 tag.
 
+### Added
+
+- `oxaudit-cli compliance` (`profiles`, `assess`, `list`, `show`, `review`,
+  `report`) brings the Compliance Center and Report Studio to the command
+  line, using the same engine, report generator and claim boundary. See
+  [the CLI reference](docs/cli.md#compliance).
+- Local advisory matching compares RPM distributions (Rocky Linux,
+  AlmaLinux, Red Hat, SUSE, openSUSE, Mageia, Azure Linux, openEuler,
+  Photon OS) with `rpmvercmp` ordering instead of reporting every advisory
+  regardless of version.
+- Fuzz targets for every lockfile parser, report import (SARIF, CycloneDX,
+  SPDX, OpenVEX, native) and package metadata (ELF package notes,
+  os-release, dpkg/apk databases, rule-pack feed index). The parsers moved
+  into the lean `oxaudit-parsers` crate so they can be fuzzed.
+- ESLint (TypeScript, React hooks, accessibility) and component coverage
+  thresholds run in CI.
+
 ### Changed
 
 - The default advisory-database ecosystems add Hex and Pub, making ten:
@@ -25,9 +42,9 @@ Changes on `main` after the v0.2.6 tag.
 - Local advisory matching compares Hex versions as SemVer and Pub versions in
   Dart's `pub_semver` order, where build metadata is significant and sorts
   after its release (`1.0.0-pre < 1.0.0-pre+build < 1.0.0 < 1.0.0+build`).
-  Wolfi, Chainguard and the bare `Debian`, `Ubuntu` and `Alpine` ecosystem
-  names use the Debian-style comparator. RPM distributions (Rocky Linux,
-  AlmaLinux, Red Hat, SUSE) remain undetermined: no RPM comparator exists.
+  Bare `Debian` and `Ubuntu` ecosystem names use the Debian comparator;
+  Alpine, Wolfi and Chainguard use apk ordering, and RPM distributions use
+  `rpmvercmp` (see Added).
 - Maven versions with unknown qualifiers (for example `-jre`, `-android`,
   `.v20210629`, `LATEST`) are compared in `ComparableVersion` order,
   case-insensitively and after every known qualifier, instead of being
@@ -52,6 +69,23 @@ Changes on `main` after the v0.2.6 tag.
 
 ### Fixed
 
+- Alpine, Wolfi and Chainguard versions use apk-tools ordering, so a
+  pre-release such as `1.2.3_rc1` is affected by an advisory fixed in
+  `1.2.3`; the Debian-style comparator ranked it above the release.
+- A malformed ELF package note with a program-header offset near the
+  address limit no longer panics debug and test builds (found by fuzzing).
+- Compliance assessments count stored source scans as evidence; they were
+  never matched to the assessed directory, so controls expecting source
+  evidence stayed gaps. Every built-in profile can be assessed in one run,
+  which is the Compliance Center's default selection.
+- When Assistant conversations cannot be loaded, the sidebar shows a
+  persistent error with Retry; deleting the active conversation when its
+  replacement cannot be created no longer sends turns to the deleted one.
+- The command palette's arrow keys, screen-reader announcement and Enter
+  follow the same, visible order; Enter could open a different page than the
+  one highlighted.
+- Source and history scan views no longer reset a run that changed while
+  its results were loading.
 - Real Alpine images (`VERSION_ID=3.20.3`) are matched against OSV's
   `Alpine:v3.20` instead of a non-existent `Alpine:v3.20.3`, which left
   image packages unmatched.
