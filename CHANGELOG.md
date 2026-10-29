@@ -69,6 +69,14 @@ Changes on `main` after the v0.2.6 tag.
 
 ### Fixed
 
+- pip requirements files no longer fail the whole dependency scan on lines
+  that pin no single release. Ranges (`flask>=2.0`), unpinned names,
+  editable installs (`-e .`) and direct URL or path references are named in
+  inventory notes as not checked; malformed lines still fail.
+- Dependency scans discover `requirements-*.txt`, `*-requirements.txt` and
+  `requirements/*.txt`, and follow `-r` includes inside the project, whatever
+  the included file is called. Remote, missing and out-of-project includes
+  are reported as unscanned and never read.
 - Alpine, Wolfi and Chainguard versions use apk-tools ordering, so a
   pre-release such as `1.2.3_rc1` is affected by an advisory fixed in
   `1.2.3`; the Debian-style comparator ranked it above the release.

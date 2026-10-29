@@ -346,7 +346,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             .expect("managed dependency run exists")
             .transition(oxaudit_domain::RunState::Discovering, epoch_millis())
             .map_err(|error| error.to_string())?;
-        let lockfiles = fs_utils::discover_lockfiles_bounded(
+        let discovered = fs_utils::discover_lockfiles_bounded(
             request.project_root,
             root,
             request.ignored_dirs,
@@ -354,6 +354,12 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             Some(request.cancel),
         )
         .map_err(|error| error.to_string())?;
+        let expanded = crate::deps::expand_requirement_includes(
+            request.project_root,
+            discovered,
+            crate::deps::lockfiles::MAX_LOCKFILES,
+        )?;
+        let lockfiles = expanded.files.clone();
         let run_id = managed
             .as_ref()
             .expect("managed dependency run exists")
@@ -377,7 +383,11 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             .map_err(|error| error.to_string())?;
 
         let mut all_deps = Vec::new();
-        let mut inventory_notes = std::collections::BTreeSet::new();
+        let mut inventory_notes = expanded
+            .notes
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
         let mut lockfile_infos = Vec::new();
         let mut parse_errors: Vec<String> = Vec::new();
 
@@ -392,7 +402,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             return Err("dependency scan cancelled".into());
         }
         let name = lf.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let kind = crate::deps::lockfiles::lockfile_kind(name);
+        let kind = expanded.kind_for(lf);
         if name == "go.sum" && !lockfiles.contains(&lf.with_file_name("go.mod")) {
             parse_errors.push(format!("{}: go.sum requires a discovered sibling go.mod; checksums cannot establish an installed inventory", lf.display()));
             continue;

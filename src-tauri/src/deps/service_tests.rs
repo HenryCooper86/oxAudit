@@ -356,6 +356,102 @@ async fn skipped_pom_dependencies_and_git_crates_surface_as_inventory_notes() {
 }
 
 #[tokio::test]
+async fn requirements_variants_and_includes_are_scanned_with_unchecked_lines_noted() {
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("shared.txt"), "outside-only==1.0\n").unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir_all(root.join("requirements")).unwrap();
+    std::fs::create_dir_all(root.join("common")).unwrap();
+    std::fs::write(
+        root.join("requirements.txt"),
+        format!(
+            "-r requirements/base.txt\n-r common/py-deps.txt\n-r missing.txt\n-r {}\n-r https://example.com/remote.txt\nflask>=2.0\n-e .\n",
+            outside.path().join("shared.txt").display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(root.join("requirements/base.txt"), "requests==2.31.0\n").unwrap();
+    // Reached only through the include, under a name discovery would skip.
+    std::fs::write(
+        root.join("common/py-deps.txt"),
+        "urllib3==2.0.7\n-r ../requirements.txt\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("requirements-dev.txt"), "pytest==8.0.0\n").unwrap();
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let provider = Provider {
+        expected_queries: 3,
+        ..provider()
+    };
+    let result = execute(
+        root,
+        &repo,
+        &provider,
+        false,
+        &AtomicBool::new(false),
+        &events(),
+    )
+    .await
+    .unwrap();
+    let mut names = result
+        .summary
+        .lockfiles_found
+        .iter()
+        .map(|path| {
+            path.replace('\\', "/")
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "base.txt",
+            "py-deps.txt",
+            "requirements-dev.txt",
+            "requirements.txt"
+        ]
+    );
+    let mut packages = result
+        .dependencies
+        .iter()
+        .map(|dependency| (dependency.ecosystem.as_str(), dependency.name.as_str()))
+        .collect::<Vec<_>>();
+    packages.sort();
+    assert_eq!(
+        packages,
+        vec![
+            ("PyPI", "pytest"),
+            ("PyPI", "requests"),
+            ("PyPI", "urllib3")
+        ]
+    );
+    let notes = result.summary.inventory_notes.join("\n");
+    assert!(notes.contains("flask"), "{notes}");
+    assert!(notes.contains("editable"), "{notes}");
+    assert!(
+        notes.contains("missing.txt") && notes.contains("not found"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("shared.txt") && notes.contains("outside"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("remote.txt") && notes.contains("not fetched"),
+        "{notes}"
+    );
+    assert!(
+        !notes.contains("outside-only"),
+        "files outside the project are never read"
+    );
+}
+
+#[tokio::test]
 async fn non_registry_gems_do_not_shadow_or_receive_registry_advisories() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(

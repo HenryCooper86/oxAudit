@@ -188,7 +188,7 @@ pub(crate) fn find_lockfiles_inner(
         return Err(format!("path is not a directory: {path}"));
     }
     let settings = state.settings.lock().unwrap().clone();
-    let files = fs_utils::discover_lockfiles_bounded(
+    let discovered = fs_utils::discover_lockfiles_bounded(
         root,
         root,
         &settings.scan.ignored_dirs,
@@ -196,10 +196,15 @@ pub(crate) fn find_lockfiles_inner(
         None,
     )
     .map_err(|error| error.to_string())?;
+    let expanded = crate::deps::expand_requirement_includes(
+        root,
+        discovered,
+        crate::deps::lockfiles::MAX_LOCKFILES,
+    )?;
     let mut out = Vec::new();
-    for f in files {
-        let name = f.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let kind = crate::deps::lockfiles::lockfile_kind(name);
+    for f in &expanded.files {
+        let f = f.clone();
+        let kind = expanded.kind_for(&f);
         let (count, parse_error) = match crate::deps::lockfiles::parse_lockfile(&f, kind) {
             Ok(dependencies) => (Some(dependencies.len()), None),
             Err(error) if crate::deps::lockfiles::is_resource_limit_error(&error) => {

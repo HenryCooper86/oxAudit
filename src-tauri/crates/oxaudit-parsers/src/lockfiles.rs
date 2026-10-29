@@ -60,6 +60,46 @@ pub fn lockfile_kind(name: &str) -> &'static str {
     }
 }
 
+/// Whether `path` is a pip requirements file: `requirements.txt`, the common
+/// variants (`requirements-dev.txt`, `requirements_test.txt`,
+/// `requirements.prod.txt`, `dev-requirements.txt`) and any `.txt` file in a
+/// `requirements/` directory (`requirements/base.txt`).
+pub fn is_requirements_file(path: &Path) -> bool {
+    let Some(stem) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".txt"))
+    else {
+        return false;
+    };
+    !stem.is_empty()
+        && (stem.starts_with("requirements")
+            || stem.ends_with("-requirements")
+            || stem.ends_with("_requirements")
+            || path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                == Some("requirements"))
+}
+
+/// The parser format for a discovered file: its own name for the fixed
+/// lockfile names, and `requirements.txt` for every pip requirements file.
+pub fn lockfile_format(path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    LOCKFILE_NAMES
+        .iter()
+        .copied()
+        .find(|known| *known == name)
+        .or_else(|| is_requirements_file(path).then_some("requirements.txt"))
+}
+
+/// [`lockfile_kind`] for a discovered path, so requirements variants such as
+/// `requirements-dev.txt` are read as pip requirements.
+pub fn lockfile_kind_for_path(path: &Path) -> &'static str {
+    lockfile_format(path).map_or("unknown", lockfile_kind)
+}
+
 /// Map a lockfile kind to the OSV ecosystem name.
 pub fn ecosystem_for_kind(kind: &str) -> &'static str {
     match kind {
@@ -146,7 +186,12 @@ fn parse_lockfile_inventory_with_limit(
     kind: &str,
     max_bytes: u64,
 ) -> Result<LockfileInventory, String> {
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    // A file reached through a requirements `-r` include can have any name;
+    // its `pip` kind selects the requirements parser.
+    let name = lockfile_format(path)
+        .or_else(|| (kind == "pip").then_some("requirements.txt"))
+        .unwrap_or(file_name);
     let lockfile = path.to_string_lossy().replace('\\', "/");
     let metadata = std::fs::metadata(path).map_err(|error| format!("read failed: {error}"))?;
     if metadata.len() > max_bytes {
@@ -231,7 +276,11 @@ fn parse_lockfile_text(
             notes = pom_notes;
             registry_packages(packages)
         }
-        "requirements.txt" => registry_packages(parse_requirements(content)?),
+        "requirements.txt" => {
+            let (packages, requirement_notes) = parse_requirements(content)?;
+            notes = requirement_notes;
+            registry_packages(packages)
+        }
         "gradle.lockfile" => registry_packages(parse_gradle_lockfile(content)?),
         "packages.lock.json" => registry_packages(parse_packages_lock_json(content)?),
         "poetry.lock" => parse_poetry_lock(content)?,
@@ -1498,68 +1547,237 @@ fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
     parse_pom(content).map(|(dependencies, _)| dependencies)
 }
 
-fn parse_requirements(content: &str) -> Result<Vec<(String, String)>, String> {
-    let mut out = Vec::new();
-    let logical_lines = content.replace("\\\r\n", " ").replace("\\\n", " ");
-    for line in logical_lines.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // Index options do not change inventory. Includes and editable
-        // requirements do, and cannot be silently omitted from coverage.
-        if [
-            "--index-url",
-            "--extra-index-url",
-            "--no-index",
-            "--find-links",
-            "--trusted-host",
-            "--require-hashes",
-            "--pre",
-            "--only-binary",
-            "--no-binary",
-        ]
-        .iter()
-        .any(|option| {
-            line == *option
-                || line
-                    .strip_prefix(option)
-                    .is_some_and(|suffix| suffix.starts_with([' ', '=']))
-        }) {
-            continue;
-        }
-        // strip environment markers: "pkg==1.0; python_version < '3.8'"
-        let base = line.split(';').next().unwrap_or(line);
-        let base = base.split(" #").next().unwrap_or(base);
-        let base = base.split(" --hash").next().unwrap_or(base).trim();
-        // strip extras: pkg[extra]==1.0
-        let unresolved = || {
-            format!("unresolved requirement {line:?}: pin every package to an exact version and scan included files separately; advisory coverage is incomplete")
-        };
-        let (name, version) = base.split_once("==").ok_or_else(unresolved)?;
-        let name = name.trim();
-        let name = match name.split_once('[') {
-            Some((name, extras)) if extras.ends_with(']') => name.trim(),
-            Some(_) => return Err(unresolved()),
-            None => name,
-        };
-        let version = version.trim();
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-            || version.is_empty()
-            || !version
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '!' | '+'))
-        {
-            return Err(unresolved());
-        }
-        out.push((name.to_string(), version.to_string()));
+/// pip options that change where packages come from or how they install,
+/// never which packages are installed. `-r`/`-c` are files: includes are
+/// followed by discovery ([`requirements_includes`]) and constraints only
+/// narrow versions of packages listed elsewhere.
+const REQUIREMENTS_SKIPPED_OPTIONS: [&str; 17] = [
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "--no-index",
+    "-f",
+    "--find-links",
+    "--trusted-host",
+    "--require-hashes",
+    "--pre",
+    "--only-binary",
+    "--no-binary",
+    "--prefer-binary",
+    "--use-feature",
+    "-r",
+    "--requirement",
+    "-c",
+    "--constraint",
+];
+
+/// Logical requirement lines: continuations joined, comments and blank lines
+/// dropped.
+fn requirement_lines(content: &str) -> Vec<String> {
+    let joined = content.replace("\\\r\n", " ").replace("\\\n", " ");
+    joined
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            if line.starts_with('#') {
+                ""
+            } else {
+                // pip treats ` #` (whitespace, then #) as a comment.
+                line.split(" #").next().unwrap_or(line).trim()
+            }
+        })
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The option a requirements line starts with and its value, accepting
+/// `-r file`, `-rfile`, `--requirement file` and `--requirement=file`.
+fn requirement_option(line: &str) -> Option<(&str, &str)> {
+    if !line.starts_with('-') {
+        return None;
     }
-    // Every requirement line is pinned or rejected above, so a file with only
-    // comments and index options declares a complete, empty inventory.
-    Ok(out)
+    let (token, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+    if let Some((option, value)) = token.split_once('=') {
+        if option.starts_with("--") {
+            return Some((option, value.trim()));
+        }
+    }
+    if !token.starts_with("--") && token.len() > 2 {
+        return Some((&token[..2], token[2..].trim()));
+    }
+    Some((token, rest.trim()))
+}
+
+/// Files a requirements file includes with `-r`/`--requirement`, as written
+/// (relative to the including file). Discovery scans them as requirements
+/// files of their own.
+pub fn requirements_includes(content: &str) -> Vec<String> {
+    requirement_lines(content)
+        .iter()
+        .filter_map(|line| match requirement_option(line) {
+            Some(("-r" | "--requirement", value)) if !value.is_empty() => Some(value.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_requirement_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+}
+
+/// A direct file, path or URL reference with no package name.
+fn is_unnamed_reference(line: &str) -> bool {
+    line.starts_with(['.', '/', '~'])
+        || line.contains("://")
+        || line.starts_with("git+")
+        || [".whl", ".tar.gz", ".zip", ".tar.bz2"]
+            .iter()
+            .any(|suffix| line.ends_with(suffix))
+}
+
+/// One PEP 440 specifier clause: an operator and a version, such as `>=2.0`
+/// or `== 1.*`.
+fn is_version_clause(clause: &str) -> bool {
+    let clause = clause.trim();
+    let version = ["===", "==", "!=", "<=", ">=", "~=", "<", ">"]
+        .iter()
+        .find_map(|operator| clause.strip_prefix(operator))
+        .map(str::trim);
+    version.is_some_and(|version| {
+        !version.is_empty()
+            && version.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '.' | '*' | '+' | '!' | '-' | '_')
+            })
+    })
+}
+
+/// The exact release a version specifier pins, if it pins one: `==1.0` or
+/// `===1.0`, alone or alongside exclusions (`==1.0, !=0.9`). Ranges and
+/// wildcards (`==1.*`) pin nothing.
+fn exact_pin(specifier: &str) -> Option<String> {
+    let mut pins = specifier.split(',').map(str::trim).filter_map(|clause| {
+        clause
+            .strip_prefix("===")
+            .or_else(|| clause.strip_prefix("=="))
+            .map(str::trim)
+    });
+    let version = pins.next()?;
+    if pins.next().is_some()
+        || version.is_empty()
+        || !version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '!' | '+'))
+    {
+        return None;
+    }
+    Some(version.to_string())
+}
+
+/// pip requirements. Exact pins (`==`, `===`) are the inventory. Lines pip
+/// accepts that name no single registry release (version ranges, editable
+/// installs, direct URL or path references) are named in notes, which the
+/// dependency scan reports as unchecked, instead of failing the scan.
+/// Anything pip would not read as a requirement is malformed.
+/// Pinned `(name, version)` requirements plus inventory notes.
+type RequirementsInventory = (Vec<(String, String)>, Vec<String>);
+
+fn parse_requirements(content: &str) -> Result<RequirementsInventory, String> {
+    let mut out = Vec::new();
+    let mut unpinned = Vec::new();
+    let mut editable = Vec::new();
+    let mut direct = Vec::new();
+    for line in requirement_lines(content) {
+        let malformed = || format!("malformed requirement {line:?}: not a pip requirement line");
+        if let Some((option, value)) = requirement_option(&line) {
+            match option {
+                "-e" | "--editable" if !value.is_empty() => editable.push(value.to_string()),
+                option if REQUIREMENTS_SKIPPED_OPTIONS.contains(&option) => {}
+                _ => return Err(malformed()),
+            }
+            continue;
+        }
+        // Environment markers and per-requirement options (`--hash=…`) do not
+        // change which release a line names.
+        let base = line.split(';').next().unwrap_or(&line);
+        let base = base.split(" --").next().unwrap_or(base).trim();
+        if let Some((name, reference)) = base.split_once('@') {
+            let name = name.trim();
+            let name = name.split_once('[').map_or(name, |(name, _)| name).trim();
+            if !is_requirement_name(name) || reference.trim().is_empty() {
+                return Err(malformed());
+            }
+            direct.push(name.to_string());
+            continue;
+        }
+        if is_unnamed_reference(base) {
+            direct.push(base.to_string());
+            continue;
+        }
+        let name_end = base
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')))
+            .unwrap_or(base.len());
+        let name = &base[..name_end];
+        let mut rest = base[name_end..].trim_start();
+        if let Some(extras) = rest.strip_prefix('[') {
+            let (_, after) = extras.split_once(']').ok_or_else(malformed)?;
+            rest = after.trim_start();
+        }
+        // Legacy `name (>=1.0)` parentheses are accepted.
+        let specifier = match rest.strip_prefix('(') {
+            Some(inner) => inner.strip_suffix(')').ok_or_else(malformed)?.trim(),
+            None => rest.trim(),
+        };
+        if !is_requirement_name(name)
+            || (!specifier.is_empty() && !specifier.split(',').all(is_version_clause))
+        {
+            return Err(malformed());
+        }
+        match exact_pin(specifier) {
+            Some(version) => out.push((name.to_string(), version)),
+            None => unpinned.push(name.to_string()),
+        }
+    }
+    let mut notes = Vec::new();
+    let plural = |count: usize| {
+        if count == 1 {
+            "requirement"
+        } else {
+            "requirements"
+        }
+    };
+    if !unpinned.is_empty() {
+        notes.push(format!(
+            "not checked against advisories: {} {} without an exact `==` version pin \
+             (the installed release is not recorded): {}",
+            unpinned.len(),
+            plural(unpinned.len()),
+            bounded_note_list(&unpinned)
+        ));
+    }
+    if !editable.is_empty() {
+        notes.push(format!(
+            "not checked against advisories: {} editable {} (local or VCS source, not a \
+             registry release): {}",
+            editable.len(),
+            plural(editable.len()),
+            bounded_note_list(&editable)
+        ));
+    }
+    if !direct.is_empty() {
+        notes.push(format!(
+            "not checked against advisories: {} direct URL or path {} (not a registry \
+             release): {}",
+            direct.len(),
+            plural(direct.len()),
+            bounded_note_list(&direct)
+        ));
+    }
+    Ok((out, notes))
 }
 
 /// Gradle's dependency-locking format: one `group:artifact:version=classifiers`
@@ -2246,22 +2464,132 @@ example==1.0+local \
     }
 
     #[test]
-    fn requirement_ranges_and_unread_includes_cannot_look_like_complete_inventory() {
-        for unresolved in [
-            "flask>=2.0",
-            "flask<=2.0",
-            "flask~=2.0",
-            "flask",
-            "flask==2.*",
-            "-r more.txt",
-        ] {
-            let error = lockfile_packages(
-                "requirements.txt",
-                &format!("requests==2.31.0\n{unresolved}\n"),
-            )
-            .expect_err("unresolved requirements must leave coverage incomplete");
-            assert!(error.contains(unresolved), "{error}");
+    fn requirements_that_pin_no_registry_release_are_named_in_notes() {
+        let inventory = super::parse_lockfile_content(
+            "requirements.txt",
+            r#"--index-url https://pypi.example/simple
+-r base.txt
+-c constraints.txt
+requests==2.31.0
+flask>=2.0
+django~=4.2
+celery
+numpy==1.*
+attrs==23.1.0, !=23.0.0
+-e .
+-e git+https://example.com/repo.git#egg=internal
+local-lib @ file:///srv/libs/local_lib-1.0.whl
+./vendor/wheel-1.0-py3-none-any.whl
+https://example.com/pkg-1.0.tar.gz
+"#,
+        )
+        .unwrap();
+        let pinned: Vec<(String, String)> = inventory
+            .dependencies
+            .iter()
+            .map(|d| (d.name.clone(), d.version.clone()))
+            .collect();
+        assert_eq!(
+            pinned,
+            vec![
+                ("requests".into(), "2.31.0".into()),
+                ("attrs".into(), "23.1.0".into()),
+            ]
+        );
+        let notes = inventory.notes.join("\n");
+        for unpinned in ["flask", "django", "celery", "numpy"] {
+            assert!(notes.contains(unpinned), "{unpinned} missing from {notes}");
         }
+        assert!(notes.contains("without an exact"), "{notes}");
+        assert!(notes.contains("editable"), "{notes}");
+        assert!(
+            notes.contains("git+https://example.com/repo.git"),
+            "{notes}"
+        );
+        assert!(notes.contains("local-lib"), "{notes}");
+        assert!(notes.contains("wheel-1.0-py3-none-any.whl"), "{notes}");
+        assert!(
+            notes
+                .lines()
+                .all(|note| note.starts_with("not checked against advisories")),
+            "{notes}"
+        );
+    }
+
+    #[test]
+    fn malformed_requirement_lines_still_fail() {
+        for malformed in [
+            "this is not a requirement",
+            "--unknown-option value",
+            "requests==2.31.0 extra words",
+            "[extras]==1.0",
+        ] {
+            let error = super::parse_lockfile_content(
+                "requirements.txt",
+                &format!("requests==2.31.0\n{malformed}\n"),
+            )
+            .expect_err("malformed lines are not silently skipped");
+            assert!(error.contains(malformed), "{error}");
+        }
+    }
+
+    #[test]
+    fn requirements_includes_are_listed_for_discovery() {
+        assert_eq!(
+            super::requirements_includes(
+                "-r base.txt\n--requirement=dev.txt\n--requirement extra.txt\n-rtight.txt\n-c constraints.txt\nrequests==2.31.0\n# -r commented.txt\n"
+            ),
+            vec!["base.txt", "dev.txt", "extra.txt", "tight.txt"]
+        );
+    }
+
+    #[test]
+    fn requirements_file_variants_are_recognised() {
+        use std::path::Path;
+        for path in [
+            "requirements.txt",
+            "requirements-dev.txt",
+            "requirements_test.txt",
+            "requirements.prod.txt",
+            "dev-requirements.txt",
+            "test_requirements.txt",
+            "requirements/base.txt",
+            "service/requirements/local.txt",
+        ] {
+            assert_eq!(
+                super::lockfile_format(Path::new(path)),
+                Some("requirements.txt"),
+                "{path}"
+            );
+            assert_eq!(
+                super::lockfile_kind_for_path(Path::new(path)),
+                "pip",
+                "{path}"
+            );
+        }
+        for path in [
+            "notes.txt",
+            "requirements.in",
+            "docs/requirements.md",
+            "README.txt",
+        ] {
+            assert_eq!(super::lockfile_format(Path::new(path)), None, "{path}");
+        }
+        assert_eq!(
+            super::lockfile_format(Path::new("x/Cargo.lock")),
+            Some("Cargo.lock")
+        );
+    }
+
+    #[test]
+    fn a_requirements_variant_file_parses_as_requirements() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("requirements-dev.txt");
+        std::fs::write(&path, "pytest==8.0.0\n").unwrap();
+        let inventory =
+            super::parse_lockfile_inventory(&path, super::lockfile_kind_for_path(&path)).unwrap();
+        assert_eq!(inventory.dependencies.len(), 1);
+        assert_eq!(inventory.dependencies[0].ecosystem, "PyPI");
     }
 
     #[test]

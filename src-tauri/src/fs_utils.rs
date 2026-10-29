@@ -675,7 +675,9 @@ pub fn discover_lockfiles_bounded(
         };
         if entry.file_type().is_file() {
             if let Some(name) = entry.file_name().to_str() {
-                if is_lockfile_name(name) {
+                if is_lockfile_name(name)
+                    || crate::deps::lockfiles::is_requirements_file(entry.path())
+                {
                     let canonical_path = entry.path().canonicalize().map_err(|error| {
                         CollectionError::LockfileDiscoveryIncomplete {
                             path: entry.path().to_path_buf(),
