@@ -1,5 +1,5 @@
 import { ShieldCheck, X } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent, type JSX } from "react";
+import { useMemo, useState, type FormEvent, type JSX } from "react";
 import { Button, Input, Select, Textarea } from "../../components/ui";
 import { Field } from "../../components/workbench/Field";
 import type { CommandError, Finding, Gate, ReviewRequest, ReviewState } from "../../lib/types";
@@ -52,15 +52,21 @@ export function FindingReviewForm(props: {
 }): JSX.Element {
   const { projectId, finding, saving, error, onSubmit, onCancel } = props;
   const [draft, setDraft] = useState(() => createReviewDraft(finding));
+  // A different finding, or a new saved review of it, starts a fresh draft.
+  // Reset while rendering (not in an effect) so the form never validates or
+  // shows the previous finding's draft; a refetched copy of the same finding
+  // and review keeps the reviewer's edits.
+  const draftSource = `${finding.fingerprint}\u0000${finding.review?.id ?? ""}`;
+  const [draftSourceSeen, setDraftSourceSeen] = useState(draftSource);
+  if (draftSourceSeen !== draftSource) {
+    setDraftSourceSeen(draftSource);
+    setDraft(createReviewDraft(finding));
+  }
   const validation = useMemo(() => validateReviewDraft(finding, draft), [draft, finding]);
   const isGateReview =
     finding.category === "vulnerability" &&
     (draft.state === "confirmed" || draft.state === "falsePositive");
   const showExpiry = ["falsePositive", "acceptedRisk", "suppressed"].includes(draft.state);
-
-  useEffect(() => {
-    setDraft(createReviewDraft(finding));
-  }, [finding.fingerprint, finding.review?.id]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();

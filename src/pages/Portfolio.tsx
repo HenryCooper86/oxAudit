@@ -1,6 +1,6 @@
 import { CalendarClock, Play, RefreshCw } from "lucide-react";
 import { listen, type UnlistenFn } from "../lib/events";
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { Button, Select, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
@@ -40,7 +40,9 @@ export function PortfolioPage(): JSX.Element {
   const refreshGeneration = useRef(0);
   const latestRefresh = useRef<Promise<void> | null>(null);
 
-  const refresh = async () => {
+  // Reads only refs and state setters, so one instance serves every render and
+  // the schedule listener below never holds a stale copy.
+  const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current;
     setRefreshing(true);
     const request = (async () => {
@@ -69,7 +71,7 @@ export function PortfolioPage(): JSX.Element {
       if (!mounted.current || pending === latestRefresh.current) return;
       pending = latestRefresh.current;
     }
-  };
+  }, []);
 
   const changePage = (next: number) => {
     currentPage.current = next;
@@ -108,8 +110,7 @@ export function PortfolioPage(): JSX.Element {
       refreshGeneration.current += 1;
       unlisten?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [push, refresh]);
 
   const scheduleByProject = useMemo(() => {
     const map = new Map<string, ScanScheduleStatus>();

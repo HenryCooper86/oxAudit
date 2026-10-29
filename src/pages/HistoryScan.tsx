@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type JSX } from "react";
 import { Ban, Clipboard, History, Play } from "lucide-react";
 import { TargetInput } from "../components/workbench/TargetInput";
 import { RunTimeline } from "../features/runs/RunTimeline";
@@ -73,6 +73,13 @@ export function HistoryScanPage(): JSX.Element {
     };
   }, [clearPageStatus]);
 
+  // Compared against the receipt on screen when the saved one arrives, not the
+  // one on screen when the read started. Not a dependency: setting the receipt
+  // must not trigger another read.
+  const clearSelectionIfReceiptChanged = useEffectEvent((nextId: string | undefined) => {
+    if (receipt?.id !== nextId) setSelectedFingerprint(null);
+  });
+
   useEffect(() => {
     const generation = ++receiptRequest.current;
     if (activeWork?.owner === "history" && !path.trim()) { setPath(activeWork.path); return; }
@@ -89,7 +96,7 @@ export function HistoryScanPage(): JSX.Element {
         setFindingTotal(saved.sections.findings ?? 0);
         setOperationState(null);
         if (!path.trim()) setPath(saved.target);
-        if (receipt?.id !== saved.receipt?.id) setSelectedFingerprint(null);
+        clearSelectionIfReceiptChanged(saved.receipt?.id);
         setPageStatus("history-scan", { label: `Saved history results · ${saved.sections.findings ?? 0} findings · ${saved.data.state ?? "state unknown"}`, tone: saved.data.state === "completed" ? "success" : "neutral" });
       }
     }).catch(cause => {

@@ -160,6 +160,28 @@ describe("FindingReviewForm", () => {
     expect(request.projectId).toBe("project-1");
   });
 
+  test("a different finding starts a fresh draft; a refetched copy keeps the edits", async () => {
+    const user = userEvent.setup();
+    const props = {
+      projectId: "project-1",
+      saving: false,
+      error: null,
+      onSubmit: vi.fn().mockResolvedValue(undefined),
+      onCancel: vi.fn(),
+    };
+    const { rerender } = render(<FindingReviewForm {...props} finding={finding()} />);
+    const decision = () => screen.getByRole<HTMLSelectElement>("combobox", { name: /^decision$/i });
+
+    await user.selectOptions(decision(), "acceptedRisk");
+    // The parent refetches the same finding: a new object, same identity.
+    rerender(<FindingReviewForm {...props} finding={finding()} />);
+    expect(decision().value).toBe("acceptedRisk");
+
+    // A decision typed for one finding must never be saved against another.
+    rerender(<FindingReviewForm {...props} finding={finding({ id: "finding-2", fingerprint: "fp-2" })} />);
+    expect(decision().value).toBe("candidate");
+  });
+
   test("an expiry in the past is refused rather than recorded", async () => {
     const { onSubmit, user } = setup();
 

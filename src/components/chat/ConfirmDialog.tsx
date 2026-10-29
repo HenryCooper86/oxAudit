@@ -73,7 +73,9 @@ export function ConfirmDialog({
   }, []);
 
   return (
+    // The backdrop is a pointer-only dismiss target; Escape is the keyboard path.
     <div
+      role="presentation"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onCancel();

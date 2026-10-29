@@ -191,6 +191,7 @@ git clone https://github.com/HenryCooper86/oxAudit.git
 cd oxAudit
 rustup show active-toolchain
 npm ci
+npm run lint
 npm run check
 npm test
 npm run build

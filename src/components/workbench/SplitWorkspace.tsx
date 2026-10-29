@@ -21,6 +21,10 @@ export function SplitWorkspace(props: {
 
   return (
     <div className={`grid min-h-[28rem] transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${listCollapsed ? "min-[900px]:grid-cols-[44px_minmax(0,1fr)]" : "min-[900px]:grid-cols-[minmax(17rem,0.8fr)_minmax(0,1.35fr)]"}`}>
+      {/* Delegated listener, not a mouse-only control: [data-detail-trigger]
+          elements are buttons, and keyboard activation of a button dispatches
+          the same bubbling click. */}
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <section
         aria-label={listLabel}
         onClick={(event) => {

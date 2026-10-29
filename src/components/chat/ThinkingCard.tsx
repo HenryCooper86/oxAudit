@@ -14,22 +14,18 @@ export function ThinkingCard({
   streaming: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // Ticks only while streaming, so once the answer starts it holds the
+  // thinking duration.
   const [elapsed, setElapsed] = useState(0);
-  const [finishedAt, setFinishedAt] = useState<number | null>(null);
   const detailsId = useId();
 
   useEffect(() => {
-    if (streaming) {
-      setFinishedAt(null);
-      const t = setInterval(() => setElapsed((e) => e + 1), 1000);
-      return () => clearInterval(t);
-    }
-    setFinishedAt((prev) => prev ?? elapsed);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!streaming) return;
+    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(t);
   }, [streaming]);
 
   const hasContent = text.trim().length > 0;
-  const duration = finishedAt ?? elapsed;
 
   return (
     <div className="selectable my-1">
@@ -50,7 +46,7 @@ export function ThinkingCard({
         </span>
         <span className="text-[12px] font-medium text-text-muted">
           {streaming ? "Thinking" : "Thought"}
-          {streaming ? `… ${elapsed}s` : duration > 0 ? ` · ${duration}s` : ""}
+          {streaming ? `… ${elapsed}s` : elapsed > 0 ? ` · ${elapsed}s` : ""}
         </span>
         {hasContent && (
           <ChevronRight

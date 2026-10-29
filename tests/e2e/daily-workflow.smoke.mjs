@@ -6,7 +6,7 @@
 // identity is verified on disk.
 import { copyFile, readFile } from "node:fs/promises";
 import path from "node:path";
-import { test, expect, fixturesRoot, connectThroughGate, metric } from "./helpers.mjs";
+import { test, expect, fixturesRoot, metric } from "./helpers.mjs";
 
 test("onboarding, first scan, review, recheck, restart, reopen and SARIF export", async ({ page, backend }) => {
   test.setTimeout(300_000);

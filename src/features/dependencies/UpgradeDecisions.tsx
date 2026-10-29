@@ -14,7 +14,8 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
   const selected=groups.find(g=>g.key===selectedKey) ?? groups[0];
   const groupPagination=usePagination(groups,50,selected ? groups.indexOf(selected) : -1);
   const advisoryPagination=usePagination(selected?.advisories ?? noAdvisories);
-  const copyScope=useMemo(()=>({}),[result,result.summary.runId,selected?.key]);
+  // Identity token: copy feedback belongs to one result and selected group.
+  const copyScope=useMemo(()=>({result,groupKey:selected?.key}),[result,selected?.key]);
   const [copyFeedback,setCopyFeedback]=useState<{scope:object;message:string}|null>(null);
   const copyRequest=useRef(0);
   const detailRef=useRef<HTMLDivElement>(null);

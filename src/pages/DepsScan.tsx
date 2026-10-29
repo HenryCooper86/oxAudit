@@ -30,6 +30,8 @@ import { dependencyEvidence, EvidenceSummary } from "../features/runs/EvidenceSu
 import { upgradeGroups, vulnerabilityKey } from "../features/dependencies/decisions";
 import { UpgradeDecisions } from "../features/dependencies/UpgradeDecisions";
 type LockfilePreview = Omit<LockfileInfo, "packages"> & { packages: number | null };
+// One empty list for every render, so memoized filters keyed on it stay cached.
+const NO_VULNERABILITIES: Vulnerability[] = [];
 function previewFromResult(result: DependencyScanResult): LockfilePreview[] {
   const counts = new Map<string, number>();
   const inventoryAvailable = Array.isArray(result.dependencies)
@@ -460,7 +462,7 @@ export function DepsScanPage() {
     }
   };
 
-  const vulns = result?.vulnerabilities ?? [];
+  const vulns = result?.vulnerabilities ?? NO_VULNERABILITIES;
   const filteredVulns = useMemo(() => vulns.filter((vulnerability) => {
     const normalizedQuery = query.trim().toLowerCase();
     if (!normalizedQuery) return true;

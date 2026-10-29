@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 
 /**
@@ -30,10 +30,11 @@ export function ApprovalModal({
     return () => clearInterval(timer);
   }, []);
 
+  // An effect event, so a parent re-render that hands over a new onDecide
+  // cannot fire a second deny while the prompt is still mounted at zero.
+  const denyOnTimeout = useEffectEvent(() => onDecide(false));
   useEffect(() => {
-    if (remaining === 0) onDecide(false);
-    // The decision handler unmounts this prompt after the timeout.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (remaining === 0) denyOnTimeout();
   }, [remaining]);
 
   useEffect(() => {

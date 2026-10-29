@@ -79,6 +79,28 @@ describe("CommandPalette", () => {
     expect(PAGE_META[page()].title).toBe(second);
   });
 
+  test("Enter runs the highlighted row even when rank order interleaves groups", async () => {
+    // With no query every command ties, so rank order is alphabetical and
+    // crosses groups; the list on screen is grouped. Selection must follow
+    // the rows the reader sees, or Enter lands on a different screen.
+    const { user } = setup();
+    const input = screen.getByRole("textbox", { name: /search commands/i });
+    await waitFor(() => expect(input).toHaveFocus());
+
+    await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
+    const highlighted = screen
+      .getAllByRole("option")
+      .filter((option) => option.getAttribute("aria-selected") === "true");
+    expect(highlighted).toHaveLength(1);
+    expect(screen.getAllByRole("option").indexOf(highlighted[0])).toBe(3);
+    expect(input).toHaveAttribute("aria-activedescendant", highlighted[0].id);
+
+    const title = highlighted[0].textContent;
+    await user.keyboard("{Enter}");
+    const { PAGE_META } = await import("../../lib/workbench");
+    expect(PAGE_META[page()].title).toBe(title);
+  });
+
   test("wrapping past the top reaches the last command", async () => {
     const { user } = setup();
     await user.type(screen.getByRole("textbox", { name: /search commands/i }), "scan");

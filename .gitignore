@@ -44,6 +44,9 @@ src-tauri/icons/ios/
 # Local scratch output
 tmp/
 
+# Vitest coverage output
+coverage/
+
 # External benchmark corpora, fetched by tools/fetch-external-benchmark.mjs.
 # Not vendored: the OWASP Benchmark is GPL-2.0 and oxAudit is Apache-2.0, and
 # it is 239MB of generated servlets besides.

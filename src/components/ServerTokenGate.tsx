@@ -73,6 +73,8 @@ export function ServerTokenGate({ onConnected }: { onConnected: () => void }): J
           aria-label="Access token"
           type="password"
           disabled={connecting}
+          // The gate replaces the whole app and this is its only field.
+          // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
           value={value}
           onChange={(event) => setValue(event.target.value)}

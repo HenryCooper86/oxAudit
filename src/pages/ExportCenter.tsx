@@ -1,6 +1,6 @@
 import { CheckCircle2, Download, FileJson, ShieldAlert, TriangleAlert, Upload } from "lucide-react";
 import { open, save } from "../lib/dialog";
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type JSX } from "react";
 import { Button, Input, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
@@ -74,14 +74,15 @@ export function ExportCenterPage(): JSX.Element {
     };
   }, []);
 
+  const applyHandoff = useEffectEvent(() => {
+    const handoff = useAppStore.getState().exportHandoff;
+    if (handoff) {
+      selectRun(handoff.runId);
+      useAppStore.setState({ exportHandoff: null });
+    }
+  });
+
   useEffect(() => {
-    const applyHandoff = () => {
-      const handoff = useAppStore.getState().exportHandoff;
-      if (handoff) {
-        selectRun(handoff.runId);
-        useAppStore.setState({ exportHandoff: null });
-      }
-    };
     applyHandoff();
     return useAppStore.subscribe((state, previous) => {
       if (state.exportHandoff !== previous.exportHandoff) applyHandoff();

@@ -26,6 +26,16 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],
       exclude: ["src/**/*.test.{ts,tsx}", "src/vite-env.d.ts", "src/main.tsx"],
+      reporter: ["text-summary"],
+      // A ratchet, not a target: set just under the measured totals (81.45 /
+      // 76.29 / 77.27 / 84.16 on 2026-10-29) so CI fails when a change lands
+      // code without the tests that cover it. Raise these as coverage grows.
+      thresholds: {
+        statements: 81,
+        branches: 76,
+        functions: 77,
+        lines: 84,
+      },
     },
   },
 });

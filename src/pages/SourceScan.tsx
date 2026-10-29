@@ -9,6 +9,7 @@ import { Clipboard, RotateCcw, Search } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -79,6 +80,9 @@ import type {
   SourceRunMetadata,
   ResultPageQuery,
 } from "../lib/types";
+
+// One empty list for every render: the selection-pruning effect keys on it.
+const NO_FINDINGS: Finding[] = [];
 
 const SEVERITIES: Array<Severity | "all"> = [
   "all",
@@ -251,6 +255,11 @@ export function SourceScanPage(): JSX.Element {
     });
   }, [clearPageStatus, progress?.file, running, setPageStatus]);
 
+  // The run on screen when the debounced load fires and when it settles, not
+  // the one on screen when it was scheduled. Changing it does not re-target
+  // the load, so it is read through an effect event rather than a dependency.
+  const viewedRun = useEffectEvent(() => ({ run, recheck }));
+
   useEffect(() => {
     if (running && !handoffRunId) return;
     const candidate = path.trim();
@@ -269,6 +278,7 @@ export function SourceScanPage(): JSX.Element {
       setTargetLoading(true);
       setTargetError(null);
       const check = useScanWorkStore.getState().check;
+      const { run, recheck } = viewedRun();
       const unsaved = run?.summary.path === candidate && run.persistence.status === "notSaved" && (!handoffRunId || handoffRunId === run.runId) ? run
         : check?.path === candidate && check.sourceResult?.runId === handoffRunId && check.sourceResult?.persistence.status === "notSaved" ? check.sourceResult : null;
       // A recheck becomes the latest completed run, but its assessment belongs
@@ -289,7 +299,7 @@ export function SourceScanPage(): JSX.Element {
             // completion reconcile arriving right after the local full result.
             // Explicit refreshes (review save/reset, recheck, bulk review,
             // history selection) still call restoreMetadata themselves.
-            if (loaded.run.runId !== run?.runId) restoreMetadata(loaded.run);
+            if (loaded.run.runId !== viewedRun().run?.runId) restoreMetadata(loaded.run);
           }
           else { setRun(null); setPagedRun(false); }
           setScanOptions((current) =>
@@ -763,7 +773,7 @@ export function SourceScanPage(): JSX.Element {
       ),
     [findings, query, reviewChanges.hasBaseline],
   );
-  const filtered = loadingRunId ? [] : pagedRun ? savedFindings.items : localFiltered;
+  const filtered = loadingRunId ? NO_FINDINGS : pagedRun ? savedFindings.items : localFiltered;
   const findingsTotal = pagedRun ? savedFindings.data?.total ?? run?.summary.totalFindings ?? 0 : reviewChanges.allFindings.length;
   const filteredTotal = pagedRun ? savedFindings.total : filtered.length;
   const effectiveSelection = nextSelection(filtered, selectedFingerprint);

@@ -43,6 +43,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   );
   const matches = useMemo(() => filterCommands(commands, query), [commands, query]);
   const grouped = useMemo(() => groupCommands(matches), [matches]);
+  // The keyboard walks rows in the order they are drawn. Rank order crosses
+  // groups, so indexing `matches` would highlight one row and run another.
+  const ordered = useMemo(() => grouped.flatMap(([, rows]) => rows), [grouped]);
+  const positions = useMemo(
+    () => new Map(ordered.map((command, position) => [command.id, position])),
+    [ordered],
+  );
 
   // A new query is a new list; keeping the old index would leave the highlight
   // on whatever happens to be in that position now.
@@ -105,26 +112,26 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     }
     if (event.key === "ArrowDown" || (event.key === "n" && event.ctrlKey)) {
       event.preventDefault();
-      setSelected((current) => moveSelection(current, 1, matches.length));
+      setSelected((current) => moveSelection(current, 1, ordered.length));
       return;
     }
     if (event.key === "ArrowUp" || (event.key === "p" && event.ctrlKey)) {
       event.preventDefault();
-      setSelected((current) => moveSelection(current, -1, matches.length));
+      setSelected((current) => moveSelection(current, -1, ordered.length));
       return;
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      const command = matches[selected];
+      const command = ordered[selected];
       // Enter on an empty result set does nothing rather than guessing.
       if (command) run(command);
     }
   };
 
-  let index = -1;
-
   return (
+    // The backdrop is a pointer-only dismiss target; Escape is the keyboard path.
     <div
+      role="presentation"
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-6 pt-[12vh]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
@@ -135,7 +142,6 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         aria-modal="true"
         aria-label="Command palette"
         className="w-full max-w-lg overflow-hidden rounded-md border border-border bg-surface-secondary shadow-lg"
-        onKeyDown={onKeyDown}
       >
         <div className="flex items-center gap-2 border-b border-border px-3">
           <Search size={15} aria-hidden="true" className="text-text-muted" />
@@ -144,10 +150,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             type="text"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={onKeyDown}
             placeholder="Go to…"
             aria-label="Search commands"
             aria-controls="command-palette-results"
-            aria-activedescendant={matches[selected] ? `command-${matches[selected].id}` : undefined}
+            aria-activedescendant={ordered[selected] ? `command-${ordered[selected].id}` : undefined}
             className="w-full bg-transparent py-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted"
           />
         </div>
@@ -171,10 +178,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 {group}
               </div>
               {commands.map((command) => {
-                index += 1;
-                const isSelected = index === selected;
-                const position = index;
+                const position = positions.get(command.id) ?? -1;
+                const isSelected = position === selected;
                 return (
+                  // Options in an aria-activedescendant listbox never take focus:
+                  // the search input owns arrow/Enter selection (onKeyDown above).
+                  // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/interactive-supports-focus
                   <div
                     key={command.id}
                     id={`command-${command.id}`}

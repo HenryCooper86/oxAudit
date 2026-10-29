@@ -44,11 +44,18 @@ jobs:
       - name: Check every action is pinned to a commit SHA
         run: node tools/check-action-pins.mjs
 
+      - name: Lint
+        run: npm run lint
+
       - name: Type-check
         run: npm run check
 
-      - name: Test
-        run: npm test
+      - name: Unit tests
+        run: npm run test:unit
+
+      # Component tests under v8 coverage; thresholds live in vitest.config.ts.
+      - name: Component tests with coverage
+        run: npm run test:coverage
 
       - name: Install workflow shell test prerequisites
         run: |
