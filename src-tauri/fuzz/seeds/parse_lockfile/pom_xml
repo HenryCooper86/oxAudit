@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId><artifactId>app</artifactId><version>2.4.0</version>
+  <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>7.1</version></parent>
+  <properties>
+    <slf4j.version>2.0.9</slf4j.version>
+    <jackson.major>2.15</jackson.major>
+    <jackson.version>${jackson.major}.3</jackson.version>
+  </properties>
+  <dependencyManagement><dependencies>
+    <dependency><groupId>org.junit</groupId><artifactId>junit-bom</artifactId><version>5.10.0</version></dependency>
+  </dependencies></dependencyManagement>
+  <dependencies>
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>${slf4j.version}</version></dependency>
+    <dependency><groupId>${project.groupId}</groupId><artifactId>core</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>com.acme</groupId><artifactId>bom-thing</artifactId><version>${project.parent.version}</version></dependency>
+    <dependency><groupId>com.fasterxml</groupId><artifactId>jackson</artifactId><version>${jackson.version}</version>
+      <exclusions><exclusion><groupId>x.y</groupId><artifactId>z</artifactId></exclusion></exclusions>
+    </dependency>
+    <dependency><groupId>a&amp;b</groupId><artifactId>unresolved</artifactId><version>${missing}</version></dependency>
+  </dependencies>
+</project>

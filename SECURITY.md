@@ -111,7 +111,10 @@ The measures below are enforced in CI, not aspirational:
 - `cargo-deny` gates advisories, licences, and unexpected sources.
 - `npm audit` and `dependency-review` gate JavaScript dependencies.
 - CodeQL runs `security-extended` on the TypeScript surface.
-- `cargo-fuzz` smoke-runs the bounded rule-pack parser on a schedule.
+- `cargo-fuzz` smoke-runs the untrusted-input parsers on a schedule: rule
+  packs, archive extraction, lockfiles, imported reports, ELF package notes,
+  OS package databases and the rule-pack feed index. Every pull request
+  builds each fuzz target (`src-tauri/fuzz`).
 - The toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
 
 Tag-triggered macOS desktop bundles fail closed unless Developer ID signing and

@@ -1,0 +1,17 @@
+version = 3
+
+[[package]]
+name = "my-app"
+version = "0.1.0"
+dependencies = ["serde", "private"]
+
+[[package]]
+name = "serde"
+version = "1.0.200"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc"
+
+[[package]]
+name = "private"
+version = "0.3.0"
+source = "git+https://example.com/private.git?branch=main#0123456789abcdef"

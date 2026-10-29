@@ -1,0 +1,36 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "documentNamespace": "https://example.test/bom",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-a",
+      "name": "a",
+      "versionInfo": "1.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/a@1.0"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-b",
+      "name": "b",
+      "licenseDeclared": "NONE"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-a",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-b"
+    },
+    {
+      "spdxElementId": "SPDXRef-b",
+      "relationshipType": "DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-missing"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+GIT
+  remote: https://example.com/project.git
+  revision: abcdef
+  specs:
+    private-gem (1.2.0)
+
+PATH
+  remote: ../local
+  specs:
+    local-gem (2.0.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    nokogiri (1.16.0-x86_64-linux)
+      racc (~> 1.4)
+    racc (1.7.3)
+
+PLATFORMS
+  x86_64-linux
+
+DEPENDENCIES
+  nokogiri

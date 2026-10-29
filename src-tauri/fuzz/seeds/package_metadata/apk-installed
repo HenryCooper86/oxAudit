@@ -1,0 +1,8 @@
+C:Q1abc=
+P:musl
+V:1.2.5-r0
+A:x86_64
+
+P:openssl
+V:3.3.2-r0
+o:openssl

@@ -125,7 +125,7 @@ jobs:
   parser-fuzz-smoke:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -141,6 +141,23 @@ jobs:
       - name: Fuzz archive extraction
         working-directory: src-tauri
         run: cargo +nightly fuzz run extract_archive -- -max_total_time=60 -timeout=5
+      # The parser targets start from the committed seeds in fuzz/seeds/; new
+      # inputs go to the ignored fuzz/corpus/ so the seeds stay as reviewed.
+      - name: Fuzz lockfile parsing
+        working-directory: src-tauri
+        run: |
+          mkdir -p fuzz/corpus/parse_lockfile
+          cargo +nightly fuzz run parse_lockfile fuzz/corpus/parse_lockfile fuzz/seeds/parse_lockfile -- -max_total_time=60 -timeout=5
+      - name: Fuzz report import
+        working-directory: src-tauri
+        run: |
+          mkdir -p fuzz/corpus/import_report
+          cargo +nightly fuzz run import_report fuzz/corpus/import_report fuzz/seeds/import_report -- -max_total_time=60 -timeout=5
+      - name: Fuzz package notes, package databases and the feed index
+        working-directory: src-tauri
+        run: |
+          mkdir -p fuzz/corpus/package_metadata
+          cargo +nightly fuzz run package_metadata fuzz/corpus/package_metadata fuzz/seeds/package_metadata -- -max_total_time=60 -timeout=5
       # A crash is only actionable with the input that produced it; libFuzzer
       # writes it under fuzz/artifacts/<target>/ and the runner discards it.
       - name: Retain fuzz crash inputs

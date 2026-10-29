@@ -1,0 +1,4 @@
+	# pinned
+requests==2.31.0 --hash=sha256:abc
+uvicorn[standard]==0.29.0  # server
+Flask_Login == 0.6.3 ; python_version >= "3.8"

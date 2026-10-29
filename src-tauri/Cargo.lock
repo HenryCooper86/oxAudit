@@ -3925,7 +3925,6 @@ dependencies = [
  "hmac",
  "ignore",
  "include_dir",
- "indexmap 2.14.0",
  "jsonschema",
  "keyring",
  "libc",
@@ -3938,6 +3937,7 @@ dependencies = [
  "oxaudit-benchmark",
  "oxaudit-compliance",
  "oxaudit-domain",
+ "oxaudit-parsers",
  "oxaudit-scanners",
  "percent-encoding",
  "printpdf",
@@ -3947,7 +3947,6 @@ dependencies = [
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
- "serde-saphyr",
  "serde_json",
  "sha1",
  "sha2",
@@ -4042,6 +4041,22 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "uuid",
+]
+
+[[package]]
+name = "oxaudit-parsers"
+version = "0.1.0"
+dependencies = [
+ "indexmap 2.14.0",
+ "once_cell",
+ "quick-xml 0.42.0",
+ "regex",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml 0.8.2",
 ]
 
 [[package]]

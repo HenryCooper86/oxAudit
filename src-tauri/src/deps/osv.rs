@@ -8,29 +8,8 @@ const MAX_QUERY_PAGES: usize = 64;
 const MAX_PACKAGE_ADVISORIES: usize = 10_000;
 const MAX_BATCH_MATCHES: usize = 100_000;
 
-/// OSV requires all three package coordinates. Keep this predicate shared by
-/// request construction, progress accounting, and cache receipts so a package
-/// is never recorded as queried unless it was eligible for the request.
-///
-/// Only registry releases are queried. Git checkouts, local/path code, direct
-/// URL archives and workspace members merely share a name and version with
-/// whatever the public registry holds; querying them would attribute another
-/// package's advisories (or its absence) to project code.
-pub fn is_queryable_dependency(dependency: &Dependency) -> bool {
-    dependency.ecosystem != "unknown"
-        && !dependency.occurrence.local_workspace
-        && !matches!(
-            dependency.occurrence.source.as_deref(),
-            Some("git" | "local" | "url")
-        )
-        && !dependency.name.trim().is_empty()
-        && !dependency.version.trim().is_empty()
-}
-
-pub fn queryable_dependencies(deps: &[Dependency]) -> impl Iterator<Item = &Dependency> {
-    deps.iter()
-        .filter(|dependency| is_queryable_dependency(dependency))
-}
+// Shared with the lockfile parsers, whose `source` values it reads.
+pub use oxaudit_parsers::models::{is_queryable_dependency, queryable_dependencies};
 
 pub fn dependency_query_key(dependency: &Dependency) -> String {
     format!(

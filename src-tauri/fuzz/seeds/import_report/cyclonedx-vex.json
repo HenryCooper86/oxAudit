@@ -1,0 +1,65 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "metadata": {
+    "component": {
+      "bom-ref": "root",
+      "name": "root"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:generic/openssl@3.0.1",
+      "type": "library",
+      "name": "openssl",
+      "version": "3.0.1",
+      "purl": "pkg:generic/openssl@3.0.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "components": [
+        {
+          "bom-ref": "leaf",
+          "name": "leaf",
+          "version": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "dup",
+      "name": "a"
+    },
+    {
+      "bom-ref": "dup"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "root",
+      "dependsOn": [
+        "pkg:generic/openssl@3.0.1",
+        "missing",
+        "dup"
+      ]
+    }
+  ],
+  "vulnerabilities": [
+    {
+      "id": "CVE-2024-1000",
+      "affects": [
+        {
+          "ref": "pkg:generic/openssl@3.0.1"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_reachable",
+        "detail": "Not reachable."
+      }
+    }
+  ]
+}

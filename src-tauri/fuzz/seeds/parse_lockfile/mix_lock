@@ -1,0 +1,4 @@
+%{
+  "phoenix": {:hex, :phoenix, "1.7.10", "abcdef0123", [:mix], [{:castore, "~> 1.0", [hex: :castore]}], "hexpm", "hash"},
+  "my_lib": {:path, "libs/my_lib"},
+}

@@ -1,0 +1,12 @@
+Package: openssl
+Status: install ok installed
+Version: 3.0.11-1~deb12u2
+
+Package: removed
+Status: deinstall ok config-files
+Version: 1.0
+
+Package: libc6
+Status: install ok installed
+Source: glibc
+Version: 2.36-9+deb12u4

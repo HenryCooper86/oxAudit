@@ -1,0 +1,16 @@
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      plugin:
+        specifier: ^1.2.3
+        version: 1.2.3(react@18.2.0)
+packages:
+  plugin@1.2.3:
+    resolution: {integrity: sha512-x}
+  '@scope/tool@2.3.4':
+    resolution: {integrity: sha512-y}
+  local@file:../local:
+    resolution: {directory: ../local, type: directory}
+snapshots:
+  plugin@1.2.3(react@18.2.0): {}

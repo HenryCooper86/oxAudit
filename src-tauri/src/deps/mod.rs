@@ -1,7 +1,6 @@
-mod go_inventory;
+use oxaudit_parsers::go_inventory;
 pub mod lockfiles;
 pub mod osv;
-pub mod relationships;
 pub mod service;
 
 const MAX_FAILED_LOCKFILES_IN_MESSAGE: usize = 5;

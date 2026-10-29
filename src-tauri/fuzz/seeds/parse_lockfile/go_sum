@@ -1,0 +1,3 @@
+example.com/original v0.1.0 h1:old=
+example.com/fork v1.2.0 h1:new=
+example.com/fork v1.2.0/go.mod h1:mod=

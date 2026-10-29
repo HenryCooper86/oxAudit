@@ -1331,11 +1331,12 @@ src-tauri/            Rust backend (Tauri v2)
     oxaudit-scanners/     bounded declarative rules and optional object analysis
     oxaudit-benchmark/    resumable ground-truth contracts and metrics
     oxaudit-compliance/   declarative readiness profiles and evidence evaluation
+    oxaudit-parsers/      fuzzed lockfile, report-import, ELF note and package-database parsers
   src/adapters/       SQLite, scanner mapping, providers and standards reporting
   src/presentation/   canonical Tauri event projection
   src/models.rs       shared serde models (camelCase ⇄ TypeScript types)
   src/scanners/       secrets.rs (rules + entropy engine), patterns.rs (source rules)
-  src/deps/           lockfiles.rs (parsers), osv.rs (OSV client + CVSS math)
+  src/deps/           dependency scan service, osv.rs (OSV client + CVSS math)
   src/binscan/        native binary scanner plus optional external-tool adapters
   src/findings/       durable runs, evidence, review, policy, diff and SQLite storage
   src/triage/         scope, falsification gates and silent-drop manifest

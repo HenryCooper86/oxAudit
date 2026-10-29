@@ -1,0 +1,36 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Semgrep",
+          "semanticVersion": "1.2.3"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "python.sql-injection",
+          "level": "error",
+          "message": {
+            "text": "Untrusted input reaches SQL."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/app.py"
+                },
+                "region": {
+                  "startLine": 42,
+                  "startColumn": 7
+                }
+              }
+            }
+          ]
+        },
+        {}
+      ]
+    }
+  ]
+}

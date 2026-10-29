@@ -1,0 +1,28 @@
+version = 1
+revision = 2
+requires-python = ">=3.12"
+
+[[package]]
+name = "anyio"
+version = "4.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "idna" },
+]
+sdist = { url = "https://files.pythonhosted.org/anyio-4.3.0.tar.gz", hash = "sha256:abc", size = 1 }
+
+[[package]]
+name = "idna"
+version = "3.7"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "my-project"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [{ name = "anyio" }]
+
+[[package]]
+name = "vendored"
+version = "0.3.0"
+source = { git = "https://example.com/vendored.git#abc" }

@@ -1,0 +1,13 @@
+module example.com/app
+
+go 1.22
+
+require example.com/original v1.0.0
+
+require (
+	golang.org/x/text v0.14.0 // indirect
+	example.com/local v0.0.0
+)
+
+replace example.com/original => example.com/fork v1.2.0
+replace example.com/local => ./local

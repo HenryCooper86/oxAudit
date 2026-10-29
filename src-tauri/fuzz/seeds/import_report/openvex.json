@@ -1,0 +1,40 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2024-1000"
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/app@1"
+        }
+      ],
+      "status": "not_affected"
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2024-1001"
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/app@1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2024-1002"
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/app@1"
+        }
+      ],
+      "status": "affected",
+      "action_statement": "Upgrade."
+    }
+  ]
+}

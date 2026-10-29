@@ -1,0 +1,21 @@
+{
+  "packages": [
+    {
+      "name": "monolog/monolog",
+      "version": "3.5.0"
+    },
+    {
+      "name": "acme/local",
+      "version": "dev-main",
+      "dist": {
+        "type": "path"
+      }
+    }
+  ],
+  "packages-dev": [
+    {
+      "name": "phpunit/phpunit",
+      "version": "v10.5.0"
+    }
+  ]
+}

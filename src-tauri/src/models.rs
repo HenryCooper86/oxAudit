@@ -173,53 +173,14 @@ pub struct ScanResult {
 // Dependency / application scanning
 // ---------------------------------------------------------------------------
 
-/// Same-read lockfile occurrence evidence. Historical projections default unknown.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct DependencyOccurrence {
-    /// Origin kind when the lockfile distinguishes registry, git and local code.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    /// Ruby platform suffix, separated from the registry version used for queries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub platform: Option<String>,
-    #[serde(default)]
-    pub local_workspace: bool,
-    pub install_path: Option<String>,
-    pub status: String,
-    pub paths: Vec<DependencyPath>,
-    pub warnings: Vec<String>,
-}
-impl Default for DependencyOccurrence {
-    fn default() -> Self {
-        Self {
-            source: None,
-            platform: None,
-            local_workspace: false,
-            install_path: None,
-            status: "unknown".into(),
-            paths: Vec::new(),
-            warnings: Vec::new(),
-        }
-    }
-}
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct DependencyPath {
-    /// Empty string identifies the root manifest; other values are relative directories.
-    pub workspace: String,
-    pub entry_point: String,
-    pub chain: Vec<DependencyStep>,
-}
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct DependencyStep {
-    pub name: String,
-    pub package_name: String,
-    pub install_path: String,
-    pub dependency_type: String,
-    pub declared: String,
-}
+// The lockfile parsers build these; they live in `oxaudit-parsers` so the
+// parsers can be fuzzed without the GUI crate. The path records are only
+// named by tests here, but they belong to the same vocabulary.
+#[allow(unused_imports)]
+pub use oxaudit_parsers::models::{
+    Dependency, DependencyOccurrence, DependencyPath, DependencyStep,
+};
+
 /// Raw, matching-package OSV affected entries preserve every range/event and version.
 /// None means historical or missing matching identity, never proof of a safe upgrade.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -228,22 +189,6 @@ pub struct AffectedEvidence {
     pub ecosystem: String,
     pub package_name: String,
     pub records: Vec<serde_json::Value>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct Dependency {
-    #[serde(default)]
-    pub occurrence: DependencyOccurrence,
-    pub ecosystem: String,
-    pub name: String,
-    pub version: String,
-    pub lockfile: String,
-    /// Declared license, when the lockfile itself carries it (npm
-    /// package-lock v2/v3 entries do). Absent means unknown — never
-    /// NOASSERTION-style guessing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub license: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

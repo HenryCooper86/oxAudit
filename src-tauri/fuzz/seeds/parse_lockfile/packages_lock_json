@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0": {
+      "Newtonsoft.Json": {
+        "type": "Direct",
+        "requested": "[13.0.3, )",
+        "resolved": "13.0.3"
+      },
+      "MyProject": {
+        "type": "Project"
+      }
+    },
+    "net8.0/linux-x64": {
+      "Microsoft.Extensions.Primitives": {
+        "type": "Transitive",
+        "resolved": "2.2.0"
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "run": {},
+  "components": [
+    {
+      "id": "old-a",
+      "name": "same",
+      "purl": "pkg:generic/same@1",
+      "license": "MIT",
+      "dependsOn": [
+        "old-b"
+      ]
+    },
+    {
+      "id": "old-b",
+      "name": "same",
+      "purl": "pkg:generic/same@1",
+      "dependsOn": [
+        "old-a"
+      ]
+    }
+  ],
+  "projection": {
+    "unmappedRecords": [
+      "earlier loss"
+    ]
+  }
+}
