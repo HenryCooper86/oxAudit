@@ -2,94 +2,125 @@
 
 There are two supported ways to get oxAudit, and they are different builds:
 
-1. **The published release.** The repository is public, and
-   [v0.1.0](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.1.0)
-   (published 2026-09-26) ships prebuilt `oxaudit-cli` binaries for Linux
-   x86_64, macOS x86_64/arm64, and Windows x86_64, plus unsigned Linux x86_64
-   desktop packages, SBOMs, checksums, and signatures. On macOS and Linux,
+1. **The published release.** The repository is public, and the
+   [latest release](https://github.com/HenryCooper86/oxAudit/releases/latest)
+   — [v0.2.6](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.6),
+   published 2026-10-26, at the time of writing — ships prebuilt
+   `oxaudit-cli` binaries for Linux x86_64 and aarch64, macOS (one universal
+   x86_64 + arm64 binary) and Windows x86_64, unsigned Linux x86_64 desktop
+   packages, a multi-architecture container image referenced by digest,
+   SBOMs, checksums, and signatures. On macOS and Linux,
    `scripts/install.sh` downloads, checksum-verifies, and installs the CLI.
 2. **A local source build of `main`.** This is required for the desktop pilot
-   on macOS/Windows, the headless browser server, a Linux aarch64 CLI, and
-   every change newer than the v0.1.0 tag. `main` still declares version
-   0.1.0 while being newer code, so it is a pilot artifact, not the published
-   release — name the exact commit when reporting results.
+   on macOS/Windows, a headless server outside the container, and every
+   change newer than the latest release tag. Between releases `main` still
+   declares the last released version while being newer code, so it is a
+   pilot artifact, not the published release — name the exact commit when
+   reporting results. The [changelog](../CHANGELOG.md) lists unreleased
+   changes.
 
-Neither path provides a signed macOS/Windows desktop installer or a public
-container image today. The [release checklist](release-checklist.md) records
-publication state with dated verification evidence, not continuous
-monitoring.
+Neither path provides a signed macOS/Windows desktop installer today. The
+[release checklist](release-checklist.md) records publication state with
+dated verification evidence, not continuous monitoring.
 
 ## Platform availability and verification
 
 This matrix is the single authoritative inventory; the
 [release checklist](release-checklist.md) and README link here instead of
 keeping copies. It was checked against the GitHub release API on
-**2026-10-20** against published v0.1.0 (20 uploaded assets).
+**2026-10-29** against published v0.2.6 (25 uploaded assets). Release asset
+names other than the Linux desktop packages carry no version, so the same
+names apply to later releases; `<version>` below is the release number
+without the leading `v` (for example `0.2.6`).
 
-| Platform / need | Published v0.1.0 artifact (exact name) | How to get it | `main` source build |
+| Platform / need | Published release artifact (exact name) | How to get it | `main` source build |
 | --- | --- | --- | --- |
 | Linux x86_64 CLI | `oxaudit-cli-linux-x86_64` | `scripts/install.sh`, [composite Action](../action/action.yml), manual download | Yes |
-| Linux aarch64 CLI | — not published. The release workflow is configured to add `oxaudit-cli-linux-aarch64`; until a release ships it, the installer's aarch64 path fails (the asset does not exist) | Build from source | Yes |
+| Linux aarch64 CLI | `oxaudit-cli-linux-aarch64` (first published in v0.2.0) | `scripts/install.sh`, manual download | Yes |
 | macOS x86_64 or arm64 CLI | `oxaudit-cli-macos-universal` (one universal binary, x86_64 + arm64) | `scripts/install.sh`, composite Action, manual download | Yes |
 | Windows x86_64 CLI | `oxaudit-cli-windows-x86_64.exe` | Manual download, or the composite Action on Windows runners. The installer script is POSIX `sh` — it does not run under PowerShell | Yes |
-| Linux x86_64 desktop | `oxAudit_0.1.0_amd64.AppImage`, `oxAudit_0.1.0_amd64.deb`, `oxAudit-0.1.0-1.x86_64.rpm` (unsigned packages) | Manual download from the release page | Yes, built on Linux |
+| Linux x86_64 desktop | `oxAudit_<version>_amd64.AppImage`, `oxAudit_<version>_amd64.deb`, `oxAudit-<version>-1.x86_64.rpm` (unsigned packages) | Manual download from the release page | Yes, built on Linux |
 | macOS desktop (.app/.dmg) | — not published (native signing not configured; see below) | Build from source: unsigned pilot bundle | Yes |
 | Windows desktop (NSIS/MSI) | — not published | Build from source: unsigned pilot bundle | Yes |
-| Container image | — no verified public image. Anonymous pulls from `ghcr.io/henrycooper86/oxaudit` were refused (403) on 2026-10-20 | Not a verified release install path; use the [source-built server](headless-server.md#running-it) | n/a |
+| Container image (CLI + headless server, linux/amd64 and linux/arm64) | `oxaudit-container.txt` holds the image reference pinned by digest; for v0.2.6 it is `ghcr.io/henrycooper86/oxaudit@sha256:173ebb003c1e9855d3e07ff7140b7f6b827e52f088ce954af98bec9e44ceb4cf`. An anonymous pull by that digest succeeded on 2026-10-29 | `docker pull` by the digest in that file; see the [server guide](headless-server.md#container) | n/a |
 | SBOMs (oxAudit itself) | `oxaudit-rust.cdx.json`, `oxaudit-npm.cdx.json` | Release page | Generated by the release workflow |
-| Checksums | `SHA256SUMS.txt` (covers the three CLIs, three Linux desktop packages and two SBOMs) | Release page | — |
-| Signatures | `.minisig`, `.bundle`, and `.bundle.minisig` sidecars for the three CLI binaries, plus `SHA256SUMS.txt.minisig` and `SHA256SUMS.txt.bundle` | Release page | — |
+| Checksums | `SHA256SUMS.txt` (covers the four CLIs, three Linux desktop packages, two SBOMs and `oxaudit-container.txt`) | Release page | — |
+| Signatures | `.minisig`, `.bundle`, and `.bundle.minisig` sidecars for the four CLI binaries, plus `SHA256SUMS.txt.minisig` and `SHA256SUMS.txt.bundle` | Release page | — |
 
 The release page also lists two auto-generated source archives (zip/tarball);
 those are GitHub-generated, not uploaded assets, and are not covered by
-`SHA256SUMS.txt`.
+`SHA256SUMS.txt`. The registry also carries version tags (`v0.2.6`,
+`latest`, per-architecture tags); a tag can be moved, so pin the digest.
 
 ### What verification proves
 
 - **Integrity.** `sha256sum -c SHA256SUMS.txt` (or `shasum -a 256 -c`)
   detects corrupted or substituted downloads. A checksum list downloaded
   from the same release does **not** by itself prove publisher identity.
-- **Publisher identity, offline key.** The three CLI binaries and
+- **Publisher identity, offline key.** The four CLI binaries and
   `SHA256SUMS.txt` carry minisign signatures verifiable against the public
   key committed at [`minisign.pub`](../minisign.pub):
 
   ```bash
   minisign -Vm oxaudit-cli-linux-x86_64 -P "$(curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/minisign.pub | tail -1)"
+  minisign -Vm SHA256SUMS.txt -P "$(curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/minisign.pub | tail -1)"
   ```
 
   Verification then rests on that committed key and works offline once you
-  have it. (The CLI bundles' own signatures are the `.bundle.minisig` files.)
+  have it. A signed `SHA256SUMS.txt` extends that identity to every file it
+  lists, including the desktop packages, SBOMs and the container reference.
+  (The CLI bundles' own signatures are the `.bundle.minisig` files.) A
+  renamed binary, such as the installer's `oxaudit-cli`, verifies with
+  `-x <asset>.minisig`.
 - **Publisher identity, workflow-bound.** The same files carry keyless
   Sigstore bundles, and every core artifact carries a SLSA build-provenance
-  attestation binding it to this repository's release workflow:
+  attestation binding it to this repository's release workflow. Set `TAG`
+  to the release you downloaded:
 
   ```bash
+  TAG=v0.2.6
   cosign verify-blob --bundle oxaudit-cli-linux-x86_64.bundle \
-    --certificate-identity 'https://github.com/HenryCooper86/oxAudit/.github/workflows/release.yml@refs/tags/v0.1.0' \
+    --certificate-identity "https://github.com/HenryCooper86/oxAudit/.github/workflows/release.yml@refs/tags/$TAG" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     oxaudit-cli-linux-x86_64
   gh attestation verify oxaudit-cli-linux-x86_64 --repo HenryCooper86/oxAudit \
-    --cert-identity 'https://github.com/HenryCooper86/oxAudit/.github/workflows/release.yml@refs/tags/v0.1.0' \
-    --source-ref refs/tags/v0.1.0
+    --cert-identity "https://github.com/HenryCooper86/oxAudit/.github/workflows/release.yml@refs/tags/$TAG" \
+    --source-ref "refs/tags/$TAG"
+  ```
+
+  Adding `--source-digest "$(git rev-list -n1 "$TAG")"` (run in a clone of
+  this repository) to `gh attestation verify` also binds the binary to the
+  tagged commit; for v0.2.6 that commit is
+  `c9f0568dc3ac890fcd9122e08f58cf92c9141b47`.
+- **Container image.** The image index is signed keylessly the same way:
+
+  ```bash
+  cosign verify "$(cat oxaudit-container.txt)" \
+    --certificate-identity-regexp '^https://github.com/HenryCooper86/oxAudit/' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
 
 These commands require the tagged release workflow, not just any workflow
-in the repository. For a later release, review its workflow/ref and update
-the expected tag deliberately. A repository-only `--repo` check provides a
-weaker identity constraint.
+in the repository. Review a new release's workflow/ref before trusting it,
+and set the expected tag deliberately. A repository-only `--repo` check, or
+the container command's repository-wide identity pattern, provides a weaker
+identity constraint.
 
 The Linux desktop packages and SBOMs have no per-file signature; verify them
 through the signed `SHA256SUMS.txt` or their provenance attestation. None of
 these mechanisms is Apple notarization or Windows Authenticode: the macOS CLI
 is not notarized, and macOS/Windows desktop installers are not published at
-all. The installer and a real `gh attestation verify` were exercised on
-2026-10-20 on macOS arm64; see the
-[release checklist](release-checklist.md#exercised-verification-2026-10-20-macos-arm64)
-for what was and was not tested.
+all. For v0.2.6, on 2026-10-29 on macOS arm64: the installer, `minisign -Vm`
+on `SHA256SUMS.txt` and two CLI binaries, the tag- and commit-bound
+`gh attestation verify` above on the Linux x86_64 CLI, and an anonymous
+container pull by digest were exercised; `cosign` was not. See the
+[release checklist](release-checklist.md#exercised-verification) for the
+full record and what remains untested.
 
 ## Install from the published release
 
-On macOS or Linux x86_64 (POSIX `sh`, `curl`, and `shasum`):
+On macOS or Linux (x86_64 or aarch64; POSIX `sh`, `curl`, and `shasum` or
+`sha256sum`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/scripts/install.sh | sh
@@ -98,24 +129,28 @@ curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/scripts/
 From a checkout you can pin a version and directory:
 
 ```bash
-OXAUDIT_VERSION=v0.1.0 OXAUDIT_INSTALL_DIR="$HOME/.oxaudit/bin" sh scripts/install.sh
+OXAUDIT_VERSION=v0.2.6 OXAUDIT_INSTALL_DIR="$HOME/.oxaudit/bin" sh scripts/install.sh
 ```
 
 The script selects the asset for the detected platform, verifies it against
 the release's `SHA256SUMS.txt` **before** installing anything, installs to
 `$OXAUDIT_INSTALL_DIR` (default `$HOME/.oxaudit/bin`), and prints the PATH
-line to add. `OXAUDIT_VERSION` defaults to `latest` (currently v0.1.0). Its
-checksum check is integrity only — for publisher identity use the minisign,
-cosign, or attestation commands above, as the installer itself reminds.
+line to add. `OXAUDIT_VERSION` defaults to `latest`, GitHub's latest
+published release. Its checksum check is integrity only — for publisher
+identity use the minisign, cosign, or attestation commands above, as the
+installer itself reminds.
 
 On Windows, download `oxaudit-cli-windows-x86_64.exe` from the
-[release page](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.1.0)
+[latest release](https://github.com/HenryCooper86/oxAudit/releases/latest)
 (or use the composite Action in CI); there is no PowerShell installer.
 
 The Linux desktop packages install with
-`sudo apt install ./oxAudit_0.1.0_amd64.deb` (or the `.rpm`/AppImage), and
-are unsigned — as are all v0.1.0 artifacts in the Apple/Microsoft sense
-described above.
+`sudo apt install ./oxAudit_0.2.6_amd64.deb` (substitute the version you
+downloaded; or use the `.rpm`/AppImage), and are unsigned — as are all
+release artifacts in the Apple/Microsoft sense described above.
+
+To run the CLI or the browser workbench from the container image instead,
+see [Container](headless-server.md#container) in the server guide.
 
 ## Build prerequisites
 
@@ -195,7 +230,7 @@ platform trust prompts; it is not a signed public release. Record the exact
 artifact and environment when reporting installation problems.
 
 Publishing posture, for accuracy: CLI and Linux releases publish **without**
-macOS/Windows credentials — v0.1.0 did. Native macOS notarization and Windows
+macOS/Windows credentials — every published release so far has. Native macOS notarization and Windows
 Authenticode are fail-closed gates that arm only if the optional
 `DESKTOP_BUNDLES` desktop-bundle jobs are enabled (currently unset; see the
 [release checklist](release-checklist.md)). Do not treat a local checksum as
@@ -237,20 +272,24 @@ See the README's “Git history secret scanning” section for coverage limits.
 Copy [examples/ci/oxaudit.yml](../examples/ci/oxaudit.yml) to
 `.github/workflows/oxaudit.yml` in a consuming repository whose protected main
 branch is named `main`. This is a source finding gate; it does not claim a
-complete dependency audit. Every action and the trusted tool checkout are pinned
-to full commits. The CLI is built from trusted oxAudit commit
-`e709594f25d3398592ebce4d35f374b9240e4113`, independently of target PR files.
-The target checkout is data only: no npm install, build scripts, project commands,
+complete dependency audit. Every action is pinned to a full commit, and the
+tool is the published v0.2.6 `oxaudit-cli-linux-x86_64` release binary, not a
+build: the workflow pins its release tag, the tag's commit
+(`c9f0568dc3ac890fcd9122e08f58cf92c9141b47`) and the binary's SHA-256 from that
+release's minisign-signed `SHA256SUMS.txt`. Before anything runs, it checks the
+download against the pinned digest and runs `gh attestation verify` requiring
+the tagged release workflow's identity, the tag ref, and the pinned commit, so
+a binary built from any other workflow, tag or commit fails the job. The target
+checkout is data only: no npm install, build scripts, project commands,
 submodules, or PR-supplied binaries are run. Review changes to the workflow and
 `.oxaudit/policy.json` as changes to your security gate.
 
-1. The example requires an `OXAUDIT_READ_TOKEN` repository secret and fails
-   closed without it. It was written when oxAudit was private; the repository
-   is public now, so any token that can read public repositories — including
-   the consuming repository's default `GITHUB_TOKEN` — has sufficient access,
-   but the workflow as pinned still demands the secret. Provide it, or
-   consciously adapt the workflow before dropping it. The token is used
-   only by the trusted checkout and is not persisted in Git config.
+1. No repository secret is needed. The job's own `GITHUB_TOKEN` (read access)
+   lets `gh` read the public attestation and the baseline artifacts. To move to
+   a later release, change `OXAUDIT_TOOL_VERSION`, `OXAUDIT_TOOL_COMMIT`
+   (`git rev-list -n1 <tag>` in a clone of oxAudit) and `OXAUDIT_TOOL_SHA256`
+   (the `oxaudit-cli-linux-x86_64` line of that release's `SHA256SUMS.txt`,
+   after checking its minisign signature as shown above) together.
 2. Merge the workflow to main and let a **push** run finish successfully. It
    publishes a baseline artifact named for that exact main commit, with tool
    commit, target commit, workflow run ID, and completed canonical source run ID.
@@ -262,7 +301,8 @@ submodules, or PR-supplied binaries are run. Review changes to the workflow and
    Artifacts retain baselines for 90 days (subject to repository retention caps);
    keep main's baseline available, rerun its workflow if expired, and update/rebase
    old PRs to a supported base. Change the tool pin deliberately and regenerate
-   main's baseline before relying on it in PRs.
+   main's baseline before relying on it in PRs: the baseline's provenance
+   records the tool commit, and a PR rejects a baseline made by another one.
 3. Require the `source` job in branch protection. The scan runs once to JSON in
    a fresh isolated database. It lists the completed canonical source run and
    exports SARIF from that same run. Exit **0** passes, **1** retains reports then
@@ -278,12 +318,17 @@ scan's observations. File-only baseline absence is **no longer observed (coverag
 unverified)**; it does not prove a verified fix. Canonical `targetLabel` is a
 human display name, not a trusted absolute project identifier.
 
-**Fork PR constraint:** GitHub does not provide repository secrets to normal fork
-PR workflows, so the required `OXAUDIT_READ_TOKEN` is absent there and the job
-intentionally fails with “no scan performed.” A maintainer must run the pinned
-CLI locally against a separate PR checkout and a trusted main baseline, then
-record the evidence through the team's review process. Do not silently mark the
-automated job passed or expose any token with `pull_request_target`.
+**Fork PRs:** the workflow no longer depends on a secret, so a fork PR is no
+longer refused for want of one. GitHub runs `pull_request` workflows from forks
+with a read-only `GITHUB_TOKEN`; the release download, attestation check and
+baseline download only read. No fork PR run of this workflow has been
+exercised, and whether the opt-in code-scanning upload below succeeds for one
+is unknown. If a fork PR cannot complete, a maintainer runs the same pinned,
+verified CLI locally against a separate PR checkout and a trusted main
+baseline, and records the evidence through the team's review process; never
+mark the job passed by hand. Do not switch
+to `pull_request_target` to obtain more access: it would run with the base
+repository's privileges next to untrusted PR content.
 See GitHub's [fork workflow restrictions](https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#workflows-in-forked-repositories).
 
 The example uploads downloadable Actions artifacts and requires `contents: read`,
@@ -294,8 +339,8 @@ the findings gate. That upload is opt-in: it runs only after a repository owner
 verifies the code-scanning capability is available and sets the repository variable
 **`OXAUDIT_CODE_SCANNING=true`**, because a repository without the capability would
 fail the step. SARIF paths are prefixed with `target/` before upload so code
-scanning resolves them against the repository root. The tool commit must not
-reorder or remove that prefix while the target is checked out under `target/`.
+scanning resolves them against the repository root. Keep that prefix while the
+target is checked out under `target/`.
 In this repository, CodeQL analysis and SARIF artifact retention stay required, as
 does the self-scan, and its own publication uses the same variable; on 2026-09-07
 the repository API returned 403, “Code scanning is not enabled for this

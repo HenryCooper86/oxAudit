@@ -41,6 +41,9 @@ src-tauri/icons/ios/
 # Isolated feature worktrees
 .worktrees/
 
+# Local scratch output
+tmp/
+
 # External benchmark corpora, fetched by tools/fetch-external-benchmark.mjs.
 # Not vendored: the OWASP Benchmark is GPL-2.0 and oxAudit is Apache-2.0, and
 # it is 239MB of generated servlets besides.

@@ -1,5 +1,5 @@
 # Copy to .github/workflows/oxaudit.yml in the consuming repository.
-# See docs/getting-started.md: private tool access, initial baseline and forks.
+# See docs/getting-started.md: tool pin, initial baseline, and forks.
 name: oxAudit source gate
 on:
   push:
@@ -15,29 +15,40 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  OXAUDIT_TOOL_COMMIT: e709594f25d3398592ebce4d35f374b9240e4113
-  CARGO_PROFILE_DEV_DEBUG: 0
-  CARGO_INCREMENTAL: 0
+  # The published, signed oxAudit release this gate trusts. Change all three
+  # together, deliberately, and regenerate main's baseline afterwards:
+  #   OXAUDIT_TOOL_VERSION  the release tag;
+  #   OXAUDIT_TOOL_COMMIT   `git rev-list -n1 <tag>` in the oxAudit repository;
+  #   OXAUDIT_TOOL_SHA256   the oxaudit-cli-linux-x86_64 line of that release's
+  #                         SHA256SUMS.txt (minisign-signed; see the guide).
+  OXAUDIT_TOOL_VERSION: v0.2.6
+  OXAUDIT_TOOL_COMMIT: c9f0568dc3ac890fcd9122e08f58cf92c9141b47
+  OXAUDIT_TOOL_SHA256: e09259dab733c7b23fa6dc06679e6b9e47971d9997ff5f819291b699b54281f0
 
 jobs:
   source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
-      - name: Require access to the private trusted tool
+      - name: Download and verify the pinned oxAudit release
         env:
-          TOOL_TOKEN: ${{ secrets.OXAUDIT_READ_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test -n "$TOOL_TOKEN" || { echo 'Missing OXAUDIT_READ_TOKEN: no scan performed. Fork PRs require the documented maintainer/local path.' >&2; exit 1; }
-
-      - name: Check out pinned trusted oxAudit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: HenryCooper86/oxAudit
-          ref: e709594f25d3398592ebce4d35f374b9240e4113
-          token: ${{ secrets.OXAUDIT_READ_TOKEN }}
-          path: tool
-          persist-credentials: false
+          set -euo pipefail
+          asset=oxaudit-cli-linux-x86_64
+          base="https://github.com/HenryCooper86/oxAudit/releases/download/$OXAUDIT_TOOL_VERSION"
+          mkdir -p tool/bin
+          curl -fsSL --retry 5 --retry-all-errors -o "tool/$asset" "$base/$asset"
+          # Integrity against the digest pinned above, not a list fetched now.
+          echo "$OXAUDIT_TOOL_SHA256  tool/$asset" | sha256sum -c -
+          # Publisher identity: build provenance from oxAudit's tagged release
+          # workflow, built from exactly the pinned commit.
+          gh attestation verify "tool/$asset" --repo HenryCooper86/oxAudit \
+            --cert-identity "https://github.com/HenryCooper86/oxAudit/.github/workflows/release.yml@refs/tags/$OXAUDIT_TOOL_VERSION" \
+            --source-ref "refs/tags/$OXAUDIT_TOOL_VERSION" \
+            --source-digest "$OXAUDIT_TOOL_COMMIT"
+          install -m 0755 "tool/$asset" tool/bin/oxaudit-cli
+          tool/bin/oxaudit-cli --version
 
       - name: Check out target as data only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -47,20 +58,6 @@ jobs:
           persist-credentials: false
           submodules: false
           lfs: false
-
-      - name: Install trusted tool build prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            build-essential curl file libayatana-appindicator3-dev librsvg2-dev \
-            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev wget
-
-      - name: Build trusted CLI
-        working-directory: tool
-        run: |
-          test "$(git rev-parse HEAD)" = "$OXAUDIT_TOOL_COMMIT"
-          rustup show active-toolchain
-          cargo build --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli
 
       - name: Locate successful main baseline at the PR base commit
         if: github.event_name == 'pull_request'
@@ -105,7 +102,7 @@ jobs:
           set -euo pipefail
           # Durable storage rejects group/world-accessible database directories.
           umask 077
-          cli="$GITHUB_WORKSPACE/tool/src-tauri/target/debug/oxaudit-cli"
+          cli="$GITHUB_WORKSPACE/tool/bin/oxaudit-cli"
           test -x "$cli"
           mkdir reports
           args=(scan "$GITHUB_WORKSPACE/target" --db "$GITHUB_WORKSPACE/reports/runs.sqlite" --format json --output "$GITHUB_WORKSPACE/reports/source.json")

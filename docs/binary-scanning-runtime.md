@@ -134,7 +134,9 @@ shipping data that goes stale.
 `docker/cve-bin-tool/Dockerfile` is a **recipe, not a distribution**. The image
 is built on the user's machine and pulls cve-bin-tool from PyPI there, so oxAudit
 never distributes GPL software and no GPL obligation attaches to it. This mirrors
-oxfuzz's `scripts/build-sandbox.sh` pattern. Do not push the built image to a
+the build-locally pattern of oxfuzz's own sandbox build script; that script
+lives in the [oxfuzz repository](https://github.com/HenryCooper86/oxfuzz), not
+here, and oxAudit has no `scripts/build-sandbox.sh`. Do not push the built image to a
 public registry without meeting those obligations.
 
 ---

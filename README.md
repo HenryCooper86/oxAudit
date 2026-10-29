@@ -22,11 +22,14 @@ and a finding on a workstation are the same finding.
 
 Two real paths, and they are different builds:
 
-- **Published release.** [v0.2.1](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.1)
-  (2026-10-25) ships prebuilt `oxaudit-cli` binaries for Linux x86_64,
-  macOS x86_64/arm64, and Windows x86_64, plus unsigned Linux x86_64
-  desktop packages. On macOS/Linux the installer verifies the release
-  checksum before installing:
+- **Published release.** The [latest release](https://github.com/HenryCooper86/oxAudit/releases/latest)
+  — [v0.2.6](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.6)
+  (2026-10-26) at the time of writing — ships prebuilt `oxaudit-cli`
+  binaries for Linux x86_64 and aarch64, macOS (one universal x86_64 + arm64
+  binary), and Windows x86_64, unsigned Linux x86_64 desktop packages, and a
+  linux/amd64 + linux/arm64 container image with the CLI and the headless
+  server, pinned by digest. On macOS/Linux the installer verifies the
+  release checksum before installing:
 
   ```bash
   curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/scripts/install.sh | sh
@@ -35,8 +38,8 @@ Two real paths, and they are different builds:
   Windows x86_64: download `oxaudit-cli-windows-x86_64.exe` from the
   release page, or use the [composite Action](action/action.yml) in CI.
 - **Build from source.** Needed for the desktop pilot (macOS/Windows
-  bundles), the headless browser server, a Linux aarch64 CLI, and anything
-  newer than the v0.2.1 tag. The [Getting started guide](docs/getting-started.md) lists
+  bundles), a headless browser server outside the container, and anything
+  newer than the latest release tag (see the [changelog](CHANGELOG.md)). The [Getting started guide](docs/getting-started.md) lists
   Node 22.22.2, the pinned Rust 1.97.1 toolchain, and platform-specific
   native prerequisites.
 
@@ -52,17 +55,16 @@ Two real paths, and they are different builds:
 The [platform availability and verification matrix](docs/getting-started.md#platform-availability-and-verification)
 names every published artifact exactly, separates checksum integrity from
 minisign/Sigstore/provenance publisher identity, and states what is not
-published: macOS/Windows desktop installers, a Linux aarch64 CLI, and a
-publicly pullable container image. CLI and Linux releases publish without
+published: macOS/Windows desktop installers. CLI and Linux releases publish without
 macOS/Windows credentials; native desktop-signing gates stay armed only for
 the optional desktop-bundle jobs (currently disabled). The
 [release checklist](docs/release-checklist.md) records publication state and
 dated verification evidence.
 
-For browser access, build and run the headless server using
-[the server guide](docs/headless-server.md). It serves the workbench through
-the same engines and documents the access token, server-side paths, and
-remote-access precautions.
+For browser access, run the headless server from the release's container
+image or build it, using [the server guide](docs/headless-server.md). It
+serves the workbench through the same engines and documents the access token,
+server-side paths, and remote-access precautions.
 
 The guide includes desktop bundle/install commands and the first-project wizard.
 The [inert demo](examples/pilot/README.md), [pilot protocol](docs/pilot-validation.md),
@@ -238,7 +240,7 @@ with a reason, an expiry, and a pull request.
 | **CI annotations** | Under GitHub Actions the CLI annotates findings on the pull request's files automatically and appends a severity-table job summary — no inputs, no extra step; SARIF upload to code scanning stays available and opt-in |
 | **Editor integration** | A VS Code extension ([`editors/vscode/`](editors/vscode)) scans the open workspace with the same CLI and reports findings as native diagnostics, with severity mapping and a status-bar scan control |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
-| **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, designed to ship in the project's container image ([ADR 0004](docs/architecture/adr/0004-headless-server.md)); no public image is published yet |
+| **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, shipped in the release's container image, pinned by digest ([server guide](docs/headless-server.md#container), [ADR 0004](docs/architecture/adr/0004-headless-server.md)) |
 | **Inventory monitoring** | `oxaudit-cli monitor` re-matches stored dependency inventories against a refreshed advisory database and reports advisories the stored runs did not report — the overnight "which of my projects does this new CVE affect" loop as one cron line, with `--update` scoped to the ecosystems actually used, `--fail-on` gating, and an optional Slack-compatible webhook digest; stored runs are never modified |
 
 ## Screens
@@ -276,6 +278,8 @@ with one reason.
 `oxaudit-cli` runs the same scanners, rules, and policy evaluation as the desktop
 app — it is a second adapter over the same core, not a second engine, so a
 finding reported in CI and a finding reported in the window are the same finding.
+The [CLI reference](docs/cli.md) lists every subcommand and option with its
+default; the examples below are the common paths.
 
 ```bash
 # Human-readable, grouped by file
@@ -495,9 +499,9 @@ proof to unknown and require a manual decision.
 
 A combined candidate must be an advisory-reported fixed version that clears every
 supplied supported range and explicit affected-version list. Comparison follows
-each ecosystem's own ordering — npm/crates.io/Go-style `SEMVER`, PyPI's PEP 440,
-Maven qualifiers, RubyGems segments, NuGet revisions, and Debian policy
-epoch/upstream/revision — ported from the same comparator the advisory database
+each ecosystem's own ordering — npm/crates.io/Go/Hex-style `SEMVER`, Pub's
+`pub_semver` build-metadata order, PyPI's PEP 440, Maven qualifiers, RubyGems
+segments, NuGet revisions, and Debian policy epoch/upstream/revision — ported from the same comparator the advisory database
 uses. Ecosystems whose ranges or versions cannot be compared with certainty stay
 manual, as do ambiguous versions and historical flattened strings. A candidate is
 the lowest advisory-reported fixed version strictly above the installed one.
@@ -520,10 +524,35 @@ Parser and range semantics follow the [npm lockfile documentation](https://githu
 
 ### In GitHub Actions
 
-Use the [complete consumer workflow](examples/ci/oxaudit.yml). The
+For a complete pull-request gate, use the [complete consumer workflow](examples/ci/oxaudit.yml).
+It installs the published v0.2.6 Linux CLI, checks it against a pinned SHA-256
+and its build-provenance attestation, and needs no repository secret. The
 [installation guide](docs/getting-started.md#complete-consumer-ci-example) explains
-the pinned tool checkout and its read token, fork restrictions, main baseline
-authority, canonical single-run JSON/SARIF export, and report retention.
+the tool pin, fork pull requests, main baseline authority, canonical single-run
+JSON/SARIF export, and report retention.
+
+For a plain scan step, the [composite action](action/action.yml) downloads a
+release CLI for the runner (Linux x64/ARM64, macOS x64/ARM64, Windows x64),
+verifies it against the release's `SHA256SUMS.txt`, and runs
+`oxaudit-cli scan`:
+
+```yaml
+- uses: actions/checkout@<full-commit-sha>
+- uses: HenryCooper86/oxAudit/action@<full-commit-sha>   # a reviewed oxAudit commit
+  with:
+    version: v0.2.6          # release tag of the CLI; default `latest`
+    target: .                # source path to scan; default `.`
+    args: --fail-on high --format sarif -o oxaudit.sarif
+```
+
+`target` is a path for `oxaudit-cli scan` only — the action runs no
+dependency, image or registry scan. `args` are extra `scan` flags, split on
+whitespace with no shell evaluation, so quotes, globs and `$()` stay literal.
+`repo` (default `HenryCooper86/oxAudit`) names the repository hosting the
+releases. Pin the action to a full commit you have reviewed, not a branch:
+the copy of the action at the v0.2.6 tag predates this input handling — it
+substitutes `target` and `args` into its shell script and has no Linux ARM64
+mapping — so pin a later commit of `main` that includes it.
 Setting the repository variable `OXAUDIT_CODE_SCANNING=true` additionally
 uploads the SARIF to code
 scanning, so findings appear inline in pull requests and in the Security tab —
@@ -1350,26 +1379,8 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --workspace --all-featu
 npm run tauri build      # produce a local bundle for this platform
 ```
 
-### Maintenance fixes — 2026-10-22
-
-- Scan and tool durations carry rounded seconds into the minute count rather
-  than displaying `1m 60s`. Unused path, truncation and pluralization helpers
-  were removed from the shared formatting module.
-- AI streaming accepts LF, CRLF and CR event framing, including line endings
-  split between network chunks, ignores one stream-leading UTF-8 BOM, and
-  preserves data-field whitespace after the single optional space defined by
-  the [SSE format](https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation).
-- Dependency recovery retains the complete live inventory when durable history
-  still identifies the same run, but restores a genuinely newer run. Target
-  edits are local drafts: **Find lockfiles** or **Check dependencies** activates
-  and remembers the project, avoiding per-keystroke runtime updates and input
-  corruption. Failed activation clears runtime context and offers a retry.
-  Upgrade decision requests belong to saved-run lifetimes.
-- npm v1 registry aliases use the real package name and pinned version. npm v1
-  and pnpm git, file, link and tarball coordinates are excluded from registry
-  inventory and OSV queries rather than treated as package versions. A valid
-  empty pnpm inventory is accepted; malformed sections and registry declarations
-  without a readable packages inventory remain coverage errors.
+Release-by-release changes, including unreleased work on `main`, are in the
+[changelog](CHANGELOG.md).
 
 ### Choosing grammars at build time
 

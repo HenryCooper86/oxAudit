@@ -112,7 +112,7 @@ npm run build
 ```
 
 HTTP regressions use a local server and do not depend on live OSV availability.
-`tests/fixtures/osv_lodash.json` contains the
+`src-tauri/tests/fixtures/osv_lodash.json` contains the
 [GHSA-35jh-r3h4-6jhm provider record](https://api.osv.dev/v1/vulns/GHSA-35jh-r3h4-6jhm),
 captured on 2026-10-09. The real-record parser test always runs using this
 committed fixture, replacing its previous optional `/tmp` input.

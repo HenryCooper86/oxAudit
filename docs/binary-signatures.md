@@ -705,7 +705,7 @@ CVEs; both rank the ones already found.
   days, `[0, 1]`, with a percentile.
 
 Both are parsed purely and tested against captured real responses
-(`tests/fixtures/cisa_kev.json`, `epss.json`), then fetched once per scan and
+(`src-tauri/tests/fixtures/cisa_kev.json` and `epss.json` beside it), then fetched once per scan and
 attached to every finding. They are best-effort: a failure of either is a note,
 not a scan failure — the findings stand on their own.
 

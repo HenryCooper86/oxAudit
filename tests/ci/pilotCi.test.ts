@@ -19,7 +19,7 @@ const provenanceShell = shellFor("Validate main baseline provenance");
 const gateShell = shellFor("Enforce scan completion and findings gate");
 async function setup() {
   const root = await mkdtemp(path.join(tmpdir(), "oxaudit CI shell "));
-  const directory = path.join(root, "tool/src-tauri/target/debug");
+  const directory = path.join(root, "tool/bin");
   await mkdir(directory, { recursive: true }); await mkdir(path.join(root, "target"));
   const output = path.join(root, "outputs"); await writeFile(output, "");
   const cli = path.join(directory, "oxaudit-cli");

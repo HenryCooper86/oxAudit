@@ -13,7 +13,7 @@ record parser.
 
 ```bash
 # Download the default ecosystems (npm, PyPI, Maven, crates.io, Go,
-# RubyGems, Packagist, NuGet) and build the database.
+# RubyGems, Packagist, NuGet, Hex, Pub) and build the database.
 oxaudit-cli advisory-db update --db ~/.oxaudit/advisories.sqlite3
 
 # Add distro ecosystems on top of the defaults; repeatable.
@@ -98,16 +98,29 @@ been downloaded, PyPI queries still fail as uncovered.
   half-open, `last_affected` is inclusive, `limit` is exclusive, intervals
   union in event order, and explicit `versions` lists add exact matches.
 - **Version comparison is per ecosystem spec**: semver (npm, crates.io, Go,
-  and `SEMVER`-typed ranges anywhere), PEP 440 (PyPI), Debian policy §5.6.12
-  (Debian, Ubuntu, Alpine), Maven `ComparableVersion` (Maven), RubyGems
-  (RubyGems), dotted-numeric-with-prerelease (NuGet, Packagist).
+  Hex, and `SEMVER`-typed ranges anywhere), Dart's `pub_semver` ordering
+  (Pub: build metadata is significant and sorts after the release it
+  annotates, so `1.0.0-pre < 1.0.0-pre+build < 1.0.0 < 1.0.0+build`), PEP 440
+  (PyPI), the Debian-style epoch/upstream/revision comparator of policy
+  §5.6.12 (`Debian:*`, `Ubuntu:*`, `Alpine:*`, the bare `Debian`, `Ubuntu`
+  and `Alpine` names, and the apk-versioned Wolfi and Chainguard), Maven
+  `ComparableVersion` (Maven), RubyGems (RubyGems), and
+  dotted-numeric-with-prerelease (NuGet, Packagist).
+- **RPM distributions stay unmatched.** Rocky Linux, AlmaLinux, Red Hat and
+  SUSE versions need `rpmvercmp`, which oxAudit does not implement, so their
+  ranges are undetermined rather than guessed, and the advisory is kept as
+  described below.
 - **`GIT` ranges are skipped.** They name commits, not releases; those
   advisories match only through their explicit affected-versions lists. The
   skip is counted and surfaced.
 - **A comparison the comparator refuses to make keeps the advisory** — the
   same trade the dataflow analysis makes: undetermined is reported, not
   dropped, and the refusal is counted in `advisoryNotes` with examples.
-  Refused shapes include unknown Maven qualifiers (`LATEST`, vendor-specific
-  tokens) and non-version strings.
+  Maven no longer refuses unknown qualifiers: Guava's `-jre`/`-android`,
+  Jetty's `.v20210629` and `LATEST` follow `ComparableVersion` ordering,
+  compared case-insensitively and sorted after every known qualifier. Only an
+  empty Maven version, or one containing whitespace or non-ASCII characters,
+  is refused; other refused shapes are non-version strings in the remaining
+  ecosystems.
 - **Package names normalize per ecosystem rules** exactly as the registry
   does: PEP 503 folding for PyPI, case-folding for npm, exact elsewhere.

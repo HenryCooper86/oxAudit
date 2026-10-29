@@ -150,7 +150,7 @@ The adoption pass reconciles published-release instructions with source-build
 instructions and adds a Chromium smoke suite against the real headless backend.
 The [pilot protocol](pilot-validation.md#automated-browser-smoke) documents setup,
 scenarios, isolated state and diagnostics; the
-[release checklist](release-checklist.md#exercised-verification-2026-10-20-macos-arm64)
+[release checklist](release-checklist.md#2026-10-20-v010-macos-arm64)
 records downloaded-release verification separately.
 
 | Check | Observed result |

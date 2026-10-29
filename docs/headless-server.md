@@ -23,15 +23,51 @@ The first start generates an access token, prints it, and stores it
 (`data/server-token`, chmod 600) so restarts reuse it. Open the printed
 address in a browser and paste the token at the gate.
 
-### Container distribution
+### Container
 
-Do not rely on an anonymous pull from `ghcr.io/henrycooper86/oxaudit`:
-published v0.1.0 includes no container reference, and an anonymous registry
-request was refused on 2026-10-20. Use the source-build commands above for
-the current browser workbench. The
-[installation matrix](getting-started.md#platform-availability-and-verification)
-and [release checklist](release-checklist.md#container-availability) distinguish
-workflow build capabilities from an actually available, verified distribution.
+Each published release since v0.2.0 comes with a multi-architecture image
+(linux/amd64, linux/arm64) carrying both `oxaudit-cli` and `oxaudit-server`
+with the built GUI. The release asset `oxaudit-container.txt` holds its reference pinned by
+digest; for [v0.2.6](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.6)
+that is
+`ghcr.io/henrycooper86/oxaudit@sha256:173ebb003c1e9855d3e07ff7140b7f6b827e52f088ce954af98bec9e44ceb4cf`.
+Use the digest, not a tag, and verify the image's signature as shown in the
+[installation guide](getting-started.md#what-verification-proves). An
+anonymous pull by that digest succeeded on 2026-10-29.
+
+The image's entrypoint is the CLI, so the server is one flag away. Inside the
+container the server binds `0.0.0.0:8080`, serves the GUI from `/app/dist`,
+and keeps all state under `/data`; it runs as the unprivileged `scanner`
+user, which must own the `/data` volume. Images up to and including v0.2.6
+do not create `/data`, so a fresh named volume is owned by root and the
+server exits with "cannot prepare the data directory". With those images,
+give the volume to `scanner` once before the first start (the `chown` line
+below); later images create `/data` owned by `scanner` and need no extra
+step:
+
+```bash
+IMAGE=ghcr.io/henrycooper86/oxaudit@sha256:173ebb003c1e9855d3e07ff7140b7f6b827e52f088ce954af98bec9e44ceb4cf
+docker run --rm --user 0 -v oxaudit-data:/data --entrypoint chown "$IMAGE" scanner:scanner /data
+docker run -d --name oxaudit -p 127.0.0.1:8080:8080 -v oxaudit-data:/data \
+  --entrypoint oxaudit-server "$IMAGE"
+docker logs oxaudit        # prints the generated access token on first start
+```
+
+The token is stored in the volume (`/data/server-token`, chmod 600), so
+restarts reuse it; open `http://127.0.0.1:8080` and paste it at the gate.
+Publishing the port as `127.0.0.1:8080:8080` keeps the loopback default on
+the host: Docker's plain `-p 8080:8080`, as in the release notes, listens on
+every host interface. Paths you enter in the browser are paths inside the
+container, so mount the projects to scan as further volumes (for example
+`-v "$PWD:/workspace"`); see [Browser import/export](#browser-importexport).
+
+## Remote access
+
+Reach the server from another device only through TLS: a reverse proxy or
+tunnel (Tailscale, `ssh -L`, Caddy, nginx) in front of the loopback-bound
+port, as described under [Security posture](#security-posture). Opening the
+workbench from a remote browser over plain HTTP is not a supported setup:
+the access token and every result would cross the network unencrypted.
 
 ## Flags and environment
 
