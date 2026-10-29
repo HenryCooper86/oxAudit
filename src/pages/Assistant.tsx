@@ -1,4 +1,4 @@
-import { Fragment, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { Fragment, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Ban,
   ClipboardPaste,
@@ -153,7 +153,11 @@ export function AssistantPage() {
   const [followUp, setFollowUp] = useState<string | null>(null);
   /** The agent's working plan, maintained by the `todo` tool. */
   const [todos, setTodos] = useState<TodoItem[]>([]);
-  const [sessionActivating, setSessionActivating] = useState(false);
+  // Mounting always starts the session bootstrap, so the page begins in the
+  // activating state rather than briefly claiming there is no conversation.
+  const [sessionActivating, setSessionActivating] = useState(true);
+  /** Why the session list could not be loaded; cleared by a successful retry. */
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [unavailableProject, setUnavailableProject] = useState<{
     sessionId: string;
     path: string;
@@ -373,31 +377,64 @@ export function AssistantPage() {
     }
   };
 
+  /**
+   * Load the session list and open the newest session, unless the one already
+   * open (a chat started after an earlier failure) is still in the list.
+   * A failure is kept on screen with a Retry rather than flashed as a toast:
+   * without a session nothing can be sent.
+   */
+  const bootstrapSessions = async (token: RequestToken) => {
+    try {
+      const list = await ensureAssistantSessions();
+      if (!requestIsCurrent(token)) return;
+      setSessionsError(null);
+      setSessions(list);
+      const current = list.find(
+        (session) => session.id === activeSessionIdRef.current,
+      );
+      if (!current) await activateSession(list[0], token);
+    } catch (error) {
+      if (requestIsCurrent(token)) setSessionsError(errorMessage(error));
+    } finally {
+      finishSessionRequest(token);
+    }
+  };
+
+  const retrySessions = () => {
+    if (sessionActivationPendingRef.current) return;
+    void bootstrapSessions(beginSessionRequest());
+  };
+
+  /** Stop targeting a session that no longer exists. */
+  const clearActiveSession = () => {
+    conversationId.current = newId();
+    activeSessionIdRef.current = null;
+    setActiveSessionId(null);
+    setMessages([]);
+    setTodos([]);
+    setConvUsage(null);
+    setModel(null);
+    setContextBudgetMetadata(null);
+    setPendingSteers([]);
+    setUnavailableProject(null);
+  };
+
+  // The Assistant owns this one-time session bootstrap. An effect event, so
+  // the per-render session helpers it calls are not dependencies.
+  const bootstrapOnMount = useEffectEvent(() => {
+    void bootstrapSessions(beginSessionRequest());
+  });
+
   useEffect(() => {
     mountedRef.current = true;
-    const token = beginSessionRequest();
-    void (async () => {
-      try {
-        const list = await ensureAssistantSessions();
-        if (!requestIsCurrent(token)) return;
-        setSessions(list);
-        await activateSession(list[0], token);
-      } catch (error) {
-        if (requestIsCurrent(token)) {
-          push("error", `Chat sessions could not be loaded: ${errorMessage(error)}`);
-        }
-      } finally {
-        finishSessionRequest(token);
-      }
-    })();
+    bootstrapOnMount();
     return () => {
       mountedRef.current = false;
       sessionActivationPendingRef.current = false;
       sessionRequests.invalidate();
     };
-    // The Assistant owns this one-time session bootstrap.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // sessionRequests is created once per mount (lazy ref), so this runs once.
+  }, [sessionRequests]);
 
   useEffect(() => {
     return () => streamHandleRef.current?.dispose();
@@ -457,6 +494,9 @@ export function AssistantPage() {
     matches[nextIndex]?.scrollIntoView({ block: "center" });
   }, [deferredSearchQuery, messages, searchIndex, searchOpen, streaming.text]);
 
+  // Escape runs the latest discard, not the one from when the dialog opened.
+  const discardContextOnEscape = useEffectEvent(() => discardContext());
+
   useEffect(() => {
     if (!contextOpen) return;
     const focusFrame = requestAnimationFrame(() =>
@@ -489,7 +529,7 @@ export function AssistantPage() {
       if (event.key === "Escape") {
         if (!contextAttachPendingRef.current) {
           event.preventDefault();
-          discardContext();
+          discardContextOnEscape();
         }
         return;
       }
@@ -878,15 +918,18 @@ export function AssistantPage() {
 
   // A declined steer becomes the next turn. This runs as an effect rather than
   // inline so `send` reads the settled message list, including the answer the
-  // run had already produced.
+  // run had already produced. `send` is an effect event: the latest one runs,
+  // and recreating it each render does not re-trigger the follow-up.
+  const sendFollowUp = useEffectEvent((content: string) => {
+    void send(content);
+  });
+
   useEffect(() => {
     if (!followUp || busy || sessionActivating || !activeSessionId || !aiReady) {
       return;
     }
     setFollowUp(null);
-    void send(followUp);
-    // `send` is recreated every render and intentionally not a dependency.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    sendFollowUp(followUp);
   }, [followUp, busy, sessionActivating, activeSessionId, aiReady]);
 
   const cancel = async () => {
@@ -1043,6 +1086,13 @@ export function AssistantPage() {
     setSearchOpen(true);
     requestAnimationFrame(() => searchInputRef.current?.focus());
   };
+  /** Why the composer is locked when no conversation is open. */
+  const noSessionMessage =
+    activeSessionId || sessionActivating
+      ? null
+      : sessionsError
+        ? "Conversations could not be loaded. Use Retry in the conversation list, or start a new chat."
+        : "No conversation is open. Start a new chat to send a message.";
   const availabilityLabel = {
     loading: "AI settings loading",
     checking: "AI endpoint checking",
@@ -1114,6 +1164,8 @@ export function AssistantPage() {
                 push("error", `Could not rename the conversation: ${errorMessage(error)}`);
               });
           }}
+          loadError={sessionsError}
+          onRetry={retrySessions}
           onDelete={async (id) => {
             // Drop the session from the list only after the delete persists;
             // on failure it stays visible instead of vanishing until reload.
@@ -1126,7 +1178,12 @@ export function AssistantPage() {
             setSessions((list) =>
               list.filter((session) => session.id !== id),
             );
-            if (id === activeSessionId) await createNewChat();
+            if (id === activeSessionId) {
+              // Cleared first, so a failed replacement leaves no session to
+              // send to rather than one whose transcript is already gone.
+              clearActiveSession();
+              await createNewChat();
+            }
           }}
         />
 
@@ -1535,15 +1592,23 @@ export function AssistantPage() {
                 }}
                 rows={2}
                 aria-describedby="assistant-composer-help"
-                disabled={!aiReady || sessionActivating}
-                placeholder={busy ? "Steer the run — your message is folded in at the next step…" : composerPlaceholder}
+                disabled={!aiReady || sessionActivating || !activeSessionId}
+                placeholder={
+                  busy
+                    ? "Steer the run — your message is folded in at the next step…"
+                    : noSessionMessage
+                      ? sessionsError
+                        ? "Conversations could not be loaded"
+                        : "Start a new chat to send a message"
+                      : composerPlaceholder
+                }
                 className="selectable block min-h-[58px] w-full resize-none border-0 bg-transparent px-4 py-3 text-[14px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-60"
               />
               <div className="flex min-h-10 items-center gap-1 border-t border-border px-2 py-1.5">
                 <button
                   type="button"
                   onClick={openManualContext}
-                  disabled={busy || sessionActivating}
+                  disabled={busy || sessionActivating || !activeSessionId}
                   className="inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-[11px] text-text-muted transition-colors hover:bg-surface-tertiary hover:text-text-primary disabled:opacity-35"
                 >
                   <ClipboardPaste size={12} aria-hidden="true" />
@@ -1610,7 +1675,8 @@ export function AssistantPage() {
               <span>
                 {busy
                   ? "Enter to steer the running turn · Shift+Enter for a new line"
-                  : "Enter to send · Shift+Enter for a new line"}
+                  : noSessionMessage ??
+                    "Enter to send · Shift+Enter for a new line"}
               </span>
               <span className="shrink-0">Project reads run without asking; other tools ask for approval</span>
             </div>
@@ -1686,7 +1752,9 @@ export function AssistantPage() {
       )}
 
       {contextOpen && (
+        // The backdrop is a pointer-only dismiss target; Escape is the keyboard path.
         <div
+          role="presentation"
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4 sm:p-6"
           onMouseDown={(event) => {
             if (

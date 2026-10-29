@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, MessageSquare, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, MessageSquare, Pencil, Plus, RotateCw, Search, Trash2, X } from "lucide-react";
 import { fmtDate } from "../../lib/format";
 import type { SessionInfo } from "../../lib/types";
 import { usePanelCollapsed } from "../../lib/usePanelCollapsed";
@@ -18,11 +18,19 @@ export function SessionSidebar({
   onCreate,
   onRename,
   onDelete,
+  loadError = null,
+  onRetry,
 }: {
   sessions: SessionInfo[];
   activeId: string | null;
   busy: boolean;
   disabled?: boolean;
+  /**
+   * Why the session list could not be loaded. Shown in place of the empty
+   * state, which would otherwise claim there is simply nothing saved yet.
+   */
+  loadError?: string | null;
+  onRetry?: () => void;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onRename: (id: string, title: string) => void;
@@ -158,7 +166,30 @@ export function SessionSidebar({
         </div>
 
         <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
-          {filtered.length === 0 && (
+          {loadError && (
+            <div
+              role="alert"
+              className="mx-0.5 mb-1 rounded-sm border border-error-border bg-error-subtle px-2.5 py-2 text-[12px] leading-relaxed"
+            >
+              <p className="flex items-center gap-1.5 font-medium text-error">
+                <AlertTriangle size={12} aria-hidden="true" className="shrink-0" />
+                Conversations could not be loaded.
+              </p>
+              <p className="mt-0.5 break-words text-text-secondary">{loadError}</p>
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  disabled={disabled}
+                  className="mt-1.5 inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-primary px-2 py-1 text-[11px] font-medium text-text-primary transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <RotateCw size={11} aria-hidden="true" />
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+          {filtered.length === 0 && !loadError && (
           <div className="px-3 py-7 text-center text-[12px] leading-relaxed text-text-muted">
             {sessions.length === 0
               ? "Your security conversations will appear here."
@@ -175,6 +206,8 @@ export function SessionSidebar({
               {renamingId === s.id ? (
                 <div className="flex items-center gap-1">
                   <input
+                    // The user just chose Rename; the field they asked for takes focus.
+                    // eslint-disable-next-line jsx-a11y/no-autofocus
                     autoFocus
                     aria-label={`Rename ${s.title}`}
                     value={renameValue}
