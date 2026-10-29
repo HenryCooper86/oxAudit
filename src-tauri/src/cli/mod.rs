@@ -21,6 +21,7 @@
 //! until someone deliberately asks it to gate one.
 
 pub mod baseline;
+mod compliance;
 mod dependency_baseline;
 mod staged;
 
@@ -119,6 +120,14 @@ enum Command {
     /// Built for cron: one honest delta, exit codes for gating, an optional
     /// webhook digest. The stored runs are never modified.
     Monitor(MonitorArgs),
+    /// Assess project evidence against built-in compliance readiness
+    /// profiles, record reviewer decisions, and compile PDF, HTML,
+    /// Markdown, CSV or JSON reports. Evidence readiness only: not
+    /// certification, legal advice, or a conformity determination.
+    Compliance {
+        #[command(subcommand)]
+        command: compliance::ComplianceCommand,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -803,6 +812,7 @@ pub fn run() -> i32 {
         Command::Hook { command } => staged::run_hook(command),
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
         Command::Monitor(args) => run_monitor(args, cli.quiet),
+        Command::Compliance { command } => compliance::run_compliance(command, cli.quiet),
     };
 
     match result {

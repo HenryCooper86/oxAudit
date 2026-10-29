@@ -63,6 +63,7 @@ until someone asks it to.
 | [`hook`](#hook) | Install, remove or inspect the pre-commit secrets hook |
 | [`external-benchmark`](#external-benchmark) | Score against the OWASP Benchmark |
 | [`monitor`](#monitor) | Re-match stored dependency inventories against a local advisory database and report the delta |
+| [`compliance`](#compliance) | Assess project evidence against built-in readiness profiles, record reviewer decisions and compile PDF, HTML, Markdown, CSV or JSON reports |
 
 ## scan
 
@@ -308,3 +309,95 @@ never modified.
 | `-o`, `--output <FILE>` | stdout | Write the report here |
 | `--fail-on <SEVERITY>` | `none` | Exit 1 when newly matching advisories reach this severity |
 | `--webhook <URL>` | — | POST a Slack-compatible `{"text": …}` digest of the delta. A delivery failure fails the command |
+
+## compliance
+
+The desktop Compliance Center and Report Studio from the command line,
+through the same engine functions: bounded evidence collection, immutable
+assessments, the append-only review log, the same report generator for every
+format (PDF included), atomic report writes and report receipts. Evidence
+readiness only: not certification, legal advice or a conformity
+determination. Every text result ends with that claim boundary, and every
+report format carries it. See
+[Compliance readiness and professional reporting](compliance-and-reporting.md).
+
+| Subcommand | Usage | Meaning |
+| --- | --- | --- |
+| `profiles` | `compliance profiles [--json]` | List the built-in readiness profiles (frameworks) and their controls; `--json` emits the full profiles, controls and disclaimers included |
+| `assess` | `compliance assess --db <FILE> --profile <ID>… --organization <TEXT> --assessor <NAME> [--title <TEXT>] [--scope <TEXT>] [--json] <PATH>` | Collect bounded evidence from a project directory and assess it against one or more profiles. Each profile becomes a separate, immutable assessment saved in `--db` |
+| `list` | `compliance list --db <FILE> [--limit <LIMIT>] [--json]` | List stored assessments, newest first |
+| `show` | `compliance show --db <FILE> (--assessment <ID> \| --latest [--profile <ID>]) [--json]` | Show one assessment: coverage summary, control matrix, matched evidence and recorded reviewer decisions |
+| `review` | `compliance review --db <FILE> --assessment <ID> --control <ID> --status <STATUS> --note <TEXT> --by <NAME> [--json]` | Record a reviewer decision on one control. Reviews are append-only and never change the automated status |
+| `report` | `compliance report --db <FILE> (--assessment <ID> \| --latest [--profile <ID>]) -o <FILE> [OPTIONS]` | Compile one assessment into a report, written atomically, with a receipt recorded in `--db` |
+
+`--db` is the findings database. For `assess`, completed runs of the same
+project stored in it count as evidence: run `deps <PATH> --db <FILE>` (or
+another stored scan) first, then assess with the same `--db`.
+
+**`assess` options**
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--db <FILE>` | required | Findings database. Completed runs of this project stored in it count as evidence, and the assessments are saved to it |
+| `--profile <ID>` | required | Profile to assess against, as listed by `compliance profiles`. Repeatable, up to eight |
+| `--organization <TEXT>` | required | Organization or program the assessment is for |
+| `--assessor <NAME>` | required | Responsible reviewer |
+| `--title <TEXT>` | `Compliance evidence readiness assessment` | Assessment title |
+| `--scope <TEXT>` | `Product software, supporting development lifecycle, and available project evidence.` | Scope and boundaries of the assessment |
+| `--json` | off | Emit the new assessments as JSON instead of a summary |
+
+Every profile is resolved before anything is saved, so an unknown id exits 2
+without storing assessments for the valid ones.
+
+**`list` and `show` options**
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--db <FILE>` | required | Findings database holding the assessments |
+| `--limit <LIMIT>` | `50` | `list` only: most assessments to list, 1 to 100 |
+| `--assessment <ID>` | — | `show` only: assessment id, as listed by `compliance list` |
+| `--latest` | off | `show` only: use the newest stored assessment instead of naming one |
+| `--profile <ID>` | — | `show` only, with `--latest`: the newest assessment of this profile |
+| `--json` | off | Emit JSON instead of text |
+
+**`review` options**
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--db <FILE>` | required | Findings database holding the assessment |
+| `--assessment <ID>` | required | Assessment holding the control |
+| `--control <ID>` | required | Control id, as shown by `compliance show` |
+| `--status <STATUS>` | required | `supported` (supported by review), `partial` (partially supported), `gap` (gap confirmed), `manual-review` (manual review needed) or `not-applicable` |
+| `--note <TEXT>` | required | Why: explain the decision and point to authoritative evidence (4 characters or more) |
+| `--by <NAME>` | required | Who decided, recorded for audit (2 characters or more) |
+| `--json` | off | Emit the recorded review as JSON instead of text |
+
+**`report` options**
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--db <FILE>` | required | Findings database holding the assessment. The report receipt is recorded here |
+| `--assessment <ID>` | — | Assessment id, as listed by `compliance list`. One of `--assessment` and `--latest` is required |
+| `--latest` | off | Use the newest stored assessment instead of naming one |
+| `--profile <ID>` | — | With `--latest`: the newest assessment of this profile |
+| `--format <FORMAT>` | `pdf` | `pdf` (paginated executive report), `html` (self-contained, print-ready), `markdown` (alias `md`), `csv` (control matrix) or `json` (canonical machine-readable report) |
+| `-o`, `--output <FILE>` | required | File to write. Its directory must exist; the file is written to a temporary file beside it, synced, then renamed into place, replacing any file already there |
+| `--title <TEXT>` | `<profile name> readiness report` | Report title |
+| `--organization <TEXT>` | the assessment's | Organization |
+| `--assessor <NAME>` | the assessment's | Assessor |
+| `--classification <TEXT>` | `Confidential` | Document classification |
+| `--executive-summary <TEXT>` | Report Studio's standard summary | Executive summary. The default states that the report is not a certification |
+| `--no-evidence` | off | Leave evidence references out of the report |
+| `--no-reviews` | off | Leave reviewer decisions, names and notes out of the report |
+| `--no-references` | off | Leave official source references out of the report |
+| `--json` | off | Emit the report receipt (id, path, SHA-256 of the written bytes, metadata) as JSON instead of text |
+
+The report defaults match Report Studio's. A report always goes to a file,
+never stdout, so every report has a receipt. When no reviewer decision is
+recorded, `report` warns on stderr (silenced by `--quiet`) that automated
+evidence coverage is not a conformity decision.
+
+An unknown profile or assessment id, `--latest` with no matching assessment,
+a missing target or output directory, a control outside the assessment, a
+review note shorter than 4 characters or out-of-bounds report metadata exits
+`2`. Nothing is written in those cases.

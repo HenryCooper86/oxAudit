@@ -12,6 +12,33 @@ The implementation has five deliberately separate boundaries:
 4. SQLite stores immutable assessments, append-only reviewer decisions, and report receipts. Report receipts include format, destination, timestamp, metadata, and the final SHA-256 digest.
 5. Report Studio compiles JSON, CSV, Markdown, self-contained HTML, and paginated PDF from the same report document. User-controlled HTML is escaped, CSV is quoted, writes are atomic, and all formats carry the same claim boundary.
 
+## From the command line
+
+`oxaudit-cli compliance` runs the same workflow without the desktop app, which
+suits CI jobs and scheduled evidence collection. It calls the same engine
+functions as the Compliance Center and Report Studio, so assessments, reviews
+and report receipts land in the same database tables, and the PDF comes from
+the same generator.
+
+```bash
+# Store a completed run so it counts as evidence, then assess
+oxaudit-cli deps . --db ~/.oxaudit/findings.sqlite3
+oxaudit-cli compliance assess . --db ~/.oxaudit/findings.sqlite3 \
+  --profile soc-2-tsc --profile owasp-top-10-2021 \
+  --organization "Example Corp" --assessor "Dana Reviewer"
+
+# Record a qualified decision, then compile the latest SOC 2 assessment
+oxaudit-cli compliance review --db ~/.oxaudit/findings.sqlite3 --assessment <id> \
+  --control soc-cc1 --status not-applicable --note "Covered by the parent programme" --by "Dana Reviewer"
+oxaudit-cli compliance report --db ~/.oxaudit/findings.sqlite3 --latest --profile soc-2-tsc \
+  --format pdf --output soc2-readiness.pdf
+```
+
+`compliance profiles` lists the profile ids, and `compliance list` and
+`compliance show` read stored assessments. Every text result ends with the
+claim boundary. See the [CLI reference](cli.md#compliance) for every option
+and exit code.
+
 ## Built-in starter profiles
 
 - ISO 26262:2018 functional safety

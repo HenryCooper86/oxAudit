@@ -501,6 +501,53 @@ fn compliance_assessments_reviews_and_report_receipts_are_durable_and_append_onl
 }
 
 #[test]
+fn latest_compliance_assessment_is_newest_overall_or_per_profile() {
+    let repository = FindingsRepository::open_in_memory().expect("open repository");
+    assert_eq!(
+        repository
+            .compliance_latest_assessment(None)
+            .expect("empty lookup"),
+        None
+    );
+    let assess = |profile_id: &str, id: &str, created_at_ms: u64| {
+        let assessment = oxaudit_compliance::assess(
+            &oxaudit_compliance::builtin_profile(profile_id).expect("profile"),
+            &oxaudit_compliance::EvidenceSnapshot {
+                root_label: "/project".into(),
+                files: vec![],
+                completed_runs: vec![],
+                collection_limits: vec![],
+            },
+            oxaudit_compliance::AssessmentMetadata {
+                title: "Readiness".into(),
+                organization: "Example".into(),
+                assessor: "Reviewer".into(),
+                scope: "Product".into(),
+            },
+            id.into(),
+            created_at_ms,
+        )
+        .expect("assessment");
+        repository
+            .compliance_save_assessment(&assessment)
+            .expect("save assessment");
+    };
+    assess("gdpr", "gdpr-old", 100);
+    assess("gdpr", "gdpr-new", 200);
+    assess("soc-2-tsc", "soc2", 300);
+
+    let latest = |profile: Option<&str>| {
+        repository
+            .compliance_latest_assessment(profile)
+            .expect("lookup")
+            .map(|assessment| assessment.id)
+    };
+    assert_eq!(latest(None).as_deref(), Some("soc2"));
+    assert_eq!(latest(Some("gdpr")).as_deref(), Some("gdpr-new"));
+    assert_eq!(latest(Some("unece-r155")), None);
+}
+
+#[test]
 fn provider_snapshot_identity_is_immutable_and_idempotent() {
     let repository = FindingsRepository::open_in_memory().expect("open repository");
     let snapshot = ProviderSnapshotRecord {

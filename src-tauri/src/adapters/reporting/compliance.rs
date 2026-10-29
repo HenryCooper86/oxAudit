@@ -7,6 +7,11 @@ use printpdf::{
 
 use crate::compliance::{ComplianceReportFormat, ComplianceReportMetadata, ComplianceReview};
 
+/// The qualification every machine-readable compliance artifact carries, and
+/// that the CLI repeats beside every compliance result it prints.
+pub const CLAIM_BOUNDARY: &str =
+    "Evidence readiness only - not certification, legal advice, or a conformity determination.";
+
 pub struct ReportDocument {
     pub assessment: oxaudit_compliance::ComplianceAssessment,
     pub reviews: Vec<ComplianceReview>,
@@ -64,7 +69,7 @@ fn generate_json(report: &ReportDocument) -> Result<Vec<u8>, String> {
     let value = serde_json::json!({
         "schemaVersion": 1,
         "documentType": "oxAudit compliance readiness report",
-        "claimBoundary": "Evidence readiness only - not certification, legal advice, or a conformity determination.",
+        "claimBoundary": CLAIM_BOUNDARY,
         "generatedAtMs": report.generated_at_ms,
         "report": report.metadata,
         "assessment": assessment,
@@ -109,7 +114,7 @@ fn generate_csv(report: &ReportDocument) -> String {
             } else {
                 String::new()
             },
-            "Evidence readiness only - not certification, legal advice, or a conformity determination.".into(),
+            CLAIM_BOUNDARY.into(),
         ];
         output.push_str(
             &row.iter()

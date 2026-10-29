@@ -97,7 +97,7 @@ fn help_names_every_subcommand() {
     let output = run(&["--help"]);
     assert_eq!(code(&output), 0);
     let help = stdout(&output);
-    for subcommand in ["scan", "deps", "export", "runs", "benchmark"] {
+    for subcommand in ["scan", "deps", "export", "runs", "benchmark", "compliance"] {
         assert!(help.contains(subcommand), "help omits {subcommand}");
     }
 }
@@ -2462,4 +2462,608 @@ fn vex_claims_import_trust_and_suggest_from_the_command_line() {
     assert!(text.contains("GHSA-e2e-fixture"), "{text}");
     assert!(text.contains("example@1.0.0"), "{text}");
     assert!(text.contains("a suggestion, not a decision"), "{text}");
+}
+
+// -------------------------------------------------------------- compliance
+
+const CLAIM_BOUNDARY: &str =
+    "Evidence readiness only - not certification, legal advice, or a conformity determination.";
+
+/// A project assessed against SOC 2 and the OWASP Top 10 using evidence the
+/// CLI itself produced: a completed dependency run stored in `db`, plus the
+/// two vendor documents SOC 2 CC9 looks for. CC9 is therefore fully
+/// supported by run and file evidence, and the rest are honest gaps.
+struct ComplianceFixture {
+    project: tempfile::TempDir,
+    _storage: tempfile::TempDir,
+    db: PathBuf,
+    run_id: String,
+    soc2: serde_json::Value,
+    owasp: serde_json::Value,
+}
+
+impl ComplianceFixture {
+    fn db(&self) -> String {
+        self.db.to_string_lossy().into_owned()
+    }
+}
+
+fn assessed_project() -> ComplianceFixture {
+    let project = empty_dependency_project();
+    std::fs::create_dir_all(project.path().join("docs")).unwrap();
+    std::fs::write(
+        project.path().join("docs/vendor-risk-assessment.md"),
+        "# Vendor risk assessment\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("docs/vendor-monitoring.md"),
+        "# Vendor monitoring\n",
+    )
+    .unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let db = storage.path().join("private/findings.sqlite");
+    let deps = run(&[
+        "deps",
+        &project.path().to_string_lossy(),
+        "--offline",
+        "--db",
+        &db.to_string_lossy(),
+        "--format",
+        "json",
+        "--quiet",
+    ]);
+    assert_eq!(code(&deps), 0, "{}", stderr(&deps));
+    let deps: serde_json::Value = serde_json::from_slice(&deps.stdout).unwrap();
+    let run_id = deps["summary"]["runId"].as_str().unwrap().to_owned();
+
+    let assessed = run(&[
+        "compliance",
+        "assess",
+        &project.path().to_string_lossy(),
+        "--db",
+        &db.to_string_lossy(),
+        "--profile",
+        "soc-2-tsc",
+        "--profile",
+        "owasp-top-10-2021",
+        "--organization",
+        "Example Corp",
+        "--assessor",
+        "Dana Reviewer",
+        "--json",
+    ]);
+    assert_eq!(code(&assessed), 0, "{}", stderr(&assessed));
+    let assessments: Vec<serde_json::Value> = serde_json::from_slice(&assessed.stdout).unwrap();
+    assert_eq!(assessments.len(), 2, "one immutable assessment per profile");
+    let [soc2, owasp] = <[serde_json::Value; 2]>::try_from(assessments).unwrap();
+    assert_eq!(soc2["profileId"], "soc-2-tsc");
+    assert_eq!(owasp["profileId"], "owasp-top-10-2021");
+    ComplianceFixture {
+        project,
+        _storage: storage,
+        db,
+        run_id,
+        soc2,
+        owasp,
+    }
+}
+
+fn control<'a>(assessment: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    assessment["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|control| control["controlId"] == id)
+        .unwrap_or_else(|| panic!("control {id} missing"))
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn compliance_profiles_list_every_framework_with_the_claim_boundary() {
+    let text = run(&["compliance", "profiles"]);
+    assert_eq!(code(&text), 0);
+    let listing = stdout(&text);
+    for id in [
+        "soc-2-tsc",
+        "owasp-top-10-2021",
+        "gdpr",
+        "iso-iec-27001-2022",
+    ] {
+        assert!(listing.contains(id), "profiles omit {id}: {listing}");
+    }
+    assert!(listing.contains("Evidence readiness, not certification."));
+
+    let json = run(&["compliance", "profiles", "--json"]);
+    assert_eq!(code(&json), 0);
+    let profiles: Vec<serde_json::Value> = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(profiles.len(), 10);
+    for profile in &profiles {
+        assert!(!profile["controls"].as_array().unwrap().is_empty());
+        assert!(
+            profile["disclaimer"].as_str().unwrap().contains("not"),
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn compliance_assessment_counts_cli_runs_and_project_files_as_evidence() {
+    let fixture = assessed_project();
+    let db = fixture.db();
+    let cc9 = control(&fixture.soc2, "soc-cc9");
+    assert_eq!(cc9["automatedStatus"], "supported", "{cc9}");
+    let evidence = cc9["evidence"].as_array().unwrap();
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item["kind"] == "run" && item["locator"] == fixture.run_id.as_str()),
+        "the stored dependency run must count as evidence: {cc9}"
+    );
+    let document = evidence
+        .iter()
+        .find(|item| item["locator"] == "docs/vendor-risk-assessment.md")
+        .expect("vendor document is evidence");
+    assert_eq!(document["contentSha256"].as_str().unwrap().len(), 64);
+    // Nothing on disk speaks to SOC 2 CC1; it stays a gap rather than being
+    // credited for unrelated evidence.
+    assert_eq!(control(&fixture.soc2, "soc-cc1")["automatedStatus"], "gap");
+    assert!(fixture.soc2["disclaimer"]
+        .as_str()
+        .unwrap()
+        .contains("not a SOC 2 report"));
+
+    let listed = run(&["compliance", "list", "--db", &db, "--json"]);
+    assert_eq!(code(&listed), 0);
+    let listed: Vec<serde_json::Value> = serde_json::from_slice(&listed.stdout).unwrap();
+    let ids = listed
+        .iter()
+        .map(|assessment| assessment["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&fixture.soc2["id"].as_str().unwrap()));
+    assert!(ids.contains(&fixture.owasp["id"].as_str().unwrap()));
+
+    let text = run(&["compliance", "list", "--db", &db]);
+    assert_eq!(code(&text), 0);
+    assert!(stdout(&text).ends_with(&format!("{CLAIM_BOUNDARY}\n")));
+
+    let shown = run(&[
+        "compliance",
+        "show",
+        "--db",
+        &db,
+        "--latest",
+        "--profile",
+        "soc-2-tsc",
+    ]);
+    assert_eq!(code(&shown), 0, "{}", stderr(&shown));
+    let shown = stdout(&shown);
+    assert!(shown.contains(fixture.soc2["id"].as_str().unwrap()));
+    assert!(shown.contains(fixture.soc2["disclaimer"].as_str().unwrap()));
+    assert!(shown.contains("[soc-cc9]"));
+    assert!(shown.contains(&format!("evidence run {}", fixture.run_id)));
+    assert!(shown.ends_with(&format!("{CLAIM_BOUNDARY}\n")));
+
+    let view = run(&[
+        "compliance",
+        "show",
+        "--db",
+        &db,
+        "--assessment",
+        fixture.owasp["id"].as_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(code(&view), 0);
+    let view: serde_json::Value = serde_json::from_slice(&view.stdout).unwrap();
+    assert_eq!(view["assessment"], fixture.owasp);
+    assert_eq!(view["reviews"], serde_json::json!([]));
+}
+
+#[test]
+fn compliance_reports_every_format_with_the_claim_boundary_and_a_receipt() {
+    use sha2::Digest;
+
+    let fixture = assessed_project();
+    let db = fixture.db();
+    let soc2_id = fixture.soc2["id"].as_str().unwrap();
+    let out = tempfile::tempdir().unwrap();
+
+    // Before any reviewer decision, the report says so on stderr.
+    let unreviewed = out.path().join("unreviewed.csv");
+    let output = run(&[
+        "compliance",
+        "report",
+        "--db",
+        &db,
+        "--assessment",
+        soc2_id,
+        "--format",
+        "csv",
+        "--output",
+        &unreviewed.to_string_lossy(),
+    ]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(stderr(&output).contains("No human review decisions are recorded"));
+    assert!(stdout(&output).ends_with(&format!("{CLAIM_BOUNDARY}\n")));
+
+    let review = run(&[
+        "compliance",
+        "review",
+        "--db",
+        &db,
+        "--assessment",
+        soc2_id,
+        "--control",
+        "soc-cc1",
+        "--status",
+        "not-applicable",
+        "--note",
+        "Governance is covered by the parent company's programme.",
+        "--by",
+        "Dana Reviewer",
+        "--json",
+    ]);
+    assert_eq!(code(&review), 0, "{}", stderr(&review));
+    let review: serde_json::Value = serde_json::from_slice(&review.stdout).unwrap();
+    assert_eq!(review["status"], "notApplicable");
+    assert_eq!(review["controlId"], "soc-cc1");
+
+    for (format, file) in [
+        ("pdf", "report.pdf"),
+        ("html", "report.html"),
+        ("markdown", "report.md"),
+        ("csv", "report.csv"),
+        ("json", "report.json"),
+    ] {
+        let path = out.path().join(file);
+        let output = run(&[
+            "compliance",
+            "report",
+            "--db",
+            &db,
+            "--latest",
+            "--profile",
+            "soc-2-tsc",
+            "--format",
+            format,
+            "--output",
+            &path.to_string_lossy(),
+            "--json",
+        ]);
+        assert_eq!(code(&output), 0, "{format}: {}", stderr(&output));
+        assert!(
+            !stderr(&output).contains("No human review decisions"),
+            "{format}: a reviewed assessment must not warn"
+        );
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(receipt["assessmentId"], soc2_id);
+        assert_eq!(receipt["outputPath"], path.to_string_lossy().as_ref());
+        assert_eq!(
+            receipt["contentSha256"],
+            format!("{:x}", sha2::Sha256::digest(&bytes)),
+            "{format}: the receipt must hash exactly what was written"
+        );
+        assert_eq!(receipt["metadata"]["classification"], "Confidential");
+        assert_eq!(receipt["metadata"]["organization"], "Example Corp");
+        let content = String::from_utf8_lossy(&bytes);
+        match format {
+            "pdf" => {
+                assert!(bytes.starts_with(b"%PDF"));
+                let pdf =
+                    printpdf::PdfDocument::parse(&bytes, &Default::default(), &mut Vec::new())
+                        .expect("a parseable PDF");
+                let text = pdf
+                    .pages
+                    .iter()
+                    .flat_map(|page| page.extract_text(&pdf.resources))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(text.contains("not certification"), "{text}");
+                assert!(text.contains("SOC 2 Trust Services Criteria"), "{text}");
+            }
+            "html" => {
+                assert!(content.starts_with("<!doctype html>"));
+                assert!(content.contains("Evidence coverage is not certification"));
+                assert!(content.contains("Dana Reviewer"));
+            }
+            "markdown" => {
+                assert!(content.starts_with("# SOC 2 Trust Services Criteria"));
+                assert!(content.contains("**Readiness boundary:**"));
+            }
+            "csv" => {
+                let mut lines = content.lines();
+                assert!(lines.next().unwrap().ends_with(",claim_boundary"));
+                let rows = lines.collect::<Vec<_>>();
+                assert_eq!(rows.len(), 10, "one row per SOC 2 control");
+                assert!(rows
+                    .iter()
+                    .all(|row| row.ends_with(&format!("\"{CLAIM_BOUNDARY}\""))));
+                let cc1 = rows
+                    .iter()
+                    .find(|row| row.starts_with("\"soc-cc1\""))
+                    .unwrap();
+                assert!(cc1.contains("\"notApplicable\""), "{cc1}");
+            }
+            "json" => {
+                let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(report["claimBoundary"], CLAIM_BOUNDARY);
+                assert_eq!(report["assessment"]["id"], soc2_id);
+                assert_eq!(report["reviews"][0]["controlId"], "soc-cc1");
+                assert!(report["assessment"]["sourceUrl"].is_string());
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn compliance_report_honors_report_studio_disclosure_options() {
+    let fixture = assessed_project();
+    let out = tempfile::tempdir().unwrap();
+    // A relative --output lands in the working directory and the receipt
+    // records the absolute path, as the desktop's save dialog would.
+    let output = cli()
+        .current_dir(out.path())
+        .args([
+            "compliance",
+            "report",
+            "--db",
+            &fixture.db(),
+            "--assessment",
+            fixture.soc2["id"].as_str().unwrap(),
+            "--format",
+            "json",
+            "--output",
+            "minimal.json",
+            "--title",
+            "Vendor programme readiness",
+            "--classification",
+            "Internal",
+            "--no-evidence",
+            "--no-reviews",
+            "--no-references",
+            "--json",
+            "--quiet",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        output.stderr.is_empty(),
+        "--quiet silences warnings: {}",
+        stderr(&output)
+    );
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let recorded = Path::new(receipt["outputPath"].as_str().unwrap());
+    assert!(recorded.is_absolute());
+    assert!(recorded.ends_with("minimal.json"));
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.path().join("minimal.json")).unwrap()).unwrap();
+    assert_eq!(report["report"]["title"], "Vendor programme readiness");
+    assert_eq!(report["report"]["classification"], "Internal");
+    assert_eq!(report["reviews"], serde_json::json!([]));
+    assert!(report["assessment"]["sourceUrl"].is_null());
+    assert!(report["assessment"]["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|control| control["evidence"] == serde_json::json!([])));
+    assert_eq!(report["claimBoundary"], CLAIM_BOUNDARY);
+}
+
+#[test]
+fn compliance_input_mistakes_are_usage_errors_that_save_nothing() {
+    let fixture = assessed_project();
+    let db = fixture.db();
+    let project = fixture.project.path().to_string_lossy().into_owned();
+    let soc2_id = fixture.soc2["id"].as_str().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let report_path = out.path().join("report.pdf").to_string_lossy().into_owned();
+
+    // An unknown profile anywhere in the list stops the run before the valid
+    // ones are saved.
+    let fresh = tempfile::tempdir().unwrap();
+    let fresh_db = fresh
+        .path()
+        .join("private/fresh.sqlite")
+        .to_string_lossy()
+        .into_owned();
+    let unknown = run(&[
+        "compliance",
+        "assess",
+        &project,
+        "--db",
+        &fresh_db,
+        "--profile",
+        "gdpr",
+        "--profile",
+        "iso-9001",
+        "--organization",
+        "Example Corp",
+        "--assessor",
+        "Dana Reviewer",
+    ]);
+    assert_eq!(code(&unknown), 2);
+    assert!(stderr(&unknown).contains("unknown compliance profile: iso-9001"));
+    assert!(stderr(&unknown).contains("compliance profiles"));
+    let listed = run(&["compliance", "list", "--db", &fresh_db, "--json"]);
+    assert_eq!(code(&listed), 0);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&listed.stdout).unwrap(),
+        serde_json::json!([])
+    );
+
+    // With no assessments at all, --latest has nothing to report on.
+    let empty = run(&[
+        "compliance",
+        "report",
+        "--db",
+        &fresh_db,
+        "--latest",
+        "--output",
+        &report_path,
+    ]);
+    assert_eq!(code(&empty), 2);
+    assert!(stderr(&empty).contains("no compliance assessment"));
+    assert!(stderr(&empty).contains("compliance assess"));
+
+    let review = |control: &'static str, status: &'static str, note: &'static str| {
+        vec![
+            "review",
+            "--db",
+            &db,
+            "--assessment",
+            soc2_id,
+            "--control",
+            control,
+            "--status",
+            status,
+            "--note",
+            note,
+            "--by",
+            "Dana Reviewer",
+        ]
+    };
+    let cases: Vec<(Vec<&str>, &str)> = vec![
+        (
+            vec![
+                "assess",
+                "/definitely/not/a/project",
+                "--db",
+                &fresh_db,
+                "--profile",
+                "gdpr",
+                "--organization",
+                "Example Corp",
+                "--assessor",
+                "Dana Reviewer",
+            ],
+            "compliance target is unavailable",
+        ),
+        (
+            vec![
+                "report",
+                "--db",
+                &db,
+                "--assessment",
+                "assessment_missing",
+                "--output",
+                &report_path,
+            ],
+            "assessment_missing was not found",
+        ),
+        (
+            vec![
+                "report",
+                "--db",
+                &db,
+                "--latest",
+                "--profile",
+                "gdpr",
+                "--output",
+                &report_path,
+            ],
+            "no gdpr compliance assessment",
+        ),
+        (
+            vec![
+                "report",
+                "--db",
+                &db,
+                "--latest",
+                "--profile",
+                "iso-9001",
+                "--output",
+                &report_path,
+            ],
+            "unknown compliance profile",
+        ),
+        (
+            vec![
+                "report",
+                "--db",
+                &db,
+                "--assessment",
+                soc2_id,
+                "--output",
+                "/definitely/not/a/dir/report.pdf",
+            ],
+            "does not exist",
+        ),
+        (
+            vec![
+                "report",
+                "--db",
+                &db,
+                "--assessment",
+                soc2_id,
+                "--organization",
+                " ",
+                "--output",
+                &report_path,
+            ],
+            "Organization must contain",
+        ),
+        (
+            review("owasp-a01", "gap", "Not this framework."),
+            "is not part of assessment",
+        ),
+        (review("soc-cc1", "gap", "no"), "meaningful review note"),
+        // Flag-level mistakes are clap's, and still exit 2.
+        (
+            vec!["report", "--db", &db, "--assessment", soc2_id],
+            "--output",
+        ),
+        (
+            vec![
+                "report",
+                "--db",
+                &db,
+                "--assessment",
+                soc2_id,
+                "--latest",
+                "--output",
+                &report_path,
+            ],
+            "cannot be used with",
+        ),
+        (
+            review("soc-cc1", "approved", "Approved by the board."),
+            "invalid value 'approved'",
+        ),
+    ];
+    for (arguments, expected) in cases {
+        let mut full = vec!["compliance"];
+        full.extend(arguments.iter().copied());
+        let output = run(&full);
+        assert_eq!(code(&output), 2, "{full:?}: {}", stderr(&output));
+        assert!(
+            stderr(&output).contains(expected),
+            "{full:?}: expected {expected:?} in {}",
+            stderr(&output)
+        );
+        assert!(output.stdout.is_empty(), "{full:?}");
+    }
+    assert!(
+        std::fs::read_dir(out.path()).unwrap().next().is_none(),
+        "no refused command may leave a report behind"
+    );
+
+    // And none of the refused reviews reached the append-only log.
+    let view = run(&[
+        "compliance",
+        "show",
+        "--db",
+        &db,
+        "--assessment",
+        soc2_id,
+        "--json",
+    ]);
+    let view: serde_json::Value = serde_json::from_slice(&view.stdout).unwrap();
+    assert_eq!(view["reviews"], serde_json::json!([]));
 }

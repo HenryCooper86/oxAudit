@@ -792,6 +792,26 @@ impl FindingsRepository {
         serde_json::from_str(&payload).map_err(persistence_error)
     }
 
+    /// The newest assessment, optionally of one profile, or `None` when the
+    /// database holds no matching assessment.
+    pub(crate) fn compliance_latest_assessment(
+        &self,
+        profile_id: Option<&str>,
+    ) -> Result<Option<oxaudit_compliance::ComplianceAssessment>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        let payload = connection
+            .query_row(
+                "SELECT payload_json FROM compliance_assessments WHERE ?1 IS NULL OR profile_id = ?1 ORDER BY created_at_ms DESC, id DESC LIMIT 1",
+                [profile_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(persistence_error)?;
+        payload
+            .map(|payload| serde_json::from_str(&payload).map_err(persistence_error))
+            .transpose()
+    }
+
     pub(crate) fn compliance_save_review(
         &self,
         review: &crate::compliance::ComplianceReview,

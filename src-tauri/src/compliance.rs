@@ -166,23 +166,18 @@ pub(crate) fn run_compliance_assessment_inner(
     findings: &FindingsState,
     request: RunComplianceRequest,
 ) -> Result<Vec<ComplianceAssessment>, String> {
-    validate_run_request(&request)?;
+    let PreparedComplianceRun {
+        root,
+        metadata,
+        profiles,
+    } = prepare_run_request(&request)?;
     let service = findings.service().map_err(|error| error.to_string())?;
-    let root = canonical_directory(&request.target_path)?;
     let evidence = collect_evidence(&root, service.repository())?;
     let now = now_ms();
-    let metadata = AssessmentMetadata {
-        title: bounded(&request.title, 160, "Assessment title")?,
-        organization: bounded(&request.organization, 160, "Organization")?,
-        assessor: bounded(&request.assessor, 160, "Assessor")?,
-        scope: bounded(&request.scope, 2_000, "Scope")?,
-    };
-    let mut assessments = Vec::with_capacity(request.profile_ids.len());
-    for profile_id in &request.profile_ids {
-        let profile =
-            oxaudit_compliance::builtin_profile(profile_id).map_err(|error| error.to_string())?;
+    let mut assessments = Vec::with_capacity(profiles.len());
+    for profile in &profiles {
         let assessment = oxaudit_compliance::assess(
-            &profile,
+            profile,
             &evidence,
             metadata.clone(),
             format!("assessment_{}", Uuid::new_v4()),
@@ -270,11 +265,7 @@ pub(crate) fn save_compliance_review_inner(
     {
         return Err("the control does not belong to this assessment".into());
     }
-    let note = bounded(&request.note, 4_000, "Review note")?;
-    let author = bounded(&request.author, 160, "Reviewer")?;
-    if note.trim().len() < 4 || author.trim().len() < 2 {
-        return Err("reviewer and a meaningful review note are required".into());
-    }
+    let (note, author) = validate_review_text(&request.note, &request.author)?;
     let review = ComplianceReview {
         id: format!("review_{}", Uuid::new_v4()),
         assessment_id: request.assessment_id,
@@ -347,6 +338,17 @@ pub(crate) fn write_compliance_report_inner(
     findings: &FindingsState,
     request: WriteComplianceReportRequest,
 ) -> Result<ComplianceReportReceipt, String> {
+    write_compliance_report_with_warnings(findings, request).map(|(receipt, _)| receipt)
+}
+
+/// Write a report and also return what the generator warned about (for
+/// example, that no human review decisions are recorded). The desktop shows
+/// those warnings from its preview; the CLI has no preview, so it takes them
+/// from the write itself.
+pub(crate) fn write_compliance_report_with_warnings(
+    findings: &FindingsState,
+    request: WriteComplianceReportRequest,
+) -> Result<(ComplianceReportReceipt, Vec<String>), String> {
     let generated = generate_report(
         findings,
         &request.assessment_id,
@@ -382,7 +384,7 @@ pub(crate) fn write_compliance_report_inner(
         .repository()
         .compliance_save_report(&receipt)
         .map_err(|error| error.to_string())?;
-    Ok(receipt)
+    Ok((receipt, generated.warnings))
 }
 
 struct GeneratedComplianceReport {
@@ -428,6 +430,44 @@ fn generate_report(
     })
 }
 
+/// A run request with every input-only check already passed.
+pub(crate) struct PreparedComplianceRun {
+    root: PathBuf,
+    metadata: AssessmentMetadata,
+    profiles: Vec<ComplianceProfile>,
+}
+
+/// Everything about a run request that can be rejected before storage is
+/// touched: profile selection, the target directory, and metadata bounds.
+///
+/// Every profile is resolved here, before any assessment is saved, so an
+/// unknown id later in the list cannot leave the earlier ones persisted.
+/// Adapters call this to tell a caller's input mistake apart from a failure.
+pub(crate) fn prepare_run_request(
+    request: &RunComplianceRequest,
+) -> Result<PreparedComplianceRun, String> {
+    validate_run_request(request)?;
+    let profiles = request
+        .profile_ids
+        .iter()
+        .map(|profile_id| {
+            oxaudit_compliance::builtin_profile(profile_id).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let root = canonical_directory(&request.target_path)?;
+    let metadata = AssessmentMetadata {
+        title: bounded(&request.title, 160, "Assessment title")?,
+        organization: bounded(&request.organization, 160, "Organization")?,
+        assessor: bounded(&request.assessor, 160, "Assessor")?,
+        scope: bounded(&request.scope, 2_000, "Scope")?,
+    };
+    Ok(PreparedComplianceRun {
+        root,
+        metadata,
+        profiles,
+    })
+}
+
 fn validate_run_request(request: &RunComplianceRequest) -> Result<(), String> {
     if request.profile_ids.is_empty() || request.profile_ids.len() > 8 {
         return Err("select between one and eight compliance profiles".into());
@@ -439,7 +479,17 @@ fn validate_run_request(request: &RunComplianceRequest) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_report_metadata(metadata: &ComplianceReportMetadata) -> Result<(), String> {
+/// The reviewer and note bounds a recorded decision must meet.
+pub(crate) fn validate_review_text(note: &str, author: &str) -> Result<(String, String), String> {
+    let note = bounded(note, 4_000, "Review note")?;
+    let author = bounded(author, 160, "Reviewer")?;
+    if note.trim().len() < 4 || author.trim().len() < 2 {
+        return Err("reviewer and a meaningful review note are required".into());
+    }
+    Ok((note, author))
+}
+
+pub(crate) fn validate_report_metadata(metadata: &ComplianceReportMetadata) -> Result<(), String> {
     bounded(&metadata.title, 160, "Report title")?;
     bounded(&metadata.organization, 160, "Organization")?;
     bounded(&metadata.assessor, 160, "Assessor")?;

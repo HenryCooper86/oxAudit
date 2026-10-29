@@ -353,6 +353,13 @@ oxaudit-cli vex claims --db ~/.oxaudit/findings.sqlite3
 oxaudit-cli vex trust --db ~/.oxaudit/findings.sqlite3 --sha <sha256> --by henry --note "team-reviewed"
 oxaudit-cli vex suggest --db ~/.oxaudit/findings.sqlite3 --run <run-id>
 
+# Compliance evidence as a CI artifact: assess the project (stored runs of it
+# count as evidence), then compile the latest assessment into a PDF. Evidence
+# readiness only, not certification; every format carries that boundary.
+oxaudit-cli compliance profiles
+oxaudit-cli compliance assess . --db ~/.oxaudit/findings.sqlite3 --profile soc-2-tsc --organization "Example Corp" --assessor "Dana Reviewer"
+oxaudit-cli compliance report --db ~/.oxaudit/findings.sqlite3 --latest --profile soc-2-tsc --format pdf --output soc2-readiness.pdf
+
 # Apply a rule pack committed to the repo, validated and compiled for this
 # run only — the CI-native form, nothing installed
 oxaudit-cli scan . --rule-pack-file .oxaudit/rules.toml
