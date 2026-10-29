@@ -1,0 +1,55 @@
+name: Container
+
+# The release workflow is the only other place the Dockerfile is built, and it
+# runs only on tags. A pull request that breaks the image recipe — a moved
+# manifest, a dependency the builder stage lacks, a .dockerignore that drops a
+# file cargo needs — would otherwise pass review and fail the release. This
+# builds the same recipe, without pushing, whenever its inputs change.
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - package.json
+      - package-lock.json
+      - rust-toolchain.toml
+      - src-tauri/Cargo.toml
+      - src-tauri/Cargo.lock
+      - docker/**
+      - .github/workflows/container.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Container build (linux/amd64, no push)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up the buildx builder
+        run: |
+          docker buildx create --use --name oxaudit-ci
+          docker buildx inspect --bootstrap
+
+      # Same invocation as release.yml's container-build job, minus the
+      # registry: the result stays in the build cache and is discarded.
+      - name: Build the linux/amd64 image
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg VERSION="ci-${GITHUB_SHA}" \
+            --output "type=cacheonly" \
+            --provenance=false \
+            .

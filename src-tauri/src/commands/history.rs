@@ -248,14 +248,6 @@ pub(crate) async fn scan_history_workflow(
     result
 }
 
-#[tauri::command]
-pub fn cancel_history_scan(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .scan_work
-        .cancel(None, &[crate::scan_work::WorkKind::History])?;
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod tests;

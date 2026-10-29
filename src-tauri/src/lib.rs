@@ -203,7 +203,6 @@ pub fn run() {
             commands::scan_project,
             commands::recheck_source_run,
             commands::history::scan_history_secrets,
-            commands::history::cancel_history_scan,
             commands::advisories::advisory_db_status,
             commands::advisories::advisory_db_update,
             commands::advisories::default_advisory_db_path,

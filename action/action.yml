@@ -12,7 +12,7 @@ branding:
 
 inputs:
   target:
-    description: What to scan — a source directory (`.`), a dependency tree, an image tar, or a registry reference.
+    description: Path to the source tree to scan with `oxaudit-cli scan` (default `.`, the workspace root). Dependency, image, and registry scans are not run by this action.
     required: false
     default: .
   version:
@@ -20,7 +20,7 @@ inputs:
     required: false
     default: latest
   args:
-    description: Extra oxaudit-cli arguments (e.g. `--fail-on high --format sarif -o oxaudit.sarif`).
+    description: Extra `oxaudit-cli scan` flags, split on whitespace with no shell evaluation (e.g. `--fail-on high --format sarif -o oxaudit.sarif`). Quotes, globs, and variable expansions are passed through literally.
     required: false
     default: ""
   repo:
@@ -40,6 +40,7 @@ runs:
         set -euo pipefail
         case "${RUNNER_OS}-${RUNNER_ARCH}" in
           Linux-X64)    asset="oxaudit-cli-linux-x86_64" ;;
+          Linux-ARM64)  asset="oxaudit-cli-linux-aarch64" ;;
           macOS-X64)    asset="oxaudit-cli-macos-universal" ;;
           macOS-ARM64)  asset="oxaudit-cli-macos-universal" ;;
           Windows-X64)  asset="oxaudit-cli-windows-x86_64.exe" ;;
@@ -59,7 +60,22 @@ runs:
         curl -fsSL --retry 5 --retry-all-errors -o "$install_dir/$asset" "$tag_url/$asset"
         curl -fsSL --retry 5 --retry-all-errors -o "$install_dir/SHA256SUMS.txt" "$tag_url/SHA256SUMS.txt"
         cd "$install_dir"
-        grep " $asset\$" SHA256SUMS.txt | shasum -a 256 -c -
+        if command -v shasum >/dev/null 2>&1; then
+          sha256_check() { shasum -a 256 -c -; }
+        elif command -v sha256sum >/dev/null 2>&1; then
+          sha256_check() { sha256sum -c -; }
+        else
+          echo "Neither shasum nor sha256sum is available to verify $asset." >&2
+          exit 2
+        fi
+        # Exactly one checksum line must name this asset; an empty selection
+        # would otherwise give `-c` nothing to verify.
+        sums="$(awk -v a="$asset" '$2 == a || $2 == "*" a' SHA256SUMS.txt)"
+        if [ -z "$sums" ] || [ "$(printf '%s\n' "$sums" | wc -l)" -ne 1 ]; then
+          echo "SHA256SUMS.txt does not list $asset exactly once." >&2
+          exit 2
+        fi
+        printf '%s\n' "$sums" | sha256_check
         if [ "${RUNNER_OS}" = "Windows" ]; then
           cli="$(pwd -W)/$asset"
         else
@@ -68,6 +84,20 @@ runs:
         fi
         echo "cli=$cli" >> "$GITHUB_ENV"
 
+    # Inputs reach the shell only through the environment, never by template
+    # substitution into the script, so a target or argument string cannot
+    # inject commands. `args` is split on whitespace into an array without
+    # eval: quotes, globs, `$()` and `;` stay literal argument text.
     - name: Run the scan
       shell: bash
-      run: '"${cli}" scan ${{ inputs.target }} ${{ inputs.args }}'
+      env:
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+        extra_args=()
+        if [ -n "$INPUT_ARGS" ]; then
+          read -r -d "" -a extra_args <<< "$INPUT_ARGS" || true
+        fi
+        # `--` ends option parsing, so a target beginning with `-` is a path.
+        "${cli:?oxaudit-cli was not installed by the previous step}" scan ${extra_args[@]+"${extra_args[@]}"} -- "$INPUT_TARGET"

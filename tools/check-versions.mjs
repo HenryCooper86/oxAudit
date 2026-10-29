@@ -6,6 +6,12 @@
  *   package.json           version             <- must match
  *   src-tauri/tauri.conf.json                  <- must NOT declare a version
  *                                                 (Tauri v2 falls back to Cargo.toml)
+ *   editors/vscode/package.json version        <- must match (released together)
+ *
+ * and for the Rust toolchain:
+ *
+ *   rust-toolchain.toml    [toolchain] channel <- authoritative
+ *   Dockerfile             ARG RUST_IMAGE      <- rust:<channel>[-variant]
  *
  * Run by CI on every push. Exits non-zero with an actionable message when the
  * declarations drift, which is the failure this file exists to prevent.
@@ -56,6 +62,40 @@ if (Object.hasOwn(tauriConf, "version")) {
   );
 }
 
+// The VS Code extension has been bumped in the same commit as every release
+// since 0.2.0; a release that forgets it ships an extension claiming the
+// previous version.
+const vscodePackage = JSON.parse(readFileSync("editors/vscode/package.json", "utf8"));
+if (vscodePackage.version !== cargoVersion) {
+  problems.push(
+    `editors/vscode/package.json declares ${vscodePackage.version}, but src-tauri/Cargo.toml ` +
+      `declares ${cargoVersion}. The extension is released with the app — set it to ${cargoVersion}.`,
+  );
+}
+
+// The container image compiles with whatever Rust its builder image carries,
+// not with rust-toolchain.toml, so the two pins drift silently: CI gates
+// clippy and tests on one compiler and the published image ships another.
+const toolchainMatch = readFileSync("rust-toolchain.toml", "utf8").match(
+  /^\s*channel\s*=\s*"([^"]+)"/m,
+);
+const toolchainChannel = toolchainMatch ? toolchainMatch[1] : null;
+if (!toolchainChannel) {
+  problems.push("rust-toolchain.toml: no [toolchain] channel found.");
+}
+const rustImageMatch = readFileSync("Dockerfile", "utf8").match(
+  /^\s*ARG\s+RUST_IMAGE\s*=\s*rust:([^\s-]+)(?:-\S*)?\s*$/m,
+);
+const rustImageVersion = rustImageMatch ? rustImageMatch[1] : null;
+if (!rustImageVersion) {
+  problems.push("Dockerfile: no `ARG RUST_IMAGE=rust:<version>` found.");
+} else if (toolchainChannel && rustImageVersion !== toolchainChannel) {
+  problems.push(
+    `Dockerfile builds with rust:${rustImageVersion}, but rust-toolchain.toml pins ` +
+      `${toolchainChannel}. Set RUST_IMAGE to rust:${toolchainChannel}-<variant>.`,
+  );
+}
+
 if (problems.length > 0) {
   console.error("Version declarations have drifted:\n");
   for (const problem of problems) console.error(`  - ${problem}`);
@@ -63,4 +103,6 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-console.log(`Version declarations agree on ${cargoVersion}.`);
+console.log(
+  `Version declarations agree on ${cargoVersion}; Dockerfile and rust-toolchain.toml agree on Rust ${toolchainChannel}.`,
+);

@@ -84,12 +84,16 @@ LABEL org.opencontainers.image.title="oxAudit" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://github.com/HenryCooper86/oxAudit"
 
+# /data exists in the image, owned by scanner, because a new named volume
+# copies the mount point's owner and mode; without it the unprivileged server
+# cannot create its private state on first start.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       git \
       libssl3 \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 1000 scanner
+    && useradd --create-home --uid 1000 scanner \
+    && install -d -o scanner -g scanner -m 0700 /data
 
 COPY --from=build /build/src-tauri/target/release/oxaudit-cli /usr/local/bin/oxaudit-cli
 COPY --from=build /build/src-tauri/target/release/oxaudit-server /usr/local/bin/oxaudit-server

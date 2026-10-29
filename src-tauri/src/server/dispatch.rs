@@ -234,10 +234,6 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
         }
 
         // --------------------------------------------------- git history
-        "cancel_history_scan" => {
-            ctx.app.scan_work.cancel(None, &[crate::scan_work::WorkKind::History]).map_err(Value::String)?;
-            Ok(Value::Null)
-        }
         "scan_history_secrets" => {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase")]
