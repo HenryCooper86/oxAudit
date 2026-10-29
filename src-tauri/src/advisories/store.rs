@@ -233,22 +233,48 @@ impl AdvisoryDb {
     }
 
     /// Every record that mentions `package` under `ecosystem`. `package` is
-    /// normalized per ecosystem rules before the lookup.
+    /// normalized per ecosystem rules before the lookup. A bare distribution
+    /// name (`Debian`) also reads its release-qualified ecosystems
+    /// (`Debian:12`), once per advisory; see [`super::versioning::ecosystem_within`].
     pub fn records_for(&self, ecosystem: &str, package: &str) -> Result<Vec<StoredRecord>, String> {
         let normalized = super::versioning::normalize_package(ecosystem, package);
+        // `Debian:` ..< `Debian;` is every `Debian:*` in byte order (`;` follows
+        // `:`), which the (ecosystem, package) index can range-scan. A
+        // qualified name gets an empty range.
+        let (release_low, release_high) = if ecosystem.is_empty() || ecosystem.contains(':') {
+            (String::new(), String::new())
+        } else {
+            (format!("{ecosystem}:"), format!("{ecosystem};"))
+        };
         let conn = self.lock()?;
         let mut statement = conn
-            .prepare("SELECT package, record FROM advisories WHERE ecosystem = ?1 AND package = ?2")
+            .prepare(
+                "SELECT id, package, record FROM advisories
+                 WHERE package = ?2
+                   AND (ecosystem = ?1 OR (ecosystem >= ?3 AND ecosystem < ?4))
+                 ORDER BY id, ecosystem",
+            )
             .map_err(|error| format!("advisory lookup failed: {error}"))?;
         let rows = statement
-            .query_map(params![ecosystem, normalized], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })
+            .query_map(
+                params![ecosystem, normalized, release_low, release_high],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
             .map_err(|error| format!("advisory lookup failed: {error}"))?;
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for row in rows {
-            let (stored_name, blob) =
+            let (id, stored_name, blob) =
                 row.map_err(|error| format!("advisory lookup failed: {error}"))?;
+            if !seen.insert(id) {
+                continue;
+            }
             out.push(StoredRecord {
                 package: stored_name,
                 record: decompress(&blob)?,
@@ -296,6 +322,33 @@ mod tests {
 
         assert!(db.records_for("PyPI", "flask").unwrap().is_empty());
         assert!(db.records_for("npm", "django").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_bare_distribution_lookup_spans_its_releases_once_per_advisory() {
+        let mut db = AdvisoryDb::open_in_memory().unwrap();
+        let record = serde_json::json!({
+            "id": "DEBIAN-CVE-1",
+            "affected": [
+                { "package": { "ecosystem": "Debian:11", "name": "openssl" } },
+                { "package": { "ecosystem": "Debian:12", "name": "openssl" } }
+            ]
+        });
+        let packages = vec![
+            ("Debian:11".to_string(), "openssl".to_string()),
+            ("Debian:12".to_string(), "openssl".to_string()),
+        ];
+        db.insert_record("DEBIAN-CVE-1", None, &record, &packages)
+            .unwrap();
+        let (other, other_packages) = fixture_record("DebianLike-1", "Debianish", "openssl");
+        db.insert_record("DebianLike-1", None, &other, &other_packages)
+            .unwrap();
+
+        let bare = db.records_for("Debian", "openssl").unwrap();
+        assert_eq!(bare.len(), 1, "one row per advisory, not per release");
+        assert_eq!(bare[0].record["id"], "DEBIAN-CVE-1");
+        assert_eq!(db.records_for("Debian:12", "openssl").unwrap().len(), 1);
+        assert!(db.records_for("Debian:10", "openssl").unwrap().is_empty());
     }
 
     #[test]

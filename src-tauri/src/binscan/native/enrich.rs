@@ -340,8 +340,10 @@ pub fn osv_dependencies(queries: &[ComponentQuery]) -> Vec<Dependency> {
 /// network at all.
 ///
 /// Coverage is stated, never implied: ecosystems the database does not carry
-/// (a bare `Debian` from an ELF package note, an undownloaded release) are
-/// named in a note rather than silently answering nothing. CPE-keyed
+/// (a bare `Debian` from an ELF package note when only one release was
+/// downloaded, an undownloaded release) are named in a note rather than
+/// silently answering nothing. A bare distribution query reads every
+/// release's advisories, as OSV's online API does. CPE-keyed
 /// components have no offline source — NVD is online-only — so callers
 /// running offline say that separately.
 pub fn enrich_local(
@@ -360,7 +362,9 @@ pub fn enrich_local(
         let Some(dependency) = osv_dependency_for(query) else {
             continue;
         };
-        if available.contains(&dependency.ecosystem) {
+        if available.iter().any(|scope| {
+            crate::advisories::versioning::ecosystem_within(scope, &dependency.ecosystem)
+        }) {
             covered.push((query, dependency));
         } else {
             uncovered_count += 1;

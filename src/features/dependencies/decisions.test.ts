@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Vulnerability, DependencyPath } from '../../lib/types';
-import { affectedBy, compareVersions, upgradeGroups, versionFamilyForEcosystem, type VersionFamily, type VersionOrdering } from './decisions';
+import { affectedBy, compareVersions, upgradeGroups, versionFamilyFor, versionFamilyForEcosystem, type VersionFamily, type VersionOrdering } from './decisions';
+import sharedVectors from '../../../src-tauri/tests/fixtures/version-ordering-vectors.json';
 const path = (workspace = '', transitive = false): DependencyPath => ({workspace,entryPoint:transitive?'parent':'leaf',chain:[...(transitive?[{name:'parent',packageName:'parent',installPath:'node_modules/parent',dependencyType:'runtime',declared:'^1.0.0'}]:[]),{name:'leaf',packageName:'leaf',installPath:'node_modules/leaf',dependencyType:'runtime',declared:'^1.0.0'}]});
 const vuln = (events: Array<Record<string,string>>, changes: Partial<Vulnerability> = {}): Vulnerability => ({id:'A',aliases:[],summary:'original summary',details:'original detail',severity:'high',cvssScore:8,epss:null,epssPercentile:null,knownExploited:false,ransomware:false,publicExploit:false,directUsage:{referenced:null,referencedFiles:0,exampleFile:null},ecosystem:'npm',packageName:'leaf',installedVersion:'1.0.0',fixedVersions:['9.9.9'],affectedRange:'legacy lossy string',references:[],published:null,modified:null,lockfile:'/repo/package-lock.json',occurrence:{installPath:'node_modules/leaf',status:'available',paths:[path()],warnings:[]},affectedEvidence:{ecosystem:'npm',packageName:'leaf',records:[{package:{ecosystem:'npm',name:'leaf'},ranges:[{type:'SEMVER',events}]}]},...changes});
 const fixed: Array<Record<string,string>> = [{introduced:'0'}, {fixed:'1.0.1'}];
@@ -101,7 +102,7 @@ describe('ecosystem version comparators (ported from advisories/versioning.rs)',
     ]);
     for (const bad of ['','abc','1.0.x','1.0!bad']) expect(compareVersions('pep440',bad,'1.0.0')).toBeNull();
   });
-  it('maven ranks qualifiers and pads missing segments',()=>{
+  it('maven follows ComparableVersion: ranked qualifiers, padding and null trimming',()=>{
     table('maven',[
       ['1.0','1.0.1',-1],['1.0','2.0',-1],
       ['1.0-alpha1','1.0-beta1',-1],['1.0-beta1','1.0-milestone1',-1],
@@ -109,8 +110,28 @@ describe('ecosystem version comparators (ported from advisories/versioning.rs)',
       ['1.0-SNAPSHOT','1.0',-1],['1.0','1.0-sp1',-1],
       ['1.0','1.0.0.1',-1],['1.0.0-alpha','1.0',-1],['1.0.0.0','1.0',0],
       ['1.0-Alpha-1','1.0-alpha-1',0],['1.0-alpha-2','1.0-alpha-10',-1],
+      ['5.3.18.RELEASE','5.3.18',0],['1.0-cr1','1.0-rc1',0],['1-a1','1-alpha-1',0],
     ]);
-    for (const bad of ['1.0-omega','1.0-LATEST']) expect(compareVersions('maven',bad,'1.0.0')).toBeNull();
+    for (const bad of ['','   ','1.0 beta','1.0-\u00e9']) expect(compareVersions('maven',bad,'1.0.0')).toBeNull();
+  });
+  it('maven orders unknown qualifiers after every known one, lexically, instead of refusing them',()=>{
+    table('maven',[
+      ['32.1.3-jre','32.1.3-android',1],['31.1-jre','32.0.0-android',-1],['32.1.3-jre','32.1.3-JRE',0],
+      ['1.0-sp1','1.0-jre',-1],['1.0','1.0-jre',-1],['1.0-jre','1.0.1',-1],['1.0-jre','1.0-1',-1],
+      ['1.0-LATEST','1.0-omega',-1],['1.0-omega','1.0.0',1],
+      ['9.4.43','9.4.43.v20210629',-1],['9.4.43.v20210629','9.4.43.v20210630',-1],['9.4.43.v20210629','9.4.44',-1],
+      // Digit strings compare numerically at any width.
+      ['1.99999999999999999999999','1.100000000000000000000000',-1],
+    ]);
+  });
+  it('pub orders build metadata after the release, like pub_semver',()=>{
+    table('pub',[
+      ['1.0.0-pre','1.0.0-pre+build',-1],['1.0.0-pre+build','1.0.0',-1],['1.0.0','1.0.0+build',-1],
+      ['1.0.0+2','1.0.0+10',-1],['1.0.0+1','1.0.0+build',-1],['1.0.0+build','1.0.1',-1],['1.0.0+build','1.0.0+build',0],
+    ]);
+    for (const bad of ['','1.0.0+','1.0.0+a..b','1.0.0+a_b']) expect(compareVersions('pub',bad,'1.0.0')).toBeNull();
+    // Plain SemVer still ignores build metadata.
+    expect(compareVersions('semver','1.0.0','1.0.0+build')).toBe(0);
   });
   it('gem sorts prerelease segments below numbers',()=>{
     table('gem',[
@@ -148,7 +169,26 @@ describe('ecosystem version comparators (ported from advisories/versioning.rs)',
     expect(versionFamilyForEcosystem('Packagist')).toBe('loose');
     expect(versionFamilyForEcosystem('Debian:12')).toBe('debian');
     expect(versionFamilyForEcosystem('Alpine:v3.20')).toBe('debian');
-    expect(versionFamilyForEcosystem('Wolfi')).toBeNull();
+    expect(versionFamilyForEcosystem('Hex')).toBe('semver');
+    expect(versionFamilyForEcosystem('Pub')).toBe('pub');
+    for (const ecosystem of ['Wolfi','Chainguard','Debian','Ubuntu:22.04:LTS']) expect(versionFamilyForEcosystem(ecosystem)).toBe('debian');
+    for (const ecosystem of ['Rocky Linux','AlmaLinux:9','Debianish','Wolfi:1']) expect(versionFamilyForEcosystem(ecosystem)).toBeNull();
+  });
+  it('agrees with the Rust comparators on every shared vector',()=>{
+    type Comparison = { family?: string; ecosystem?: string; a: string; b: string; expected: number | null };
+    expect(sharedVectors.families.length).toBeGreaterThan(0);
+    for (const { rangeType, ecosystem, family } of sharedVectors.families) {
+      expect(versionFamilyFor(rangeType, ecosystem), `family_for(${rangeType}, ${ecosystem})`).toBe(family);
+    }
+    const comparisons: Comparison[] = sharedVectors.comparisons;
+    expect(comparisons.length).toBeGreaterThan(0);
+    for (const { family: named, ecosystem, a, b, expected } of comparisons) {
+      const family = (named ?? versionFamilyFor('ECOSYSTEM', ecosystem!)) as VersionFamily;
+      expect(family, `${ecosystem} has a family`).not.toBeNull();
+      const mirrored = expected === null || expected === 0 ? expected : -expected;
+      expect(compareVersions(family, a, b), `${family}: ${a} vs ${b}`).toBe(expected);
+      expect(compareVersions(family, b, a), `${family}: ${b} vs ${a} (mirrored)`).toBe(mirrored);
+    }
   });
 });
 describe('ecosystem-wide upgrade candidates',()=>{
@@ -177,8 +217,16 @@ describe('ecosystem-wide upgrade candidates',()=>{
     expect(upgradeGroups([ecosystemVuln('PyPI',[{introduced:'0'},{fixed:'0.9.0'}])])[0].candidate).toBeNull();
   });
   it('stays undetermined for ecosystems without a comparator',()=>{
-    const wolfi=ecosystemVuln('Wolfi',[{introduced:'0'},{fixed:'1.0.1'}]);
-    expect(affectedBy(wolfi,'1.0.0')).toBeNull();
-    expect(upgradeGroups([wolfi])[0].candidate).toBeNull();
+    const rocky=ecosystemVuln('Rocky Linux:9',[{introduced:'0'},{fixed:'1.0.1'}]);
+    expect(affectedBy(rocky,'1.0.0')).toBeNull();
+    expect(upgradeGroups([rocky])[0].candidate).toBeNull();
+  });
+  it('evaluates Wolfi ranges with the apk/Debian comparator and Maven ranges past unknown qualifiers',()=>{
+    const wolfi=ecosystemVuln('Wolfi',[{introduced:'0'},{fixed:'1.2.3-r1'}]);
+    expect(affectedBy(wolfi,'1.2.3-r0')).toBe(true);
+    expect(affectedBy(wolfi,'1.2.3-r1')).toBe(false);
+    const guava=ecosystemVuln('Maven',[{introduced:'0'},{fixed:'32.0.0-android'}],{installedVersion:'31.1-jre'});
+    expect(affectedBy(guava,'31.1-jre')).toBe(true);
+    expect(affectedBy(guava,'32.0.0-jre')).toBe(false);
   });
 });

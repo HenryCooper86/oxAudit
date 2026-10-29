@@ -33,6 +33,7 @@ pub fn lockfile_kind(name: &str) -> &'static str {
         "bun.lock" => "bun",
         "mix.lock" => "mix",
         "pubspec.lock" => "pubspec",
+        "uv.lock" => "uv",
         _ => "unknown",
     }
 }
@@ -43,7 +44,7 @@ pub fn ecosystem_for_kind(kind: &str) -> &'static str {
         "npm" | "yarn" | "pnpm" => "npm",
         "cargo" => "crates.io",
         "go" => "Go",
-        "pipenv" | "pip" | "poetry" => "PyPI",
+        "pipenv" | "pip" | "poetry" | "uv" => "PyPI",
         "bundler" => "RubyGems",
         "gomod" => "Go",
         "bun" => "npm",
@@ -59,14 +60,70 @@ pub fn ecosystem_for_kind(kind: &str) -> &'static str {
 /// Parse a lockfile into dependencies. Returns Err with a human-readable
 /// reason when the file cannot be understood.
 pub fn parse_lockfile(path: &Path, kind: &str) -> Result<Vec<Dependency>, String> {
-    parse_lockfile_with_limit(path, kind, MAX_LOCKFILE_BYTES)
+    parse_lockfile_inventory(path, kind).map(|inventory| inventory.dependencies)
 }
 
+/// A parsed lockfile: its dependencies plus inventory notes about entries the
+/// parser read but could not turn into a checked dependency (for example a
+/// `pom.xml` version oxAudit cannot resolve). Notes describe incomplete
+/// advisory coverage the user should see; they are not parser failures.
+#[derive(Debug, Default)]
+pub struct LockfileInventory {
+    pub dependencies: Vec<Dependency>,
+    /// Inventory caveats (e.g. pom dependencies skipped for unresolved
+    /// versions); the dependency scan reports them as inventory notes.
+    pub notes: Vec<String>,
+}
+
+/// Like [`parse_lockfile`], but keeps the inventory notes.
+pub fn parse_lockfile_inventory(path: &Path, kind: &str) -> Result<LockfileInventory, String> {
+    parse_lockfile_inventory_with_limit(path, kind, MAX_LOCKFILE_BYTES)
+}
+
+#[cfg(test)]
 fn parse_lockfile_with_limit(
     path: &Path,
     kind: &str,
     max_bytes: u64,
 ) -> Result<Vec<Dependency>, String> {
+    parse_lockfile_inventory_with_limit(path, kind, max_bytes)
+        .map(|inventory| inventory.dependencies)
+}
+
+/// One locked package. `source` is `None` for the ecosystem's package
+/// registry and `git`, `local` or `url` for code that did not come from it;
+/// only registry packages are advisory queries (see
+/// [`crate::deps::osv::is_queryable_dependency`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockedPackage {
+    name: String,
+    version: String,
+    source: Option<&'static str>,
+}
+
+fn registry_packages(packages: Vec<(String, String)>) -> Vec<LockedPackage> {
+    packages
+        .into_iter()
+        .map(|(name, version)| LockedPackage {
+            name,
+            version,
+            source: None,
+        })
+        .collect()
+}
+
+fn complete(dependencies: Vec<Dependency>) -> LockfileInventory {
+    LockfileInventory {
+        dependencies,
+        notes: Vec::new(),
+    }
+}
+
+fn parse_lockfile_inventory_with_limit(
+    path: &Path,
+    kind: &str,
+    max_bytes: u64,
+) -> Result<LockfileInventory, String> {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let ecosystem = ecosystem_for_kind(kind).to_string();
     let lockfile = path.to_string_lossy().replace('\\', "/");
@@ -97,11 +154,11 @@ fn parse_lockfile_with_limit(
             for dependency in &mut dependencies {
                 dependency.lockfile = lockfile.clone();
             }
-            return Ok(dependencies);
+            return Ok(complete(dependencies));
         }
     }
     if name == "go.mod" {
-        return super::go_inventory::parse(&content, &lockfile);
+        return super::go_inventory::parse(&content, &lockfile).map(complete);
     }
     if name == "go.sum" {
         if !path.with_file_name("go.mod").is_file() {
@@ -111,43 +168,66 @@ fn parse_lockfile_with_limit(
             );
         }
         super::go_inventory::validate_sums(&content)?;
-        return Ok(Vec::new());
+        return Ok(LockfileInventory::default());
     }
     if name == "Gemfile.lock" {
-        return parse_gemfile_lock(&content, &lockfile);
+        return parse_gemfile_lock(&content, &lockfile).map(complete);
     }
-    let deps = match name {
-        "package-lock.json" => parse_package_lock(&content)?,
-        "yarn.lock" => parse_yarn_lock(&content)?,
-        "pnpm-lock.yaml" => parse_pnpm_lock(&content)?,
+    let mut notes = Vec::new();
+    let packages = match name {
+        "package-lock.json" => registry_packages(parse_package_lock(&content)?),
+        "yarn.lock" => registry_packages(parse_yarn_lock(&content)?),
+        "pnpm-lock.yaml" => registry_packages(parse_pnpm_lock(&content)?),
         "Cargo.lock" => parse_cargo_lock(&content)?,
-        "Pipfile.lock" => parse_pipfile_lock(&content)?,
-        "composer.lock" => parse_composer_lock(&content)?,
-        "pom.xml" => parse_pom_xml(&content)?,
-        "requirements.txt" => parse_requirements(&content)?,
-        "gradle.lockfile" => parse_gradle_lockfile(&content)?,
-        "packages.lock.json" => parse_packages_lock_json(&content)?,
+        "Pipfile.lock" => registry_packages(parse_pipfile_lock(&content)?),
+        "composer.lock" => registry_packages(parse_composer_lock(&content)?),
+        "pom.xml" => {
+            let (packages, pom_notes) = parse_pom(&content)?;
+            notes = pom_notes;
+            registry_packages(packages)
+        }
+        "requirements.txt" => registry_packages(parse_requirements(&content)?),
+        "gradle.lockfile" => registry_packages(parse_gradle_lockfile(&content)?),
+        "packages.lock.json" => registry_packages(parse_packages_lock_json(&content)?),
         "poetry.lock" => parse_poetry_lock(&content)?,
-        "bun.lock" => parse_bun_lock(&content)?,
-        "mix.lock" => parse_mix_lock(&content)?,
-        "pubspec.lock" => parse_pubspec_lock(&content)?,
+        "uv.lock" => parse_uv_lock(&content)?,
+        "bun.lock" => registry_packages(parse_bun_lock(&content)?),
+        "mix.lock" => registry_packages(parse_mix_lock(&content)?),
+        "pubspec.lock" => registry_packages(parse_pubspec_lock(&content)?),
         _ => return Err("unsupported lockfile".into()),
     };
 
-    Ok(deps
+    let dependencies = packages
         .into_iter()
-        .map(|(n, v)| Dependency {
-            license: None,
-            occurrence: crate::models::DependencyOccurrence {
+        .map(|package| {
+            let mut occurrence = crate::models::DependencyOccurrence {
                 status: "unavailable".into(),
                 ..Default::default()
-            },
-            ecosystem: ecosystem.clone(),
-            name: n,
-            version: v,
-            lockfile: lockfile.clone(),
+            };
+            if let Some(source) = package.source {
+                occurrence.source = Some(source.into());
+                occurrence.local_workspace = source == "local";
+                occurrence.warnings.push(format!(
+                    "{} {} is from a {source} source, not the {ecosystem} registry; its declared \
+                     version does not prove a registry release. Registry advisory lookup is \
+                     skipped; review its source code.",
+                    package.name, package.version
+                ));
+            }
+            Dependency {
+                license: None,
+                occurrence,
+                ecosystem: ecosystem.clone(),
+                name: package.name,
+                version: package.version,
+                lockfile: lockfile.clone(),
+            }
         })
-        .collect())
+        .collect();
+    Ok(LockfileInventory {
+        dependencies,
+        notes,
+    })
 }
 
 pub fn extend_dependencies_bounded(
@@ -341,7 +421,15 @@ fn parse_yarn_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     }
     flush(&current_names, current_version.as_ref(), classic, &mut out);
 
-    if out.is_empty() {
+    // Yarn writes its format marker even for a project with no dependencies:
+    // the `# yarn lockfile v1` comment (classic) or a `__metadata:` block
+    // (Berry). With the marker, an empty inventory is complete; without it,
+    // the file is not a readable yarn lockfile.
+    let marked = content.lines().any(|line| {
+        let line = line.trim_end();
+        line == "# yarn lockfile v1" || line == "__metadata:"
+    });
+    if out.is_empty() && !marked {
         return Err("no packages found in yarn.lock".into());
     }
     Ok(out)
@@ -435,6 +523,8 @@ fn registry_version_evidence(value: &serde_json::Value) -> bool {
 
 #[derive(serde::Deserialize)]
 struct PipfileLockfile {
+    #[serde(rename = "_meta")]
+    meta: Option<serde_json::Value>,
     default: Option<YamlPackages>,
     develop: Option<YamlPackages>,
 }
@@ -675,7 +765,10 @@ fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-fn parse_cargo_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+/// Cargo.lock packages without a `source` are workspace members or path
+/// dependencies: project code, never a crates.io release. `git+` sources are
+/// git checkouts. Only `registry+`/`sparse+` packages are registry queries.
+fn parse_cargo_lock(content: &str) -> Result<Vec<LockedPackage>, String> {
     let root: toml::Value =
         toml::from_str(content).map_err(|e| format!("invalid Cargo.lock: {e}"))?;
     let mut out = Vec::new();
@@ -697,7 +790,20 @@ fn parse_cargo_lock(content: &str) -> Result<Vec<(String, String)>, String> {
                     format!("invalid Cargo.lock package {name}: version must be a nonempty string")
                 })?
                 .to_string();
-            out.push((name, version));
+            let source = match pkg.get("source") {
+                None => Some("local"),
+                Some(source) => {
+                    let source = source.as_str().ok_or_else(|| {
+                        format!("invalid Cargo.lock package {name}: source must be a string")
+                    })?;
+                    source.starts_with("git+").then_some("git")
+                }
+            };
+            out.push(LockedPackage {
+                name,
+                version,
+                source,
+            });
         }
     }
     if out.is_empty() {
@@ -811,6 +917,11 @@ fn parse_bun_jsonc(content: &str) -> Result<serde_json::Value, String> {
 /// `mix.lock`: an Erlang map of `"name" => {:hex, :name, "version", …}`.
 /// `:path` entries are local code, not registry packages.
 fn parse_mix_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+    // Every mix.lock is one Elixir map literal, `%{}` when nothing is locked.
+    let body = content.trim();
+    if !(body.starts_with("%{") && body.ends_with('}')) {
+        return Err("invalid mix.lock: expected an Elixir map (%{...})".into());
+    }
     let mut out = Vec::new();
     for line in content.lines() {
         // One package per line; the shape is fixed enough to read without an
@@ -843,9 +954,8 @@ fn parse_mix_lock(content: &str) -> Result<Vec<(String, String)>, String> {
             out.push((name.to_string(), version.to_string()));
         }
     }
-    if out.is_empty() {
-        return Err("no hex packages found in mix.lock".into());
-    }
+    // A well-formed map whose entries are all git or path dependencies is a
+    // complete, empty registry inventory.
     Ok(out)
 }
 
@@ -881,30 +991,51 @@ fn parse_pubspec_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         }
         out.push((name.to_string(), version.to_string()));
     }
-    if out.is_empty() {
-        return Err("no packages found in pubspec.lock".into());
-    }
+    // A packages map holding only SDK and path packages is complete and empty.
     Ok(out)
 }
 
 fn parse_pipfile_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     let root: PipfileLockfile = parse_yaml_lockfile(content, "Pipfile.lock")?;
+    // Pipenv always writes `_meta` plus the `default`/`develop` sections;
+    // a document with none of them is not a Pipfile.lock.
+    if !root.meta.as_ref().is_some_and(serde_json::Value::is_object)
+        && root.default.is_none()
+        && root.develop.is_none()
+    {
+        return Err("invalid Pipfile.lock: no _meta, default or develop section".into());
+    }
     let mut out = Vec::new();
     for map in [root.default, root.develop].into_iter().flatten() {
         for (name, val) in map {
-            let version = val
-                .get("version")
-                .and_then(|v| v.as_str())
-                .map(strip_version_ops)
-                .unwrap_or_default();
-            if !name.is_empty() && !version.is_empty() {
-                out.push((name.to_string(), version));
+            let entry = val.as_object().ok_or_else(|| {
+                format!("invalid Pipfile.lock package {name}: expected an object")
+            })?;
+            match entry.get("version") {
+                Some(version) => {
+                    let version = version.as_str().map(strip_version_ops).unwrap_or_default();
+                    if name.trim().is_empty() || version.is_empty() {
+                        return Err(format!(
+                            "invalid Pipfile.lock package {name}: version must be a nonempty string"
+                        ));
+                    }
+                    out.push((name.to_string(), version));
+                }
+                // Git, path and direct-file requirements carry no registry
+                // version; they are project or remote code, not PyPI releases.
+                None if ["git", "path", "file", "editable"]
+                    .iter()
+                    .any(|key| entry.contains_key(*key)) => {}
+                None => {
+                    return Err(format!(
+                        "invalid Pipfile.lock package {name}: no version or non-registry source"
+                    ))
+                }
             }
         }
     }
-    if out.is_empty() {
-        return Err("no packages found in Pipfile.lock".into());
-    }
+    // Sections whose entries are all git/path requirements (or are empty) are
+    // a complete, empty registry inventory.
     Ok(out)
 }
 
@@ -991,6 +1122,14 @@ fn parse_gemfile_lock(content: &str, lockfile: &str) -> Result<Vec<Dependency>, 
 fn parse_composer_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     let root: serde_json::Value =
         serde_json::from_str(content).map_err(|e| format!("invalid composer.lock: {e}"))?;
+    // Composer always writes the `packages` array, empty for a project with
+    // no dependencies; without it the document is not a composer.lock.
+    if !root
+        .as_object()
+        .is_some_and(|object| object.contains_key("packages"))
+    {
+        return Err("invalid composer.lock: no packages inventory".into());
+    }
     let mut out = Vec::new();
     for section in ["packages", "packages-dev"] {
         if let Some(value) = root.get(section) {
@@ -1016,119 +1155,302 @@ fn parse_composer_lock(content: &str) -> Result<Vec<(String, String)>, String> {
             }
         }
     }
-    if out.is_empty() {
-        return Err("no packages found in composer.lock".into());
-    }
     Ok(out)
 }
 
-fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
+/// Placeholder expansion is bounded in nesting, output length and total
+/// lookups: a hostile `pom.xml` must not turn `${...}` into a blow-up.
+const MAX_POM_PROPERTY_DEPTH: usize = 16;
+const MAX_POM_RESOLVED_CHARS: usize = 512;
+const MAX_POM_PROPERTY_LOOKUPS: usize = 1_024;
+const MAX_POM_NOTE_ITEMS: usize = 10;
+
+#[derive(Default)]
+struct RawPomDependency {
+    group: String,
+    artifact: String,
+    version: String,
+}
+
+/// Values a POM can reference about itself without fetching anything: its
+/// own `<properties>` and the project/parent coordinates.
+#[derive(Default)]
+struct PomModel {
+    properties: BTreeMap<String, String>,
+    group: Option<String>,
+    artifact: Option<String>,
+    version: Option<String>,
+    parent_group: Option<String>,
+    parent_artifact: Option<String>,
+    parent_version: Option<String>,
+}
+
+impl PomModel {
+    fn lookup(&self, key: &str) -> Option<&str> {
+        // Maven model values take precedence over user properties; a child's
+        // version and groupId default to its parent's.
+        let model = match key {
+            "project.version" | "pom.version" | "version" => {
+                self.version.as_ref().or(self.parent_version.as_ref())
+            }
+            "project.groupId" | "pom.groupId" | "groupId" => {
+                self.group.as_ref().or(self.parent_group.as_ref())
+            }
+            "project.artifactId" | "pom.artifactId" | "artifactId" => self.artifact.as_ref(),
+            "project.parent.version" | "parent.version" => self.parent_version.as_ref(),
+            "project.parent.groupId" | "parent.groupId" => self.parent_group.as_ref(),
+            "project.parent.artifactId" | "parent.artifactId" => self.parent_artifact.as_ref(),
+            _ => None,
+        };
+        model
+            .or_else(|| self.properties.get(key))
+            .map(String::as_str)
+    }
+
+    /// Expand `${...}` placeholders. `None` means the value references
+    /// something this POM does not define (a parent or BOM property, an
+    /// environment or settings value), is cyclic, or exceeds the bounds.
+    fn resolve(&self, value: &str, depth: usize, lookups: &mut usize) -> Option<String> {
+        if depth > MAX_POM_PROPERTY_DEPTH {
+            return None;
+        }
+        let mut out = String::new();
+        let mut rest = value;
+        while let Some(start) = rest.find("${") {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 2..];
+            let end = after.find('}')?;
+            *lookups += 1;
+            if *lookups > MAX_POM_PROPERTY_LOOKUPS {
+                return None;
+            }
+            let resolved = self.resolve(self.lookup(&after[..end])?, depth + 1, lookups)?;
+            out.push_str(&resolved);
+            if out.len() > MAX_POM_RESOLVED_CHARS {
+                return None;
+            }
+            rest = &after[end + 1..];
+        }
+        out.push_str(rest);
+        (out.len() <= MAX_POM_RESOLVED_CHARS).then_some(out)
+    }
+}
+
+fn bounded_note_list(items: &[String]) -> String {
+    let mut listed = items
+        .iter()
+        .take(MAX_POM_NOTE_ITEMS)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if items.len() > MAX_POM_NOTE_ITEMS {
+        listed.push_str(&format!(", and {} more", items.len() - MAX_POM_NOTE_ITEMS));
+    }
+    listed
+}
+
+/// Versioned `(group:artifact, version)` coordinates plus inventory notes.
+type PomInventory = (Vec<(String, String)>, Vec<String>);
+
+/// Read the declared dependencies of one `pom.xml`. Placeholders resolve from
+/// the POM's own `<properties>` and project/parent coordinates; parent POMs
+/// and imported BOMs are not fetched. Dependencies whose version is managed
+/// elsewhere or references an unresolvable property are not queried — a
+/// literal `${...}` is not a version — and are named in the returned notes so
+/// the gap in advisory coverage stays visible.
+fn parse_pom(content: &str) -> Result<PomInventory, String> {
     use quick_xml::events::Event;
     use quick_xml::{Reader, XmlVersion};
 
     let mut reader = Reader::from_str(content);
-    let mut out = Vec::new();
-    let mut depth = 0usize;
-    let mut current: Option<(String, String, String)> = None; // groupId, artifactId, version
-    let mut in_dependency = false;
-    let mut in_dependencies = false;
+    let mut model = PomModel::default();
+    let mut raw = Vec::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut saw_project = false;
+    // The dependency being read and the stack depth of its element.
+    let mut current: Option<(RawPomDependency, usize)> = None;
     let mut pending_text = String::new();
 
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let name = e.name().as_ref().to_string();
-                pending_text.clear();
-                match name.as_str() {
-                    "dependencies" | "dependencyManagement" => {
-                        in_dependencies = true;
-                        current = None;
+                if stack.is_empty() {
+                    if name != "project" {
+                        return Err("invalid pom.xml: root element must be <project>".into());
                     }
-                    "dependency" if in_dependencies => {
-                        in_dependency = true;
-                        current = None;
-                    }
-                    _ => {}
+                    saw_project = true;
                 }
-                depth += 1;
+                pending_text.clear();
+                // A dependency is declared directly inside `<dependencies>`
+                // (or, leniently, `<dependencyManagement>`), never elsewhere.
+                if name == "dependency"
+                    && matches!(
+                        stack.last().map(String::as_str),
+                        Some("dependencies" | "dependencyManagement")
+                    )
+                {
+                    current = Some((RawPomDependency::default(), stack.len() + 1));
+                }
+                stack.push(name);
             }
             Ok(Event::Empty(e)) => {
-                let _ = e;
+                if stack.is_empty() {
+                    if e.name().as_ref() != "project" {
+                        return Err("invalid pom.xml: root element must be <project>".into());
+                    }
+                    saw_project = true;
+                }
             }
             Ok(Event::Text(t)) => {
-                if in_dependency {
-                    pending_text.push_str(&t.xml_content(XmlVersion::Implicit1_0));
-                }
+                pending_text.push_str(&t.xml_content(XmlVersion::Implicit1_0));
             }
             // `&amp;` and `&#38;` arrive as their own events. A group or
             // artifact id containing one is unusual but legal, and dropping the
             // reference would silently corrupt the coordinate we look up.
-            Ok(Event::GeneralRef(r)) => {
-                if in_dependency {
-                    match r.resolve_char_ref() {
-                        Ok(Some(ch)) => pending_text.push(ch),
-                        Ok(None) => {
-                            if let Some(resolved) = quick_xml::escape::resolve_predefined_entity(&r)
-                            {
-                                pending_text.push_str(resolved);
-                            }
-                            // An unresolvable entity is defined in a DTD oxAudit
-                            // does not read. Skipping it is the safe reading; a
-                            // partial coordinate simply fails to match later.
-                        }
-                        Err(_) => {}
+            Ok(Event::GeneralRef(r)) => match r.resolve_char_ref() {
+                Ok(Some(ch)) => pending_text.push(ch),
+                Ok(None) => {
+                    if let Some(resolved) = quick_xml::escape::resolve_predefined_entity(&r) {
+                        pending_text.push_str(resolved);
                     }
+                    // An unresolvable entity is defined in a DTD oxAudit
+                    // does not read. Skipping it is the safe reading; a
+                    // partial coordinate simply fails to match later.
                 }
-            }
-            Ok(Event::End(e)) => {
-                let name = e.name().as_ref().to_string();
+                Err(_) => {}
+            },
+            Ok(Event::End(_)) => {
                 let text = std::mem::take(&mut pending_text).trim().to_string();
-                if in_dependency && !text.is_empty() {
-                    match name.as_str() {
-                        "groupId" => match &mut current {
-                            Some(c) => c.0 = text,
-                            None => current = Some((text, String::new(), String::new())),
-                        },
-                        "artifactId" => match &mut current {
-                            Some(c) => c.1 = text,
-                            None => current = Some((String::new(), text, String::new())),
-                        },
-                        "version" => {
-                            if let Some(c) = &mut current {
-                                c.2 = text;
-                            }
+                let depth = stack.len();
+                if !text.is_empty() {
+                    let path = stack.iter().map(String::as_str).collect::<Vec<_>>();
+                    match path.as_slice() {
+                        ["project", "properties", key] => {
+                            model.properties.insert((*key).to_string(), text.clone());
+                        }
+                        ["project", "groupId"] => model.group = Some(text.clone()),
+                        ["project", "artifactId"] => model.artifact = Some(text.clone()),
+                        ["project", "version"] => model.version = Some(text.clone()),
+                        ["project", "parent", "groupId"] => model.parent_group = Some(text.clone()),
+                        ["project", "parent", "artifactId"] => {
+                            model.parent_artifact = Some(text.clone())
+                        }
+                        ["project", "parent", "version"] => {
+                            model.parent_version = Some(text.clone())
                         }
                         _ => {}
                     }
-                }
-                if name == "dependency" && in_dependency {
-                    if let Some((g, a, v)) = current.take() {
-                        if !a.is_empty() && !v.is_empty() {
-                            let full = if g.is_empty() {
-                                a.clone()
-                            } else {
-                                format!("{g}:{a}")
-                            };
-                            out.push((full, v));
+                    // Only the dependency's own children name it; exclusion
+                    // coordinates nested deeper must not overwrite them.
+                    if let Some((dependency, dependency_depth)) = &mut current {
+                        if depth == *dependency_depth + 1 {
+                            match stack.last().map(String::as_str) {
+                                Some("groupId") => dependency.group = text,
+                                Some("artifactId") => dependency.artifact = text,
+                                Some("version") => dependency.version = text,
+                                _ => {}
+                            }
                         }
                     }
-                    in_dependency = false;
                 }
-                if name == "dependencies" || name == "dependencyManagement" {
-                    in_dependencies = false;
+                if current
+                    .as_ref()
+                    .is_some_and(|(_, dependency_depth)| *dependency_depth == depth)
+                {
+                    raw.push(current.take().expect("checked above").0);
                 }
-                depth = depth.saturating_sub(1);
+                stack.pop();
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(format!("invalid pom.xml: {e}")),
             _ => {}
         }
     }
-
-    if out.is_empty() {
-        return Err("no dependencies with versions found in pom.xml".into());
+    if let Some(open) = stack.last() {
+        return Err(format!("invalid pom.xml: unclosed <{open}> element"));
     }
-    Ok(out)
+    if !saw_project {
+        return Err("invalid pom.xml: no <project> root element".into());
+    }
+
+    let mut out = Vec::new();
+    let mut unversioned = Vec::new();
+    let mut unresolved = Vec::new();
+    for dependency in raw {
+        if dependency.artifact.is_empty() {
+            continue;
+        }
+        let mut lookups = 0;
+        let group = model.resolve(&dependency.group, 0, &mut lookups);
+        let artifact = model.resolve(&dependency.artifact, 0, &mut lookups);
+        let version = model.resolve(&dependency.version, 0, &mut lookups);
+        let display = |group: &str, artifact: &str| {
+            if group.is_empty() {
+                artifact.to_string()
+            } else {
+                format!("{group}:{artifact}")
+            }
+        };
+        match (group, artifact, version) {
+            (Some(group), Some(artifact), Some(version)) if !version.is_empty() => {
+                out.push((display(&group, &artifact), version));
+            }
+            (Some(group), Some(artifact), Some(_)) => {
+                unversioned.push(display(&group, &artifact));
+            }
+            _ => unresolved.push(format!(
+                "{} ({})",
+                display(&dependency.group, &dependency.artifact),
+                if dependency.version.is_empty() {
+                    "no version"
+                } else {
+                    dependency.version.as_str()
+                }
+            )),
+        }
+    }
+
+    let plural = |count: usize| {
+        if count == 1 {
+            "dependency"
+        } else {
+            "dependencies"
+        }
+    };
+    let mut notes = Vec::new();
+    if !unversioned.is_empty() {
+        notes.push(format!(
+            "not checked against advisories: {} Maven {} with no version in this POM (managed by \
+             a parent POM or imported BOM, which oxAudit does not fetch): {}",
+            unversioned.len(),
+            plural(unversioned.len()),
+            bounded_note_list(&unversioned)
+        ));
+    }
+    if !unresolved.is_empty() {
+        notes.push(format!(
+            "not checked against advisories: {} Maven {} using properties this POM does not \
+             define (inherited, external, or cyclic): {}",
+            unresolved.len(),
+            plural(unresolved.len()),
+            bounded_note_list(&unresolved)
+        ));
+    }
+    if out.is_empty() && notes.is_empty() {
+        if let (Some(group), Some(artifact)) = (&model.parent_group, &model.parent_artifact) {
+            notes.push(format!(
+                "declares no versioned dependencies; dependencies inherited from parent POM \
+                 {group}:{artifact} are not fetched and were not checked against advisories"
+            ));
+        }
+    }
+    Ok((out, notes))
+}
+
+#[cfg(test)]
+fn parse_pom_xml(content: &str) -> Result<Vec<(String, String)>, String> {
+    parse_pom(content).map(|(dependencies, _)| dependencies)
 }
 
 fn parse_requirements(content: &str) -> Result<Vec<(String, String)>, String> {
@@ -1190,11 +1512,8 @@ fn parse_requirements(content: &str) -> Result<Vec<(String, String)>, String> {
         }
         out.push((name.to_string(), version.to_string()));
     }
-    if out.is_empty() {
-        return Err(
-            "no pinned requirements found (unpinned packages can't be checked against OSV)".into(),
-        );
-    }
+    // Every requirement line is pinned or rejected above, so a file with only
+    // comments and index options declares a complete, empty inventory.
     Ok(out)
 }
 
@@ -1204,29 +1523,37 @@ fn parse_requirements(content: &str) -> Result<Vec<(String, String)>, String> {
 /// `group:artifact` OSV Maven name a `pom.xml` produces.
 fn parse_gradle_lockfile(content: &str) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
-    for line in content.lines() {
+    let mut saw_empty_marker = false;
+    for (index, line) in content.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((coordinate, _classifiers)) = line.split_once('=') else {
-            continue;
+        let invalid = || {
+            format!(
+                "invalid gradle.lockfile line {}: expected group:artifact:version=configurations",
+                index + 1
+            )
         };
-        // `empty=` is Gradle's marker for a module with no dependencies.
+        let (coordinate, _classifiers) = line.split_once('=').ok_or_else(invalid)?;
+        // `empty=` is Gradle's marker for configurations with no dependencies.
         if coordinate == "empty" {
+            saw_empty_marker = true;
             continue;
         }
         let parts: Vec<&str> = coordinate.split(':').collect();
         if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
-            continue;
+            return Err(invalid());
         }
         // Extra colon-separated segments exist for classifier coordinates
         // (`group:artifact:version:classifier`); the first three fields are
         // the identity OSV matches on.
         out.push((format!("{}:{}", parts[0], parts[1]), parts[2].to_string()));
     }
-    if out.is_empty() {
-        return Err("no locked modules found in gradle.lockfile".into());
+    // Gradle always writes an `empty=` line; with it and no modules, the
+    // lockfile is a complete, empty inventory.
+    if out.is_empty() && !saw_empty_marker {
+        return Err("no locked modules or empty= marker found in gradle.lockfile".into());
     }
     Ok(out)
 }
@@ -1263,42 +1590,151 @@ fn parse_packages_lock_json(content: &str) -> Result<Vec<(String, String)>, Stri
             }
         }
     }
-    if out.is_empty() {
-        return Err("no packages found in packages.lock.json".into());
-    }
+    // A restore lock with only project references (or no packages) is a
+    // complete, empty registry inventory.
     Ok(out)
 }
 
 /// Poetry's lock format: `[[package]]` tables with `name` and `version`, the
 /// same shape a `Cargo.lock` carries. Optional and dev packages are pinned
-/// too, so they stay in the inventory.
-fn parse_poetry_lock(content: &str) -> Result<Vec<(String, String)>, String> {
-    let root: toml::Value =
+/// too, so they stay in the inventory. `[package.source]` marks packages that
+/// did not come from PyPI: `git` checkouts, local `directory`/`file` code and
+/// direct `url` archives. A `legacy` source is a PyPI-compatible index.
+fn parse_poetry_lock(content: &str) -> Result<Vec<LockedPackage>, String> {
+    let root: toml::Table =
         toml::from_str(content).map_err(|e| format!("invalid poetry.lock: {e}"))?;
-    let mut out = Vec::new();
-    if let Some(packages) = root.get("package").and_then(|p| p.as_array()) {
-        for pkg in packages {
-            let name = pkg
-                .get("name")
-                .and_then(|v| v.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    "invalid poetry.lock package: name must be a nonempty string".to_string()
-                })?
-                .to_string();
-            let version = pkg
-                .get("version")
-                .and_then(|v| v.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    format!("invalid poetry.lock package {name}: version must be a nonempty string")
-                })?
-                .to_string();
-            out.push((name, version));
-        }
+    let packages = match root.get("package") {
+        None => &[][..],
+        Some(packages) => packages
+            .as_array()
+            .ok_or("invalid poetry.lock: package must be an array of tables")?
+            .as_slice(),
+    };
+    // Poetry always writes `[metadata]`; a dependency-free project has only
+    // that table. Without packages or metadata the file is not a poetry.lock.
+    if packages.is_empty() && !root.get("metadata").is_some_and(toml::Value::is_table) {
+        return Err("invalid poetry.lock: no packages or [metadata] table".into());
     }
-    if out.is_empty() {
-        return Err("no packages found in poetry.lock".into());
+    let mut out = Vec::new();
+    for pkg in packages {
+        let name = pkg
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                "invalid poetry.lock package: name must be a nonempty string".to_string()
+            })?
+            .to_string();
+        let version = pkg
+            .get("version")
+            .and_then(|v| v.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                format!("invalid poetry.lock package {name}: version must be a nonempty string")
+            })?
+            .to_string();
+        let source = match pkg.get("source") {
+            None => None,
+            Some(source) => {
+                let kind = source
+                    .as_table()
+                    .and_then(|table| table.get("type"))
+                    .and_then(toml::Value::as_str)
+                    .ok_or_else(|| {
+                        format!("invalid poetry.lock package {name}: source must be a table with a type")
+                    })?;
+                match kind {
+                    "git" => Some("git"),
+                    "directory" | "file" => Some("local"),
+                    "url" => Some("url"),
+                    _ => None,
+                }
+            }
+        };
+        out.push(LockedPackage {
+            name,
+            version,
+            source,
+        });
+    }
+    Ok(out)
+}
+
+/// uv's lock format: a top-level integer `version` and `[[package]]` tables
+/// whose inline `source` table names where each package came from. Only
+/// `registry` sources are PyPI-compatible releases; `editable`, `virtual`,
+/// `path` and `directory` are project code, `git` is a checkout and `url` a
+/// direct archive.
+fn parse_uv_lock(content: &str) -> Result<Vec<LockedPackage>, String> {
+    let root: toml::Table = toml::from_str(content).map_err(|e| format!("invalid uv.lock: {e}"))?;
+    if !root.get("version").is_some_and(toml::Value::is_integer) {
+        return Err("invalid uv.lock: missing integer lockfile version".into());
+    }
+    let packages = match root.get("package") {
+        None => &[][..],
+        Some(packages) => packages
+            .as_array()
+            .ok_or("invalid uv.lock: package must be an array of tables")?
+            .as_slice(),
+    };
+    let mut out = Vec::new();
+    for pkg in packages {
+        let pkg = pkg
+            .as_table()
+            .ok_or("invalid uv.lock: package must be an array of tables")?;
+        let name = pkg
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("invalid uv.lock package: name must be a nonempty string")?
+            .to_string();
+        let source = match pkg.get("source") {
+            None => None,
+            Some(source) => {
+                let source = source.as_table().ok_or_else(|| {
+                    format!("invalid uv.lock package {name}: source must be a table")
+                })?;
+                if source.contains_key("registry") {
+                    None
+                } else if source.contains_key("git") {
+                    Some("git")
+                } else if source.contains_key("url") {
+                    Some("url")
+                } else if ["editable", "virtual", "path", "directory"]
+                    .iter()
+                    .any(|key| source.contains_key(*key))
+                {
+                    Some("local")
+                } else {
+                    return Err(format!(
+                        "invalid uv.lock package {name}: unrecognized source"
+                    ));
+                }
+            }
+        };
+        let version = match pkg.get("version") {
+            Some(version) => version
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!("invalid uv.lock package {name}: version must be a nonempty string")
+                })?
+                .to_string(),
+            // A project with a dynamic version (often a virtual workspace
+            // root) is locked without one. It is local code with no release
+            // identity to report.
+            None if source == Some("local") => continue,
+            None => {
+                return Err(format!(
+                    "invalid uv.lock package {name}: version must be a nonempty string"
+                ))
+            }
+        };
+        out.push(LockedPackage {
+            name,
+            version,
+            source,
+        });
     }
     Ok(out)
 }
@@ -2146,15 +2582,20 @@ example==1.0+local \
 
     #[test]
     fn skips_a_dependency_with_no_version() {
-        // Version comes from a parent POM or a property oxAudit does not resolve.
-        // Reporting it as unversioned would produce a bogus advisory query.
-        let err = parse_pom_xml(&pom(r#"  <dependencies>
+        // Version comes from a parent POM or a BOM oxAudit does not fetch.
+        // Reporting it as unversioned would produce a bogus advisory query;
+        // the skip is a visible note, not a failure of the whole scan.
+        let (out, notes) = super::parse_pom(&pom(r#"  <dependencies>
     <dependency>
       <groupId>com.example</groupId><artifactId>inherited</artifactId>
     </dependency>
   </dependencies>"#))
-        .expect_err("a dependency with no version yields no packages");
-        assert!(err.contains("no dependencies with versions"), "got: {err}");
+        .expect("a dependency with no version is skipped, not fatal");
+        assert!(out.is_empty());
+        assert!(
+            notes.join("\n").contains("com.example:inherited"),
+            "{notes:?}"
+        );
     }
 
     #[test]
@@ -2168,13 +2609,13 @@ example==1.0+local \
 
     #[test]
     fn ignores_dependency_elements_outside_a_dependencies_block() {
-        let err = parse_pom_xml(&pom(r#"  <build>
+        let out = parse_pom_xml(&pom(r#"  <build>
     <dependency>
       <groupId>com.example</groupId><artifactId>stray</artifactId><version>9.9</version>
     </dependency>
   </build>"#))
-        .expect_err("a <dependency> outside <dependencies> is not a declared dependency");
-        assert!(err.contains("no dependencies with versions"), "got: {err}");
+        .expect("a <dependency> outside <dependencies> is not a declared dependency");
+        assert!(out.is_empty(), "got: {out:?}");
     }
 
     #[test]
@@ -2189,10 +2630,10 @@ example==1.0+local \
     }
 
     #[test]
-    fn rejects_a_pom_with_no_dependencies() {
-        let err = parse_pom_xml(&pom("  <name>empty</name>"))
-            .expect_err("a pom with no dependencies is reported, not silently empty");
-        assert!(err.contains("no dependencies with versions"), "got: {err}");
+    fn a_pom_with_no_dependencies_is_an_empty_inventory() {
+        let out = parse_pom_xml(&pom("  <name>empty</name>"))
+            .expect("a project with no dependencies is a complete, empty inventory");
+        assert!(out.is_empty(), "got: {out:?}");
     }
 
     #[test]
@@ -2284,9 +2725,12 @@ example==1.0+local \
     }
 
     #[test]
-    fn a_gradle_lockfile_with_no_modules_is_reported() {
-        let error = parse_gradle_lockfile("# only comments\n\nempty=\n")
-            .expect_err("an empty inventory must not look like a parsed one");
+    fn a_gradle_lockfile_with_only_the_empty_marker_is_a_valid_empty_inventory() {
+        let out = parse_gradle_lockfile("# only comments\n\nempty=\n")
+            .expect("Gradle's empty= marker declares a complete, empty inventory");
+        assert!(out.is_empty(), "got: {out:?}");
+        let error = parse_gradle_lockfile("# only comments\n")
+            .expect_err("without modules or the empty= marker the file is not a lockfile");
         assert!(error.contains("no locked modules"), "got: {error}");
     }
 
@@ -2397,6 +2841,10 @@ example==1.0+local \
              [metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.8\"\n",
         )
         .expect("a poetry lock with two packages parses");
+        let out = out
+            .into_iter()
+            .map(|package| (package.name, package.version))
+            .collect::<Vec<(String, String)>>();
         assert_eq!(
             out,
             vec![
@@ -2407,9 +2855,12 @@ example==1.0+local \
     }
 
     #[test]
-    fn a_poetry_lock_with_no_packages_is_reported() {
-        let error = parse_poetry_lock("[metadata]\nlock-version = \"2.0\"\n")
-            .expect_err("an empty poetry lock must not look complete");
+    fn a_poetry_lock_with_only_metadata_is_a_valid_empty_inventory() {
+        let out = parse_poetry_lock("[metadata]\nlock-version = \"2.0\"\n")
+            .expect("a dependency-free poetry project locks only [metadata]");
+        assert!(out.is_empty(), "got: {out:?}");
+        let error = parse_poetry_lock("title = \"not a lockfile\"\n")
+            .expect_err("a TOML file without packages or metadata is not a poetry lock");
         assert!(error.contains("no packages"), "got: {error}");
     }
 
@@ -2768,5 +3219,472 @@ replace example.com/a=>"../\xC3\xA9\U00000061"
         assert_eq!(super::ecosystem_for_kind("bun"), "npm");
         assert_eq!(super::ecosystem_for_kind("mix"), "Hex");
         assert_eq!(super::ecosystem_for_kind("pubspec"), "Pub");
+    }
+}
+
+#[cfg(test)]
+mod coverage_gap_tests {
+    use super::{parse_lockfile, parse_lockfile_inventory};
+
+    fn write(name: &str, content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        (directory, path)
+    }
+
+    fn parsed(name: &str, content: &str) -> Result<Vec<crate::models::Dependency>, String> {
+        let (_directory, path) = write(name, content);
+        parse_lockfile(&path, super::lockfile_kind(name))
+    }
+
+    fn inventory(name: &str, content: &str) -> Result<super::LockfileInventory, String> {
+        let (_directory, path) = write(name, content);
+        parse_lockfile_inventory(&path, super::lockfile_kind(name))
+    }
+
+    // ------------------------------------------------ item 1: valid empties
+
+    #[test]
+    fn structurally_valid_lockfiles_with_no_registry_packages_are_complete_and_empty() {
+        for (name, content) in [
+            ("gradle.lockfile", "# This is a Gradle generated file for dependency locking.\n# Manual edits can break the build and are not advised.\n# This file is expected to be part of source control.\nempty=\n"),
+            ("gradle.lockfile", "# comment\nempty=compileClasspath,runtimeClasspath\n"),
+            ("composer.lock", r#"{"_readme":["generated"],"content-hash":"abc","packages":[],"packages-dev":[],"aliases":[]}"#),
+            ("poetry.lock", "# generated by poetry\npackage = []\n\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.11\"\ncontent-hash = \"abc\"\n"),
+            ("poetry.lock", "[metadata]\nlock-version = \"2.0\"\n"),
+            ("mix.lock", "%{}\n"),
+            ("mix.lock", "%{\n  \"private\": {:git, \"https://example.com/private.git\", \"0123456789abcdef\", []},\n}\n"),
+            ("Pipfile.lock", r#"{"_meta":{"hash":{"sha256":"abc"},"pipfile-spec":6,"requires":{},"sources":[]},"default":{},"develop":{}}"#),
+            ("Pipfile.lock", r#"{"_meta":{"pipfile-spec":6},"default":{"local":{"editable":true,"path":"."},"private":{"git":"https://example.com/p.git","ref":"0123abc"}},"develop":{}}"#),
+            ("packages.lock.json", r#"{"version":1,"dependencies":{"net8.0":{"MyApp.Core":{"type":"Project"}}}}"#),
+            ("packages.lock.json", r#"{"version":1,"dependencies":{}}"#),
+            ("pubspec.lock", "packages:\n  flutter:\n    dependency: \"direct main\"\n    description: flutter\n    source: sdk\n    version: \"0.0.0\"\nsdks:\n  dart: \">=3.0.0 <4.0.0\"\n"),
+            ("yarn.lock", "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n\n\n"),
+            ("yarn.lock", "# This file is generated by running \"yarn install\" inside your project.\n\n__metadata:\n  version: 8\n  cacheKey: 10c0\n"),
+            ("requirements.txt", "# no dependencies yet\n"),
+        ] {
+            let result = parsed(name, content);
+            assert!(
+                result.as_ref().is_ok_and(Vec::is_empty),
+                "{name} must parse as a complete empty inventory: {result:?}\n{content}"
+            );
+        }
+    }
+
+    #[test]
+    fn junk_in_a_lockfile_name_is_still_a_parse_failure() {
+        for (name, content) in [
+            ("gradle.lockfile", "this is not a gradle lockfile\n"),
+            ("gradle.lockfile", "# only comments\n"),
+            (
+                "gradle.lockfile",
+                "org.example:lib:1.0=runtimeClasspath\nnot a coordinate\n",
+            ),
+            ("composer.lock", "{}"),
+            ("composer.lock", "[]"),
+            ("composer.lock", "not json"),
+            ("poetry.lock", "title = \"not a lockfile\"\n"),
+            ("poetry.lock", "not = [valid toml\n"),
+            ("mix.lock", "hello world\n"),
+            ("mix.lock", ""),
+            ("Pipfile.lock", "{}"),
+            (
+                "Pipfile.lock",
+                r#"{"_meta":{"pipfile-spec":6},"default":{"broken":{"hashes":[]}}}"#,
+            ),
+            ("packages.lock.json", r#"{"version":1}"#),
+            ("pubspec.lock", "sdks: {}\n"),
+            ("yarn.lock", "just some text\n"),
+            ("yarn.lock", ""),
+        ] {
+            assert!(
+                parsed(name, content).is_err(),
+                "{name} junk must not look like a complete inventory:\n{content}"
+            );
+        }
+    }
+
+    // ------------------------------------------------------ item 2: maven
+
+    fn pom(body: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\"?>\n<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n<modelVersion>4.0.0</modelVersion>\n{body}\n</project>"
+        )
+    }
+
+    fn coordinates(deps: &[crate::models::Dependency]) -> Vec<(&str, &str)> {
+        deps.iter()
+            .map(|d| (d.name.as_str(), d.version.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn pom_placeholders_resolve_from_properties_and_project_versions() {
+        let content = pom(
+            r#"<groupId>com.acme</groupId><artifactId>app</artifactId><version>2.4.0</version>
+<parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>7.1</version></parent>
+<dependencies>
+  <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>${slf4j.version}</version></dependency>
+  <dependency><groupId>${project.groupId}</groupId><artifactId>core</artifactId><version>${project.version}</version></dependency>
+  <dependency><groupId>com.acme</groupId><artifactId>bom-thing</artifactId><version>${project.parent.version}</version></dependency>
+  <dependency><groupId>com.fasterxml</groupId><artifactId>jackson</artifactId><version>${jackson.version}</version>
+    <exclusions><exclusion><groupId>x.y</groupId><artifactId>z</artifactId></exclusion></exclusions>
+  </dependency>
+</dependencies>
+<properties>
+  <slf4j.version>2.0.9</slf4j.version>
+  <jackson.major>2.15</jackson.major>
+  <jackson.version>${jackson.major}.3</jackson.version>
+</properties>"#,
+        );
+        let inventory = inventory("pom.xml", &content).expect("a resolvable pom parses");
+        assert_eq!(
+            coordinates(&inventory.dependencies),
+            vec![
+                ("org.slf4j:slf4j-api", "2.0.9"),
+                ("com.acme:core", "2.4.0"),
+                ("com.acme:bom-thing", "7.1"),
+                ("com.fasterxml:jackson", "2.15.3"),
+            ]
+        );
+        assert!(inventory.notes.is_empty(), "{:?}", inventory.notes);
+    }
+
+    #[test]
+    fn pom_project_version_is_inherited_from_the_parent() {
+        let content = pom(
+            r#"<parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>3.0.1</version></parent>
+<artifactId>child</artifactId>
+<dependencies>
+  <dependency><groupId>com.acme</groupId><artifactId>sibling</artifactId><version>${project.version}</version></dependency>
+</dependencies>"#,
+        );
+        let deps = parsed("pom.xml", &content).unwrap();
+        assert_eq!(coordinates(&deps), vec![("com.acme:sibling", "3.0.1")]);
+    }
+
+    #[test]
+    fn unresolved_pom_placeholders_are_skipped_with_a_visible_note_not_queried() {
+        let content = pom(r#"<dependencies>
+  <dependency><groupId>org.example</groupId><artifactId>from-parent</artifactId><version>${parent.defined.version}</version></dependency>
+  <dependency><groupId>org.example</groupId><artifactId>cyclic</artifactId><version>${a}</version></dependency>
+  <dependency><groupId>org.example</groupId><artifactId>pinned</artifactId><version>1.0</version></dependency>
+</dependencies>
+<properties><a>${b}</a><b>${a}</b></properties>"#);
+        let inventory =
+            inventory("pom.xml", &content).expect("unresolved entries do not fail the pom");
+        assert_eq!(
+            coordinates(&inventory.dependencies),
+            vec![("org.example:pinned", "1.0")]
+        );
+        assert!(
+            inventory
+                .dependencies
+                .iter()
+                .all(|d| !d.version.contains("${")),
+            "placeholders must never become literal versions"
+        );
+        let notes = inventory.notes.join("\n");
+        assert!(notes.contains("org.example:from-parent"), "{notes}");
+        assert!(notes.contains("org.example:cyclic"), "{notes}");
+        assert!(notes.contains("${parent.defined.version}"), "{notes}");
+    }
+
+    #[test]
+    fn pom_property_expansion_is_bounded() {
+        let mut properties = String::from("<p0>xxxxxxxxxxxxxxxx</p0>");
+        for index in 1..40 {
+            let previous = index - 1;
+            properties.push_str(&format!(
+                "<p{index}>${{p{previous}}}${{p{previous}}}</p{index}>"
+            ));
+        }
+        let content = pom(&format!(
+            "<dependencies><dependency><groupId>g</groupId><artifactId>a</artifactId><version>${{p39}}</version></dependency></dependencies><properties>{properties}</properties>"
+        ));
+        let inventory = inventory("pom.xml", &content).expect("bounded expansion");
+        assert!(inventory.dependencies.is_empty());
+        assert!(inventory.notes.join("\n").contains("g:a"));
+    }
+
+    #[test]
+    fn a_pom_with_no_versioned_dependencies_is_an_empty_inventory_with_a_note() {
+        for body in [
+            // Aggregator: modules only.
+            "<packaging>pom</packaging><modules><module>api</module><module>impl</module></modules>",
+            // Child relying on its parent's dependencyManagement / an imported BOM.
+            "<parent><groupId>g</groupId><artifactId>p</artifactId><version>1</version></parent><dependencies><dependency><groupId>org.example</groupId><artifactId>managed</artifactId></dependency></dependencies>",
+        ] {
+            let inventory = inventory("pom.xml", &pom(body)).expect("must not fail the scan");
+            assert!(inventory.dependencies.is_empty(), "{body}");
+            if body.contains("managed") {
+                let notes = inventory.notes.join("\n");
+                assert!(notes.contains("org.example:managed"), "{notes}");
+            }
+        }
+    }
+
+    #[test]
+    fn pom_documents_that_are_not_maven_projects_still_fail() {
+        for content in [
+            "not xml at all",
+            "<settings><dependencies/></settings>",
+            "<project><dependencies><dependency>",
+            "",
+        ] {
+            assert!(
+                parsed("pom.xml", content).is_err(),
+                "accepted a non-project pom: {content}"
+            );
+        }
+    }
+
+    // ------------------------------------- item 3: non-registry sources
+
+    #[test]
+    fn cargo_workspace_members_and_git_sources_are_not_registry_queries() {
+        let deps = parsed(
+            "Cargo.lock",
+            r#"version = 3
+
+[[package]]
+name = "my-app"
+version = "0.1.0"
+dependencies = ["serde", "private"]
+
+[[package]]
+name = "serde"
+version = "1.0.200"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc"
+
+[[package]]
+name = "private"
+version = "0.3.0"
+source = "git+https://example.com/private.git?branch=main#0123456789abcdef"
+
+[[package]]
+name = "sparse"
+version = "2.0.0"
+source = "sparse+https://index.crates.io/"
+"#,
+        )
+        .unwrap();
+        let by_name = |name: &str| deps.iter().find(|d| d.name == name).unwrap();
+        assert_eq!(
+            by_name("my-app").occurrence.source.as_deref(),
+            Some("local")
+        );
+        assert!(by_name("my-app").occurrence.local_workspace);
+        assert_eq!(by_name("private").occurrence.source.as_deref(), Some("git"));
+        assert_eq!(by_name("serde").occurrence.source, None);
+        let queried = crate::deps::osv::queryable_dependencies(&deps)
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(queried, vec!["serde", "sparse"]);
+    }
+
+    #[test]
+    fn poetry_non_registry_sources_are_not_registry_queries() {
+        let deps = parsed(
+            "poetry.lock",
+            r#"[[package]]
+name = "requests"
+version = "2.31.0"
+
+[[package]]
+name = "internal"
+version = "1.0.0"
+[package.source]
+type = "legacy"
+url = "https://pypi.internal.example/simple"
+reference = "internal"
+
+[[package]]
+name = "forked"
+version = "0.5.0"
+[package.source]
+type = "git"
+url = "https://example.com/forked.git"
+reference = "main"
+resolved_reference = "0123abcd"
+
+[[package]]
+name = "sibling"
+version = "0.1.0"
+develop = true
+[package.source]
+type = "directory"
+url = "../sibling"
+
+[[package]]
+name = "wheel"
+version = "0.2.0"
+[package.source]
+type = "file"
+url = "dist/wheel-0.2.0-py3-none-any.whl"
+
+[[package]]
+name = "archive"
+version = "0.3.0"
+[package.source]
+type = "url"
+url = "https://example.com/archive-0.3.0.tar.gz"
+
+[metadata]
+lock-version = "2.0"
+"#,
+        )
+        .unwrap();
+        let source = |name: &str| {
+            deps.iter()
+                .find(|d| d.name == name)
+                .unwrap()
+                .occurrence
+                .source
+                .clone()
+        };
+        assert_eq!(source("requests"), None);
+        assert_eq!(source("internal"), None);
+        assert_eq!(source("forked").as_deref(), Some("git"));
+        assert_eq!(source("sibling").as_deref(), Some("local"));
+        assert_eq!(source("wheel").as_deref(), Some("local"));
+        assert_eq!(source("archive").as_deref(), Some("url"));
+        let queried = crate::deps::osv::queryable_dependencies(&deps)
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(queried, vec!["requests", "internal"]);
+    }
+
+    #[test]
+    fn npm_workspace_members_are_not_registry_queries() {
+        let deps = parsed(
+            "package-lock.json",
+            r#"{"lockfileVersion":3,"packages":{
+              "":{"name":"root","workspaces":["packages/*"],"dependencies":{"@acme/ui":"*","left-pad":"1.3.0"}},
+              "packages/ui":{"name":"@acme/ui","version":"1.0.0"},
+              "node_modules/@acme/ui":{"resolved":"packages/ui","link":true},
+              "node_modules/left-pad":{"version":"1.3.0"}}}"#,
+        )
+        .unwrap();
+        let ui = deps.iter().find(|d| d.name == "@acme/ui").unwrap();
+        assert!(ui.occurrence.local_workspace);
+        assert_eq!(ui.version, "1.0.0");
+        let queried = crate::deps::osv::queryable_dependencies(&deps)
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(queried, vec!["left-pad"]);
+    }
+
+    // ------------------------------------------------------- item 4: uv
+
+    #[test]
+    fn uv_lock_is_discovered_and_maps_to_pypi() {
+        assert!(crate::fs_utils::is_lockfile_name("uv.lock"));
+        assert_eq!(super::lockfile_kind("uv.lock"), "uv");
+        assert_eq!(super::ecosystem_for_kind("uv"), "PyPI");
+    }
+
+    #[test]
+    fn uv_lock_reads_registry_packages_and_marks_local_and_git_sources() {
+        let deps = parsed(
+            "uv.lock",
+            r#"version = 1
+revision = 2
+requires-python = ">=3.12"
+
+[[package]]
+name = "anyio"
+version = "4.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "idna" },
+]
+sdist = { url = "https://files.pythonhosted.org/anyio-4.3.0.tar.gz", hash = "sha256:abc", size = 1 }
+
+[[package]]
+name = "idna"
+version = "3.7"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "my-project"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [{ name = "anyio" }]
+
+[[package]]
+name = "workspace-root"
+source = { virtual = "." }
+
+[[package]]
+name = "member"
+version = "0.2.0"
+source = { directory = "packages/member" }
+
+[[package]]
+name = "vendored"
+version = "0.3.0"
+source = { path = "vendor/vendored-0.3.0-py3-none-any.whl" }
+
+[[package]]
+name = "forked"
+version = "1.1.0"
+source = { git = "https://example.com/forked.git?rev=main#0123abcd" }
+
+[[package]]
+name = "archive"
+version = "2.0.0"
+source = { url = "https://example.com/archive-2.0.0.tar.gz" }
+"#,
+        )
+        .unwrap();
+        assert!(deps.iter().all(|d| d.ecosystem == "PyPI"));
+        assert!(
+            deps.iter().all(|d| d.name != "workspace-root"),
+            "a versionless virtual root has no identity to report"
+        );
+        let source = |name: &str| {
+            deps.iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("{name} missing"))
+                .occurrence
+                .source
+                .clone()
+        };
+        assert_eq!(source("anyio"), None);
+        assert_eq!(source("my-project").as_deref(), Some("local"));
+        assert_eq!(source("member").as_deref(), Some("local"));
+        assert_eq!(source("vendored").as_deref(), Some("local"));
+        assert_eq!(source("forked").as_deref(), Some("git"));
+        assert_eq!(source("archive").as_deref(), Some("url"));
+        let queried = crate::deps::osv::queryable_dependencies(&deps)
+            .map(|d| (d.name.as_str(), d.version.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(queried, vec![("anyio", "4.3.0"), ("idna", "3.7")]);
+    }
+
+    #[test]
+    fn uv_lock_empty_and_malformed_documents() {
+        assert!(parsed(
+            "uv.lock",
+            "version = 1\nrequires-python = \">=3.12\"\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { virtual = \".\" }\n"
+        )
+        .unwrap()
+        .iter()
+        .all(|d| !crate::deps::osv::is_queryable_dependency(d)));
+        assert!(parsed("uv.lock", "version = 1\n").unwrap().is_empty());
+        for content in [
+            "",
+            "name = \"not a uv lock\"\n",
+            "version = 1\n[[package]\n",
+            "version = 1\n[[package]]\nname = \"x\"\nsource = { registry = \"https://pypi.org/simple\" }\n",
+            "version = 1\n[[package]]\nversion = \"1.0\"\nsource = { registry = \"https://pypi.org/simple\" }\n",
+            "version = 1\n[[package]]\nname = \"x\"\nversion = \"1.0\"\nsource = { mystery = \"?\" }\n",
+            "version = 1\npackage = \"nope\"\n",
+        ] {
+            assert!(parsed("uv.lock", content).is_err(), "accepted: {content}");
+        }
     }
 }

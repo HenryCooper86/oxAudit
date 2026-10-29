@@ -18,8 +18,9 @@ use super::store::AdvisoryDb;
 pub const OSV_DUMP_BASE: &str = "https://osv-vulnerabilities.storage.googleapis.com";
 
 /// The ecosystems oxAudit's lockfile parsers can produce queries for; the
-/// default set `advisory-db update` downloads.
-pub const DEFAULT_ECOSYSTEMS: [&str; 8] = [
+/// default set `advisory-db update` downloads. Names are OSV dump directory
+/// names, which are case-sensitive.
+pub const DEFAULT_ECOSYSTEMS: [&str; 10] = [
     "npm",
     "PyPI",
     "Maven",
@@ -28,6 +29,8 @@ pub const DEFAULT_ECOSYSTEMS: [&str; 8] = [
     "RubyGems",
     "Packagist",
     "NuGet",
+    "Hex",
+    "Pub",
 ];
 
 /// One ecosystem dump is expected in the hundreds of megabytes; two gigabytes
@@ -493,6 +496,27 @@ mod tests {
         );
         // The rows are inert extras: present, but unusable for coverage.
         assert_eq!(db.records_for("npm", "lodash").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn default_ecosystems_cover_every_lockfile_ecosystem() {
+        // Every lockfile kind the parsers recognise; a default
+        // `--advisory-db` scan must not fail as incomplete for any of them.
+        let kinds = [
+            "npm", "yarn", "pnpm", "bun", "cargo", "go", "gomod", "pipenv", "pip", "poetry",
+            "bundler", "mix", "pubspec", "composer", "maven", "gradle", "nuget",
+        ];
+        for kind in kinds {
+            let ecosystem = crate::deps::lockfiles::ecosystem_for_kind(kind);
+            assert_ne!(ecosystem, "unknown", "{kind}");
+            assert!(
+                DEFAULT_ECOSYSTEMS.contains(&ecosystem),
+                "{kind} produces {ecosystem}, which the defaults omit"
+            );
+        }
+        // OSV dump directory names are case-sensitive.
+        assert!(DEFAULT_ECOSYSTEMS.contains(&"Hex"));
+        assert!(DEFAULT_ECOSYSTEMS.contains(&"Pub"));
     }
 
     fn futures_block_on<F: std::future::Future>(future: F) -> F::Output {

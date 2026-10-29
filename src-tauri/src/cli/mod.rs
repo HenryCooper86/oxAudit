@@ -359,7 +359,8 @@ enum AdvisoryDbCommand {
         db: PathBuf,
 
         /// Ecosystem to download in addition to the defaults (npm, PyPI,
-        /// Maven, crates.io, Go, RubyGems, Packagist, NuGet). Repeatable —
+        /// Maven, crates.io, Go, RubyGems, Packagist, NuGet, Hex, Pub).
+        /// Repeatable —
         /// for example `--ecosystem Debian:12 --ecosystem 'Alpine:v3.20'`.
         #[arg(long = "ecosystem", value_name = "NAME")]
         ecosystems: Vec<String>,

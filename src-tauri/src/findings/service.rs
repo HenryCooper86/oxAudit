@@ -925,14 +925,30 @@ impl FindingsService {
                 .expect("managed run exists until terminal handling")
                 .transition(oxaudit_domain::RunState::Enriching, epoch_millis())
                 .map_err(|_| CommandError::persistence_unavailable())?;
+            let mut enrichment_warnings: Vec<String> = Vec::new();
             if findings.iter().any(|finding| finding.cwe.is_some()) {
                 let _ = events.emit("scan://progress", Value::from("exploitation-signal"));
-                let kev = cve.kev_set().await;
-                for finding in &mut findings {
-                    if let Some(cwe) = finding.cwe.as_deref() {
-                        let count = kev.cwe_exploited_count(cwe);
-                        finding.cwe_exploited = count > 0;
-                        finding.cwe_exploited_count = count;
+                match cve.kev_set().await {
+                    Ok(kev) => {
+                        for finding in &mut findings {
+                            if let Some(cwe) = finding.cwe.as_deref() {
+                                let count = kev.cwe_exploited_count(cwe);
+                                finding.cwe_exploited = count > 0;
+                                finding.cwe_exploited_count = count;
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        // An unavailable catalog must not read as "no weakness
+                        // class here is being exploited".
+                        let message = format!(
+                            "Exploitation signal unavailable: {reason}. CWE known-exploited markers were not computed for this run."
+                        );
+                        managed_run
+                            .as_mut()
+                            .expect("managed run exists until terminal handling")
+                            .warning("exploitation_signal_unavailable", message.clone());
+                        enrichment_warnings.push(message);
                     }
                 }
             }
@@ -1002,6 +1018,7 @@ impl FindingsService {
                 &findings,
             );
             summary.coverage_warnings = coverage_warnings.to_vec();
+            summary.coverage_warnings.extend(enrichment_warnings);
             let git_after = crate::git_context::snapshot(&canonical).ok();
             if git_before.is_some() || git_after.is_some() {
                 summary.git_context = Some(crate::git_context::GitEvidence {

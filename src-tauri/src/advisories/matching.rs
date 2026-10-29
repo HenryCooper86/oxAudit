@@ -141,7 +141,7 @@ pub fn record_affects(
             .pointer("/package/name")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if entry_ecosystem != ecosystem
+        if !versioning::ecosystem_within(ecosystem, entry_ecosystem)
             || versioning::normalize_package(ecosystem, entry_name) != normalized
         {
             continue;
@@ -207,7 +207,11 @@ pub fn query_local(
     let mut missing: Vec<String> = Vec::new();
     let available = db.ecosystems()?;
     for dep in &queryable {
-        if !available.iter().any(|e| e == &dep.ecosystem) && !missing.contains(&dep.ecosystem) {
+        if !available
+            .iter()
+            .any(|e| versioning::ecosystem_within(e, &dep.ecosystem))
+            && !missing.contains(&dep.ecosystem)
+        {
             missing.push(dep.ecosystem.clone());
         }
     }
@@ -423,14 +427,160 @@ mod tests {
         let advisory = serde_json::json!({
             "id": "OSV-1",
             "affected": [{
-                "package": { "ecosystem": "Wolfi", "name": "zlib" },
+                "package": { "ecosystem": "Rocky Linux:9", "name": "zlib" },
                 "ranges": [{ "type": "ECOSYSTEM", "events": [{"introduced": "0"}] }]
             }]
         });
         assert_eq!(
-            affects(advisory, "Wolfi", "zlib", "1.0.0"),
+            affects(advisory, "Rocky Linux:9", "zlib", "1.0.0"),
             Verdict::Undetermined
         );
+    }
+
+    fn ecosystem_range(ecosystem: &str, name: &str, events: Value) -> Value {
+        serde_json::json!({
+            "id": "OSV-eco",
+            "affected": [{
+                "package": { "ecosystem": ecosystem, "name": name },
+                "ranges": [{ "type": "ECOSYSTEM", "events": events }]
+            }]
+        })
+    }
+
+    #[test]
+    fn hex_and_pub_ranges_evaluate_instead_of_matching_everything() {
+        for (ecosystem, name) in [("Hex", "plug"), ("Pub", "http")] {
+            let advisory = ecosystem_range(
+                ecosystem,
+                name,
+                serde_json::json!([{"introduced": "1.0.0"}, {"fixed": "1.3.5"}]),
+            );
+            for (version, expected) in [
+                ("0.9.0", Verdict::NotAffected),
+                ("1.0.0", Verdict::Affected),
+                ("1.3.5-rc.1", Verdict::Affected),
+                ("1.3.4", Verdict::Affected),
+                ("1.3.5", Verdict::NotAffected),
+                ("2.0.0", Verdict::NotAffected),
+            ] {
+                assert_eq!(
+                    affects(advisory.clone(), ecosystem, name, version),
+                    expected,
+                    "{ecosystem} {version}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn apk_distributions_without_a_release_evaluate_ranges() {
+        for ecosystem in ["Wolfi", "Chainguard"] {
+            let advisory = ecosystem_range(
+                ecosystem,
+                "zlib",
+                serde_json::json!([{"introduced": "0"}, {"fixed": "1.3.1-r0"}]),
+            );
+            assert_eq!(
+                affects(advisory.clone(), ecosystem, "zlib", "1.3-r4"),
+                Verdict::Affected,
+                "{ecosystem}"
+            );
+            assert_eq!(
+                affects(advisory, ecosystem, "zlib", "1.3.1-r0"),
+                Verdict::NotAffected,
+                "{ecosystem}"
+            );
+        }
+    }
+
+    fn distro_db() -> crate::advisories::store::AdvisoryDb {
+        let mut db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
+        let record = serde_json::json!({
+            "id": "DEBIAN-CVE-2024-0001",
+            "affected": [{
+                "package": { "ecosystem": "Debian:12", "name": "openssl" },
+                "ranges": [{ "type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.0.13-1~deb12u1"}] }]
+            }]
+        });
+        db.insert_record(
+            "DEBIAN-CVE-2024-0001",
+            None,
+            &record,
+            &[("Debian:12".into(), "openssl".into())],
+        )
+        .unwrap();
+        // `advisory-db update --ecosystem Debian` downloads every release.
+        db.finish_update(&["Debian".into()], 1, 1).unwrap();
+        db
+    }
+
+    fn distro_dependency(ecosystem: &str, version: &str) -> Dependency {
+        Dependency {
+            occurrence: Default::default(),
+            ecosystem: ecosystem.into(),
+            name: "openssl".into(),
+            version: version.into(),
+            lockfile: "image".into(),
+            license: None,
+        }
+    }
+
+    #[test]
+    fn a_bare_distribution_query_matches_release_qualified_records() {
+        // ELF package notes name the distribution but not the release.
+        let db = distro_db();
+        let vulnerable = distro_dependency("Debian", "3.0.11-1~deb12u2");
+        let fixed = distro_dependency("Debian", "3.0.13-1~deb12u1");
+        let outcome = query_local(&db, &[vulnerable.clone(), fixed.clone()]).unwrap();
+        assert_eq!(
+            outcome.results[&osv::dependency_query_key(&vulnerable)].len(),
+            1,
+            "a release-qualified advisory must not vanish behind a bare name"
+        );
+        assert!(!outcome
+            .results
+            .contains_key(&osv::dependency_query_key(&fixed)));
+    }
+
+    #[test]
+    fn a_bare_distribution_dump_covers_release_qualified_queries() {
+        let db = distro_db();
+        let vulnerable = distro_dependency("Debian:12", "3.0.11-1~deb12u2");
+        let outcome = query_local(&db, std::slice::from_ref(&vulnerable)).unwrap();
+        assert_eq!(
+            outcome.results[&osv::dependency_query_key(&vulnerable)].len(),
+            1
+        );
+
+        // A single release's dump never covers a bare (any-release) query.
+        let db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
+        db.finish_update(&["Debian:12".into()], 1, 1).unwrap();
+        let error = query_local(&db, &[distro_dependency("Debian", "1.0")])
+            .err()
+            .expect("bare query against one release is incomplete");
+        assert!(error.contains("incomplete advisory coverage"), "{error}");
+    }
+
+    #[test]
+    fn maven_flavour_qualifiers_evaluate_against_guava_ranges() {
+        // GHSA-7g45-4rm6-3mm3: guava before 32.0.0-android.
+        let advisory = ecosystem_range(
+            "Maven",
+            "com.google.guava:guava",
+            serde_json::json!([{"introduced": "1.0"}, {"fixed": "32.0.0-android"}]),
+        );
+        for (version, expected) in [
+            ("31.1-jre", Verdict::Affected),
+            ("31.1-android", Verdict::Affected),
+            ("32.0.0-jre", Verdict::NotAffected),
+            ("32.1.3-jre", Verdict::NotAffected),
+        ] {
+            assert_eq!(
+                affects(advisory.clone(), "Maven", "com.google.guava:guava", version),
+                expected,
+                "{version}"
+            );
+        }
     }
 
     #[test]

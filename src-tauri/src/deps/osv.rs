@@ -11,11 +11,17 @@ const MAX_BATCH_MATCHES: usize = 100_000;
 /// OSV requires all three package coordinates. Keep this predicate shared by
 /// request construction, progress accounting, and cache receipts so a package
 /// is never recorded as queried unless it was eligible for the request.
+///
+/// Only registry releases are queried. Git checkouts, local/path code, direct
+/// URL archives and workspace members merely share a name and version with
+/// whatever the public registry holds; querying them would attribute another
+/// package's advisories (or its absence) to project code.
 pub fn is_queryable_dependency(dependency: &Dependency) -> bool {
     dependency.ecosystem != "unknown"
+        && !dependency.occurrence.local_workspace
         && !matches!(
             dependency.occurrence.source.as_deref(),
-            Some("git" | "local")
+            Some("git" | "local" | "url")
         )
         && !dependency.name.trim().is_empty()
         && !dependency.version.trim().is_empty()
@@ -791,6 +797,30 @@ pub fn score_to_severity(score: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_registry_occurrences_are_queryable() {
+        let registry = Dependency {
+            ecosystem: "PyPI".into(),
+            name: "example".into(),
+            version: "1.0.0".into(),
+            lockfile: "uv.lock".into(),
+            license: None,
+            occurrence: Default::default(),
+        };
+        assert!(is_queryable_dependency(&registry));
+        for source in ["git", "local", "url"] {
+            let mut dependency = registry.clone();
+            dependency.occurrence.source = Some(source.into());
+            assert!(!is_queryable_dependency(&dependency), "{source}");
+        }
+        let mut workspace = registry.clone();
+        workspace.occurrence.local_workspace = true;
+        assert!(
+            !is_queryable_dependency(&workspace),
+            "workspace members are project code, not registry releases"
+        );
+    }
 
     #[test]
     fn fixes_match_queried_package_and_preserve_every_interval() {

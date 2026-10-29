@@ -2126,7 +2126,7 @@ mod tests {
         let members: Vec<(&str, Vec<u8>)> = vec![
             (
                 "etc/os-release",
-                b"NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.20\n".to_vec(),
+                b"NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.20.3\nPRETTY_NAME=\"Alpine Linux v3.20\"\n".to_vec(),
             ),
             (
                 "lib/apk/db/installed",

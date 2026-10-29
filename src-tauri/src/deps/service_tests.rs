@@ -305,6 +305,57 @@ async fn go_scan_excludes_history_and_persists_static_inventory_limits() {
 }
 
 #[tokio::test]
+async fn skipped_pom_dependencies_and_git_crates_surface_as_inventory_notes() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("app");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("pom.xml"),
+        r#"<project>
+  <groupId>example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+  <dependencies>
+    <dependency><groupId>org.example</groupId><artifactId>pinned</artifactId><version>2.0.0</version></dependency>
+    <dependency><groupId>org.example</groupId><artifactId>inherited</artifactId><version>${parent.only.version}</version></dependency>
+  </dependencies>
+</project>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("Cargo.lock"),
+        "version = 3\n\n[[package]]\nname = \"forked\"\nversion = \"0.1.0\"\nsource = \"git+https://example.com/forked#abc\"\n",
+    )
+    .unwrap();
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let result = execute(
+        directory.path(),
+        &repo,
+        &provider(),
+        false,
+        &AtomicBool::new(false),
+        &events(),
+    )
+    .await
+    .unwrap();
+    let notes = &result.summary.inventory_notes;
+    assert!(
+        notes.iter().any(|note| note.contains("pom.xml")
+            && note.contains("org.example:inherited")
+            && note.contains("not checked against advisories")),
+        "unresolved pom property is reported: {notes:?}"
+    );
+    assert!(
+        notes.iter().any(|note| note.contains("Cargo.lock")
+            && note.contains("forked")
+            && note.contains("git source")),
+        "git crate's skipped registry lookup is reported: {notes:?}"
+    );
+    assert_eq!(
+        result.summary.packages_queried, 1,
+        "only the pinned Maven artifact is queried"
+    );
+}
+
+#[tokio::test]
 async fn non_registry_gems_do_not_shadow_or_receive_registry_advisories() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -1276,7 +1327,10 @@ async fn repeated_install_paths_survive_projection_and_canonical_evidence() {
 }
 
 #[tokio::test]
-async fn unnamed_workspace_v2_v3_queries_and_persists_actual_package_name() {
+async fn unnamed_workspace_v2_v3_persists_actual_package_name_without_registry_query() {
+    // A workspace member is project code. Its name and version can collide
+    // with an unrelated public npm package, so it is inventoried under its
+    // package identity but never sent to the advisory provider.
     struct WorkspaceProvider;
     impl DependencyProviders for WorkspaceProvider {
         fn query_full<'a>(
@@ -1284,17 +1338,11 @@ async fn unnamed_workspace_v2_v3_queries_and_persists_actual_package_name() {
             dependencies: &'a [Dependency],
         ) -> PortFuture<'a, Result<AdvisoryResults, String>> {
             Box::pin(async move {
-                assert_eq!(dependencies.len(), 1);
-                assert_eq!(
-                    dependencies[0].name, "a",
-                    "provider must query package identity, not local directory"
+                assert!(
+                    dependencies.is_empty(),
+                    "workspace members must not be queried: {dependencies:?}"
                 );
-                let mut vulnerability = full_vulnerability();
-                vulnerability.package_name = "a".into();
-                Ok(AdvisoryResults::from([(
-                    "npm\u{0}a\u{0}1.0.0".into(),
-                    vec![vulnerability],
-                )]))
+                Ok(AdvisoryResults::new())
             })
         }
         fn enrich<'a>(
@@ -1324,12 +1372,14 @@ async fn unnamed_workspace_v2_v3_queries_and_persists_actual_package_name() {
         .await
         .unwrap();
         assert_eq!(result.dependencies[0].name, "a");
-        assert_eq!(result.vulnerabilities[0].package_name, "a");
-        assert_eq!(result.summary.packages_queried, 1);
+        assert!(result.dependencies[0].occurrence.local_workspace);
+        assert!(result.vulnerabilities.is_empty());
+        assert_eq!(result.summary.packages_queried, 0);
         let run = oxaudit_domain::RunId::parse(result.summary.run_id.unwrap()).unwrap();
         let (_, components, observations) = repository.canonical_load_report_graph(&run).unwrap();
         assert_eq!(components[0].name, "a");
-        assert_eq!(components[0].purl.as_deref(), Some("pkg/npm/a@1.0.0"));
+        // Only registry releases get a registry package URL.
+        assert_eq!(components[0].purl, None);
         assert!(observations.iter().flat_map(|o| &o.evidence).any(|e| matches!(&e.evidence,oxaudit_domain::Evidence::PackageDeclaration(d) if d.package_name=="a" && d.install_path.as_deref()==Some("packages/a"))));
     }
 }

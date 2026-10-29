@@ -7,9 +7,10 @@
 //! lockfiles contain (leading `v`, missing patch segments, build metadata).
 //!
 //! A comparator returns `None` when it refuses to guess — an unparseable
-//! version, or a construct the spec leaves to implementations (unknown Maven
-//! qualifiers, `dev-` branch names). Callers treat `None` as *undetermined*,
-//! which keeps the advisory (never silently drops it) and says so.
+//! version, or a construct the spec leaves to implementations (`dev-` branch
+//! names); `family_for` likewise has no family for a scheme without a
+//! comparator here (RPM). Callers treat `None` as *undetermined*, which keeps
+//! the advisory (never silently drops it) and says so.
 
 use std::cmp::Ordering;
 
@@ -24,6 +25,9 @@ pub enum VersionFamily {
     /// Composer pin in practice. SemVer covers most of it; this handles the
     /// fourth revision segment NuGet allows.
     Loose,
+    /// SemVer with build metadata ordered after the release, as Dart's
+    /// `pub_semver` (and OSV's Pub ecosystem) compare it.
+    Pub,
 }
 
 /// Pick the comparator for an OSV range. `range_type` is the OSV range type
@@ -37,23 +41,43 @@ pub fn family_for(range_type: &str, ecosystem: &str) -> Option<VersionFamily> {
             "PyPI" => Some(VersionFamily::Pep440),
             "Maven" => Some(VersionFamily::Maven),
             "RubyGems" => Some(VersionFamily::Gem),
-            "npm" | "crates.io" | "Go" => Some(VersionFamily::SemVer),
+            // Elixir's `Version` is SemVer 2.0, build metadata ignored.
+            "npm" | "crates.io" | "Go" | "Hex" => Some(VersionFamily::SemVer),
+            "Pub" => Some(VersionFamily::Pub),
             "Packagist" | "NuGet" => Some(VersionFamily::Loose),
+            // apk-versioned distributions OSV names without a release. They
+            // take the comparator Alpine uses.
+            "Wolfi" | "Chainguard" => Some(VersionFamily::Debian),
             other => {
                 // Distro ecosystems (Debian:*, Ubuntu:*, Alpine:*) all use
-                // epoch-based comparison over the same character rules.
-                if other.starts_with("Debian:")
-                    || other.starts_with("Ubuntu:")
-                    || other.starts_with("Alpine:")
-                {
-                    Some(VersionFamily::Debian)
-                } else {
-                    None
-                }
+                // epoch-based comparison over the same character rules. The
+                // release never changes the version scheme, so the bare names
+                // ELF package notes carry (`Debian`, no release) share it.
+                // RPM distributions (Rocky Linux, AlmaLinux, Red Hat, SUSE)
+                // need rpmvercmp, which this module does not implement, so
+                // they stay undetermined.
+                let distro = other.split_once(':').map_or(other, |(name, _)| name);
+                matches!(distro, "Debian" | "Ubuntu" | "Alpine").then_some(VersionFamily::Debian)
             }
         },
         _ => None,
     }
+}
+
+/// Whether `scope` names `ecosystem` itself or, as a bare distribution name
+/// such as `Debian`, one of its release-qualified ecosystems (`Debian:12`).
+///
+/// OSV answers a bare distribution across every release, and the bare
+/// distribution dump carries every release's records, so the local database
+/// treats a bare name the same way in both directions: a bare query reads
+/// every release's advisories, and a bare dump covers release queries.
+pub fn ecosystem_within(scope: &str, ecosystem: &str) -> bool {
+    scope == ecosystem
+        || (!scope.is_empty()
+            && !scope.contains(':')
+            && ecosystem.len() > scope.len() + 1
+            && ecosystem.starts_with(scope)
+            && ecosystem.as_bytes()[scope.len()] == b':')
 }
 
 /// Normalize a package name the way the ecosystem's registry does, so a
@@ -78,6 +102,7 @@ pub fn compare(family: VersionFamily, a: &str, b: &str) -> Option<Ordering> {
         VersionFamily::Maven => maven::compare(a, b),
         VersionFamily::Gem => gem::compare(a, b),
         VersionFamily::Loose => loose::compare(a, b),
+        VersionFamily::Pub => semver::compare_pub(a, b),
     }
 }
 
@@ -123,21 +148,7 @@ pub mod semver {
             return None;
         }
         let pre = match pre_raw {
-            Some(pre) if !pre.is_empty() => pre
-                .split('.')
-                .map(|ident| {
-                    if ident.is_empty() {
-                        None
-                    } else if let Ok(n) = ident.parse::<u64>() {
-                        Some(PreIdent::Num(n))
-                    } else {
-                        ident
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-                            .then(|| PreIdent::Alpha(ident.to_string()))
-                    }
-                })
-                .collect::<Option<Vec<_>>>()?,
+            Some(pre) if !pre.is_empty() => parse_identifiers(pre)?,
             _ => Vec::new(),
         };
         Some(Version {
@@ -146,6 +157,53 @@ pub mod semver {
             patch,
             pre,
         })
+    }
+
+    /// Dot-separated identifiers, numeric where all digits; `None` for an
+    /// empty identifier or a character outside `[0-9A-Za-z-]`.
+    fn parse_identifiers(raw: &str) -> Option<Vec<PreIdent>> {
+        raw.split('.')
+            .map(|ident| {
+                if ident.is_empty() {
+                    None
+                } else if let Ok(n) = ident.parse::<u64>() {
+                    Some(PreIdent::Num(n))
+                } else {
+                    ident
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                        .then(|| PreIdent::Alpha(ident.to_string()))
+                }
+            })
+            .collect()
+    }
+
+    /// The build identifiers after `+`, empty when there are none. An empty
+    /// or malformed build is refused.
+    fn parse_build(raw: &str) -> Option<Vec<PreIdent>> {
+        match raw.trim().split_once('+') {
+            None => Some(Vec::new()),
+            Some((_, build)) => parse_identifiers(build),
+        }
+    }
+
+    /// Pub's `pub_semver` ordering: SemVer precedence, then build metadata as
+    /// a final tie-break. Unlike SemVer 2.0 the build is significant — a
+    /// version with one sorts after the same version without, and build
+    /// identifiers compare like prerelease ones, so
+    /// `1.0.0-pre < 1.0.0-pre+build < 1.0.0 < 1.0.0+build`. OSV's Pub
+    /// ecosystem orders versions the same way.
+    pub fn compare_pub(a: &str, b: &str) -> Option<Ordering> {
+        let (version_a, build_a) = (parse(a)?, parse_build(a)?);
+        let (version_b, build_b) = (parse(b)?, parse_build(b)?);
+        Some(compare_parsed(&version_a, &version_b).then_with(|| {
+            match (build_a.is_empty(), build_b.is_empty()) {
+                (true, true) => Ordering::Equal,
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                (false, false) => compare_pre(&build_a, &build_b),
+            }
+        }))
     }
 
     fn parse_num(raw: &str) -> Option<u64> {
@@ -519,103 +577,221 @@ pub mod debian {
 }
 
 pub mod maven {
-    //! Maven `ComparableVersion` ordering: tokens split on `.` and `-`, numeric
-    //! tokens compared numerically, qualifiers by their documented ranks
-    //! (alpha < beta < milestone < rc < snapshot < release < sp). Unknown
-    //! qualifiers are refused rather than guessed.
+    //! Maven version order, as the POM reference specifies it
+    //! (<https://maven.apache.org/pom.html#Version_Order_Specification>) and
+    //! `ComparableVersion` implements it — the model OSV's Maven ecosystem
+    //! uses too:
+    //!
+    //! - the version is lowercased and split into tokens at `.`, `-` and every
+    //!   transition between digits and non-digits (a transition acts as `-`);
+    //!   each token remembers its separator, and an empty token is `0`;
+    //! - `a`/`b`/`m` directly followed by a digit mean alpha/beta/milestone,
+    //!   `cr` means `rc`, and `ga`/`final`/`release` mean the release (`""`);
+    //! - trailing null tokens (`0`, the release) are trimmed from the end, and
+    //!   again before each remaining `-` group;
+    //! - tokens compare pairwise, the shorter side padded with a null (zero
+    //!   against a number, the release against a qualifier). With the same
+    //!   separator numbers compare numerically, a qualifier sits below a
+    //!   number, and qualifiers order
+    //!   `alpha < beta < milestone < rc = cr < snapshot < "" = ga = final =
+    //!   release < sp < unknown`, unknown qualifiers lexically among
+    //!   themselves. With different separators,
+    //!   `.qualifier < -qualifier < -number < .number`.
+    //!
+    //! Unknown qualifiers — Guava's `-jre`/`-android`, Jetty's `.v20210629` —
+    //! therefore order the way Maven orders them instead of being refused.
 
     use std::cmp::Ordering;
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Separator {
+        Dot,
+        Hyphen,
+    }
+
     #[derive(Debug, PartialEq, Eq)]
-    enum Item {
-        Integer(u64),
-        /// A qualifier and the number glued to it (`alpha1`, `RC4`).
-        Qualifier(u8, u64),
+    enum Value {
+        /// Digits without leading zeroes (`"0"` for zero), so numbers wider
+        /// than any integer type still order by (length, digits).
+        Number(String),
+        /// Lowercased, with aliases folded onto their canonical spelling.
+        Qualifier(String),
     }
 
-    /// Rank 0 pads a version that ends before the other side's qualifier —
-    /// `1.0` still outranks `1.0-alpha`.
-    const RELEASE_RANK: u8 = 6;
+    #[derive(Debug)]
+    struct Token {
+        separator: Separator,
+        value: Value,
+    }
 
-    /// Known qualifiers longest-first, so `alpha` is never read as `a`.
-    const QUALIFIERS: [(&str, u8); 13] = [
-        ("milestone", 3),
-        ("snapshot", 5),
-        ("release", RELEASE_RANK),
-        ("alpha", 1),
-        ("final", RELEASE_RANK),
-        ("beta", 2),
-        ("cr", 4),
-        ("ga", RELEASE_RANK),
-        ("sp", 7),
-        ("rc", 4),
-        ("a", 1),
-        ("b", 2),
-        ("m", 3),
-    ];
-
-    fn qualifier_rank(token: &str) -> Option<(u8, u64)> {
-        let token = token.to_ascii_lowercase();
-        for (qualifier, rank) in QUALIFIERS {
-            if let Some(rest) = token.strip_prefix(qualifier) {
-                let number = if rest.is_empty() {
-                    0
-                } else if rest.chars().all(|c| c.is_ascii_digit()) {
-                    rest.parse().ok()?
-                } else {
-                    return None;
-                };
-                return Some((rank, number));
+    impl Token {
+        fn is_null(&self) -> bool {
+            match &self.value {
+                Value::Number(digits) => digits == "0",
+                Value::Qualifier(qualifier) => qualifier.is_empty(),
             }
         }
-        None
     }
 
-    fn tokenize(version: &str) -> Option<Vec<Item>> {
-        let mut items = Vec::new();
-        for token in version.split(['.', '-']) {
-            if token.is_empty() {
-                continue;
-            }
-            if let Ok(n) = token.parse::<u64>() {
-                items.push(Item::Integer(n));
+    /// Known qualifiers in order; `""` is the release. Anything else ranks
+    /// after all of them.
+    const KNOWN_QUALIFIERS: [&str; 7] = ["alpha", "beta", "milestone", "rc", "snapshot", "", "sp"];
+
+    fn qualifier_rank(qualifier: &str) -> usize {
+        KNOWN_QUALIFIERS
+            .iter()
+            .position(|known| *known == qualifier)
+            .unwrap_or(KNOWN_QUALIFIERS.len())
+    }
+
+    fn compare_qualifiers(a: &str, b: &str) -> Ordering {
+        // Equal known ranks are equal strings (aliases are already folded),
+        // so the lexical tie-break only ever orders unknown qualifiers.
+        qualifier_rank(a)
+            .cmp(&qualifier_rank(b))
+            .then_with(|| a.cmp(b))
+    }
+
+    fn compare_numbers(a: &str, b: &str) -> Ordering {
+        a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+    }
+
+    /// Order across different separators:
+    /// `.qualifier < -qualifier < -number < .number`.
+    fn kind_rank(token: &Token) -> u8 {
+        match (token.separator, &token.value) {
+            (Separator::Dot, Value::Qualifier(_)) => 0,
+            (Separator::Hyphen, Value::Qualifier(_)) => 1,
+            (Separator::Hyphen, Value::Number(_)) => 2,
+            (Separator::Dot, Value::Number(_)) => 3,
+        }
+    }
+
+    fn compare_tokens(a: &Token, b: &Token) -> Ordering {
+        if a.separator != b.separator {
+            return kind_rank(a).cmp(&kind_rank(b));
+        }
+        match (&a.value, &b.value) {
+            (Value::Number(x), Value::Number(y)) => compare_numbers(x, y),
+            (Value::Qualifier(x), Value::Qualifier(y)) => compare_qualifiers(x, y),
+            (Value::Number(_), Value::Qualifier(_)) => Ordering::Greater,
+            (Value::Qualifier(_), Value::Number(_)) => Ordering::Less,
+        }
+    }
+
+    /// `token` against the null the shorter version is padded with: zero
+    /// against a number, the release against a qualifier — so `1 < 1.1`,
+    /// `1-snapshot < 1 < 1-sp`, and `1 < 1-jre`.
+    fn compare_to_padding(token: &Token) -> Ordering {
+        match &token.value {
+            Value::Number(digits) => compare_numbers(digits, "0"),
+            Value::Qualifier(qualifier) => compare_qualifiers(qualifier, ""),
+        }
+    }
+
+    fn canonical_qualifier(qualifier: &str, followed_by_digit: bool) -> &str {
+        match qualifier {
+            "a" if followed_by_digit => "alpha",
+            "b" if followed_by_digit => "beta",
+            "m" if followed_by_digit => "milestone",
+            "cr" => "rc",
+            "ga" | "final" | "release" => "",
+            other => other,
+        }
+    }
+
+    /// Split one `.`/`-`-delimited segment at its digit/non-digit
+    /// transitions; every piece after the first is `-`-separated.
+    fn push_segment(tokens: &mut Vec<Token>, mut separator: Separator, segment: &str) {
+        if segment.is_empty() {
+            tokens.push(Token {
+                separator,
+                value: Value::Number("0".to_string()),
+            });
+            return;
+        }
+        // The caller admits only ASCII, so byte offsets are char boundaries.
+        let bytes = segment.as_bytes();
+        let mut start = 0;
+        while start < bytes.len() {
+            let digit = bytes[start].is_ascii_digit();
+            let end = bytes[start..]
+                .iter()
+                .position(|byte| byte.is_ascii_digit() != digit)
+                .map_or(bytes.len(), |offset| start + offset);
+            let piece = &segment[start..end];
+            let value = if digit {
+                let trimmed = piece.trim_start_matches('0');
+                Value::Number(if trimmed.is_empty() { "0" } else { trimmed }.to_string())
             } else {
-                let (rank, number) = qualifier_rank(token)?;
-                items.push(Item::Qualifier(rank, number));
+                // A non-digit run that stops before the segment ends stops
+                // at a digit.
+                Value::Qualifier(canonical_qualifier(piece, end < bytes.len()).to_string())
+            };
+            tokens.push(Token { separator, value });
+            separator = Separator::Hyphen;
+            start = end;
+        }
+    }
+
+    /// Trim trailing nulls from the end, then again before each remaining
+    /// `-` group, walking from the end to the start. The first token stays.
+    fn trim_nulls(tokens: &mut Vec<Token>) {
+        let mut trimming = true;
+        let mut index = tokens.len();
+        while index > 1 {
+            index -= 1;
+            let starts_group = tokens[index].separator == Separator::Hyphen;
+            if trimming && tokens[index].is_null() {
+                tokens.remove(index);
+            } else {
+                trimming = false;
+            }
+            if starts_group {
+                trimming = true;
             }
         }
-        Some(items)
+    }
+
+    fn parse(raw: &str) -> Option<Vec<Token>> {
+        let version = raw.trim().to_ascii_lowercase();
+        if version.is_empty() || !version.chars().all(|c| c.is_ascii_graphic()) {
+            return None;
+        }
+        let mut tokens = Vec::new();
+        let mut separator = Separator::Dot;
+        let mut rest = version.as_str();
+        loop {
+            let end = rest.find(['.', '-']).unwrap_or(rest.len());
+            push_segment(&mut tokens, separator, &rest[..end]);
+            if end == rest.len() {
+                break;
+            }
+            separator = if rest.as_bytes()[end] == b'.' {
+                Separator::Dot
+            } else {
+                Separator::Hyphen
+            };
+            rest = &rest[end + 1..];
+        }
+        trim_nulls(&mut tokens);
+        Some(tokens)
     }
 
     pub fn compare(a: &str, b: &str) -> Option<Ordering> {
-        let (a, b) = (tokenize(a)?, tokenize(b)?);
-        let mut ord = Ordering::Equal;
+        let (a, b) = (parse(a)?, parse(b)?);
         for index in 0..a.len().max(b.len()) {
-            ord = match (a.get(index), b.get(index)) {
-                (Some(Item::Integer(x)), Some(Item::Integer(y))) => x.cmp(y),
-                (Some(Item::Qualifier(x, xn)), Some(Item::Qualifier(y, yn))) => {
-                    x.cmp(y).then(xn.cmp(yn))
-                }
-                (Some(Item::Integer(_)), Some(Item::Qualifier(_, _))) => {
-                    // Maven compares an integer token above every qualifier
-                    // token at the same position ("1.0.1" > "1.0-rc1").
-                    Ordering::Greater
-                }
-                (Some(Item::Qualifier(_, _)), Some(Item::Integer(_))) => Ordering::Less,
-                // A version that ran out of items is padded: with 0 when the
-                // other side has an integer, with the release rank when it has
-                // a qualifier.
-                (None, Some(Item::Integer(y))) => 0u64.cmp(y),
-                (None, Some(Item::Qualifier(y, yn))) => (RELEASE_RANK, 0u64).cmp(&(*y, *yn)),
-                (Some(Item::Integer(x)), None) => x.cmp(&0),
-                (Some(Item::Qualifier(x, xn)), None) => (*x, *xn).cmp(&(RELEASE_RANK, 0)),
+            let ord = match (a.get(index), b.get(index)) {
+                (Some(x), Some(y)) => compare_tokens(x, y),
+                (Some(x), None) => compare_to_padding(x),
+                (None, Some(y)) => compare_to_padding(y).reverse(),
                 (None, None) => break,
             };
             if ord != Ordering::Equal {
                 return Some(ord);
             }
         }
-        Some(ord)
+        Some(Ordering::Equal)
     }
 }
 
@@ -929,8 +1105,67 @@ mod tests {
                 ("1.0-alpha-2", "1.0-alpha-10", Less),
             ],
         );
-        // Unknown qualifiers are refused rather than guessed.
-        unparseable(VersionFamily::Maven, &["1.0-omega", "1.0-LATEST"]);
+        unparseable(VersionFamily::Maven, &["", "   ", "1.0 beta"]);
+    }
+
+    #[test]
+    fn maven_unknown_qualifiers_sort_after_known_ones_lexically() {
+        table(
+            VersionFamily::Maven,
+            &[
+                // Guava ships each release in -jre and -android flavours.
+                ("32.1.3-jre", "32.1.3-android", Greater),
+                ("31.1-jre", "32.0.0-android", Less),
+                ("32.0.0-jre", "32.0.0-android", Greater),
+                ("32.0.1-jre", "32.0.0-android", Greater),
+                ("32.0.0-android", "32.0.1-android", Less),
+                ("32.1.3-jre", "33.0.0-jre", Less),
+                ("32.1.3-jre", "32.1.3-JRE", Equal),
+                // Unknown qualifiers sit after every known one, `sp` and the
+                // release included, and before a following number.
+                ("1.0-sp1", "1.0-jre", Less),
+                ("1.0", "1.0-jre", Less),
+                ("1.0-jre", "1.0.1", Less),
+                ("1.0-jre", "1.0-1", Less),
+                ("1.0-LATEST", "1.0-omega", Less),
+                // Jetty's v-dated versions.
+                ("9.4.43.v20210629", "9.4.44.v20210927", Less),
+                ("9.4.43.v20210629", "9.4.43.v20210630", Less),
+                ("9.4.43", "9.4.43.v20210629", Less),
+                ("9.4.43.v20210629", "9.4.44", Less),
+                ("9.4.43.v20210629", "10.0.0", Less),
+                // Release aliases and their trimming.
+                ("5.3.18.RELEASE", "5.3.18", Equal),
+                ("5.6.15.Final", "5.6.15", Equal),
+                ("1.0-cr1", "1.0-rc1", Equal),
+                // Examples from the Maven version order specification.
+                ("1", "1.1", Less),
+                ("1-snapshot", "1", Less),
+                ("1", "1-sp", Less),
+                ("1-foo2", "1-foo10", Less),
+                ("1-foo", "1-1", Less),
+                ("1-1", "1.1", Less),
+                ("1.ga", "1", Equal),
+                ("1-ga", "1", Equal),
+                ("1-0", "1", Equal),
+                ("1.0", "1", Equal),
+                ("1-sp", "1-ga", Greater),
+                ("1-sp.1", "1-ga.1", Greater),
+                ("1-sp-1", "1-ga-1", Less),
+                ("1-ga-1", "1-1", Equal),
+                ("1-a1", "1-alpha-1", Equal),
+                // A letter/digit transition is a hyphen, so the glued and
+                // separated spellings agree and order by the number.
+                ("1.0-alpha1", "1.0-alpha-1", Equal),
+                ("1.0-alpha1", "1.0-alpha-2", Less),
+                // Numbers wider than u64 still compare numerically.
+                (
+                    "1.99999999999999999999999",
+                    "1.100000000000000000000000",
+                    Less,
+                ),
+            ],
+        );
     }
 
     #[test]
@@ -998,7 +1233,81 @@ mod tests {
             Some(VersionFamily::Loose)
         );
         assert_eq!(family_for("GIT", "npm"), None);
-        assert_eq!(family_for("ECOSYSTEM", "Wolfi"), None);
+    }
+
+    #[test]
+    fn hex_and_pub_have_comparators() {
+        // Elixir's Version is SemVer 2.0 with build metadata ignored.
+        assert_eq!(family_for("ECOSYSTEM", "Hex"), Some(VersionFamily::SemVer));
+        // pub_semver orders build metadata, so it gets its own family.
+        assert_eq!(family_for("ECOSYSTEM", "Pub"), Some(VersionFamily::Pub));
+    }
+
+    #[test]
+    fn distro_ecosystems_map_only_where_a_comparator_fits() {
+        // apk-versioned distributions share the Alpine comparator choice.
+        for ecosystem in ["Wolfi", "Chainguard", "Alpine", "Alpine:v3.20"] {
+            assert_eq!(
+                family_for("ECOSYSTEM", ecosystem),
+                Some(VersionFamily::Debian),
+                "{ecosystem}"
+            );
+        }
+        // dpkg comparison does not depend on the release, so the bare names
+        // ELF package notes produce get the same comparator.
+        for ecosystem in ["Debian", "Ubuntu", "Ubuntu:22.04:LTS"] {
+            assert_eq!(
+                family_for("ECOSYSTEM", ecosystem),
+                Some(VersionFamily::Debian),
+                "{ecosystem}"
+            );
+        }
+        // RPM ordering (rpmvercmp) is not implemented, so RPM distributions
+        // stay undetermined rather than borrowing a near-miss comparator.
+        for ecosystem in [
+            "Rocky Linux",
+            "Rocky Linux:9",
+            "AlmaLinux",
+            "AlmaLinux:9",
+            "Red Hat",
+            "openSUSE",
+            "SUSE",
+            "Mageia",
+            "Photon OS",
+            // A prefix that merely starts like a known name is not it.
+            "Debianish",
+            "Wolfi:1",
+        ] {
+            assert_eq!(family_for("ECOSYSTEM", ecosystem), None, "{ecosystem}");
+        }
+    }
+
+    #[test]
+    fn pub_ordering_follows_pub_semver() {
+        table(
+            VersionFamily::Pub,
+            &[
+                ("1.0.0", "2.0.0", Less),
+                ("1.0.0-dev.1", "1.0.0", Less),
+                ("2.0.0-nullsafety.0", "2.0.0-nullsafety.1", Less),
+                ("1.0.0-beta.2", "1.0.0-beta.11", Less),
+                // Unlike SemVer 2.0, build metadata orders:
+                // 1.0.0-pre < 1.0.0-pre+build < 1.0.0 < 1.0.0+build
+                ("1.0.0-pre", "1.0.0-pre+build", Less),
+                ("1.0.0-pre+build", "1.0.0", Less),
+                ("1.0.0", "1.0.0+build", Less),
+                ("1.0.0+1", "1.0.0+2", Less),
+                ("1.0.0+2", "1.0.0+10", Less),
+                ("1.0.0+1", "1.0.0+build", Less),
+                ("1.0.0+build.1", "1.0.0+build.1.1", Less),
+                ("1.0.0+build", "1.0.1", Less),
+                ("1.0.0+build", "1.0.0+build", Equal),
+            ],
+        );
+        unparseable(
+            VersionFamily::Pub,
+            &["", "x.y.z", "1.0.0+", "1.0.0+a..b", "1.0.0+a_b"],
+        );
     }
 
     #[test]
@@ -1014,5 +1323,72 @@ mod tests {
             normalize_package("Maven", "org.apache.Commons"),
             "org.apache.Commons"
         );
+    }
+
+    /// The vectors the frontend mirror (src/features/dependencies/decisions.ts)
+    /// also runs, so the two implementations cannot drift apart.
+    #[test]
+    fn shared_vectors_hold_for_the_frontend_mirror() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/version-ordering-vectors.json"
+        ))
+        .expect("version-ordering-vectors.json is valid JSON");
+        let family_named = |name: &str| match name {
+            "semver" => VersionFamily::SemVer,
+            "pep440" => VersionFamily::Pep440,
+            "debian" => VersionFamily::Debian,
+            "maven" => VersionFamily::Maven,
+            "gem" => VersionFamily::Gem,
+            "loose" => VersionFamily::Loose,
+            "pub" => VersionFamily::Pub,
+            other => panic!("unknown family {other:?} in the shared vectors"),
+        };
+
+        let families = fixture["families"].as_array().expect("families array");
+        assert!(!families.is_empty());
+        for case in families {
+            let range_type = case["rangeType"].as_str().expect("rangeType");
+            let ecosystem = case["ecosystem"].as_str().expect("ecosystem");
+            let expected = case["family"].as_str().map(family_named);
+            assert_eq!(
+                family_for(range_type, ecosystem),
+                expected,
+                "family_for({range_type:?}, {ecosystem:?})"
+            );
+        }
+
+        let comparisons = fixture["comparisons"]
+            .as_array()
+            .expect("comparisons array");
+        assert!(!comparisons.is_empty());
+        for case in comparisons {
+            let family = match (case["family"].as_str(), case["ecosystem"].as_str()) {
+                (Some(name), None) => family_named(name),
+                (None, Some(ecosystem)) => family_for("ECOSYSTEM", ecosystem)
+                    .unwrap_or_else(|| panic!("{ecosystem:?} has no family")),
+                _ => panic!("a comparison names exactly one of family/ecosystem: {case}"),
+            };
+            let a = case["a"].as_str().expect("a");
+            let b = case["b"].as_str().expect("b");
+            let expected = match &case["expected"] {
+                serde_json::Value::Null => None,
+                value => Some(
+                    value
+                        .as_i64()
+                        .expect("expected is -1, 0, 1 or null")
+                        .cmp(&0),
+                ),
+            };
+            assert_eq!(
+                compare(family, a, b),
+                expected,
+                "{family:?}: {a:?} vs {b:?}"
+            );
+            assert_eq!(
+                compare(family, b, a),
+                expected.map(Ordering::reverse),
+                "{family:?}: {b:?} vs {a:?} (mirrored)"
+            );
+        }
     }
 }

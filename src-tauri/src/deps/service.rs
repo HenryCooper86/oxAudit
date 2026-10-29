@@ -400,11 +400,19 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         if name == "go.mod" {
             inventory_notes.insert(format!("{}: {}", lf.display(), crate::deps::go_inventory::SCOPE_NOTE));
         }
-        match crate::deps::lockfiles::parse_lockfile(lf, kind) {
-            Ok(deps) => {
+        match crate::deps::lockfiles::parse_lockfile_inventory(lf, kind) {
+            Ok(crate::deps::lockfiles::LockfileInventory { dependencies: deps, notes }) => {
+                for note in notes {
+                    inventory_notes.insert(format!("{}: {note}", lf.display()));
+                }
                 for dep in &deps {
                     for warning in &dep.occurrence.warnings {
-                        if dep.ecosystem == "RubyGems" || dep.occurrence.source.as_deref() == Some("local") {
+                        let non_registry = dep
+                            .occurrence
+                            .source
+                            .as_deref()
+                            .is_some_and(|source| source != "registry");
+                        if dep.ecosystem == "RubyGems" || non_registry {
                             inventory_notes.insert(format!("{}: {warning}", lf.display()));
                         }
                     }

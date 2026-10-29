@@ -54,7 +54,8 @@ pub fn is_apk_installed_path(path: &str) -> bool {
 /// Debian release codenames → OSV's release-qualified ecosystems. `sid` and
 /// `testing` name a moving target no dump pins, so they are unsupported
 /// rather than mapped to the last stable.
-const DEBIAN_CODENAMES: [(&str, &str); 3] = [
+const DEBIAN_CODENAMES: [(&str, &str); 4] = [
+    ("buster", "Debian:10"),
     ("bullseye", "Debian:11"),
     ("bookworm", "Debian:12"),
     ("trixie", "Debian:13"),
@@ -62,10 +63,15 @@ const DEBIAN_CODENAMES: [(&str, &str); 3] = [
 
 /// Read an `os-release` member and decide which OSV ecosystem it names.
 ///
-/// Ubuntu is deliberately mapped to the `Ubuntu:Pro:<release>:LTS` ecosystem:
-/// OSV carries both the shorter `Ubuntu:<release>:LTS` (main only) and the Pro
-/// set (main + universe), and universe is where most shipped packages live —
-/// measured against the dump bucket, both exist for supported releases.
+/// Ubuntu maps to the standard-archive ecosystem: `Ubuntu:<release>:LTS` for
+/// LTS releases (`YY.04` in an even year) and `Ubuntu:<release>` for interim
+/// ones (OSV's `Ubuntu:23.10`). The `Ubuntu:Pro:…` ecosystems hold only ESM
+/// fixes — queried against OSV, `openssl` in 22.04 has 96 advisories under
+/// `Ubuntu:22.04:LTS` and none under `Ubuntu:Pro:22.04:LTS` — and an image
+/// built from the public archive does not carry ESM packages.
+///
+/// Alpine's `VERSION_ID` is the patch release (`3.20.3`); OSV keys the branch
+/// (`Alpine:v3.20`), so only major.minor is kept.
 pub fn parse_os_release(bytes: &[u8]) -> OsReleaseMatch {
     let text = match std::str::from_utf8(bytes) {
         Ok(text) => text,
@@ -98,7 +104,7 @@ pub fn parse_os_release(bytes: &[u8]) -> OsReleaseMatch {
                 });
             }
             match version_id.as_str() {
-                "11" | "12" | "13" => {
+                "10" | "11" | "12" | "13" => {
                     let major = version_id.as_str();
                     OsReleaseMatch::Distro(DistroIdentity {
                         osv_ecosystem: format!("Debian:{major}"),
@@ -109,32 +115,50 @@ pub fn parse_os_release(bytes: &[u8]) -> OsReleaseMatch {
                 )),
             }
         }
-        "ubuntu" => {
-            if version_id.is_empty() {
-                OsReleaseMatch::Unsupported(
-                    "os-release names Ubuntu without a version; packages are reported but not matched against a distribution".into(),
-                )
-            } else {
-                OsReleaseMatch::Distro(DistroIdentity {
-                    osv_ecosystem: format!("Ubuntu:Pro:{version_id}:LTS"),
-                })
-            }
-        }
-        "alpine" => {
-            if version_id.is_empty() {
-                OsReleaseMatch::Unsupported(
-                    "os-release names Alpine without a version; packages are reported but not matched against a distribution".into(),
-                )
-            } else {
-                OsReleaseMatch::Distro(DistroIdentity {
-                    osv_ecosystem: format!("Alpine:v{version_id}"),
-                })
-            }
-        }
+        "ubuntu" => match ubuntu_ecosystem(&version_id) {
+            Some(osv_ecosystem) => OsReleaseMatch::Distro(DistroIdentity { osv_ecosystem }),
+            None => OsReleaseMatch::Unsupported(format!(
+                "os-release names Ubuntu without a recognizable release (version {version_id:?}); packages are reported but not matched against a distribution"
+            )),
+        },
+        "alpine" => match alpine_branch(&version_id) {
+            Some(branch) => OsReleaseMatch::Distro(DistroIdentity {
+                osv_ecosystem: format!("Alpine:v{branch}"),
+            }),
+            None => OsReleaseMatch::Unsupported(format!(
+                "os-release names Alpine without a release branch (version {version_id:?}); packages are reported but not matched against a distribution"
+            )),
+        },
         other => OsReleaseMatch::Unsupported(format!(
             "os-release names {other:?}, which OSV does not carry as a distribution ecosystem; packages are reported but not matched"
         )),
     }
+}
+
+/// `YY.MM` → `Ubuntu:YY.MM:LTS` for April releases of even years, otherwise
+/// `Ubuntu:YY.MM`. Anything not shaped like a release is `None`.
+fn ubuntu_ecosystem(version_id: &str) -> Option<String> {
+    let (year, month) = version_id.split_once('.')?;
+    let numeric = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    if !numeric(year) || month.len() != 2 || !numeric(month) {
+        return None;
+    }
+    let lts = month == "04" && year.parse::<u32>().ok()? % 2 == 0;
+    Some(if lts {
+        format!("Ubuntu:{version_id}:LTS")
+    } else {
+        format!("Ubuntu:{version_id}")
+    })
+}
+
+/// `3.20.3` → `3.20`. `edge` and other non-numeric versions are `None`:
+/// OSV has no ecosystem for a rolling branch.
+fn alpine_branch(version_id: &str) -> Option<String> {
+    let mut parts = version_id.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    let numeric = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    (numeric(major) && numeric(minor)).then(|| format!("{major}.{minor}"))
 }
 
 /// `/var/lib/dpkg/status`: Debian control stanzas. Only packages whose
@@ -240,24 +264,87 @@ mod tests {
         ));
     }
 
+    fn ecosystem_of(os_release: &[u8]) -> String {
+        match parse_os_release(os_release) {
+            OsReleaseMatch::Distro(identity) => identity.osv_ecosystem,
+            other => panic!("expected a distribution, got {other:?}"),
+        }
+    }
+
     #[test]
     fn ubuntu_and_alpine_map_to_release_qualified_ecosystems() {
+        // Standard (non-Pro) archive: OSV's `Ubuntu:<release>:LTS` carries
+        // main-archive fixes such as openssl; the Pro ecosystem does not.
         assert_eq!(
-            parse_os_release(b"ID=ubuntu\nVERSION_ID=\"24.04\"\n"),
-            OsReleaseMatch::Distro(DistroIdentity {
-                osv_ecosystem: "Ubuntu:Pro:24.04:LTS".into()
-            })
+            ecosystem_of(b"ID=ubuntu\nVERSION_ID=\"24.04\"\n"),
+            "Ubuntu:24.04:LTS"
         );
         assert_eq!(
-            parse_os_release(b"ID=alpine\nVERSION_ID=3.20\n"),
-            OsReleaseMatch::Distro(DistroIdentity {
-                osv_ecosystem: "Alpine:v3.20".into()
-            })
+            ecosystem_of(b"ID=alpine\nVERSION_ID=3.20\n"),
+            "Alpine:v3.20"
         );
         assert!(matches!(
             parse_os_release(b"ID=alpine\n"),
             OsReleaseMatch::Unsupported(_)
         ));
+    }
+
+    #[test]
+    fn real_alpine_os_release_maps_to_the_major_minor_branch() {
+        // The os-release Alpine actually ships: VERSION_ID carries the patch
+        // release, OSV keys the branch.
+        let alpine = b"NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.20.3\nPRETTY_NAME=\"Alpine Linux v3.20\"\nHOME_URL=\"https://alpinelinux.org/\"\nBUG_REPORT_URL=\"https://gitlab.alpinelinux.org/alpine/aports/-/issues\"\n";
+        assert_eq!(ecosystem_of(alpine), "Alpine:v3.20");
+        assert_eq!(
+            ecosystem_of(b"ID=alpine\nVERSION_ID=3.9.6\n"),
+            "Alpine:v3.9"
+        );
+        assert!(matches!(
+            parse_os_release(b"ID=alpine\nVERSION_ID=edge\n"),
+            OsReleaseMatch::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn real_ubuntu_os_release_maps_lts_and_interim_releases() {
+        let jammy = b"PRETTY_NAME=\"Ubuntu 22.04.4 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"22.04\"\nVERSION=\"22.04.4 LTS (Jammy Jellyfish)\"\nVERSION_CODENAME=jammy\nID=ubuntu\nID_LIKE=debian\nUBUNTU_CODENAME=jammy\n";
+        assert_eq!(ecosystem_of(jammy), "Ubuntu:22.04:LTS");
+        assert_eq!(
+            ecosystem_of(b"ID=ubuntu\nVERSION_ID=\"20.04\"\n"),
+            "Ubuntu:20.04:LTS"
+        );
+        // Interim releases carry no LTS suffix in OSV (`Ubuntu:23.10`).
+        assert_eq!(
+            ecosystem_of(b"ID=ubuntu\nVERSION_ID=\"23.10\"\n"),
+            "Ubuntu:23.10"
+        );
+        assert_eq!(
+            ecosystem_of(b"ID=ubuntu\nVERSION_ID=\"23.04\"\n"),
+            "Ubuntu:23.04"
+        );
+        for ecosystem in [
+            ecosystem_of(jammy),
+            ecosystem_of(b"ID=ubuntu\nVERSION_ID=23.10\n"),
+        ] {
+            assert!(
+                crate::advisories::versioning::family_for("ECOSYSTEM", &ecosystem).is_some(),
+                "{ecosystem} must stay comparable"
+            );
+        }
+        assert!(crate::advisories::versioning::family_for(
+            "ECOSYSTEM",
+            &ecosystem_of(b"ID=alpine\nVERSION_ID=3.20.3\n")
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn debian_buster_is_a_supported_osv_release() {
+        assert_eq!(
+            ecosystem_of(b"ID=debian\nVERSION_ID=\"10\"\nVERSION_CODENAME=buster\n"),
+            "Debian:10"
+        );
+        assert_eq!(ecosystem_of(b"ID=debian\nVERSION_ID=10\n"), "Debian:10");
     }
 
     #[test]

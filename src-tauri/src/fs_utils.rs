@@ -33,6 +33,7 @@ pub enum CollectionError {
     Cancelled,
     FileLimitExceeded { limit: usize },
     ByteLimitExceeded { limit: u64 },
+    LockfileDiscoveryIncomplete { path: PathBuf, reason: String },
 }
 
 impl fmt::Display for CollectionError {
@@ -48,6 +49,13 @@ impl fmt::Display for CollectionError {
                 formatter,
                 "file discovery exceeded the safety limit of {limit} eligible bytes; scan a \
                  smaller subdirectory or add ignore rules"
+            ),
+            Self::LockfileDiscoveryIncomplete { path, reason } => write!(
+                formatter,
+                "incomplete dependency coverage: lockfile discovery could not read {}: {reason}. \
+                 Fix its permissions or add an ignore rule for that directory before checking \
+                 advisories.",
+                path.display()
             ),
         }
     }
@@ -156,6 +164,7 @@ pub fn is_lockfile_name(name: &str) -> bool {
             | "bun.lock"
             | "mix.lock"
             | "pubspec.lock"
+            | "uv.lock"
     )
 }
 
@@ -573,7 +582,9 @@ fn has_git_component(path: &Path) -> bool {
 /// Discover dependency lockfiles with a policy independent from source scans:
 /// ordinary ignore files are deliberately not consulted, `.git` is always
 /// excluded, symlinks are never followed, and canonical paths must stay within
-/// the explicit project boundary.
+/// the explicit project boundary. A directory or entry that cannot be read
+/// fails discovery with [`CollectionError::LockfileDiscoveryIncomplete`]: it
+/// may hold lockfiles, so a partial list must not pass as complete coverage.
 #[cfg(test)]
 pub fn discover_lockfiles(
     project_root: &Path,
@@ -604,12 +615,28 @@ pub fn discover_lockfiles_bounded(
     };
     let mut out = BTreeSet::new();
     let ignored: Vec<String> = extra_ignored.to_vec();
+    // A directory that cannot be read may hold lockfiles. Report it instead of
+    // returning what was readable as if it were the whole project.
+    let unreadable = std::cell::RefCell::new(None::<CollectionError>);
+    let unreadable_entry = &unreadable;
     let walker = WalkDir::new(&collection_root)
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e| {
-            let Ok(canonical_path) = e.path().canonicalize() else {
-                return false;
+            let canonical_path = match e.path().canonicalize() {
+                Ok(canonical_path) => canonical_path,
+                // Symlinks are never followed or collected, so a dangling
+                // one hides nothing.
+                Err(_) if e.path_is_symlink() => return false,
+                Err(error) => {
+                    unreadable_entry.borrow_mut().get_or_insert(
+                        CollectionError::LockfileDiscoveryIncomplete {
+                            path: e.path().to_path_buf(),
+                            reason: error.to_string(),
+                        },
+                    );
+                    return false;
+                }
             };
             if !canonical_path.starts_with(&project_root)
                 || has_git_component(e.path())
@@ -626,24 +653,47 @@ pub fn discover_lockfiles_bounded(
             }
             !ignored.iter().any(|d| d == &name)
         });
-    for entry in walker.flatten() {
+    for entry in walker {
         if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return Err(CollectionError::Cancelled);
         }
+        if let Some(error) = unreadable.borrow_mut().take() {
+            return Err(error);
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                return Err(CollectionError::LockfileDiscoveryIncomplete {
+                    path: error
+                        .path()
+                        .map_or_else(|| collection_root.clone(), Path::to_path_buf),
+                    reason: error
+                        .io_error()
+                        .map_or_else(|| error.to_string(), ToString::to_string),
+                });
+            }
+        };
         if entry.file_type().is_file() {
             if let Some(name) = entry.file_name().to_str() {
                 if is_lockfile_name(name) {
-                    if let Ok(canonical_path) = entry.path().canonicalize() {
-                        if !out.contains(&canonical_path) && out.len() >= max_lockfiles {
-                            return Err(CollectionError::FileLimitExceeded {
-                                limit: max_lockfiles,
-                            });
+                    let canonical_path = entry.path().canonicalize().map_err(|error| {
+                        CollectionError::LockfileDiscoveryIncomplete {
+                            path: entry.path().to_path_buf(),
+                            reason: error.to_string(),
                         }
-                        out.insert(canonical_path);
+                    })?;
+                    if !out.contains(&canonical_path) && out.len() >= max_lockfiles {
+                        return Err(CollectionError::FileLimitExceeded {
+                            limit: max_lockfiles,
+                        });
                     }
+                    out.insert(canonical_path);
                 }
             }
         }
+    }
+    if let Some(error) = unreadable.into_inner() {
+        return Err(error);
     }
     Ok(out.into_iter().collect())
 }
@@ -1366,5 +1416,69 @@ mod tests {
         symlink(outside.path(), &alias).unwrap();
 
         assert!(discover_lockfiles(&alias, &alias, &[]).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lockfile_discovery_reports_unreadable_directories_instead_of_complete() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("Cargo.lock"), "").unwrap();
+        let locked = root.path().join("service");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("package-lock.json"), "{}").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&locked).is_ok() {
+            // Running with privileges that ignore directory modes.
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let result = discover_lockfiles_bounded(root.path(), root.path(), &[], 16, None);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = result.expect_err("an unreadable directory may hide lockfiles");
+        assert!(
+            matches!(error, CollectionError::LockfileDiscoveryIncomplete { .. }),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("incomplete dependency coverage"),
+            "{message}"
+        );
+        assert!(message.contains("service"), "{message}");
+
+        // An ignored directory is never read, so the user can opt out.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let ignored =
+            discover_lockfiles_bounded(root.path(), root.path(), &["service".into()], 16, None);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            ignored.unwrap(),
+            [root.path().join("Cargo.lock").canonicalize().unwrap()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lockfile_discovery_tolerates_dangling_symlinks_it_never_follows() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("Cargo.lock"), "").unwrap();
+        symlink(root.path().join("missing"), root.path().join("dangling")).unwrap();
+        symlink(root.path().join("gone.lock"), root.path().join("yarn.lock")).unwrap();
+
+        assert_eq!(
+            discover_lockfiles_bounded(root.path(), root.path(), &[], 16, None).unwrap(),
+            [root.path().join("Cargo.lock").canonicalize().unwrap()]
+        );
+    }
+
+    #[test]
+    fn uv_lock_is_a_discovered_lockfile() {
+        assert!(super::is_lockfile_name("uv.lock"));
     }
 }
