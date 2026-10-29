@@ -16,7 +16,11 @@ lists what each release ships.
 
 ## [Unreleased]
 
-Changes on `main` after the v0.2.6 tag.
+Nothing yet.
+
+## [0.2.7] - 2026-10-29
+
+Release notes: [docs/releases/v0.2.7.md](docs/releases/v0.2.7.md).
 
 ### Added
 
@@ -301,7 +305,8 @@ Windows x86_64, unsigned Linux desktop packages, SBOMs, checksums, minisign
 and Sigstore signatures, and build-provenance attestations, plus the
 composite GitHub Action and the installer script.
 
-[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.3...v0.2.5
 [0.2.3]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.2...v0.2.3
