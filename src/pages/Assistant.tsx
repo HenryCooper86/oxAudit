@@ -20,6 +20,7 @@ import { BrandMark } from "../components/brand/BrandMark";
 import { AssistantActivityPanel } from "../components/chat/AssistantActivityPanel";
 import { ApprovalModal } from "../components/chat/ApprovalModal";
 import { AskUserModal } from "../components/chat/AskUserModal";
+import { ConfirmDialog } from "../components/chat/ConfirmDialog";
 import { ChatSearchToolbar } from "../components/chat/ChatSearchToolbar";
 import { ContextBudgetMeter } from "../components/chat/ContextBudgetMeter";
 import { ContextCompactedNotice } from "../components/chat/ContextCompactedNotice";
@@ -58,6 +59,8 @@ import type {
   UsageSummary,
 } from "../lib/types";
 import { Button } from "../components/ui";
+import { errorMessage } from "../lib/commandError";
+import { newId } from "../lib/ids";
 
 const SUGGESTIONS = [
   "Explain the difference between stored, reflected and DOM XSS with code examples.",
@@ -137,6 +140,12 @@ export function AssistantPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  /** A rewind awaiting confirmation; truncation is permanent. */
+  const [rewindRequest, setRewindRequest] = useState<{
+    messageId: string;
+    discardedCount: number;
+    replacesDraft: boolean;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   /** Steers accepted by the run but not yet folded into the conversation. */
   const [pendingSteers, setPendingSteers] = useState<{ id: string; text: string }[]>([]);
@@ -181,7 +190,7 @@ export function AssistantPage() {
   /** Highlighted row in the composer's slash-command menu. */
   const [slashIndex, setSlashIndex] = useState(0);
 
-  const conversationId = useRef<string>(crypto.randomUUID());
+  const conversationId = useRef<string>(newId());
   const streamHandleRef = useRef<StreamHandle | null>(null);
   const sessionRequestsRef = useRef<LatestRequestQueue | null>(null);
   if (!sessionRequestsRef.current) {
@@ -343,7 +352,7 @@ export function AssistantPage() {
     try {
       await activateSession(info, token);
     } catch (error) {
-      if (requestIsCurrent(token)) push("error", String(error));
+      if (requestIsCurrent(token)) push("error", errorMessage(error));
     } finally {
       finishSessionRequest(token);
     }
@@ -358,7 +367,7 @@ export function AssistantPage() {
       setSessions((list) => [session, ...list]);
       await activateSession(session, token, []);
     } catch (error) {
-      if (requestIsCurrent(token)) push("error", String(error));
+      if (requestIsCurrent(token)) push("error", errorMessage(error));
     } finally {
       finishSessionRequest(token);
     }
@@ -375,7 +384,7 @@ export function AssistantPage() {
         await activateSession(list[0], token);
       } catch (error) {
         if (requestIsCurrent(token)) {
-          push("error", `Chat sessions could not be loaded: ${String(error)}`);
+          push("error", `Chat sessions could not be loaded: ${errorMessage(error)}`);
         }
       } finally {
         finishSessionRequest(token);
@@ -540,7 +549,7 @@ export function AssistantPage() {
     const tools = Array.from(turnToolsRef.current.values());
     const compactionRecord = compactionRef.current;
     const stored: StoredMessage = {
-      id: crypto.randomUUID(),
+      id: newId(),
       role: "assistant",
       content,
       tools: tools.length ? tools : undefined,
@@ -588,7 +597,7 @@ export function AssistantPage() {
   ) => {
     const next: ChatMessage[] = [...history, { role: "user", content }];
     const stored: StoredMessage = {
-      id: crypto.randomUUID(),
+      id: newId(),
       role: "user",
       content,
       at: new Date().toISOString(),
@@ -675,7 +684,7 @@ export function AssistantPage() {
               : [...current.slice(0, index), ...current.slice(index + 1)];
           });
           const stored: StoredMessage = {
-            id: crypto.randomUUID(),
+            id: newId(),
             role: "user",
             content: text,
             at: new Date().toISOString(),
@@ -711,7 +720,7 @@ export function AssistantPage() {
             setMessages((current) => [
               ...current,
               {
-                id: crypto.randomUUID(),
+                id: newId(),
                 role: "assistant",
                 content: partial
                   ? `${partial}\n\n_— interrupted (${message})_`
@@ -771,7 +780,7 @@ export function AssistantPage() {
     try {
       await api.sessionTruncate(activeSessionId, plan.keepCount);
     } catch (error) {
-      push("error", `Could not retry with full context: ${String(error)}`);
+      push("error", `Could not retry with full context: ${errorMessage(error)}`);
       return;
     }
 
@@ -793,6 +802,18 @@ export function AssistantPage() {
    * left alone, so the UI never claims to have discarded turns that are still on
    * disk and would reappear on reload.
    */
+  const requestRewind = (messageId: string) => {
+    if (busy || !activeSessionId) return;
+    const plan = planRewind(messages, messageId);
+    if (!plan) return;
+    const draft = input.trim();
+    setRewindRequest({
+      messageId,
+      discardedCount: plan.discardedCount,
+      replacesDraft: draft !== "" && draft !== plan.restoredInput.trim(),
+    });
+  };
+
   const rewindTo = async (messageId: string) => {
     if (busy || !activeSessionId) return;
     const plan = planRewind(messages, messageId);
@@ -801,7 +822,7 @@ export function AssistantPage() {
     try {
       await api.sessionTruncate(activeSessionId, plan.keepCount);
     } catch (error) {
-      push("error", `Could not rewind: ${String(error)}`);
+      push("error", `Could not rewind: ${errorMessage(error)}`);
       return;
     }
 
@@ -834,14 +855,14 @@ export function AssistantPage() {
       if (await api.steerChat(handle.runId, content)) {
         setPendingSteers((current) => [
           ...current,
-          { id: crypto.randomUUID(), text: content },
+          { id: newId(), text: content },
         ]);
       } else {
         setFollowUp(content);
       }
     } catch (error) {
       setInput(content);
-      push("error", `That message could not be sent: ${String(error)}`);
+      push("error", `That message could not be sent: ${errorMessage(error)}`);
     }
   };
 
@@ -888,7 +909,7 @@ export function AssistantPage() {
       return;
     }
     const stored: StoredMessage = {
-      id: crypto.randomUUID(),
+      id: newId(),
       role: "user",
       content: `[User-attached source context: ${contextLabel}]\n\n${contextText}`,
       at: new Date().toISOString(),
@@ -908,7 +929,7 @@ export function AssistantPage() {
       setContextAttaching(false);
       closeContext();
     } catch (error) {
-      push("error", `Context could not be attached: ${String(error)}`);
+      push("error", `Context could not be attached: ${errorMessage(error)}`);
     } finally {
       contextAttachPendingRef.current = false;
       setContextAttaching(false);
@@ -925,7 +946,7 @@ export function AssistantPage() {
       try {
         await api.sessionTruncate(activeSessionId, 0);
       } catch (error) {
-        push("error", `Could not clear the conversation: ${String(error)}`);
+        push("error", `Could not clear the conversation: ${errorMessage(error)}`);
         return;
       }
     }
@@ -973,7 +994,7 @@ export function AssistantPage() {
           await navigator.clipboard.writeText(lastAssistant.content);
           push("success", "Last reply copied to clipboard.");
         } catch (error) {
-          push("error", `Could not copy: ${String(error)}`);
+          push("error", `Could not copy: ${errorMessage(error)}`);
         }
         return;
       }
@@ -1044,7 +1065,7 @@ export function AssistantPage() {
     unavailable:
       "AI readiness could not be loaded from local settings. Messages remain available; review Settings before sending.",
     unsupported:
-      "AI is not available in the browser build. Run the desktop app or the CLI.",
+      "AI is available in the oxAudit desktop app; this server does not accept AI requests.",
   }[aiReadiness.status];
   const composerPlaceholder = {
     loading: "Loading saved AI settings…",
@@ -1090,7 +1111,7 @@ export function AssistantPage() {
                 if (info) updateSessionInfo({ ...info, title, autoTitle: false });
               })
               .catch((error) => {
-                push("error", `Could not rename the conversation: ${String(error)}`);
+                push("error", `Could not rename the conversation: ${errorMessage(error)}`);
               });
           }}
           onDelete={async (id) => {
@@ -1099,7 +1120,7 @@ export function AssistantPage() {
             try {
               await api.sessionDelete(id);
             } catch (error) {
-              push("error", `Could not delete the conversation: ${String(error)}`);
+              push("error", `Could not delete the conversation: ${errorMessage(error)}`);
               return;
             }
             setSessions((list) =>
@@ -1318,7 +1339,7 @@ export function AssistantPage() {
                   {message.role === "user" && !busy && (
                     <button
                       type="button"
-                      onClick={() => void rewindTo(message.id)}
+                      onClick={() => requestRewind(message.id)}
                       title="Discard this and everything after it, and put the text back in the composer"
                       aria-label="Rewind the conversation to this message"
                       className="mt-5 flex h-7 w-7 shrink-0 items-center justify-center self-start rounded-sm text-text-muted opacity-0 transition-opacity hover:bg-surface-tertiary hover:text-text-primary focus-visible:opacity-100 group-hover:opacity-100"
@@ -1627,6 +1648,32 @@ export function AssistantPage() {
             setPermission(null);
           }}
         />
+      )}
+
+      {rewindRequest && (
+        <ConfirmDialog
+          title="Rewind this conversation?"
+          confirmLabel="Rewind"
+          onCancel={() => setRewindRequest(null)}
+          onConfirm={() => {
+            const { messageId } = rewindRequest;
+            setRewindRequest(null);
+            void rewindTo(messageId);
+          }}
+          onRestoreFocus={() => assistantFallbackRef.current?.focus()}
+        >
+          <p>
+            This permanently removes {rewindRequest.discardedCount}{" "}
+            {rewindRequest.discardedCount === 1 ? "message" : "messages"} from this
+            conversation, starting with the selected one. Its text goes back into the
+            composer so you can ask again.
+          </p>
+          {rewindRequest.replacesDraft && (
+            <p className="text-warning">
+              Your unsent draft will be replaced with the rewound message.
+            </p>
+          )}
+        </ConfirmDialog>
       )}
 
       {askUser && (

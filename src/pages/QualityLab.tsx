@@ -5,6 +5,7 @@ import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import type { BenchmarkCounts, ExternalBenchmarkReport, QualityStatus } from "../lib/types";
+import { errorMessage } from "../lib/commandError";
 
 export function QualityLabPage(): JSX.Element {
   const [status, setStatus] = useState<QualityStatus | null>(null);
@@ -16,7 +17,7 @@ export function QualityLabPage(): JSX.Element {
     try {
       setStatus(await api.qualityStatus());
     } catch (cause) {
-      setError(String(cause));
+      setError(errorMessage(cause));
     } finally {
       setRunning(false);
     }
@@ -100,7 +101,7 @@ function ExternalBenchmarkPanel(): JSX.Element {
     try {
       setReport(await api.externalBenchmark(target));
     } catch (cause) {
-      setError(String(cause));
+      setError(errorMessage(cause));
     } finally {
       setRunning(false);
     }
@@ -216,7 +217,7 @@ function CompiledGrammarsPanel(): JSX.Element {
         if (!cancelled) setGrammars(next);
       })
       .catch(cause => {
-        if (!cancelled) setError(String(cause));
+        if (!cancelled) setError(errorMessage(cause));
       });
     return () => {
       cancelled = true;

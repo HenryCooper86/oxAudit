@@ -6,6 +6,7 @@ import type { AdvisoryDbStatus, AdvisoryDbUpdateReport } from "../lib/types";
 import { useToastStore } from "../lib/stores";
 import { Button, SectionLabel } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
+import { errorMessage } from "../lib/commandError";
 
 function formatTimestamp(ms: number | null): string {
   return ms === null ? "unknown" : new Date(ms).toLocaleString();
@@ -38,7 +39,7 @@ export function AdvisoryDatabasePage() {
       if (disposed) unlisten();
       else stop = unlisten;
     }).catch((cause) => {
-      if (!disposed) push("error", `advisory database progress unavailable: ${String(cause)}`);
+      if (!disposed) push("error", `advisory database progress unavailable: ${errorMessage(cause)}`);
     });
     return () => {
       disposed = true;
@@ -69,7 +70,7 @@ export function AdvisoryDatabasePage() {
       const next = await api.advisoryDbStatus(path.trim());
       if (mounted.current && request === statusRequest.current) setStatus(next);
     } catch (cause) {
-      if (mounted.current && request === statusRequest.current) setStatusError(String(cause));
+      if (mounted.current && request === statusRequest.current) setStatusError(errorMessage(cause));
     } finally {
       if (mounted.current && request === statusRequest.current) setBusy(null);
     }
@@ -95,10 +96,10 @@ export function AdvisoryDatabasePage() {
         const refreshed = await api.advisoryDbStatus(path.trim());
         if (mounted.current) setStatus(refreshed);
       } catch (cause) {
-        if (mounted.current) setStatusError(`advisory database status refresh failed: ${String(cause)}`);
+        if (mounted.current) setStatusError(`advisory database status refresh failed: ${errorMessage(cause)}`);
       }
     } catch (cause) {
-      if (mounted.current) push("error", `advisory database update failed: ${String(cause)}`);
+      if (mounted.current) push("error", `advisory database update failed: ${errorMessage(cause)}`);
     } finally {
       if (mounted.current) setBusy(null);
     }

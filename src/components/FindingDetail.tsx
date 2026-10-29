@@ -9,6 +9,7 @@ import { serverMode } from "../lib/transport";
 import type { CommandError, Finding, ReviewRequest } from "../lib/types";
 import { SeverityBadge } from "./SeverityBadge";
 import { Button } from "./ui";
+import { newId } from "../lib/ids";
 
 export function FindingDetail({
   projectId,
@@ -62,7 +63,7 @@ export function FindingDetail({
       .join("\n\n");
 
     openAssistant({
-      id: crypto.randomUUID(),
+      id: newId(),
       label: `Finding: ${finding.ruleName}`,
       content,
       projectPath: activeProject,

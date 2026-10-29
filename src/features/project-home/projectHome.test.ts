@@ -14,6 +14,7 @@ import {
   acquireScan,
   releaseScan,
   reconcileBackendWork,
+  refreshScanWork,
 } from "./coordinator";
 import type { CanonicalRun, RecentProject } from "../../lib/types";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -332,4 +333,30 @@ test('another client replacing backend work ends the local project check and ret
   expect(useScanWorkStore.getState().check).toMatchObject({ status: 'incomplete', sourceResult: source, dependencies: 'not run' });
   expect(useScanWorkStore.getState().active?.operationId).toBe('external-image');
   expect(api.scanDependencies).not.toHaveBeenCalled();
+});
+test("a structured scanCancelled error from the backend settles the check as cancelled", async () => {
+  mockCheck();
+  vi.mocked(api.scanProject).mockRejectedValue({
+    code: "scanCancelled",
+    message: "Project check cancelled",
+    detail: null,
+    retryable: true,
+  });
+  await startProjectCheck("/alias", settings);
+  const check = useScanWorkStore.getState().check;
+  expect(check?.status).toBe("cancelled");
+  expect(check?.source).toBe("cancelled");
+  expect(check?.error).toBe("Project check cancelled");
+});
+test("structured backend errors are shown by message, never as [object Object]", async () => {
+  const commandError = { code: "persistenceUnavailable", message: "Database is locked", detail: null, retryable: true };
+  vi.spyOn(api, "scanWorkStatus").mockRejectedValue(commandError);
+  await refreshScanWork();
+  expect(useScanWorkStore.getState().recoveryError).toBe("Database is locked");
+
+  acquireScan("project", "/real/project", "Inspecting project");
+  useScanWorkStore.setState({ check: { path: "/real/project", status: "running", source: "running", dependencies: "pending" }, checkOwnerId: useScanWorkStore.getState().active!.id });
+  vi.spyOn(api, "cancelScanWork").mockRejectedValue(commandError);
+  await cancelActiveScan();
+  expect(useScanWorkStore.getState().check?.error).toBe("Cancellation failed: Database is locked");
 });

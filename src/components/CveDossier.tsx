@@ -1,13 +1,15 @@
 import { Bot, Calendar, ExternalLink, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
-import Markdown from "react-markdown";
 import { fmtDateTime } from "../lib/format";
 import type { AiReadinessStatus } from "../lib/settingsRequests";
 import { useAppStore } from "../lib/stores";
 import type { CveDetail } from "../lib/types";
+import { SafeMarkdown } from "./MarkdownLink";
 import { SeverityBadge } from "./SeverityBadge";
 import { InlineState } from "./workbench/InlineState";
 import { Button } from "./ui";
+import { errorMessage } from "../lib/commandError";
+import { newId } from "../lib/ids";
 
 export function CveDossier({
   detail,
@@ -35,7 +37,7 @@ export function CveDossier({
     offline: "The saved AI endpoint is offline. Review Settings before generating a briefing.",
     ready: "",
     unavailable: "AI readiness could not be loaded. Review Settings before generating a briefing.",
-    unsupported: "AI is not available in the browser build; use the desktop app or CLI.",
+    unsupported: "AI briefings are available in the oxAudit desktop app.",
   }[aiReadiness];
 
   useEffect(() => {
@@ -57,7 +59,7 @@ export function CveDossier({
       else setBriefingError("The AI briefing could not be generated.");
     } catch (error) {
       if (requestId === briefingRequestRef.current)
-        setBriefingError(String(error));
+        setBriefingError(errorMessage(error));
     } finally {
       if (requestId === briefingRequestRef.current) setAiLoading(false);
     }
@@ -89,7 +91,7 @@ export function CveDossier({
 
   const discussCve = () => {
     openAssistant({
-      id: crypto.randomUUID(),
+      id: newId(),
       label: `CVE dossier: ${item.id}`,
       content: [
         `CVE: ${item.id}`,
@@ -332,7 +334,7 @@ export function CveDossier({
         )}
         {briefing && (
           <div className="md-body selectable mt-3 text-[13px] leading-relaxed text-text-primary">
-            <Markdown>{briefing}</Markdown>
+            <SafeMarkdown>{briefing}</SafeMarkdown>
           </div>
         )}
       </section>

@@ -3,6 +3,7 @@ import { FileUp, FolderOpen } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { serverMode } from "../../lib/transport";
 import { Button } from "../ui";
+import { errorMessage } from "../../lib/commandError";
 
 export type TargetPickerMode = "folder" | "file";
 
@@ -49,7 +50,7 @@ export function TargetInput({
       if (mounted.current && available.current && generation === pickerGeneration.current && typeof selected === "string" && selected) onChange(selected);
     } catch (cause) {
       if (mounted.current && available.current && generation === pickerGeneration.current) {
-        const message = cause instanceof Error ? cause.message : String(cause);
+        const message = errorMessage(cause);
         setPickerError(`Could not open the ${mode} picker. ${message} You can paste a path instead.`);
       }
     } finally {

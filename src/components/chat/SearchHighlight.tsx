@@ -9,6 +9,7 @@ import {
 } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { normalizeSearchQuery, splitSearchMatches } from "../../lib/chatSearch";
+import { MarkdownLink } from "../MarkdownLink";
 
 function highlightNode(node: ReactNode, query: string): ReactNode {
   if (!query) return node;
@@ -72,7 +73,10 @@ function markdownComponents(query: string): Components {
   const Code = ({ node: _node, children, ...props }: MarkdownProps<"code">) => (
     <code {...props}>{highlightNode(children, query)}</code>
   );
-  return { p: P, li: Li, h1: H1, h2: H2, h3: H3, h4: H4, blockquote: Blockquote, td: Td, th: Th, code: Code };
+  const A = ({ children, ...props }: MarkdownProps<"a">) => (
+    <MarkdownLink {...props}>{highlightNode(children, query)}</MarkdownLink>
+  );
+  return { a: A, p: P, li: Li, h1: H1, h2: H2, h3: H3, h4: H4, blockquote: Blockquote, td: Td, th: Th, code: Code };
 }
 
 export function HighlightedText({ text, query }: { text: string; query: string }) {

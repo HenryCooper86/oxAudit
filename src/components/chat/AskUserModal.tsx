@@ -3,6 +3,7 @@ import { HelpCircle } from "lucide-react";
 import { api } from "../../lib/api";
 import type { AskQuestion } from "../../lib/types";
 import { Button } from "../ui";
+import { errorMessage } from "../../lib/commandError";
 
 /**
  * Modal for the AI's `ask_user` tool: renders 1-4 structured questions with
@@ -108,7 +109,7 @@ export function AskUserModal({
       await api.respondInteraction(requestId, payload);
       onClose();
     } catch (error) {
-      setSubmitError(String(error));
+      setSubmitError(errorMessage(error));
     }
   };
 

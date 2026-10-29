@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
   Binary,
   CheckCircle2,
@@ -21,6 +21,8 @@ import { InlineState } from "../components/workbench/InlineState";
 import { Button, Input, Select, Switch, Textarea } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
+import { errorMessage } from "../lib/commandError";
+import { serverMode } from "../lib/transport";
 import { normalizeThemePreference, THEME_PREFERENCES, type ThemePreference } from "../lib/theme";
 import { DEFAULT_SYSTEM_PROMPT } from "../lib/defaults";
 import { requestReadinessWizard } from "../lib/readinessWizard";
@@ -70,6 +72,36 @@ const DEFAULT_SETTINGS: AppSettings = {
   agentAllowedFetchHosts: [],
 };
 
+type NumberFieldKey = "timeoutSecs" | "maxTokens" | "contextWindow" | "maxFileSizeKb";
+type ListFieldKey = "agentAllowedFetchHosts" | "ignoredDirs";
+type RawFieldKey = NumberFieldKey | ListFieldKey;
+
+/** Bounds a number field must satisfy before the draft can be saved. */
+const NUMBER_BOUNDS: Record<NumberFieldKey, { min: number; max: number }> = {
+  timeoutSecs: { min: 10, max: 600 },
+  maxTokens: { min: 256, max: 8192 },
+  contextWindow: { min: 4096, max: 2_000_000 },
+  maxFileSizeKb: { min: 1, max: 10240 },
+};
+
+/** Parses a non-negative whole number within bounds, or explains why not. */
+export function parseBoundedInteger(
+  raw: string,
+  { min, max }: { min: number; max: number },
+): { value: number; error: null } | { value: null; error: string } {
+  const text = raw.trim();
+  const value = /^\d+$/.test(text) ? Number(text) : Number.NaN;
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    return { value: null, error: `Enter a whole number between ${min.toLocaleString("en-US")} and ${max.toLocaleString("en-US")}.` };
+  }
+  return { value, error: null };
+}
+
+/** One entry per non-blank line, trimmed. */
+export function parseLineList(raw: string): string[] {
+  return raw.split("\n").map((item) => item.trim()).filter(Boolean);
+}
+
 function cloneSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
@@ -111,6 +143,10 @@ export function SettingsPage() {
     { tone: "success" | "error"; message: string } | null
   >(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Raw text of fields being edited. List and number inputs show this text
+  // instead of the parsed draft so typing a newline, a trailing space, or an
+  // empty/partial number is not rewritten under the cursor.
+  const [rawFields, setRawFields] = useState<Partial<Record<RawFieldKey, string>>>({});
   const [totalUsage, setTotalUsage] = useState<UsageSummary | null>(null);
   const [usageLoading, setUsageLoading] = useState(true);
   const [usageError, setUsageError] = useState(false);
@@ -142,6 +178,7 @@ export function SettingsPage() {
     formInitializedRef.current = true;
     formRef.current = initial;
     setForm(initial);
+    setRawFields({});
     setDirty(false);
     setLoadError(null);
   }, [settings]);
@@ -186,7 +223,7 @@ export function SettingsPage() {
       if (!persistedSettingsRequests.isCurrent(token)) return;
       setSettingsLoadError(true);
       setAiReadiness(unavailableAiReadiness(token));
-      if (mountedRef.current) setLoadError(String(error));
+      if (mountedRef.current) setLoadError(errorMessage(error));
     }
   };
 
@@ -298,7 +335,7 @@ export function SettingsPage() {
 
   const save = async () => {
     const current = formRef.current;
-    if (!current || savePendingRef.current) return;
+    if (!current || savePendingRef.current || hasFieldErrors) return;
     const snapshot = cloneSettings(current);
     const credentials = {
       aiApiKey: credentialMutation(aiApiKeyDraft, removeAiApiKey),
@@ -330,6 +367,7 @@ export function SettingsPage() {
           }
           formRef.current = persisted;
           setForm(persisted);
+          setRawFields({});
           setAiApiKeyDraft("");
           setNvdApiKeyDraft("");
           setRemoveAiApiKey(false);
@@ -346,7 +384,7 @@ export function SettingsPage() {
       }
     } catch (error) {
       if (!mountedRef.current) return;
-      const message = String(error);
+      const message = errorMessage(error, "Settings could not be saved.");
       setSaveState({ tone: "error", message });
     } finally {
       savePendingRef.current = false;
@@ -356,6 +394,7 @@ export function SettingsPage() {
 
   const reset = () => {
     const current = formRef.current ?? form;
+    setRawFields({});
     publishDraft({
       ...DEFAULT_SETTINGS,
       ai: { ...DEFAULT_SETTINGS.ai },
@@ -388,7 +427,7 @@ export function SettingsPage() {
         setCopied(false);
       }
     } catch (error) {
-      setDiagnosticsError(String(error));
+      setDiagnosticsError(errorMessage(error));
     }
   };
 
@@ -410,7 +449,7 @@ export function SettingsPage() {
       if (mountedRef.current && draftRequests.isCurrent(token)) {
         setDraftStatus({
           ok: false,
-          message: String(error),
+          message: errorMessage(error, "The connection test failed."),
           model: null,
           latencyMs: 0,
         });
@@ -421,6 +460,67 @@ export function SettingsPage() {
         if (mountedRef.current) setTesting(false);
       }
     }
+  };
+
+  const fieldErrors: Partial<Record<NumberFieldKey, string>> = {};
+  for (const key of Object.keys(NUMBER_BOUNDS) as NumberFieldKey[]) {
+    const raw = rawFields[key];
+    if (raw === undefined) continue;
+    const parsed = parseBoundedInteger(raw, NUMBER_BOUNDS[key]);
+    if (parsed.error) fieldErrors[key] = parsed.error;
+  }
+  const hasFieldErrors = Object.keys(fieldErrors).length > 0;
+
+  const setRawField = (key: RawFieldKey, raw: string) =>
+    setRawFields((fields) => ({ ...fields, [key]: raw }));
+
+  /** Drop raw text once it is valid so the field shows the normalized value. */
+  const settleRawField = (key: RawFieldKey) => {
+    setRawFields((fields) => {
+      const raw = fields[key];
+      if (raw === undefined) return fields;
+      if (key in NUMBER_BOUNDS && parseBoundedInteger(raw, NUMBER_BOUNDS[key as NumberFieldKey]).error) {
+        return fields;
+      }
+      const next = { ...fields };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const editNumber = (key: NumberFieldKey, raw: string) => {
+    setRawField(key, raw);
+    const parsed = parseBoundedInteger(raw, NUMBER_BOUNDS[key]);
+    const current = formRef.current ?? form;
+    if (parsed.value === null) {
+      // Keep the last valid draft value; the inline error blocks saving.
+      publishDraft(current);
+      return;
+    }
+    if (key === "maxFileSizeKb") {
+      publishDraft({ ...current, scan: { ...current.scan, maxFileSizeKb: parsed.value } });
+    } else {
+      publishDraft({ ...current, ai: { ...current.ai, [key]: parsed.value } });
+    }
+  };
+
+  const numberInputProps = (key: NumberFieldKey, value: number) => ({
+    type: "number",
+    inputMode: "numeric" as const,
+    min: NUMBER_BOUNDS[key].min,
+    max: NUMBER_BOUNDS[key].max,
+    value: rawFields[key] ?? String(value),
+    "aria-invalid": fieldErrors[key] ? true : undefined,
+    onChange: (event: ChangeEvent<HTMLInputElement>) => editNumber(key, event.target.value),
+    onBlur: () => settleRawField(key),
+  });
+
+  const editList = (key: ListFieldKey, raw: string) => {
+    setRawField(key, raw);
+    const current = formRef.current ?? form;
+    const items = parseLineList(raw);
+    if (key === "ignoredDirs") publishDraft({ ...current, scan: { ...current.scan, ignoredDirs: items } });
+    else publishDraft({ ...current, agentAllowedFetchHosts: items });
   };
 
   const statusMessage = draftStatus
@@ -453,7 +553,7 @@ export function SettingsPage() {
           <button
             type="button"
             onClick={() => void save()}
-            disabled={!dirty || saving}
+            disabled={!dirty || saving || hasFieldErrors}
             className={primaryButtonCls}
           >
             {saving ? (
@@ -478,206 +578,204 @@ export function SettingsPage() {
           </Field>
           <p className="mt-2 text-[11px] text-text-muted">VS Code must register its vscode URL handler; its command-line launcher is not required. Errors stay visible if the handler is unavailable. Positions use the current saved file, which may have changed since scanning.</p>
         </section>
-        <section className={sectionCls} aria-labelledby="ai-engine-title">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 id="ai-engine-title" className={sectionTitleCls}>
-                <ShieldCheck size={15} aria-hidden="true" className="text-accent" />
-                AI Engine
-              </h2>
-              <p className={sectionDescriptionCls}>
-                Configure any OpenAI-compatible endpoint used by assistant features.
-              </p>
+        {serverMode ? (
+          <section className={sectionCls} aria-labelledby="ai-engine-title">
+            <h2 id="ai-engine-title" className={sectionTitleCls}>
+              <ShieldCheck size={15} aria-hidden="true" className="text-accent" />
+              AI Engine
+            </h2>
+            <p className={sectionDescriptionCls}>
+              AI features are available in the oxAudit desktop app. This server does not
+              accept AI requests, so its AI settings cannot be changed here.
+            </p>
+          </section>
+        ) : (
+          <section className={sectionCls} aria-labelledby="ai-engine-title">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 id="ai-engine-title" className={sectionTitleCls}>
+                  <ShieldCheck size={15} aria-hidden="true" className="text-accent" />
+                  AI Engine
+                </h2>
+                <p className={sectionDescriptionCls}>
+                  Configure any OpenAI-compatible endpoint used by assistant features.
+                </p>
+              </div>
+              <Switch
+                checked={form.ai.enabled}
+                onChange={(enabled) => updateAi({ enabled })}
+                label="Enable AI engine"
+              />
             </div>
-            <Switch
-              checked={form.ai.enabled}
-              onChange={(enabled) => updateAi({ enabled })}
-              label="Enable AI engine"
-            />
-          </div>
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <Field
-              label="Base URL"
-              htmlFor="ai-base-url"
-              hint="Examples include OpenAI, Ollama, LM Studio, vLLM, Groq, and OpenRouter."
-            >
-              <Input
-                id="ai-base-url"
-                aria-describedby="ai-base-url-hint"
-                value={form.ai.baseUrl}
-                onChange={(event) => updateAi({ baseUrl: event.target.value })}
-                placeholder="https://api.openai.com/v1"
-              />
-            </Field>
-            <Field label="Model" htmlFor="ai-model">
-              <Input
-                id="ai-model"
-                value={form.ai.model}
-                onChange={(event) => updateAi({ model: event.target.value })}
-                placeholder="gpt-4o-mini"
-              />
-            </Field>
-            <Field
-              label="API key"
-              htmlFor="ai-api-key"
-              hint={
-                removeAiApiKey
-                  ? "The saved key will be removed when you save."
-                  : form.credentials.aiApiKey
-                    ? "A key is stored in your operating system credential manager. Leave blank to keep it."
-                    : "Stored in your operating system credential manager and sent only to this endpoint."
-              }
-            >
-              <div className="flex gap-2">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <Field
+                label="Base URL"
+                htmlFor="ai-base-url"
+                hint="Examples include OpenAI, Ollama, LM Studio, vLLM, Groq, and OpenRouter."
+              >
                 <Input
-                  id="ai-api-key"
-                  aria-describedby="ai-api-key-hint"
-                  type="password"
-                  autoComplete="new-password"
-                  value={aiApiKeyDraft}
-                  disabled={removeAiApiKey}
-                  onChange={(event) => {
-                    setAiApiKeyDraft(event.target.value);
-                    setRemoveAiApiKey(false);
-                    publishCredentialDraft();
-                  }}
-                  placeholder={form.credentials.aiApiKey ? "Stored key unchanged" : "sk-…"}
+                  id="ai-base-url"
+                  aria-describedby="ai-base-url-hint"
+                  value={form.ai.baseUrl}
+                  onChange={(event) => updateAi({ baseUrl: event.target.value })}
+                  placeholder="https://api.openai.com/v1"
                 />
-                {form.credentials.aiApiKey && (
-                  <button
-                    type="button"
-                    className={secondaryButtonCls}
-                    onClick={() => {
-                      setRemoveAiApiKey((value) => !value);
-                      setAiApiKeyDraft("");
+              </Field>
+              <Field label="Model" htmlFor="ai-model">
+                <Input
+                  id="ai-model"
+                  value={form.ai.model}
+                  onChange={(event) => updateAi({ model: event.target.value })}
+                  placeholder="gpt-4o-mini"
+                />
+              </Field>
+              <Field
+                label="API key"
+                htmlFor="ai-api-key"
+                hint={
+                  removeAiApiKey
+                    ? "The saved key will be removed when you save."
+                    : form.credentials.aiApiKey
+                      ? "A key is stored in your operating system credential manager. Leave blank to keep it."
+                      : "Stored in your operating system credential manager and sent only to this endpoint."
+                }
+              >
+                <div className="flex gap-2">
+                  <Input
+                    id="ai-api-key"
+                    aria-describedby="ai-api-key-hint"
+                    type="password"
+                    autoComplete="new-password"
+                    value={aiApiKeyDraft}
+                    disabled={removeAiApiKey}
+                    onChange={(event) => {
+                      setAiApiKeyDraft(event.target.value);
+                      setRemoveAiApiKey(false);
                       publishCredentialDraft();
                     }}
-                  >
-                    {removeAiApiKey ? "Keep" : "Remove"}
-                  </button>
-                )}
-              </div>
-            </Field>
-            <Field label="Timeout (seconds)" htmlFor="ai-timeout">
-              <Input
-                id="ai-timeout"
-                type="number"
-                value={form.ai.timeoutSecs}
-                min={10}
-                max={600}
-                onChange={(event) => updateAi({ timeoutSecs: Number(event.target.value) || 120 })}
-              />
-            </Field>
-            <Field label={`Temperature — ${form.ai.temperature.toFixed(2)}`} htmlFor="ai-temperature">
-              <input
-                id="ai-temperature"
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={form.ai.temperature}
-                onChange={(event) => updateAi({ temperature: Number(event.target.value) })}
-                className="h-9 w-full accent-[var(--accent)]"
-              />
-            </Field>
-            <Field label="Max tokens" htmlFor="ai-max-tokens">
-              <Input
-                id="ai-max-tokens"
-                type="number"
-                value={form.ai.maxTokens}
-                min={256}
-                max={8192}
-                step={256}
-                onChange={(event) => updateAi({ maxTokens: Number(event.target.value) || 2048 })}
-              />
-            </Field>
-            <Field
-              label="Context window"
-              htmlFor="ai-context-window"
-              hint="Model input + output capacity. Used for local preflight; check your provider's model documentation."
-            >
-              <Input
-                id="ai-context-window"
-                aria-describedby="ai-context-window-hint"
-                type="number"
-                value={form.ai.contextWindow}
-                min={4096}
-                max={2000000}
-                step={1024}
-                onChange={(event) =>
-                  updateAi({ contextWindow: Number(event.target.value) || 128000 })
-                }
-              />
-            </Field>
-          </div>
-
-          <div className="mt-3">
-            <Field label="System prompt" htmlFor="ai-system-prompt">
-              <Textarea
-                id="ai-system-prompt"
-                value={form.ai.systemPrompt}
-                onChange={(event) => updateAi({ systemPrompt: event.target.value })}
-                rows={4}
-                className="selectable resize-y"
-              />
-            </Field>
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => void test()}
-              disabled={testing || !form.ai.baseUrl}
-              className={secondaryButtonCls}
-            >
-              {testing ? (
-                <Loader2 size={13} aria-hidden="true" className="animate-spin" />
-              ) : (
-                <CheckCircle2 size={13} aria-hidden="true" />
-              )}
-              {testing ? "Testing…" : "Test connection"}
-            </button>
-            {statusMessage && (
-              <span
-                role={draftStatus?.ok ? "status" : "alert"}
-                className={`inline-flex items-center gap-1.5 text-[12px] ${ draftStatus?.ok ? "text-success" : "text-error" }`}
+                    placeholder={form.credentials.aiApiKey ? "Stored key unchanged" : "sk-…"}
+                  />
+                  {form.credentials.aiApiKey && (
+                    <button
+                      type="button"
+                      className={secondaryButtonCls}
+                      onClick={() => {
+                        setRemoveAiApiKey((value) => !value);
+                        setAiApiKeyDraft("");
+                        publishCredentialDraft();
+                      }}
+                    >
+                      {removeAiApiKey ? "Keep" : "Remove"}
+                    </button>
+                  )}
+                </div>
+              </Field>
+              <Field label="Timeout (seconds)" htmlFor="ai-timeout" error={fieldErrors.timeoutSecs}>
+                <Input
+                  id="ai-timeout"
+                  aria-describedby={fieldErrors.timeoutSecs ? "ai-timeout-error" : undefined}
+                  {...numberInputProps("timeoutSecs", form.ai.timeoutSecs)}
+                />
+              </Field>
+              <Field label={`Temperature — ${form.ai.temperature.toFixed(2)}`} htmlFor="ai-temperature">
+                <input
+                  id="ai-temperature"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={form.ai.temperature}
+                  onChange={(event) => updateAi({ temperature: Number(event.target.value) })}
+                  className="h-9 w-full accent-[var(--accent)]"
+                />
+              </Field>
+              <Field label="Max tokens" htmlFor="ai-max-tokens" error={fieldErrors.maxTokens}>
+                <Input
+                  id="ai-max-tokens"
+                  aria-describedby={fieldErrors.maxTokens ? "ai-max-tokens-error" : undefined}
+                  step={256}
+                  {...numberInputProps("maxTokens", form.ai.maxTokens)}
+                />
+              </Field>
+              <Field
+                label="Context window"
+                htmlFor="ai-context-window"
+                hint="Model input + output capacity. Used for local preflight; check your provider's model documentation."
+                error={fieldErrors.contextWindow}
               >
-                {draftStatus?.ok ? (
-                  <CheckCircle2 size={13} aria-hidden="true" />
-                ) : (
-                  <XCircle size={13} aria-hidden="true" />
-                )}
-                {statusMessage}
-              </span>
-            )}
-          </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
-            This checks the current draft only. Assistant readiness continues to reflect saved settings.
-          </p>
+                <Input
+                  id="ai-context-window"
+                  aria-describedby={fieldErrors.contextWindow ? "ai-context-window-hint ai-context-window-error" : "ai-context-window-hint"}
+                  step={1024}
+                  {...numberInputProps("contextWindow", form.ai.contextWindow)}
+                />
+              </Field>
+            </div>
 
-          <div className="mt-4">
-            <Field
-              label="Allowed fetch hosts"
-              htmlFor="agent-allowed-fetch-hosts"
-              hint="One host per line. This extends the built-in web-fetch list for advisory sites such as nvd.nist.gov, osv.dev, and github.com. Every model-selected network tool still asks for approval. Web fetches to private, loopback, link-local, or otherwise non-routable addresses are always refused."
-            >
-              <Textarea
-                id="agent-allowed-fetch-hosts"
-                aria-describedby="agent-allowed-fetch-hosts-hint"
-                placeholder="psirt.vendor.example"
-                value={(form.agentAllowedFetchHosts ?? []).join("\n")}
-                onChange={(event) =>
-                  update(
-                    "agentAllowedFetchHosts",
-                    event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
-                  )
-                }
-                rows={3}
-              />
-            </Field>
-          </div>
-        </section>
+            <div className="mt-3">
+              <Field label="System prompt" htmlFor="ai-system-prompt">
+                <Textarea
+                  id="ai-system-prompt"
+                  value={form.ai.systemPrompt}
+                  onChange={(event) => updateAi({ systemPrompt: event.target.value })}
+                  rows={4}
+                  className="selectable resize-y"
+                />
+              </Field>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => void test()}
+                disabled={testing || !form.ai.baseUrl}
+                className={secondaryButtonCls}
+              >
+                {testing ? (
+                  <Loader2 size={13} aria-hidden="true" className="animate-spin" />
+                ) : (
+                  <CheckCircle2 size={13} aria-hidden="true" />
+                )}
+                {testing ? "Testing…" : "Test connection"}
+              </button>
+              {statusMessage && (
+                <span
+                  role={draftStatus?.ok ? "status" : "alert"}
+                  className={`inline-flex items-center gap-1.5 text-[12px] ${ draftStatus?.ok ? "text-success" : "text-error" }`}
+                >
+                  {draftStatus?.ok ? (
+                    <CheckCircle2 size={13} aria-hidden="true" />
+                  ) : (
+                    <XCircle size={13} aria-hidden="true" />
+                  )}
+                  {statusMessage}
+                </span>
+              )}
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
+              This checks the current draft only. Assistant readiness continues to reflect saved settings.
+            </p>
+
+            <div className="mt-4">
+              <Field
+                label="Allowed fetch hosts"
+                htmlFor="agent-allowed-fetch-hosts"
+                hint="One host per line. This extends the built-in web-fetch list for advisory sites such as nvd.nist.gov, osv.dev, and github.com. Every model-selected network tool still asks for approval. Web fetches to private, loopback, link-local, or otherwise non-routable addresses are always refused."
+              >
+                <Textarea
+                  id="agent-allowed-fetch-hosts"
+                  aria-describedby="agent-allowed-fetch-hosts-hint"
+                  placeholder="psirt.vendor.example"
+                  value={rawFields.agentAllowedFetchHosts ?? (form.agentAllowedFetchHosts ?? []).join("\n")}
+                  onChange={(event) => editList("agentAllowedFetchHosts", event.target.value)}
+                  onBlur={() => settleRawField("agentAllowedFetchHosts")}
+                  rows={3}
+                />
+              </Field>
+            </div>
+          </section>
+        )}
 
         <section className={sectionCls} aria-labelledby="diagnostics-title">
           <h2 id="diagnostics-title" className={sectionTitleCls}>
@@ -783,14 +881,11 @@ export function SettingsPage() {
             <Switch checked={form.scan.followSymlinks} onChange={(followSymlinks) => update("scan", { ...form.scan, followSymlinks })} label="Follow in-project symlinks" />
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <Field label="Max file size (KB)" htmlFor="scan-max-file-size">
+            <Field label="Max file size (KB)" htmlFor="scan-max-file-size" error={fieldErrors.maxFileSizeKb}>
               <Input
                 id="scan-max-file-size"
-                type="number"
-                value={form.scan.maxFileSizeKb}
-                min={1}
-                max={10240}
-                onChange={(event) => update("scan", { ...form.scan, maxFileSizeKb: Number(event.target.value) || 1024 })}
+                aria-describedby={fieldErrors.maxFileSizeKb ? "scan-max-file-size-error" : undefined}
+                {...numberInputProps("maxFileSizeKb", form.scan.maxFileSizeKb)}
               />
             </Field>
           </div>
@@ -803,13 +898,9 @@ export function SettingsPage() {
               <Textarea
                 id="scan-ignored-directories"
                 aria-describedby="scan-ignored-directories-hint"
-                value={form.scan.ignoredDirs.join("\n")}
-                onChange={(event) =>
-                update("scan", {
-                ...form.scan,
-                ignoredDirs: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean),
-                })
-                }
+                value={rawFields.ignoredDirs ?? form.scan.ignoredDirs.join("\n")}
+                onChange={(event) => editList("ignoredDirs", event.target.value)}
+                onBlur={() => settleRawField("ignoredDirs")}
                 rows={4}
               />
             </Field>

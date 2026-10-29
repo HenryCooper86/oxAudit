@@ -8,6 +8,7 @@ import { api } from "../lib/api";
 import { serverMode } from "../lib/transport";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { CanonicalRun, ExportFormat, ExportPreview, ImportPreview } from "../lib/types";
+import { errorMessage } from "../lib/commandError";
 
 const FORMATS: Array<{ id: ExportFormat; label: string; description: string }> = [
   { id: "oxaudit-json", label: "oxAudit JSON", description: "Complete canonical graph, evidence, provenance, and screen projection." },
@@ -97,7 +98,7 @@ export function ExportCenterPage(): JSX.Element {
       setRunsCapped(loaded.length >= 100);
       setRunId((current) => current || completed[0]?.id || "");
     }).catch((cause) => {
-      if (!disposed) setRunsError(String(cause));
+      if (!disposed) setRunsError(errorMessage(cause));
     });
     return () => { disposed = true; };
   }, [runsRevision]);
@@ -118,7 +119,7 @@ export function ExportCenterPage(): JSX.Element {
     }).catch((cause) => {
       if (!disposed) {
         setPreview(null);
-        setPreviewError(String(cause));
+        setPreviewError(errorMessage(cause));
       }
     }).finally(() => {
       if (!disposed) setLoading(false);
@@ -152,7 +153,7 @@ export function ExportCenterPage(): JSX.Element {
       }
     } catch (cause) {
       if (requestedRevision === exportRevision.current) {
-        setError(String(cause));
+        setError(errorMessage(cause));
         push("error", "The export could not be saved");
       }
     } finally {
@@ -180,7 +181,7 @@ export function ExportCenterPage(): JSX.Element {
       const result = await api.previewReportImport(selected);
       if (requestedRevision === importRevision.current) setImportPreview(result);
     } catch (cause) {
-      if (requestedRevision === importRevision.current) setImportError(String(cause));
+      if (requestedRevision === importRevision.current) setImportError(errorMessage(cause));
     } finally {
       importBusy.current = false;
       if (mounted.current) setImportLoading(false);
@@ -210,7 +211,7 @@ export function ExportCenterPage(): JSX.Element {
       }
     } catch (cause) {
       if (requestedRevision === importRevision.current) {
-        setImportError(String(cause));
+        setImportError(errorMessage(cause));
         push("error", kind === "inventory" ? "The inventory was not imported" : "The external claims were not imported");
       }
     } finally {

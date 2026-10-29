@@ -12,7 +12,7 @@ import { ResultPagination } from "../components/workbench/ResultPagination";
 import { useCanonicalPage } from "../lib/serverPagination";
 import { ServerPageState } from "../components/workbench/ServerPageState";
 import { usePagination } from "../lib/pagination";
-import { normalizeCommandError } from "../lib/commandError";
+import { errorMessage, normalizeCommandError } from "../lib/commandError";
 import { Button, Switch } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { TargetBar } from "../components/workbench/TargetBar";
@@ -73,7 +73,7 @@ export function ImageScanPage() {
         setPageStatus("image-scan", { label: `Saved image results · ${saved.data.state} · ${saved.data.result.summary.vulnerabilities} vulnerabilities`, tone: saved.data.state === "completed" ? "success" : "neutral" });
       }
     }).catch(cause => {
-      if (mounted.current && generation === receiptRequest.current) setError(`Saved image evidence could not be loaded: ${String(cause)}`);
+      if (mounted.current && generation === receiptRequest.current) setError(`Saved image evidence could not be loaded: ${errorMessage(cause)}`);
     });
     return () => { receiptRequest.current += 1; };
   }, [activeWork?.owner, activeWork?.path, busy, recoveryRevision, setPageStatus, target]);
@@ -93,7 +93,7 @@ export function ImageScanPage() {
       if (disposed) unlisten();
       else stop = unlisten;
     }).catch((cause) => {
-      if (!disposed) setError(String(cause));
+      if (!disposed) setError(errorMessage(cause));
     });
     return () => { disposed = true; stop?.(); };
   }, []);

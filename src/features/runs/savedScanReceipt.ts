@@ -1,6 +1,7 @@
 import { api } from "../../lib/api";
 import { normalizedTarget } from "../../lib/durableRuns";
 import type { CanonicalRun, CanonicalProjectionSection } from "../../lib/types";
+import { errorMessage } from "../../lib/commandError";
 
 /** Read stored evidence by canonical run identity, retaining a failed latest attempt separately. */
 export async function readSavedScanReceipt<T extends { runId?: string }>(kind: "image" | "history", target: string, preferredRunId?: string | null): Promise<{
@@ -20,6 +21,6 @@ export async function readSavedScanReceipt<T extends { runId?: string }>(kind: "
     if (projection.runId && projection.runId !== receipt.id) throw new Error("Stored scan evidence belongs to a different run.");
     return { target: resolvedTarget, attempt, receipt, data: { ...projection, runId: receipt.id, state: receipt.state }, sections: metadata.sections, loadError: null };
   } catch (error) {
-    return { target: resolvedTarget, attempt, receipt, data: null, sections: {}, loadError: String(error) };
+    return { target: resolvedTarget, attempt, receipt, data: null, sections: {}, loadError: errorMessage(error) };
   }
 }

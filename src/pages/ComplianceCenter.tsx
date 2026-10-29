@@ -26,6 +26,7 @@ import type {
   ComplianceReadinessStatus,
   ComplianceReview,
 } from "../lib/types";
+import { errorMessage } from "../lib/commandError";
 
 function StatusPill({ status, prefix }: { status: ComplianceReadinessStatus; prefix?: string }): JSX.Element {
   return (
@@ -84,7 +85,7 @@ function ControlReviewCard({
       onSaved(review);
       push("success", `Recorded review for ${control.reference}`);
     } catch (cause) {
-      push("error", String(cause));
+      push("error", errorMessage(cause));
     } finally {
       setSaving(false);
     }
@@ -177,7 +178,7 @@ export function ComplianceCenterPage(): JSX.Element {
         setHistory(loadedHistory);
         setSelectedIds(loadedProfiles.map((profile) => profile.id));
       })
-      .catch((cause) => { if (!disposed) setError(String(cause)); });
+      .catch((cause) => { if (!disposed) setError(errorMessage(cause)); });
     return () => { disposed = true; viewRequest.current += 1; };
   }, []);
 
@@ -203,7 +204,7 @@ export function ComplianceCenterPage(): JSX.Element {
       const loaded = await api.loadComplianceAssessment(assessmentId);
       if (request === viewRequest.current) setSelectedView(loaded);
     } catch (cause) {
-      if (request === viewRequest.current) setError(String(cause));
+      if (request === viewRequest.current) setError(errorMessage(cause));
     } finally {
       if (request === viewRequest.current) setLoadingView(false);
     }
@@ -218,7 +219,7 @@ export function ComplianceCenterPage(): JSX.Element {
       if (assessments[0]) await loadAssessment(assessments[0].id);
       push("success", `Created ${assessments.length} durable readiness assessment${assessments.length === 1 ? "" : "s"}`);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorMessage(cause));
       push("error", "The compliance assessment could not be completed");
     } finally {
       setRunning(false);

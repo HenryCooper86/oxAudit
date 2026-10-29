@@ -8,6 +8,8 @@ import type {
   TodoItem,
   Usage,
 } from "./types";
+import { errorMessage } from "./commandError";
+import { newId } from "./ids";
 
 export interface StreamHandlers {
   onStarted?: (runId: string) => void;
@@ -59,7 +61,7 @@ export interface StreamHandle {
  * down when this run settles (matching done/error, invoke rejection, disposal).
  */
 export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
-  const runId = crypto.randomUUID();
+  const runId = newId();
   const unlisteners: UnlistenFn[] = [];
   let disposed = false;
   let settled = false;
@@ -104,7 +106,7 @@ export function streamChat(req: ChatRequest, h: StreamHandlers): StreamHandle {
   };
 
   const reportError = (error: unknown) => {
-    settle(() => h.onError?.(String(error)));
+    settle(() => h.onError?.(errorMessage(error)));
   };
 
   const dispatch = (callback: () => void) => {

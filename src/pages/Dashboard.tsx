@@ -39,7 +39,7 @@ export function Dashboard() {
     offline: "Configured but unreachable. Check the endpoint settings.",
     ready: "Connected and ready for security research.",
     unavailable: "Readiness could not be loaded from local settings. Review Settings and retry.",
-    unsupported: "The browser build has no AI features. Use the desktop app or CLI for AI research.",
+    unsupported: "AI research is available in the oxAudit desktop app.",
   }[aiReadiness.status];
   const readinessPending =
     aiReadiness.status === "loading" || aiReadiness.status === "checking";

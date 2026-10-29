@@ -17,7 +17,7 @@ import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
-import { normalizeCommandError } from "../lib/commandError";
+import { errorMessage, normalizeCommandError } from "../lib/commandError";
 import { resolveRuntimeProject } from "../lib/assistantSessions";
 import { latestCompletedRun, normalizedTarget } from "../lib/durableRuns";
 import { fmtDate } from "../lib/format";
@@ -485,7 +485,7 @@ export function DepsScanPage() {
     try {
       const data = await api.loadCanonicalProjection<DependencyScanResult>(receipt.id);
       publish({ data, error: null });
-    } catch (cause) { publish({ error: String(cause) }); }
+    } catch (cause) { publish({ error: errorMessage(cause) }); }
   };
   const critical = receipt ? savedCritical ?? "…" : vulns.filter((vulnerability) => vulnerability.severity === "critical").length;
   const high = receipt ? savedHigh ?? "…" : vulns.filter((vulnerability) => vulnerability.severity === "high").length;

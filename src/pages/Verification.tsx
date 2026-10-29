@@ -11,6 +11,7 @@ import { useToastStore } from "../lib/stores";
 import { usePagination } from "../lib/pagination";
 import { useVerificationWrites } from "../features/verification/writes";
 import type { CanonicalFinding, VerificationRecord, VerificationResult } from "../lib/types";
+import { errorMessage } from "../lib/commandError";
 
 export function VerificationPage(): JSX.Element {
   const [claims, setClaims] = useState<CanonicalFinding[] | null>(null);
@@ -31,7 +32,7 @@ export function VerificationPage(): JSX.Element {
           ? current
           : loaded[0]?.id ?? null);
       })
-      .catch(cause => { if (!disposed) setError(String(cause)); });
+      .catch(cause => { if (!disposed) setError(errorMessage(cause)); });
     return () => { disposed = true; };
   }, [loadRevision]);
 
@@ -155,7 +156,7 @@ function ClaimVerification({ claim, verifierId, onVerifierId }: {
       if (saved && loaded.some(record => record.id === saved.id)) {
         useVerificationWrites.getState().acknowledge(claim.id, saved.id);
       }
-    }).catch(cause => { if (!disposed) setHistoryError(String(cause)); })
+    }).catch(cause => { if (!disposed) setHistoryError(errorMessage(cause)); })
       .finally(() => { if (!disposed) setHistoryLoading(false); });
     return () => { disposed = true; };
   }, [claim.id, historyRevision, saved]);
@@ -173,8 +174,8 @@ function ClaimVerification({ claim, verifierId, onVerifierId }: {
       }
       push("success", `Independent verification saved for ${claim.title}`);
     } catch (cause) {
-      if (mounted.current) setSaveError(String(cause));
-      else push("error", `Verification failed for ${claim.title}: ${String(cause)}`);
+      if (mounted.current) setSaveError(errorMessage(cause));
+      else push("error", `Verification failed for ${claim.title}: ${errorMessage(cause)}`);
     } finally {
       useVerificationWrites.getState().finish(claim.id, savedRecord);
     }

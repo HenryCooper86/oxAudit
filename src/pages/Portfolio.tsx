@@ -8,6 +8,7 @@ import { api } from "../lib/api";
 import { fmtDateTime } from "../lib/format";
 import { useToastStore } from "../lib/stores";
 import type { RecentProject, ScanScheduleStatus } from "../lib/types";
+import { errorMessage } from "../lib/commandError";
 
 const INTERVALS: Array<{ hours: number; label: string }> = [
   { hours: 1, label: "Hourly" },
@@ -54,7 +55,7 @@ export function PortfolioPage(): JSX.Element {
         setSchedules(nextSchedules);
         setError(null);
       } catch (cause) {
-        if (mounted.current && generation === refreshGeneration.current) setError(String(cause));
+        if (mounted.current && generation === refreshGeneration.current) setError(errorMessage(cause));
       } finally {
         if (mounted.current && generation === refreshGeneration.current) setRefreshing(false);
       }
@@ -99,7 +100,7 @@ export function PortfolioPage(): JSX.Element {
       if (disposed) stop();
       else unlisten = stop;
     }).catch((cause) => {
-      if (!disposed) setError(String(cause));
+      if (!disposed) setError(errorMessage(cause));
     });
     return () => {
       disposed = true;
@@ -145,7 +146,7 @@ export function PortfolioPage(): JSX.Element {
       await refresh();
     } catch (cause) {
       push("error", "The schedule could not be saved.");
-      setError(String(cause));
+      setError(errorMessage(cause));
     } finally {
       finishProjectOperation(project.projectId);
     }
@@ -158,7 +159,7 @@ export function PortfolioPage(): JSX.Element {
       await refresh();
     } catch (cause) {
       push("error", "The schedule could not be removed.");
-      setError(String(cause));
+      setError(errorMessage(cause));
     } finally {
       finishProjectOperation(project.projectId);
     }
@@ -178,7 +179,7 @@ export function PortfolioPage(): JSX.Element {
       }
       await refresh();
     } catch (cause) {
-      push("error", `${project.displayName}: scan failed — ${String(cause)}`);
+      push("error", `${project.displayName}: scan failed — ${errorMessage(cause)}`);
     } finally {
       finishProjectOperation(project.projectId);
     }

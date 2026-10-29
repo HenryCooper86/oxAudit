@@ -26,7 +26,7 @@ import type { BinaryComponent, BinaryScannersStatus, BinaryScanResult, Canonical
 import { RunTimeline } from "../features/runs/RunTimeline";
 import { binaryEvidence, EvidenceSummary } from "../features/runs/EvidenceSummary";
 import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
-import { normalizeCommandError } from "../lib/commandError";
+import { errorMessage, normalizeCommandError } from "../lib/commandError";
 
 
 export function BinaryScanPage(): JSX.Element {
@@ -90,7 +90,7 @@ export function BinaryScanPage(): JSX.Element {
           program: null,
           version: null,
           source: null,
-          message: `Could not check which scanners are installed: ${String(cause)}`,
+          message: `Could not check which scanners are installed: ${errorMessage(cause)}`,
         };
         setToolStatus({
           // The native scanner is built in and cannot be absent, so a scan can

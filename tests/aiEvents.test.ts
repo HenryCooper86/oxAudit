@@ -229,7 +229,7 @@ test("stream command rejection reports once and releases every listener", async 
   harness.streamStart.reject(new Error("native invoke failed"));
   await handle.finished;
 
-  assert.deepEqual(errors, ["Error: native invoke failed"]);
+  assert.deepEqual(errors, ["native invoke failed"]);
   assert.equal(harness.unregistered.length, 4);
   assert.equal(harness.commandCount("cancel_chat"), 0);
 });

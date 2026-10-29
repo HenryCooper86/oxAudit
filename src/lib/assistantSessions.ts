@@ -1,5 +1,6 @@
 import type { LatestRequestQueue, LatestRequestResult, RequestToken } from "./latestRequest";
 import type { StoredMessage } from "./types";
+import { errorMessage } from "./commandError";
 
 export interface RuntimeProjectOutcome {
   runtimePath: string | null;
@@ -74,7 +75,7 @@ class RuntimeProjectCoordinator {
         return {
           runtimePath: null,
           unavailablePath: null,
-          warning: `Runtime project context could not be cleared: ${String(error)}`,
+          warning: `Runtime project context could not be cleared: ${errorMessage(error)}`,
         };
       }
     }
@@ -87,11 +88,11 @@ class RuntimeProjectCoordinator {
         return {
           runtimePath: null,
           unavailablePath: projectPath,
-          warning: `Project is unavailable: ${String(error)}`,
+          warning: `Project is unavailable: ${errorMessage(error)}`,
         };
       }
 
-      let warning = `Project is unavailable: ${String(error)}`;
+      let warning = `Project is unavailable: ${errorMessage(error)}`;
       try {
         await setActiveProject(null);
       } catch (clearError) {

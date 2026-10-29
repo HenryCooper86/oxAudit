@@ -74,7 +74,7 @@ test("an unavailable historic project keeps the transcript outcome and clears on
   assert.deepEqual(outcome, {
     runtimePath: null,
     unavailablePath: "/moved/project",
-    warning: "Project is unavailable: Error: not a directory",
+    warning: "Project is unavailable: not a directory",
   });
 });
 

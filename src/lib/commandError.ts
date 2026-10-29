@@ -22,16 +22,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function safeMessage(value: unknown): string {
+function safeMessage(value: unknown, fallback: string): string {
   if (typeof value === "string" && value.trim()) return value.trim();
   if (value instanceof Error && value.message.trim()) return value.message.trim();
   if (isRecord(value) && typeof value.message === "string" && value.message.trim()) {
     return value.message.trim();
   }
-  return "The scan could not be completed.";
+  return fallback;
 }
 
-export function normalizeCommandError(value: unknown): CommandError {
+export function normalizeCommandError(
+  value: unknown,
+  fallback = "The scan could not be completed.",
+): CommandError {
   if (
     isRecord(value) &&
     typeof value.code === "string" &&
@@ -49,8 +52,20 @@ export function normalizeCommandError(value: unknown): CommandError {
 
   return {
     code: "scanFailed",
-    message: safeMessage(value),
+    message: safeMessage(value, fallback),
     detail: null,
     retryable: true,
   };
+}
+
+/**
+ * Human-readable message for any rejected command or thrown value. Structured
+ * CommandErrors are plain objects, so `String(error)` renders them as
+ * "[object Object]"; this reads their message instead.
+ */
+export function errorMessage(
+  value: unknown,
+  fallback = "The operation could not be completed.",
+): string {
+  return normalizeCommandError(value, fallback).message;
 }

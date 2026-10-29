@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { listen } from "../../lib/events";
 import { invalidateWorkStatusRequests, reconcileBackendWork, refreshScanWork, useScanWorkStore } from "./coordinator";
+import { errorMessage } from "../../lib/commandError";
 
 /** App-level subscriptions keep backend ownership alive across page navigation. */
 export function useScanWorkRecovery(enabled = true): void {
@@ -30,7 +31,7 @@ export function useScanWorkRecovery(enabled = true): void {
         if (disposed) stop();
         else stops.push(stop);
       } catch (error) {
-        subscriptionError = `Scan work updates unavailable: ${String(error)}`;
+        subscriptionError = `Scan work updates unavailable: ${errorMessage(error)}`;
         if (!disposed) useScanWorkStore.setState({ recoveryError: subscriptionError });
       }
     };

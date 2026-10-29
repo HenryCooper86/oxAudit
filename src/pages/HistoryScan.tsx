@@ -19,7 +19,7 @@ import { EvidenceSummary, historyEvidence } from "../features/runs/EvidenceSumma
 import { useCanonicalPage } from "../lib/serverPagination";
 import { ServerPageState } from "../components/workbench/ServerPageState";
 import { usePagination } from "../lib/pagination";
-import { normalizeCommandError } from "../lib/commandError";
+import { errorMessage, normalizeCommandError } from "../lib/commandError";
 
 const SEVERITIES: Array<Severity | "all"> = ["all", "critical", "high", "medium", "low", "info"];
 
@@ -93,7 +93,7 @@ export function HistoryScanPage(): JSX.Element {
         setPageStatus("history-scan", { label: `Saved history results · ${saved.sections.findings ?? 0} findings · ${saved.data.state ?? "state unknown"}`, tone: saved.data.state === "completed" ? "success" : "neutral" });
       }
     }).catch(cause => {
-      if (mounted.current && generation === receiptRequest.current) setError(`Saved history evidence could not be loaded: ${String(cause)}`);
+      if (mounted.current && generation === receiptRequest.current) setError(`Saved history evidence could not be loaded: ${errorMessage(cause)}`);
     });
     return () => { receiptRequest.current += 1; };
   }, [activeWork?.owner, activeWork?.path, path, recoveryRevision, running, setPageStatus]);

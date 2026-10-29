@@ -13,6 +13,7 @@ import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { CveDetail, CveItem, CveSearchResult } from "../lib/types";
 import { Button, Select } from "../components/ui";
+import { errorMessage } from "../lib/commandError";
 
 const PER_PAGE = 20;
 const ECOSYSTEMS = [
@@ -98,7 +99,7 @@ export function CveResearchPage(): JSX.Element {
         });
       } catch (error) {
         if (generation !== searchGenerationRef.current) return;
-        setSearchError(String(error));
+        setSearchError(errorMessage(error));
         setFailedSearch(parameters);
         setPageStatus("cve-research", {
           label: "Research unavailable",
@@ -133,7 +134,7 @@ export function CveResearchPage(): JSX.Element {
       const response = await api.cveDetail(id);
       if (requestId === detailRequestRef.current) setDetail(response);
     } catch (error) {
-      if (requestId === detailRequestRef.current) setDetailError(String(error));
+      if (requestId === detailRequestRef.current) setDetailError(errorMessage(error));
     } finally {
       if (requestId === detailRequestRef.current) setDetailLoading(false);
     }
@@ -163,7 +164,7 @@ export function CveResearchPage(): JSX.Element {
         setPkgResult({ ...parameters, advisories });
       }
     } catch (error) {
-      if (requestId === packageRequestRef.current) setPkgError(String(error));
+      if (requestId === packageRequestRef.current) setPkgError(errorMessage(error));
     } finally {
       if (requestId === packageRequestRef.current) setPkgLoading(false);
     }

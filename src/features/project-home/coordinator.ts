@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { normalizeCommandError } from "../../lib/commandError";
+import { errorMessage, normalizeCommandError } from "../../lib/commandError";
 import { api } from "../../lib/api";
 import {
   buildSourceScanRequest,
@@ -13,6 +13,7 @@ import type {
   ScanWorkSnapshot,
   ScanWorkStatus,
 } from "../../lib/types";
+import { newId } from "../../lib/ids";
 export { useScanWorkRecovery } from "./scanWorkRecovery";
 
 type Owner = "project" | ScanWorkKind;
@@ -127,7 +128,7 @@ export async function refreshScanWork(forceRevision = false): Promise<void> {
     const snapshot = await api.scanWorkStatus();
     if (request === statusRequestSequence && epoch === useScanWorkStore.getState().backendEpoch) reconcileBackendWork(snapshot, forceRevision);
   } catch (error) {
-    if (request === statusRequestSequence && epoch === useScanWorkStore.getState().backendEpoch) useScanWorkStore.setState({ recoveryError: String(error) });
+    if (request === statusRequestSequence && epoch === useScanWorkStore.getState().backendEpoch) useScanWorkStore.setState({ recoveryError: errorMessage(error) });
   }
 }
 function withSavedSourceReceipt(
@@ -175,7 +176,7 @@ export function acquireScan(
 ): number | null {
   if (useScanWorkStore.getState().active) return null;
   const id = ++sequence;
-  const operationId = crypto.randomUUID();
+  const operationId = newId();
   useScanWorkStore.setState({
     active: {
       id,
@@ -220,7 +221,7 @@ export async function cancelActiveScan() {
           ? {
               check: {
                 ...useScanWorkStore.getState().check!,
-                error: `Cancellation failed: ${String(error)}`,
+                error: `Cancellation failed: ${errorMessage(error)}`,
               },
             }
           : {}),
@@ -277,7 +278,7 @@ export async function startProjectCheck(
   ) => {
     assertCurrent();
     const active = useScanWorkStore.getState().active!;
-    const operationId = startsNative ? crypto.randomUUID() : active.operationId;
+    const operationId = startsNative ? newId() : active.operationId;
     useScanWorkStore.setState({
       active: { ...active, operationId, path: result.path, stage: label,
         backendObserved: startsNative ? false : active.backendObserved,
@@ -349,12 +350,14 @@ export async function startProjectCheck(
         ? "completed"
         : "incomplete";
   } catch (error) {
+    const commandError = normalizeCommandError(error);
     const cancelled =
       useScanWorkStore.getState().active?.cancelling ||
-      String(error).includes("Project check cancelled");
+      commandError.code === "scanCancelled" ||
+      commandError.message.includes("Project check cancelled");
     const interrupted = useScanWorkStore.getState().active?.id !== id;
     result.status = interrupted ? "incomplete" : cancelled ? "cancelled" : "failed";
-    result.error = normalizeCommandError(error).message;
+    result.error = commandError.message;
     if (result.source === "running")
       result.source = receivedSourceResult && result.sourceResult?.status === "completed" ? (result.sourceResult.persistence.status === "saved" ? "completed" : "completed, not saved") : interrupted ? "interrupted" : cancelled ? "cancelled" : "failed";
     if (result.dependencies === "running")

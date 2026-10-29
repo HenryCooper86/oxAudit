@@ -7,6 +7,7 @@ import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
 import { useToastStore } from "../lib/stores";
 import type { DataSourceStatus } from "../lib/types";
+import { errorMessage } from "../lib/commandError";
 
 export function DataSourcesPage(): JSX.Element {
   const push = useToastStore(state => state.push);
@@ -23,7 +24,7 @@ export function DataSourcesPage(): JSX.Element {
       const loaded = await api.listDataSources();
       if (generation === request.current) setSources(loaded);
     } catch (cause) {
-      if (generation === request.current) setError(String(cause));
+      if (generation === request.current) setError(errorMessage(cause));
     }
   }, []);
   useEffect(() => {
@@ -44,7 +45,7 @@ export function DataSourcesPage(): JSX.Element {
         (current ?? []).map((source) => (source.id === providerId ? next : source)),
       );
     } catch (cause) {
-      if (generation === request.current) setError(String(cause));
+      if (generation === request.current) setError(errorMessage(cause));
     } finally {
       refreshPending.current = false;
       if (generation === request.current) setRefreshing(null);

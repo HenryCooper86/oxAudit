@@ -8,6 +8,7 @@ import { api } from "../lib/api";
 import { serverMode } from "../lib/transport";
 import { useToastStore } from "../lib/stores";
 import type { ComplianceAssessment, ComplianceReportFormat, ComplianceReportMetadata, ComplianceReportPreview } from "../lib/types";
+import { errorMessage } from "../lib/commandError";
 
 const REPORT_FORMATS: Array<{ id: ComplianceReportFormat; label: string; description: string; icon: typeof FileText }> = [
   { id: "pdf", label: "Professional PDF", description: "Paginated executive report with headers, footers, page numbers, control details, and source boundary.", icon: FileText },
@@ -56,7 +57,7 @@ export function ReportStudioPage(): JSX.Element {
         setAssessmentId(first.id);
         setMetadata(defaultMetadata(first));
       }
-    }).catch((cause) => { if (!disposed) setError(String(cause)); });
+    }).catch((cause) => { if (!disposed) setError(errorMessage(cause)); });
     return () => { disposed = true; mounted.current = false; revision.current += 1; };
   }, []);
 
@@ -93,7 +94,7 @@ export function ReportStudioPage(): JSX.Element {
       const result = await api.previewComplianceReport({ assessmentId, format, metadata });
       if (requestedRevision === revision.current) setPreview(result);
     } catch (cause) {
-      if (requestedRevision === revision.current) setError(String(cause));
+      if (requestedRevision === revision.current) setError(errorMessage(cause));
     } finally {
       busy.current = false;
       if (mounted.current) setWorking(false);
@@ -125,7 +126,7 @@ export function ReportStudioPage(): JSX.Element {
       }
     } catch (cause) {
       if (requestedRevision === revision.current) {
-        setError(String(cause));
+        setError(errorMessage(cause));
         push("error", "The report could not be saved");
       }
     } finally {

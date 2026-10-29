@@ -9,6 +9,7 @@ import { api } from "../lib/api";
 import { useToastStore } from "../lib/stores";
 import { serverMode } from "../lib/transport";
 import type { InstalledRulePack, RuleLibraryPackStatus, RulePackValidationPreview } from "../lib/types";
+import { errorMessage } from "../lib/commandError";
 
 export function RuleLibraryPage(): JSX.Element {
   const push = useToastStore((state) => state.push);
@@ -32,7 +33,7 @@ export function RuleLibraryPage(): JSX.Element {
         if (!disposed) setPacks(result);
       })
       .catch((cause) => {
-        if (!disposed) setError(String(cause));
+        if (!disposed) setError(errorMessage(cause));
       });
     return () => {
       disposed = true;
@@ -44,7 +45,7 @@ export function RuleLibraryPage(): JSX.Element {
       setInstalled(await api.listInstalledRulePacks());
       setInstalledError(null);
     } catch (cause) {
-      setInstalledError(String(cause));
+      setInstalledError(errorMessage(cause));
     }
   };
 
@@ -61,7 +62,7 @@ export function RuleLibraryPage(): JSX.Element {
       await refreshInstalled();
     } catch (cause) {
       push("error", "The pack could not be installed.");
-      setInstalledError(String(cause));
+      setInstalledError(errorMessage(cause));
     } finally {
       setInstalling(false);
     }
@@ -73,7 +74,7 @@ export function RuleLibraryPage(): JSX.Element {
       await refreshInstalled();
     } catch (cause) {
       push("error", "The pack state could not be changed.");
-      setInstalledError(String(cause));
+      setInstalledError(errorMessage(cause));
     }
   };
 
@@ -84,7 +85,7 @@ export function RuleLibraryPage(): JSX.Element {
       await refreshInstalled();
     } catch (cause) {
       push("error", "The pack could not be removed.");
-      setInstalledError(String(cause));
+      setInstalledError(errorMessage(cause));
     }
   };
 
@@ -122,7 +123,7 @@ export function RuleLibraryPage(): JSX.Element {
       setExternalPreview(await api.validateRulePack(selected));
       setExternalPath(selected);
     } catch (cause) {
-      setExternalError(String(cause));
+      setExternalError(errorMessage(cause));
     } finally {
       setValidating(false);
     }

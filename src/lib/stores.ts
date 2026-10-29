@@ -3,6 +3,7 @@ import { parseSelectedProject } from "../features/project-home/history";
 import type { AiReadiness } from "./settingsRequests";
 import type { AppSettings, DependencyScanResult } from "./types";
 import type { AssistantHandoff, Page, WorkbenchStatus } from "./workbench";
+import { newId } from "./ids";
 
 interface AppStore {
   page: Page;
@@ -112,17 +113,67 @@ interface ToastStore {
   toasts: Toast[];
   push: (kind: Toast["kind"], message: string) => void;
   dismiss: (id: string) => void;
+  /** Stop a toast's auto-dismiss countdown (hover or focus). */
+  pause: (id: string) => void;
+  /** Continue a paused countdown with the time it had left. */
+  resume: (id: string) => void;
 }
 
-export const useToastStore = create<ToastStore>((set) => ({
-  toasts: [],
-  push: (kind, message) => {
-    const id = crypto.randomUUID();
-    set((s) => ({ toasts: [...s.toasts, { id, kind, message }] }));
-    setTimeout(() => {
+/** Most toasts shown at once; older ones are dropped first. */
+export const MAX_TOASTS = 5;
+/** Auto-dismiss delay for info and success toasts. Errors stay until dismissed. */
+export const TOAST_DURATION_MS = 5000;
+
+interface ToastTimer {
+  handle: ReturnType<typeof setTimeout> | null;
+  remaining: number;
+  startedAt: number;
+}
+
+const toastTimers = new Map<string, ToastTimer>();
+
+function clearToastTimer(id: string) {
+  const timer = toastTimers.get(id);
+  if (timer?.handle) clearTimeout(timer.handle);
+  toastTimers.delete(id);
+}
+
+export const useToastStore = create<ToastStore>((set, get) => {
+  const startTimer = (id: string, remaining: number) => {
+    toastTimers.set(id, {
+      remaining,
+      startedAt: Date.now(),
+      handle: setTimeout(() => get().dismiss(id), remaining),
+    });
+  };
+  return {
+    toasts: [],
+    push: (kind, message) => {
+      const id = newId();
+      const next = [...get().toasts, { id, kind, message }];
+      const dropped = next.slice(0, Math.max(0, next.length - MAX_TOASTS));
+      for (const toast of dropped) clearToastTimer(toast.id);
+      set({ toasts: next.slice(-MAX_TOASTS) });
+      if (kind !== "error") startTimer(id, TOAST_DURATION_MS);
+    },
+    dismiss: (id) => {
+      clearToastTimer(id);
       set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
-    }, 5000);
-  },
-  dismiss: (id) =>
-    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
-}));
+    },
+    pause: (id) => {
+      const timer = toastTimers.get(id);
+      if (!timer?.handle) return;
+      clearTimeout(timer.handle);
+      toastTimers.set(id, {
+        handle: null,
+        startedAt: timer.startedAt,
+        remaining: Math.max(0, timer.remaining - (Date.now() - timer.startedAt)),
+      });
+    },
+    resume: (id) => {
+      const timer = toastTimers.get(id);
+      if (!timer || timer.handle) return;
+      startTimer(id, Math.max(1000, timer.remaining));
+    },
+  };
+});

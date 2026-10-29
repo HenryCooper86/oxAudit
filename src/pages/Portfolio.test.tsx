@@ -255,3 +255,18 @@ test("a late schedule subscription is released after the portfolio unmounts", as
   await act(async () => resolve(stop));
   expect(stop).toHaveBeenCalledOnce();
 });
+
+test("structured command errors are shown by message, never as [object Object]", async () => {
+  const commandError = (message: string) => ({ code: "persistenceUnavailable", message, detail: null, retryable: true });
+  listSourceProjects.mockReset().mockRejectedValueOnce(commandError("Project index is locked")).mockResolvedValue([project()]);
+  listScanSchedules.mockResolvedValue([]);
+  runScanNow.mockReset().mockRejectedValue(commandError("Scanner is busy"));
+  toast.mockClear();
+  render(<PortfolioPage />);
+  await screen.findByText(/Project index is locked/);
+  expect(screen.queryByText(/object Object/)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Retry loading portfolio" }));
+  await screen.findByText("service-a");
+  await userEvent.click(screen.getByRole("button", { name: /scan now/i }));
+  await waitFor(() => expect(toast).toHaveBeenCalledWith("error", "service-a: scan failed — Scanner is busy"));
+});
