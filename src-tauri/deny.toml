@@ -65,6 +65,25 @@ ignore = [
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser via printpdf; builtin fonts only, no untrusted font input" },
   { id = "RUSTSEC-2026-0206", reason = "rustybuzz via printpdf; builtin fonts only, no untrusted font input" },
 
+  # zbus's D-Bus helpers reach the tree only through tauri-plugin-opener on
+  # Linux (opening files and URLs with the desktop). Even opener 2.7.2 still
+  # requires zbus ^5.9. Maintenance-status notices, no known defect;
+  # removable only upstream.
+  { id = "RUSTSEC-2026-0370", reason = "zvariant via zbus <- tauri-plugin-opener (Linux only)" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names via zbus <- tauri-plugin-opener (Linux only)" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via zbus <- tauri-plugin-opener (Linux only)" },
+
+  # zstd 0.13 / zstd-safe 7 remain only because backhand (squashfs reading,
+  # latest 0.25.5) requires them. oxAudit's own zstd use is on the patched
+  # 0.14.3 / 8.2.0 line (zstd >= 0.14.3 in oxaudit-archive). backhand calls
+  # only zstd::bulk::Decompressor/Compressor (one-shot DCtx::decompress) and
+  # zstd_safe::compress_bound, never the affected functions: raw
+  # Encoder/Decoder::with_context (0391), Seekable::decompress (0398) or
+  # DCtx::decompress_stream (0403). Clears when backhand moves to zstd 0.14.
+  { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 via backhand; affected with_context paths unused" },
+  { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 via backhand; seekable API unused" },
+  { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 via backhand; decompress_stream unused (bulk API only)" },
+
   # Build-time proc-macro helper, not present in any shipped artifact.
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is build-time only and never linked into a release binary" },
 ]
