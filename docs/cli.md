@@ -339,7 +339,7 @@ another stored scan) first, then assess with the same `--db`.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--db <FILE>` | required | Findings database. Completed runs of this project stored in it count as evidence, and the assessments are saved to it |
-| `--profile <ID>` | required | Profile to assess against, as listed by `compliance profiles`. Repeatable, up to eight |
+| `--profile <ID>` | required | Profile to assess against, as listed by `compliance profiles`. Repeatable; each profile at most once |
 | `--organization <TEXT>` | required | Organization or program the assessment is for |
 | `--assessor <NAME>` | required | Responsible reviewer |
 | `--title <TEXT>` | `Compliance evidence readiness assessment` | Assessment title |

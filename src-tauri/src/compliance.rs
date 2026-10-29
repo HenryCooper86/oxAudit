@@ -468,9 +468,16 @@ pub(crate) fn prepare_run_request(
     })
 }
 
+/// An input bound only: duplicates and unknown ids are refused, so the
+/// built-in catalogue is the real limit, and every profile can be assessed in
+/// one run (the Compliance Center's default selection).
+const MAX_PROFILES_PER_RUN: usize = 32;
+
 fn validate_run_request(request: &RunComplianceRequest) -> Result<(), String> {
-    if request.profile_ids.is_empty() || request.profile_ids.len() > 8 {
-        return Err("select between one and eight compliance profiles".into());
+    if request.profile_ids.is_empty() || request.profile_ids.len() > MAX_PROFILES_PER_RUN {
+        return Err(format!(
+            "select between one and {MAX_PROFILES_PER_RUN} compliance profiles"
+        ));
     }
     let unique = request.profile_ids.iter().collect::<BTreeSet<_>>();
     if unique.len() != request.profile_ids.len() {
@@ -573,11 +580,27 @@ fn collect_evidence(
     }
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
-    let completed_runs = repository
+    let mut completed_runs = Vec::new();
+    for run in repository
         .canonical_list_runs(None, 100)
         .map_err(|error| error.to_string())?
+    {
+        if run.state != RunState::Completed {
+            continue;
+        }
+        // Source scans carry the project's display name as their label; the
+        // project record holds the path they scanned.
+        let belongs = run_matches_root(&run.target_label, root)
+            || repository
+                .scan_run_project_path(run.id.as_str())
+                .map_err(|error| error.to_string())?
+                .is_some_and(|path| run_matches_root(&path, root));
+        if belongs {
+            completed_runs.push(run);
+        }
+    }
+    let completed_runs = completed_runs
         .into_iter()
-        .filter(|run| run.state == RunState::Completed && run_matches_root(&run.target_label, root))
         .map(|run| RunEvidence {
             run_id: run.id.as_str().into(),
             kind: run.kind,
@@ -731,6 +754,26 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_built_in_profile_can_be_assessed_in_one_run() {
+        // The Compliance Center selects every profile by default.
+        let profile_ids: Vec<String> = list_compliance_profiles()
+            .unwrap()
+            .into_iter()
+            .map(|profile| profile.id)
+            .collect();
+        assert!(profile_ids.len() > 1);
+        let request = RunComplianceRequest {
+            target_path: "/project".into(),
+            profile_ids,
+            title: "t".into(),
+            organization: "o".into(),
+            assessor: "a".into(),
+            scope: "s".into(),
+        };
+        validate_run_request(&request).unwrap();
+    }
 
     #[test]
     fn slug_is_safe_and_bounded() {

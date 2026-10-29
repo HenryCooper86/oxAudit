@@ -84,7 +84,7 @@ pub(super) struct AssessArgs {
     db: PathBuf,
 
     /// Profile to assess against, as listed by `compliance profiles`.
-    /// Repeatable, up to eight.
+    /// Repeatable; each profile at most once.
     #[arg(long = "profile", value_name = "ID", required = true)]
     profiles: Vec<String>,
 

@@ -2591,6 +2591,81 @@ fn compliance_profiles_list_every_framework_with_the_claim_boundary() {
 }
 
 #[test]
+fn compliance_assessment_counts_stored_source_scans_as_evidence() {
+    // Source runs are labelled with the project's display name, not its
+    // path; the assessment must still recognise them as this project's.
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("app.py"), "print('hello')\n").unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let db = storage.path().join("private/findings.sqlite");
+    let db = db.to_string_lossy();
+    let scan = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--db",
+        &db,
+        "--quiet",
+    ]);
+    assert_eq!(code(&scan), 0, "{}", stderr(&scan));
+    let listed = run(&[
+        "runs", "--db", &db, "--kind", "source", "--limit", "1", "--json",
+    ]);
+    assert_eq!(code(&listed), 0, "{}", stderr(&listed));
+    let runs: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let source_run = runs[0]["id"]
+        .as_str()
+        .expect("stored source run")
+        .to_owned();
+
+    let assessed = run(&[
+        "compliance",
+        "assess",
+        &project.path().to_string_lossy(),
+        "--db",
+        &db,
+        "--profile",
+        "owasp-top-10-2021",
+        "--organization",
+        "Example Corp",
+        "--assessor",
+        "Dana Reviewer",
+        "--json",
+    ]);
+    assert_eq!(code(&assessed), 0, "{}", stderr(&assessed));
+    let assessments: Vec<serde_json::Value> = serde_json::from_slice(&assessed.stdout).unwrap();
+    let cites_source_run = assessments[0]["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|control| control["evidence"].as_array().unwrap())
+        .any(|item| item["kind"] == "run" && item["locator"] == source_run.as_str());
+    assert!(
+        cites_source_run,
+        "the stored source scan must count as evidence: {}",
+        assessments[0]
+    );
+
+    // A scan of another directory is not this project's evidence.
+    let other = tempfile::tempdir().unwrap();
+    let assessed_other = run(&[
+        "compliance",
+        "assess",
+        &other.path().to_string_lossy(),
+        "--db",
+        &db,
+        "--profile",
+        "owasp-top-10-2021",
+        "--organization",
+        "Example Corp",
+        "--assessor",
+        "Dana Reviewer",
+        "--json",
+    ]);
+    assert_eq!(code(&assessed_other), 0, "{}", stderr(&assessed_other));
+    assert!(!String::from_utf8_lossy(&assessed_other.stdout).contains(&source_run));
+}
+
+#[test]
 fn compliance_assessment_counts_cli_runs_and_project_files_as_evidence() {
     let fixture = assessed_project();
     let db = fixture.db();

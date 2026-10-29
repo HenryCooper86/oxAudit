@@ -1737,6 +1737,27 @@ impl FindingsRepository {
         from_json(&json)
     }
 
+    /// The canonical path of the project a source scan run belongs to, or
+    /// `None` for runs that are not project source scans. Source runs are
+    /// labelled with the project's display name, so this is how callers
+    /// relate them to a directory.
+    pub(crate) fn scan_run_project_path(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<String>, CommandError> {
+        let connection = self.connection.lock().map_err(persistence_error)?;
+        connection
+            .query_row(
+                "SELECT projects.canonical_path FROM scan_runs
+                 JOIN projects ON projects.id = scan_runs.project_id
+                 WHERE scan_runs.id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(persistence_error)
+    }
+
     pub(crate) fn run_coverage(
         &self,
         run_id: &str,
