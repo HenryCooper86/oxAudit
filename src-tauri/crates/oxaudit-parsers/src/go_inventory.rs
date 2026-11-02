@@ -159,7 +159,63 @@ fn tokens(line: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// A Go version in OSV's form for the `stdlib` and `toolchain` packages:
+/// `go1.21.3` → `1.21.3`, `1.21` → `1.21.0`, `go1.22rc1` → `1.22.0-rc.1`.
+/// A custom toolchain suffix (`go1.21.0-custom+auto`) is dropped. Anything
+/// that does not name a release (`default`, `go1`, `(devel)`) is `None`:
+/// OSV treats an unparseable version as matching every advisory, so a guess
+/// would report the whole standard-library history.
+pub fn osv_go_version(raw: &str) -> Option<String> {
+    // `go1.25.3 X:boringcrypto`: GOEXPERIMENT builds append a space form.
+    let raw = raw.split_whitespace().next()?;
+    let version = raw.strip_prefix("go").unwrap_or(raw);
+    let version = version.split(['-', '+']).next()?;
+    let numeric = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    let mut parts = version.splitn(3, '.');
+    let major = parts.next()?;
+    let minor_and_pre = parts.next()?;
+    let patch = parts.next();
+    if !numeric(major) {
+        return None;
+    }
+    // A pre-release names only major.minor: `1.22rc1`, never `1.22.0rc1`.
+    let split = minor_and_pre
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(minor_and_pre.len());
+    let (minor, pre) = minor_and_pre.split_at(split);
+    if !numeric(minor) {
+        return None;
+    }
+    match (patch, pre) {
+        (Some(patch), "") if numeric(patch) => Some(format!("{major}.{minor}.{patch}")),
+        (Some(_), _) => None,
+        (None, "") => Some(format!("{major}.{minor}.0")),
+        (None, pre) => {
+            let (label, number) = pre.split_at(pre.find(|c: char| c.is_ascii_digit())?);
+            (matches!(label, "rc" | "beta") && numeric(number))
+                .then(|| format!("{major}.{minor}.0-{label}.{number}"))
+        }
+    }
+}
+
 pub fn parse(content: &str, lockfile: &str) -> Result<Vec<Dependency>, String> {
+    parse_inventory(content, lockfile).map(|(dependencies, _)| dependencies)
+}
+
+/// The note for a go.mod whose only Go version is the `go` line.
+const GO_LINE_ONLY_NOTE: &str = "Go standard-library advisories need a toolchain directive in go.mod, or a scan of the built binary";
+
+/// The warning on the synthetic `stdlib` and `toolchain` packages.
+const TOOLCHAIN_WARNING: &str = "Go standard-library version comes from the go.mod toolchain directive; the Go that actually builds this module can be newer";
+
+/// [`parse`], plus inventory notes. A `toolchain goX.Y.Z` directive adds the
+/// `stdlib` and `toolchain` packages at that version. The `go` line alone
+/// adds nothing: it is a minimum language version, real builds almost always
+/// use a newer Go, and matching it would report long-fixed advisories.
+pub fn parse_inventory(
+    content: &str,
+    lockfile: &str,
+) -> Result<(Vec<Dependency>, Vec<String>), String> {
     static GO_VERSION: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
         regex::Regex::new(r"^([1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?([a-z]+[0-9]+)?$")
             .unwrap()
@@ -172,6 +228,7 @@ pub fn parse(content: &str, lockfile: &str) -> Result<Vec<Dependency>, String> {
     let mut saw_module = false;
     let mut saw_go = false;
     let mut saw_toolchain = false;
+    let mut toolchain: Option<String> = None;
     for (index, line) in content.lines().enumerate() {
         let tokens = tokens(line).map_err(|e| format!("invalid go.mod line {}: {e}", index + 1))?;
         if tokens.is_empty() {
@@ -264,6 +321,7 @@ pub fn parse(content: &str, lockfile: &str) -> Result<Vec<Dependency>, String> {
                     return Err(invalid());
                 }
                 saw_toolchain = true;
+                toolchain = osv_go_version(&args[0]);
             }
             "tool" | "ignore" => {
                 if args.len() != 1 || !module(&args[0]) {
@@ -342,7 +400,29 @@ pub fn parse(content: &str, lockfile: &str) -> Result<Vec<Dependency>, String> {
             license: None,
         });
     }
-    Ok(out)
+    let mut notes = Vec::new();
+    match toolchain {
+        Some(version) => {
+            notes.push(format!("{lockfile}: {TOOLCHAIN_WARNING}"));
+            for name in ["stdlib", "toolchain"] {
+                out.push(Dependency {
+                    name: name.into(),
+                    version: version.clone(),
+                    ecosystem: "Go".into(),
+                    occurrence: DependencyOccurrence {
+                        status: "unavailable".into(),
+                        warnings: vec![TOOLCHAIN_WARNING.into()],
+                        ..Default::default()
+                    },
+                    lockfile: lockfile.into(),
+                    license: None,
+                });
+            }
+        }
+        None if saw_go => notes.push(GO_LINE_ONLY_NOTE.to_string()),
+        None => {}
+    }
+    Ok((out, notes))
 }
 
 pub fn validate_sums(content: &str) -> Result<(), String> {
@@ -361,4 +441,93 @@ pub fn validate_sums(content: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod stdlib_tests {
+    use super::*;
+
+    #[test]
+    fn go_versions_normalize_to_osv_form() {
+        let cases = [
+            ("1.21", Some("1.21.0")),
+            ("1.21.3", Some("1.21.3")),
+            ("go1.21.3", Some("1.21.3")),
+            ("1.22rc1", Some("1.22.0-rc.1")),
+            ("go1.22beta2", Some("1.22.0-beta.2")),
+            ("go1.21.0-custom+auto", Some("1.21.0")),
+            ("go1.20", Some("1.20.0")),
+            // GOEXPERIMENT builds (boringcrypto, FIPS) append a space form.
+            ("go1.25.3 X:boringcrypto", Some("1.25.3")),
+            ("go1.26.5-custom X:fieldtrack", Some("1.26.5")),
+            ("default", None),
+            ("go1", None),
+            ("(devel)", None),
+            ("devel go1.23-abc", None),
+            ("1", None),
+            ("x.y", None),
+            ("1.21.0rc1", None),
+            ("", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(osv_go_version(raw).as_deref(), expected, "{raw:?}");
+        }
+    }
+
+    fn stdlib_rows(content: &str) -> (Vec<(String, String)>, Vec<String>) {
+        let (dependencies, notes) = parse_inventory(content, "go.mod").expect("go.mod");
+        let rows = dependencies
+            .into_iter()
+            .filter(|d| d.name == "stdlib" || d.name == "toolchain")
+            .inspect(|d| {
+                assert_eq!(d.ecosystem, "Go");
+                assert!(d
+                    .occurrence
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains("toolchain directive")));
+            })
+            .map(|d| (d.name, d.version))
+            .collect();
+        (rows, notes)
+    }
+
+    #[test]
+    fn a_toolchain_directive_yields_stdlib_and_toolchain_packages() {
+        let (rows, _) = stdlib_rows(
+            "module example.com/app\n\ngo 1.22\n\ntoolchain go1.22.4\n\nrequire golang.org/x/net v0.17.0\n",
+        );
+        assert_eq!(
+            rows,
+            [
+                ("stdlib".to_string(), "1.22.4".to_string()),
+                ("toolchain".to_string(), "1.22.4".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_toolchain_caveat_is_an_inventory_note() {
+        let (_, notes) = stdlib_rows("module example.com/app\n\ngo 1.22\n\ntoolchain go1.22.4\n");
+        assert!(
+            notes.iter().any(|note| note.contains("can be newer")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn the_go_directive_alone_yields_no_stdlib_package() {
+        let (rows, notes) = stdlib_rows("module example.com/app\n\ngo 1.22\n");
+        assert!(rows.is_empty());
+        assert_eq!(
+            notes,
+            ["Go standard-library advisories need a toolchain directive in go.mod, or a scan of the built binary"]
+        );
+    }
+
+    #[test]
+    fn toolchain_default_yields_nothing() {
+        let (rows, _) = stdlib_rows("module example.com/app\n\ngo 1.22\ntoolchain default\n");
+        assert!(rows.is_empty());
+    }
 }

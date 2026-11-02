@@ -173,6 +173,16 @@ impl UsageIndex {
 
     /// The direct-usage answer for one package.
     pub fn lookup(&self, ecosystem: &str, package_name: &str) -> DirectUsage {
+        // Go's standard library is imported by package path (`net/http`),
+        // and the toolchain is not imported at all: neither maps to a
+        // module, so "not referenced" would be a false statement.
+        if ecosystem == "Go" && matches!(package_name, "stdlib" | "toolchain") {
+            return DirectUsage {
+                referenced: None,
+                referenced_files: 0,
+                example_file: None,
+            };
+        }
         match canonical_candidates(ecosystem, package_name).and_then(|candidates| {
             candidates
                 .iter()
@@ -550,6 +560,16 @@ mod tests {
             usage(&idx, "Go", "github.com/spf13/viper").referenced,
             Some(false)
         );
+    }
+
+    #[test]
+    fn go_stdlib_and_toolchain_are_unmappable_not_unused() {
+        // The standard library is imported by package path (net/http), never
+        // as a module called "stdlib"; a confident "not referenced" would
+        // rank every standard-library advisory below the rest.
+        let idx = index(&[("main.go", "package main\nimport \"net/http\"\n")]);
+        assert_eq!(usage(&idx, "Go", "stdlib").referenced, None);
+        assert_eq!(usage(&idx, "Go", "toolchain").referenced, None);
     }
 
     #[test]

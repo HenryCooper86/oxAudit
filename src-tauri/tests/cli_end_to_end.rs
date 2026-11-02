@@ -3879,3 +3879,57 @@ fn an_invalid_config_stops_a_staged_scan_before_it_writes_anything() {
         "no report is written when the config is invalid"
     );
 }
+
+fn go_stdlib_dump_zip() -> Vec<u8> {
+    let advisory = serde_json::json!({
+        "id": "GO-2099-0001",
+        "aliases": ["CVE-2099-4444"],
+        "summary": "go stdlib e2e fixture advisory",
+        // Like real Go vulnerability records: no severity at all.
+        "affected": [{
+            "package": { "ecosystem": "Go", "name": "stdlib" },
+            "ranges": [{ "type": "SEMVER",
+                "events": [{"introduced": "0"}, {"fixed": "1.22.5"}] }]
+        }]
+    })
+    .to_string();
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "GO-2099-0001.json".to_string(),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("zip member");
+    std::io::Write::write_all(&mut writer, advisory.as_bytes()).expect("zip body");
+    writer.finish().expect("zip").into_inner()
+}
+
+#[test]
+fn image_scans_answer_go_stdlib_offline() {
+    let document = offline_image_scan(go_stdlib_dump_zip(), "Go", &|dir| {
+        let binary = oxaudit_parsers::go_buildinfo::encode_for_tests(
+            "go1.22.4",
+            "path\texample.com/app\nmod\texample.com/app\t(devel)\t\ndep\tgolang.org/x/net\tv0.17.0\th1:a=\n",
+        );
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(binary.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "usr/local/bin/app", binary.as_slice())
+            .expect("image member");
+        let path = dir.join("go-app.tar");
+        std::fs::write(&path, builder.into_inner().expect("image tar")).expect("write image");
+        path
+    });
+    let stdlib = component(&document, "stdlib");
+    let vulnerabilities = stdlib["vulnerabilities"].as_array().unwrap();
+    assert_eq!(vulnerabilities.len(), 1, "{stdlib}");
+    assert_eq!(vulnerabilities[0]["cveId"], "CVE-2099-4444");
+    assert_eq!(vulnerabilities[0]["fixedIn"], "1.22.5");
+    // Go's records carry no severity, so the finding is reported as
+    // unknown and does not trip a severity gate (as with other unrated
+    // distribution records); the docs say so.
+    assert_eq!(vulnerabilities[0]["severity"], "unknown");
+}

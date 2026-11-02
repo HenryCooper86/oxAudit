@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use oxaudit_parsers::{bdb_hash, os_packages, package_note, rpm_header, rulepack_index};
+use oxaudit_parsers::{bdb_hash, go_buildinfo, go_inventory, os_packages, package_note, rpm_header, rulepack_index};
 
 // The small parsers of image and download content, each cheap enough to run
 // on every input: the ELF package note, the os-release and package databases
@@ -21,6 +21,9 @@ fuzz_target!(|data: &[u8]| {
         for value in values {
             let _ = rpm_header::parse_header_blob(&value);
         }
+    }
+    if let Ok(Some(info)) = go_buildinfo::read(data) {
+        let _ = go_inventory::osv_go_version(&info.go_version);
     }
     let _ = rulepack_index::parse_index(data);
 });

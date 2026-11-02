@@ -18,6 +18,18 @@ lists what each release ships.
 
 ### Added
 
+- Go standard-library and toolchain advisories. Compiled Go binaries (ELF,
+  Mach-O, PE) in images and directories report the exact Go version they
+  were built with as OSV's `stdlib` package, plus every linked module, read
+  from the binary's build information (pre-1.18 binaries are named in a
+  note). A `go.mod` with a `toolchain` directive adds `stdlib` and
+  `toolchain` at that version; the `go` line alone adds a note instead,
+  since it is only a minimum. Go version spellings (`go1.22rc1`, `1.21`) are
+  normalized to OSV's form, which otherwise matches every advisory, including
+  GOEXPERIMENT builds (`go1.25.3 X:boringcrypto`). A program's own module is
+  reported when its build recorded a release. OSV's Go records carry no
+  severity, so standard-library findings are `unknown` and do not trip
+  `--fail-on`.
 - Dependency scans read `npm-shrinkwrap.json`, `gems.locked`, `pdm.lock`,
   `deno.lock` (npm packages; JSR and remote modules are counted in a note)
   and .NET project files (`*.csproj`, `*.fsproj`, `*.vbproj`) with what

@@ -8,6 +8,7 @@
 //! each module at its original path.
 
 pub mod bdb_hash;
+pub mod go_buildinfo;
 pub mod go_inventory;
 pub mod lockfiles;
 pub mod models;

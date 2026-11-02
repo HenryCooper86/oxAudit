@@ -126,6 +126,9 @@ pub enum DetectionSource {
     OsPackageDatabase,
     /// Declared by the builder in the ELF package note.
     PackageNote,
+    /// Recorded by the Go linker in the binary's build information: the
+    /// exact Go version and modules the program was built from.
+    GoBuildInfo,
 }
 
 impl From<Evidence> for DetectionSource {
@@ -461,6 +464,15 @@ fn scan_buffer_at_depth(
         }
     }
 
+    if matches!(
+        classification,
+        Classification::Executable(
+            filetype::Format::Elf | filetype::Format::MachO | filetype::Format::Pe
+        )
+    ) {
+        detections.extend(go_build_info_detections(display, bytes, truncated, notes));
+    }
+
     let blob = strings::extract(bytes);
 
     for hit in signatures.detect(file_name, &blob, bytes) {
@@ -478,6 +490,65 @@ fn scan_buffer_at_depth(
         });
     }
 
+    detections
+}
+
+/// The standard library and modules a Go binary was linked with, from its
+/// build information. The standard library is asked about as OSV's Go
+/// `stdlib` package at the exact Go version; `toolchain` is not, because
+/// toolchain advisories affect the machine that builds, not the program.
+fn go_build_info_detections(
+    display: &str,
+    bytes: &[u8],
+    truncated: bool,
+    notes: &mut Vec<String>,
+) -> Vec<Detection> {
+    let info = match oxaudit_parsers::go_buildinfo::read(bytes) {
+        Ok(Some(info)) => info,
+        Ok(None) => return Vec::new(),
+        Err(reason) => {
+            notes.push(format!("{display}: {reason}"));
+            return Vec::new();
+        }
+    };
+    let detection = |name: &str, version: String| Detection {
+        vendor: String::new(),
+        product: name.to_string(),
+        version: Some(version.clone()),
+        raw_version: Some(version),
+        ecosystem: Some("Go".into()),
+        package_name: Some(name.to_string()),
+        source_package: None,
+        path: display.to_string(),
+        source: DetectionSource::GoBuildInfo,
+        truncated,
+    };
+    let mut detections = Vec::new();
+    match oxaudit_parsers::go_inventory::osv_go_version(&info.go_version) {
+        Some(version) => detections.push(detection("stdlib", version)),
+        None => notes.push(format!(
+            "{display}: built by Go {:?}, which names no release; its standard library is not checked",
+            info.go_version
+        )),
+    }
+    // The program's own module, when the build recorded a release or VCS
+    // version (Go 1.24+ for `go install mod@v…` and git builds). A `(devel)`
+    // or `+dirty` main is a local build with no release to look up.
+    if let Some((path, version)) = &info.main {
+        if !version.is_empty() && version != "(devel)" && !version.ends_with("+dirty") {
+            detections.push(detection(path, version.trim_start_matches('v').to_string()));
+        }
+    }
+    for (path, version) in &info.deps {
+        // Module versions carry Go's `v`; OSV's Go records do not.
+        detections.push(detection(path, version.trim_start_matches('v').to_string()));
+    }
+    if info.truncated {
+        notes.push(format!(
+            "{display}: Go build information lists more than {} modules; later ones are not reported",
+            oxaudit_parsers::go_buildinfo::MAX_DEPS
+        ));
+    }
     detections
 }
 
@@ -1884,6 +1955,145 @@ mod tests {
         let folded = fold(vec![from_note, from_signature]);
         assert_eq!(folded.len(), 1);
         assert_eq!(folded[0].vendor, "openssl");
+    }
+
+    const GO_MODINFO: &str = "path\texample.com/app\nmod\texample.com/app\t(devel)\t\ndep\tgolang.org/x/net\tv0.17.0\th1:a=\ndep\tgithub.com/docker/docker\tv24.0.7+incompatible\th1:b=\n";
+
+    fn go_binary() -> Vec<u8> {
+        // Already ELF-prefixed, with the blob 16-byte aligned.
+        oxaudit_parsers::go_buildinfo::encode_for_tests("go1.22.4", GO_MODINFO)
+    }
+
+    fn go_rows(detections: &[Detection]) -> Vec<(String, String, String)> {
+        let mut rows: Vec<(String, String, String)> = detections
+            .iter()
+            .filter(|d| d.source == DetectionSource::GoBuildInfo)
+            .map(|d| {
+                (
+                    d.package_name.clone().unwrap_or_default(),
+                    d.raw_version.clone().unwrap_or_default(),
+                    d.ecosystem.clone().unwrap_or_default(),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    #[test]
+    fn go_binaries_yield_stdlib_and_module_detections() {
+        let mut notes = Vec::new();
+        let detections = scan_buffer_at_depth(
+            "bin/app",
+            "app",
+            &go_binary(),
+            false,
+            &SIGNATURES,
+            &mut notes,
+            &mut None,
+            0,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(
+            go_rows(&detections),
+            [
+                (
+                    "github.com/docker/docker".to_string(),
+                    "24.0.7+incompatible".to_string(),
+                    "Go".to_string()
+                ),
+                (
+                    "golang.org/x/net".to_string(),
+                    "0.17.0".to_string(),
+                    "Go".to_string()
+                ),
+                ("stdlib".to_string(), "1.22.4".to_string(), "Go".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tagged_main_module_is_reported_and_devel_or_dirty_ones_are_not() {
+        let detect = |main: &str| {
+            let binary = oxaudit_parsers::go_buildinfo::encode_for_tests(
+                "go1.22.4",
+                &format!("path\tgithub.com/acme/tool/cmd/tool\nmod\t{main}\th1:m=\n"),
+            );
+            let mut notes = Vec::new();
+            let detections = scan_buffer_at_depth(
+                "bin/tool",
+                "tool",
+                &binary,
+                false,
+                &SIGNATURES,
+                &mut notes,
+                &mut None,
+                0,
+                &AtomicBool::new(false),
+            );
+            go_rows(&detections)
+                .into_iter()
+                .filter(|(name, _, _)| name != "stdlib")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            detect("github.com/acme/tool\tv1.7.3"),
+            [(
+                "github.com/acme/tool".to_string(),
+                "1.7.3".to_string(),
+                "Go".to_string()
+            )]
+        );
+        assert!(detect("github.com/acme/tool\t(devel)").is_empty());
+        assert!(
+            detect("github.com/acme/tool\tv0.0.0-20260101000000-abcdef123456+dirty").is_empty()
+        );
+    }
+
+    #[test]
+    fn a_go_binary_inside_an_image_layer_is_detected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let layer = tar_with("usr/local/bin/app", &go_binary());
+        std::fs::write(dir.path().join("image.tar"), tar_with("layer.tar", &layer))
+            .expect("write image");
+        let scanned = scan_dir(dir.path());
+        let stdlib = scanned
+            .queries
+            .iter()
+            .find(|q| q.osv_name.as_deref() == Some("stdlib"))
+            .expect("stdlib is a component query");
+        assert_eq!(stdlib.ecosystem.as_deref(), Some("Go"));
+        assert_eq!(stdlib.raw_version, "1.22.4");
+    }
+
+    #[test]
+    fn pre_1_18_go_binaries_are_noted() {
+        let mut binary = go_binary();
+        let magic = b"\xff Go buildinf:";
+        let at = binary
+            .windows(magic.len())
+            .position(|w| w == magic)
+            .unwrap();
+        binary[at + magic.len() + 1] = 0;
+        let mut notes = Vec::new();
+        let detections = scan_buffer_at_depth(
+            "bin/old",
+            "old",
+            &binary,
+            false,
+            &SIGNATURES,
+            &mut notes,
+            &mut None,
+            0,
+            &AtomicBool::new(false),
+        );
+        assert!(go_rows(&detections).is_empty());
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("bin/old") && note.contains("pre-1.18")),
+            "{notes:?}"
+        );
     }
 
     #[test]

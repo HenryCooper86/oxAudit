@@ -43,6 +43,14 @@ cannot establish its replacement selection. Valid dependency-free manifests
 produce an empty inventory. Malformed requirements, replacements, checksum rows
 and unterminated blocks fail instead of silently dropping packages.
 
+A `toolchain goX.Y.Z` directive adds the Go standard library (`stdlib`) and
+the go command (`toolchain`) at that version, as OSV's Go records name them,
+with a warning that the Go that actually builds the module can be newer. The
+`go` line alone adds nothing: it is a minimum language version, real builds
+almost always use a newer Go, and matching it would report long-fixed
+advisories. An inventory note says so; scanning the built binary (below, and
+in [binary scanning](binary-scanning-runtime.md)) gives the exact version.
+
 `go.sum` validates checksum row shape but contributes no installed components.
 It requires a discovered sibling `go.mod`; standalone checksum history fails
 with a coverage error. Go permits unused historical versions in

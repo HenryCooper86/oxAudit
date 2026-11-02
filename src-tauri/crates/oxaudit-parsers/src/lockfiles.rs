@@ -384,7 +384,11 @@ fn parse_lockfile_text_with(
         }
     }
     if name == "go.mod" {
-        return super::go_inventory::parse(content, &lockfile).map(complete);
+        let (dependencies, notes) = super::go_inventory::parse_inventory(content, &lockfile)?;
+        return Ok(LockfileInventory {
+            dependencies,
+            notes,
+        });
     }
     if name == "go.sum" {
         super::go_inventory::validate_sums(content)?;

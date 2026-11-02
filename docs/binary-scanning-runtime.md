@@ -294,6 +294,7 @@ one of them:
 |---|---|---|---|
 | Signature | CPE vendor + upstream version | **NVD** | OSV has no ecosystem for a bare upstream library |
 | ELF package note | distro package + packaged version | **OSV** | NVD needs a CPE vendor, which the note does not carry |
+| Go build information (ELF, Mach-O, PE) | the exact Go version (`stdlib`), the program's own module when it records a release, and every linked module (`(devel)` and local replacements skipped) | **OSV** (`Go`) | NVD has no CPE for most Go modules |
 
 Both directions were measured against the live APIs rather than assumed:
 
@@ -344,6 +345,14 @@ lookups and *says so* when it caps, rather than returning a short list.
   product modules (`SUSE:Linux Enterprise Module for Basesystem 15 SP5`) that
   nothing in the image names. Fedora, Amazon Linux, Oracle Linux, CentOS and
   Photon OS have no OSV distribution ecosystem.
+- **Pre-1.18 Go binaries.** Their build information is stored as pointers
+  into the data segment; following them needs the executable's section table,
+  so those binaries are named in a note instead of read. Build information
+  past the 128 MiB read prefix of a very large binary is not seen either.
+- **Go standard-library findings carry no severity.** OSV's Go records rate
+  nothing, so `stdlib` and `toolchain` findings are reported as `unknown` and
+  do not trip `--fail-on`, like other unrated distribution records. Module
+  advisories that come from GitHub's database do carry one.
 - **Layer whiteouts are not applied.** Every layer's package database is
   read, so a package upgraded or removed in a later layer can still be
   reported at its earlier version.
