@@ -126,7 +126,32 @@ fn workflow_expression_in_script(content: &str, offset: usize) -> bool {
             break;
         }
     }
-    if let Some((key, _)) = split_key(&content[line_start..offset]) {
+    // A block key whose value is plain text owns the expression, even when
+    // that text has braces of its own (`run: jq -n '{title: …}'`).
+    let before = &content[line_start..offset];
+    if let Some((key, value)) = split_key(before) {
+        if !value.trim_start().starts_with('{') {
+            return is_script(key);
+        }
+    }
+    // A flow mapping (`- {name: x, run: echo ${{ … }}}`, `with: {…}`) names
+    // its key on the same line, after the last `{` or `,` before the
+    // expression.
+    if let Some(open) = before.rfind(['{', ',']) {
+        if before.contains('{') {
+            if let Some((key, _)) = before[open + 1..].split_once(':') {
+                let key = key.trim();
+                if !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
+                    return is_script(key);
+                }
+            }
+        }
+    }
+    if let Some((key, _)) = split_key(before) {
         return is_script(key);
     }
     parent.is_some_and(|(key, _)| is_script(key))
@@ -2359,6 +2384,25 @@ mod tests {
         workflow_rules_firing("ci.yml", source)
             .iter()
             .any(|rule| rule == "gha-script-injection")
+    }
+
+    #[test]
+    fn workflow_injection_fires_in_flow_style_steps() {
+        assert!(injection_fires(
+            "on: issues\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - {name: Echo, run: \"echo ${{ github.event.issue.title }}\"}\n"
+        ));
+        assert!(injection_fires(
+            "on: issues\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - { run: echo ${{ github.event.issue.title }} }\n"
+        ));
+        // A JS/jq object literal inside a block-level `run:` is still the
+        // script, not a flow mapping.
+        assert!(injection_fires(
+            "on: issues\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: jq -n '{title: \"${{ github.event.issue.title }}\"}' > payload.json\n"
+        ));
+        // A flow-style `with:` input is not a script.
+        assert!(!injection_fires(
+            "on: issues\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - {uses: actions/labeler@v5, with: {title: \"${{ github.event.issue.title }}\"}}\n"
+        ));
     }
 
     #[test]

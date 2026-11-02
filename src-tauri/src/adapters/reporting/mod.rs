@@ -307,12 +307,21 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
         }
         ReportFormat::CycloneDxVex => {
             let components = dependencies::ComponentIndex::new(data);
-            let vulnerabilities = data.observations.iter().filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch).map(|record| serde_json::json!({
-                "id": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()),
-                "analysis": { "state": "exploitable", "detail": "Affected-range match observed by oxAudit; review status was not silently inferred." },
-                "affects": components.affected_components(record).iter().map(|component| serde_json::json!({"ref": component.id.as_str()})).collect::<Vec<_>>(),
-                "properties": [{ "name": "oxaudit:observationId", "value": record.observation.id.as_str() }]
-            })).collect::<Vec<_>>();
+            let reviews = dependencies::policy_reviews(data);
+            let vulnerabilities = data.observations.iter().filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch).map(|record| {
+                let affected = components.affected_components(record);
+                let analysis = match shared_policy_review(&reviews, record, &affected) {
+                    Some((state, reason)) if state == "falsePositive" => serde_json::json!({ "state": "false_positive", "detail": reason }),
+                    Some((_, reason)) => serde_json::json!({ "state": "exploitable", "response": ["will_not_fix"], "detail": reason }),
+                    None => serde_json::json!({ "state": "exploitable", "detail": "Affected-range match observed by oxAudit; review status was not silently inferred." }),
+                };
+                serde_json::json!({
+                    "id": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()),
+                    "analysis": analysis,
+                    "affects": affected.iter().map(|component| serde_json::json!({"ref": component.id.as_str()})).collect::<Vec<_>>(),
+                    "properties": [{ "name": "oxaudit:observationId", "value": record.observation.id.as_str() }]
+                })
+            }).collect::<Vec<_>>();
             serde_json::json!({
                 "bomFormat": "CycloneDX",
                 "specVersion": "1.6",
@@ -615,19 +624,67 @@ fn preserve_inventory_metadata(
     Ok(())
 }
 
+/// The advisory-policy decision shared by every affected component of an
+/// observation, as `(state, reason)`. Components that disagree (or are not
+/// all dismissed) share none, and the statement stays a plain match.
+fn shared_policy_review(
+    reviews: &std::collections::HashMap<(String, String), serde_json::Value>,
+    record: &ObservationRecord,
+    affected: &[&oxaudit_domain::Component],
+) -> Option<(String, String)> {
+    let mut shared: Option<(String, String)> = None;
+    for component in affected {
+        let review = reviews.get(&(
+            record.observation.id.as_str().to_string(),
+            component.id.as_str().to_string(),
+        ))?;
+        let state = review.get("state")?.as_str()?.to_string();
+        let reason = review.get("reason")?.as_str()?.to_string();
+        match &shared {
+            None => shared = Some((state, reason)),
+            Some((known, _)) if *known == state => {}
+            Some(_) => return None,
+        }
+    }
+    shared
+}
+
 fn vex_statements(data: &ReportData) -> Vec<serde_json::Value> {
     let components = dependencies::ComponentIndex::new(data);
+    let reviews = dependencies::policy_reviews(data);
     data.observations
         .iter()
         .filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch)
-        .map(|record| serde_json::json!({
-            "@id": format!("https://oxaudit.local/vex/{}/statements/{}", data.run.id, record.observation.id),
-            "vulnerability": { "name": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()) },
-            "products": components.affected_components(record).iter().map(|component| serde_json::json!({ "@id": component.purl.as_deref().map(standard_purl).unwrap_or_else(|| format!("urn:oxaudit:component:{}", component.id)) })).collect::<Vec<_>>(),
-            "status": "affected",
-            "action_statement": "Review the affected-range match and the advisory's remediation guidance before selecting an upgrade or mitigation; oxAudit has not verified a remediation.",
-            "status_notes": "Affected-range match observed; no analyst disposition was inferred."
-        }))
+        .map(|record| {
+            let affected = components.affected_components(record);
+            let mut statement = serde_json::json!({
+                "@id": format!("https://oxaudit.local/vex/{}/statements/{}", data.run.id, record.observation.id),
+                "vulnerability": { "name": record.observation.rule_id.clone().unwrap_or_else(|| record.observation.title.clone()) },
+                "products": affected.iter().map(|component| serde_json::json!({ "@id": component.purl.as_deref().map(standard_purl).unwrap_or_else(|| format!("urn:oxaudit:component:{}", component.id)) })).collect::<Vec<_>>(),
+                "status": "affected",
+                "action_statement": "Review the affected-range match and the advisory's remediation guidance before selecting an upgrade or mitigation; oxAudit has not verified a remediation.",
+                "status_notes": "Affected-range match observed; no analyst disposition was inferred."
+            });
+            // A decision recorded in the project's advisory policy is a
+            // disposition: state it rather than "no disposition".
+            match shared_policy_review(&reviews, record, &affected) {
+                Some((state, reason)) if state == "falsePositive" => {
+                    statement["status"] = "not_affected".into();
+                    statement["impact_statement"] = reason.into();
+                    statement["status_notes"] = "Marked a false positive in the project's advisory policy.".into();
+                    if let Some(object) = statement.as_object_mut() {
+                        object.remove("action_statement");
+                    }
+                }
+                Some((state, reason)) => {
+                    let label = if state == "acceptedRisk" { "Risk accepted" } else { "Suppressed by policy" };
+                    statement["action_statement"] = format!("{label}: {reason}").into();
+                    statement["status_notes"] = "Dismissed in the project's advisory policy; still affected.".into();
+                }
+                None => {}
+            }
+            statement
+        })
         .collect()
 }
 

@@ -429,7 +429,8 @@ struct ScanArgs {
 
     /// Exit 1 when a finding at this severity or higher is reported.
     /// Defaults to none — reporting should not break a build — except with
-    /// --staged, where the default is high.
+    /// --staged, where the default is high; the project config's `[scan]
+    /// fail_on` replaces the default.
     #[arg(long, value_enum)]
     fail_on: Option<FailOn>,
 
@@ -2600,7 +2601,6 @@ fn gates_the_build(finding: &crate::models::Finding) -> bool {
     }
 }
 
-/// Decide the exit code from the severities reported and the requested gate.
 /// Where a gate threshold came from, so a config-set gate is visible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GateSource {
@@ -2633,7 +2633,10 @@ fn load_config(
     if no_config {
         return Ok(None);
     }
-    project_config::load_project_config(root).map_err(usage)
+    project_config::load_project_config(root).map_err(|error| match error {
+        project_config::ConfigError::Invalid(message) => usage(message),
+        project_config::ConfigError::Unreadable(message) => failure(message),
+    })
 }
 
 /// An explicit value, else the config's, else the default — with its source.
@@ -2681,9 +2684,19 @@ fn merge_scan(
     let scan_secrets = !args.no_secrets && config.secrets != Some(false);
     let scan_patterns = !args.no_patterns && config.patterns != Some(false);
     if !scan_secrets && !scan_patterns {
-        return Err(usage(
-            "--no-secrets and --no-patterns (or the project config's secrets = false and patterns = false) together leave nothing to scan",
-        ));
+        // Name where each switch came from.
+        let source = |flag: bool, key: &str| {
+            if flag {
+                format!("--no-{key}")
+            } else {
+                format!("the project config's {key} = false")
+            }
+        };
+        return Err(usage(format!(
+            "{} and {} together leave nothing to scan",
+            source(args.no_secrets, "secrets"),
+            source(args.no_patterns, "patterns")
+        )));
     }
     let mut rule_pack_files = config.rule_pack_files.clone();
     for path in &args.rule_pack_files {
@@ -2755,6 +2768,7 @@ where
         .map(|vulnerability| severity_rank(vulnerability.severity.as_deref().unwrap_or("")))
 }
 
+/// Decide the exit code from the severities reported and the requested gate.
 fn gate(severities: impl Iterator<Item = u8>, fail_on: FailOn, quiet: bool) -> i32 {
     let Some(threshold) = fail_on.threshold() else {
         return EXIT_OK;
@@ -2965,12 +2979,38 @@ fn automatic_sarif_prefix(root: &Path) -> String {
 /// starts with the prefix's name (`mysite/settings.py` inside a scan of
 /// `mysite/`), so apply it once per report. An empty prefix returns the
 /// input unchanged.
+/// Percent-encode a relative path for a SARIF URI (RFC 3986): `/` and the
+/// characters a path segment allows stay, everything else — spaces, `#`,
+/// `?`, non-ASCII — is encoded. An existing `%XX` escape is kept, so an
+/// already-encoded prefix is not encoded twice.
+fn percent_encode_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out = String::with_capacity(path.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let escaped = byte == b'%'
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit);
+        let allowed =
+            byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/".contains(&byte) || escaped;
+        if allowed {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+        index += 1;
+    }
+    out
+}
+
 fn prefix_sarif_uris(sarif: &[u8], prefix: &str) -> Result<Vec<u8>, CliError> {
     if prefix.is_empty() {
         return Ok(sarif.to_vec());
     }
+    let prefix = percent_encode_path(prefix);
     let prefix = if prefix.ends_with('/') {
-        prefix.to_string()
+        prefix
     } else {
         format!("{prefix}/")
     };
@@ -3537,6 +3577,27 @@ mod tests {
         };
         let error = merge_scan(&scan_args(&["."]), Some(&config), FailOn::None, false).unwrap_err();
         assert_eq!(error.exit_code, EXIT_USAGE);
+        // The message names where each switch came from.
+        let only_config =
+            merge_scan(&scan_args(&["."]), Some(&config), FailOn::None, false).unwrap_err();
+        assert!(
+            only_config.message.contains("project config"),
+            "{}",
+            only_config.message
+        );
+        assert!(
+            !only_config.message.contains("--no-secrets"),
+            "{}",
+            only_config.message
+        );
+        let flags = merge_scan(
+            &scan_args(&[".", "--no-secrets", "--no-patterns"]),
+            None,
+            FailOn::None,
+            false,
+        )
+        .unwrap_err();
+        assert!(!flags.message.contains("config"), "{}", flags.message);
         let error = merge_scan(
             &scan_args(&[".", "--no-secrets"]),
             Some(&project_config::ScanConfig {
@@ -3948,6 +4009,19 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    #[test]
+    fn sarif_prefixes_are_percent_encoded_once() {
+        let sarif = sarif_with_uris(&["src/app.py"]);
+        let prefixed = prefix_sarif_uris(&sarif, "my dir/#1/caf\u{e9}%").unwrap();
+        assert_eq!(
+            sarif_uris(&prefixed)[0],
+            "my%20dir/%231/caf%C3%A9%25/src/app.py"
+        );
+        // An already-encoded prefix is not encoded again.
+        let again = prefix_sarif_uris(&sarif, "my%20dir").unwrap();
+        assert_eq!(sarif_uris(&again)[0], "my%20dir/src/app.py");
     }
 
     #[test]

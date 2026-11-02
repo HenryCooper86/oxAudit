@@ -503,9 +503,9 @@ mod tests {
         // Every lockfile kind the parsers recognise; a default
         // `--advisory-db` scan must not fail as incomplete for any of them.
         let kinds = [
-            "npm", "yarn", "pnpm", "bun", "deno", "cargo", "go", "gomod", "pipenv", "pip",
-            "poetry", "uv", "pdm", "bundler", "mix", "pubspec", "composer", "maven", "gradle",
-            "nuget",
+            "npm", "yarn", "pnpm", "bun", "deno", "msbuild", "cargo", "go", "gomod", "pipenv",
+            "pip", "poetry", "uv", "pdm", "bundler", "mix", "pubspec", "composer", "maven",
+            "gradle", "nuget",
         ];
         for kind in kinds {
             let ecosystem = crate::deps::lockfiles::ecosystem_for_kind(kind);

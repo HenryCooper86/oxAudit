@@ -18,7 +18,7 @@
 //! installed package, keyed to a release-qualified distribution ecosystem —
 //! see [`super::os_packages`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -513,7 +513,13 @@ fn go_build_info_detections(
     };
     let detection = |name: &str, version: String| Detection {
         vendor: String::new(),
-        product: name.to_string(),
+        // OSV calls the standard library `stdlib`; in a component list that
+        // says nothing, so it is shown as `go-stdlib`.
+        product: if name == "stdlib" {
+            "go-stdlib".to_string()
+        } else {
+            name.to_string()
+        },
         version: Some(version.clone()),
         raw_version: Some(version),
         ecosystem: Some("Go".into()),
@@ -838,6 +844,101 @@ fn annotate_packages(detections: &mut [Detection], distro: &Option<DistroIdentit
     }
 }
 
+/// Where a package database sits, for supersession: the image, the layer,
+/// the filesystem root inside the layer (empty for the OS itself, non-empty
+/// for a chroot or sysroot), and its kind: dpkg, apk, or rpm (SQLite and
+/// Berkeley DB, at either rpm location, are one database).
+/// `image.tar!/top/layer.tar!/srv/sysroot/var/lib/dpkg/status` →
+/// (`image.tar`, `top/layer.tar`, `srv/sysroot/`, `dpkg`); a registry chain
+/// `ref@digest!layer-0001.tar!/…` the same way.
+fn package_database_location(path: &str) -> Option<(&str, &str, &str, &'static str)> {
+    const SUFFIXES: [(&str, &str); 6] = [
+        ("var/lib/dpkg/status", "dpkg"),
+        ("lib/apk/db/installed", "apk"),
+        ("var/lib/rpm/rpmdb.sqlite", "rpm"),
+        ("usr/lib/sysimage/rpm/rpmdb.sqlite", "rpm"),
+        ("var/lib/rpm/Packages", "rpm"),
+        ("usr/lib/sysimage/rpm/Packages", "rpm"),
+    ];
+    let (suffix, kind) = SUFFIXES.iter().find(|(suffix, _)| path.ends_with(suffix))?;
+    let mut parts = path.splitn(3, '!');
+    let image = parts.next()?;
+    let layer = parts.next()?.trim_start_matches('/');
+    let inside = parts.next()?.trim_start_matches('/');
+    let root = inside.strip_suffix(suffix)?;
+    Some((image, layer, root, kind))
+}
+
+/// An image's merged filesystem holds only the topmost copy of a file, so a
+/// package database written again by a later layer replaces the earlier
+/// ones: an upgraded package must not also be reported at its old version.
+/// Detections whose layer has no known rank are left alone.
+fn supersede_lower_layer_databases(
+    detections: &mut Vec<Detection>,
+    rank: &dyn Fn(&str) -> Option<usize>,
+    notes: &mut Vec<String>,
+) {
+    type Place = (String, String, &'static str);
+    let key = |detection: &Detection| -> Option<(Place, usize)> {
+        if detection.source != DetectionSource::OsPackageDatabase {
+            return None;
+        }
+        let (image, layer, root, kind) = package_database_location(&detection.path)?;
+        Some(((image.to_string(), root.to_string(), kind), rank(layer)?))
+    };
+    let mut topmost: HashMap<Place, usize> = HashMap::new();
+    for (place, layer_rank) in detections.iter().filter_map(key) {
+        let entry = topmost.entry(place).or_insert(layer_rank);
+        *entry = (*entry).max(layer_rank);
+    }
+    let before = detections.len();
+    detections.retain(|detection| match key(detection) {
+        Some((place, layer_rank)) => topmost.get(&place) == Some(&layer_rank),
+        None => true,
+    });
+    let superseded = before - detections.len();
+    if superseded > 0 {
+        notes.push(format!(
+            "{superseded} package(s) from lower image layers are superseded by a later layer's package database and are not reported"
+        ));
+    }
+}
+
+/// The layer order a saved image (`docker save`) declares in its
+/// `manifest.json`: layer path → position, bottom first. `None` for anything
+/// that is not such an image.
+fn saved_image_layer_order(path: &Path) -> Option<HashMap<String, usize>> {
+    use std::io::Read as _;
+    const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = tar::Archive::new(file);
+    for entry in archive.entries_with_seek().ok()? {
+        let mut entry = entry.ok()?;
+        let is_manifest = entry
+            .path()
+            .ok()
+            .is_some_and(|name| name.as_os_str() == "manifest.json");
+        if !is_manifest {
+            continue;
+        }
+        if entry.size() > MAX_MANIFEST_BYTES {
+            return None;
+        }
+        let mut text = String::new();
+        entry.read_to_string(&mut text).ok()?;
+        let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let layers = manifest.get(0)?.get("Layers")?.as_array()?;
+        return Some(
+            layers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, layer)| Some((layer.as_str()?.to_string(), index)))
+                .collect(),
+        );
+    }
+    None
+}
+
 fn finish_metadata(
     detections: &mut Vec<Detection>,
     distro: &Option<DistroIdentity>,
@@ -1100,6 +1201,13 @@ pub fn scan(
                         Vec::new()
                     }
                 };
+                if let Some(order) = saved_image_layer_order(path) {
+                    supersede_lower_layer_databases(
+                        &mut detections,
+                        &|layer| order.get(layer).copied(),
+                        &mut file_notes,
+                    );
+                }
                 finish_metadata(&mut detections, &distro, &mut file_notes);
                 if !file_notes.is_empty() {
                     if let Ok(mut notes) = extraction_notes.lock() {
@@ -1181,6 +1289,18 @@ pub fn scan_image_layers(
         return Err("scan cancelled".into());
     }
 
+    // Registry layers arrive in pull order, bottom first.
+    let order: HashMap<&str, usize> = layers
+        .iter()
+        .map(|layer| layer.name.as_str())
+        .enumerate()
+        .map(|(index, name)| (name, index))
+        .collect();
+    supersede_lower_layer_databases(
+        &mut detections,
+        &|layer| order.get(layer).copied(),
+        &mut notes,
+    );
     finish_metadata(&mut detections, &distro, &mut notes);
     let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
@@ -1327,6 +1447,18 @@ pub fn scan_image_layer_files(
     if cancel.load(Ordering::Relaxed) {
         return Err("scan cancelled".into());
     }
+    // Registry layers arrive in pull order, bottom first.
+    let order: HashMap<&str, usize> = layers
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .enumerate()
+        .map(|(index, name)| (name, index))
+        .collect();
+    supersede_lower_layer_databases(
+        &mut detections,
+        &|layer| order.get(layer).copied(),
+        &mut notes,
+    );
     finish_metadata(&mut detections, &distro, &mut notes);
     let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
@@ -2051,6 +2183,59 @@ mod tests {
     }
 
     #[test]
+    fn a_package_note_and_go_build_info_coexist_in_one_elf() {
+        let mut binary = oxaudit_parsers::package_note::encode_elf_with_note_for_tests(
+            b"FDO",
+            0xcafe1a7e,
+            br#"{"type":"deb","os":"Debian","name":"containerd","version":"1.7.3-1","architecture":"amd64"}"#,
+        );
+        while binary.len() % 16 != 0 {
+            binary.push(0);
+        }
+        // The blob builder carries its own 16-byte prefix; keep alignment.
+        binary.extend_from_slice(&go_binary());
+        let mut notes = Vec::new();
+        let detections = scan_buffer_at_depth(
+            "bin/containerd",
+            "containerd",
+            &binary,
+            false,
+            &SIGNATURES,
+            &mut notes,
+            &mut None,
+            0,
+            &AtomicBool::new(false),
+        );
+        assert!(detections
+            .iter()
+            .any(|d| d.source == DetectionSource::PackageNote));
+        assert!(go_rows(&detections)
+            .iter()
+            .any(|(name, _, _)| name == "stdlib"));
+    }
+
+    #[test]
+    fn the_standard_library_component_is_named_go_stdlib() {
+        let mut notes = Vec::new();
+        let detections = scan_buffer_at_depth(
+            "bin/app",
+            "app",
+            &go_binary(),
+            false,
+            &SIGNATURES,
+            &mut notes,
+            &mut None,
+            0,
+            &AtomicBool::new(false),
+        );
+        let stdlib = detections
+            .iter()
+            .find(|d| d.package_name.as_deref() == Some("stdlib"))
+            .expect("stdlib detection");
+        assert_eq!(stdlib.product, "go-stdlib");
+    }
+
+    #[test]
     fn a_go_binary_inside_an_image_layer_is_detected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let layer = tar_with("usr/local/bin/app", &go_binary());
@@ -2658,6 +2843,138 @@ mod tests {
             "{:?}",
             scanned.notes
         );
+    }
+
+    fn dpkg_layer(version: &str) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut add = |path: &str, body: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, body)
+                .expect("layer member");
+        };
+        add(
+            "etc/os-release",
+            b"ID=debian\nVERSION_ID=\"12\"\nVERSION_CODENAME=bookworm\n",
+        );
+        add(
+            "var/lib/dpkg/status",
+            format!("Package: libssl3\nSource: openssl\nVersion: {version}\nStatus: install ok installed\n").as_bytes(),
+        );
+        builder.into_inner().expect("layer tar")
+    }
+
+    fn libssl_versions(scanned: &NativeScan) -> Vec<String> {
+        let mut versions: Vec<String> = scanned
+            .result
+            .components
+            .iter()
+            .filter(|c| c.product == "libssl3")
+            .map(|c| c.version.clone())
+            .collect();
+        versions.sort();
+        versions
+    }
+
+    #[test]
+    fn a_later_layer_package_database_supersedes_an_earlier_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The manifest lists the bottom layer first; the tar stores the top
+        // layer first, so only the manifest can say which is newer.
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut add = |path: &str, body: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, body)
+                .expect("image member");
+        };
+        add("top/layer.tar", &dpkg_layer("3.0.11-1~deb12u2"));
+        add("bottom/layer.tar", &dpkg_layer("3.0.9-1"));
+        add("manifest.json", br#"[{"Config":"c.json","RepoTags":["x:1"],"Layers":["bottom/layer.tar","top/layer.tar"]}]"#);
+        std::fs::write(dir.path().join("image.tar"), builder.into_inner().unwrap()).unwrap();
+        let scanned = scan_dir(dir.path());
+        assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2"]);
+        assert!(
+            scanned
+                .notes
+                .iter()
+                .any(|note| note.contains("superseded by a later layer")),
+            "{:?}",
+            scanned.notes
+        );
+    }
+
+    #[test]
+    fn a_chroot_database_in_a_later_layer_does_not_supersede_the_os() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chroot = tar_with(
+            "srv/sysroot/var/lib/dpkg/status",
+            b"Package: gcc-12-base\nVersion: 12.2.0-14\nStatus: install ok installed\n",
+        );
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut add = |path: &str, body: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, body)
+                .expect("image member");
+        };
+        add("bottom/layer.tar", &dpkg_layer("3.0.9-1"));
+        add("top/layer.tar", &chroot);
+        add("manifest.json", br#"[{"Config":"c.json","RepoTags":["x:1"],"Layers":["bottom/layer.tar","top/layer.tar"]}]"#);
+        std::fs::write(dir.path().join("image.tar"), builder.into_inner().unwrap()).unwrap();
+        let scanned = scan_dir(dir.path());
+        assert_eq!(libssl_versions(&scanned), ["3.0.9-1"]);
+        assert!(scanned
+            .result
+            .components
+            .iter()
+            .any(|c| c.product == "gcc-12-base"));
+        assert!(
+            !scanned
+                .notes
+                .iter()
+                .any(|note| note.contains("superseded by a later layer")),
+            "{:?}",
+            scanned.notes
+        );
+    }
+
+    #[test]
+    fn registry_layers_supersede_in_pull_order() {
+        let layers = vec![
+            super::super::super::registry::Layer {
+                name: "layer-0000.tar".into(),
+                bytes: dpkg_layer("3.0.9-1"),
+            },
+            super::super::super::registry::Layer {
+                name: "layer-0001.tar".into(),
+                bytes: dpkg_layer("3.0.11-1~deb12u2"),
+            },
+        ];
+        let scanned = scan_image_layers(
+            "registry.example/app:1",
+            &layers,
+            &Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+        assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2"]);
+    }
+
+    #[test]
+    fn a_directory_scan_without_layers_is_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (name, version) in [("a", "3.0.9-1"), ("b", "3.0.11-1~deb12u2")] {
+            std::fs::write(dir.path().join(format!("{name}.tar")), dpkg_layer(version)).unwrap();
+        }
+        let scanned = scan_dir(dir.path());
+        assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2", "3.0.9-1"]);
     }
 
     #[test]

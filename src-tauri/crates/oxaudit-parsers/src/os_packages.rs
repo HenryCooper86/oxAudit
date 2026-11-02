@@ -243,6 +243,18 @@ pub fn parse_os_release(bytes: &[u8]) -> OsReleaseMatch {
                 None => unrecognized_release(id_raw, &version_id),
             }
         }
+        // CBL-Mariner 2.0 is filed as Azure Linux 2 (checked against OSV);
+        // there is no ecosystem for 1.0.
+        "mariner" => match release_major(&version_id).as_deref() {
+            Some("2") => OsReleaseMatch::Distro(DistroIdentity {
+                osv_ecosystem: "Azure Linux:2".into(),
+            }),
+            _ => unrecognized_release(id_raw, &version_id),
+        },
+        // A rolling release: one ecosystem whatever the snapshot date.
+        "opensuse-tumbleweed" => OsReleaseMatch::Distro(DistroIdentity {
+            osv_ecosystem: "openSUSE:Tumbleweed".into(),
+        }),
         "sles" | "sled" => OsReleaseMatch::Unsupported(format!(
             "os-release names {id_raw:?}; OSV files SUSE Linux Enterprise advisories under product modules the image does not name, so packages are reported but not matched"
         )),
@@ -560,7 +572,11 @@ mod tests {
             ("ID=\"ol\"\nVERSION_ID=\"9.4\"\n", None),
             ("ID=\"centos\"\nVERSION_ID=\"7\"\n", None),
             ("ID=photon\nVERSION_ID=5.0\n", None),
-            ("ID=mariner\nVERSION_ID=2.0\n", None),
+            // CBL-Mariner 2.0 is filed as Azure Linux 2 (checked against OSV);
+            // 1.0 has no ecosystem.
+            ("ID=mariner\nVERSION_ID=2.0\n", Some("Azure Linux:2")),
+            ("ID=mariner\nVERSION_ID=1.0\n", None),
+            ("ID=\"opensuse-tumbleweed\"\nVERSION_ID=\"20251030\"\n", Some("openSUSE:Tumbleweed")),
         ];
         for (os_release, expected) in cases {
             assert_eq!(distro(os_release).as_deref(), expected, "{os_release:?}");
@@ -626,6 +642,8 @@ mod tests {
             "Rocky Linux:9",
             "openSUSE:Leap 15.5",
             "Azure Linux:3",
+            "Azure Linux:2",
+            "openSUSE:Tumbleweed",
             "openEuler:22.03-LTS-SP4",
         ] {
             assert!(files_advisories_under_source(source), "{source}");

@@ -413,7 +413,10 @@ pub fn enrich_local(
         db.ecosystems().unwrap_or_default().into_iter().collect();
     let mut covered: Vec<(&ComponentQuery, Dependency)> = Vec::new();
     let mut uncovered_names: Vec<String> = Vec::new();
-    let mut uncovered_count = 0usize;
+    // Components, not per-stream queries: a RHEL package missing two streams
+    // is one component the database cannot fully answer.
+    let mut uncovered_components: std::collections::HashSet<&ComponentKey> =
+        std::collections::HashSet::new();
     for (query, dependency) in queries.iter().flat_map(|query| {
         osv_dependencies_for(query)
             .into_iter()
@@ -424,15 +427,24 @@ pub fn enrich_local(
         }) {
             covered.push((query, dependency));
         } else {
-            uncovered_count += 1;
+            uncovered_components.insert(&query.key);
             if !uncovered_names.contains(&dependency.ecosystem) {
                 uncovered_names.push(dependency.ecosystem.clone());
             }
         }
     }
+    let uncovered_count = uncovered_components.len();
 
     if !covered.is_empty() {
-        let dependencies: Vec<Dependency> = covered.iter().map(|(_, d)| d.clone()).collect();
+        // Each distinct (ecosystem, name, version) is matched once, however
+        // many binaries share it.
+        let mut seen = std::collections::HashSet::new();
+        let dependencies: Vec<Dependency> = covered
+            .iter()
+            .map(|(_, d)| d)
+            .filter(|d| seen.insert(crate::deps::osv::dependency_query_key(d)))
+            .cloned()
+            .collect();
         match crate::advisories::matching::query_local(db, &dependencies) {
             Ok(outcome) => {
                 for (query, dependency) in &covered {
@@ -527,6 +539,57 @@ pub struct Enrichment {
     pub notes: Vec<String>,
 }
 
+/// How many OSV lookups an image scan keeps in flight. OSV is not
+/// rate-limited the way NVD is; a handful in parallel turns minutes into
+/// seconds for images full of Go binaries without hammering the API.
+pub(crate) const OSV_CONCURRENCY: usize = 8;
+
+/// Run `query` for every lookup, up to [`OSV_CONCURRENCY`] at a time, and
+/// return the results in lookup order. A lookup not started because the scan
+/// was cancelled is `None`.
+pub(crate) async fn run_osv_lookups<V, F, Fut>(
+    lookups: &[(Dependency, Vec<ComponentKey>)],
+    cancel: &std::sync::atomic::AtomicBool,
+    on_progress: &(dyn Fn(String) + Send + Sync),
+    query: F,
+) -> Vec<Option<Result<Vec<V>, String>>>
+where
+    F: Fn(Dependency) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<V>, String>>,
+{
+    use futures::stream::{self, StreamExt};
+    use std::sync::atomic::Ordering;
+    let total = lookups.len();
+    // The futures are built in a plain loop (not inside a stream combinator)
+    // so they stay `Send` for the commands that spawn this work. An async
+    // block does nothing until polled, so the cancellation check and the
+    // request both happen only when `buffered` starts it.
+    let mut pending = Vec::with_capacity(total);
+    for (index, (dependency, _)) in lookups.iter().enumerate() {
+        let request = query(dependency.clone());
+        let label = format!(
+            "OSV {}/{}: {} {}",
+            index + 1,
+            total,
+            dependency.name,
+            dependency.version
+        );
+        pending.push(async move {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            on_progress(label);
+            Some(request.await)
+        });
+    }
+    // `buffered` keeps input order, so findings and notes stay deterministic
+    // however the requests interleave.
+    stream::iter(pending)
+        .buffered(OSV_CONCURRENCY)
+        .collect()
+        .await
+}
+
 /// Ask both sources about every component they can answer for.
 ///
 /// A failure in one source is a note, not an error. The two see different
@@ -556,37 +619,38 @@ pub async fn enrich(
     // is not rate-limited the way NVD is, so the extra requests are cheap.
     let lookups = osv_lookups(queries);
     if !lookups.is_empty() {
-        for (index, (dependency, keys)) in lookups.iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                notes.push(format!(
-                    "cancelled after {index} of {} OSV lookups; results are partial",
-                    lookups.len()
-                ));
-                break;
-            }
-            on_progress(format!(
-                "OSV {}/{}: {} {}",
-                index + 1,
-                lookups.len(),
-                dependency.name,
-                dependency.version
-            ));
-            match state
-                .osv
-                .query_package(&dependency.ecosystem, &dependency.name, &dependency.version)
-                .await
-            {
-                Ok(vulnerabilities) if !vulnerabilities.is_empty() => {
+        let results = run_osv_lookups(
+            &lookups,
+            &cancel,
+            on_progress.as_ref(),
+            |dependency| async move {
+                state
+                    .osv
+                    .query_package(&dependency.ecosystem, &dependency.name, &dependency.version)
+                    .await
+            },
+        )
+        .await;
+        let completed = results.iter().filter(|result| result.is_some()).count();
+        for ((dependency, keys), result) in lookups.iter().zip(results) {
+            match result {
+                Some(Ok(vulnerabilities)) => {
                     for key in keys {
                         record(&mut found, key, vulnerabilities.iter().map(from_osv));
                     }
                 }
-                Ok(_) => {}
-                Err(error) => notes.push(format!(
+                Some(Err(error)) => notes.push(format!(
                     "OSV lookup for {} {} failed: {error}",
                     dependency.name, dependency.version
                 )),
+                None => {}
             }
+        }
+        if completed < lookups.len() {
+            notes.push(format!(
+                "cancelled after {completed} of {} OSV lookups; results are partial",
+                lookups.len()
+            ));
         }
     }
 
@@ -884,6 +948,75 @@ mod tests {
             source: super::super::scan::DetectionSource::Content,
             truncated: false,
         }
+    }
+
+    fn lookup(name: &str) -> (Dependency, Vec<ComponentKey>) {
+        (
+            Dependency {
+                license: None,
+                occurrence: Default::default(),
+                ecosystem: "Debian:12".into(),
+                name: name.into(),
+                version: "1.0".into(),
+                lockfile: String::new(),
+            },
+            vec![component_key(name, "1.0")],
+        )
+    }
+
+    #[tokio::test]
+    async fn osv_lookups_run_concurrently_and_keep_their_order() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let lookups: Vec<_> = (0..12).map(|i| lookup(&format!("pkg{i}"))).collect();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let results = run_osv_lookups(
+            &lookups,
+            &AtomicBool::new(false),
+            &|_| {},
+            |dependency: Dependency| {
+                let (in_flight, peak) = (in_flight.clone(), peak.clone());
+                async move {
+                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    // Later lookups finish first, so order is not completion order.
+                    let index: u64 = dependency.name.trim_start_matches("pkg").parse().unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(40 - index * 3)).await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    if dependency.name == "pkg3" {
+                        Err::<Vec<String>, String>("upstream timeout".into())
+                    } else {
+                        Ok(vec![dependency.name.clone()])
+                    }
+                }
+            },
+        )
+        .await;
+        assert!(peak.load(Ordering::SeqCst) > 1, "lookups overlapped");
+        assert!(peak.load(Ordering::SeqCst) <= OSV_CONCURRENCY);
+        assert_eq!(results.len(), 12);
+        for (index, result) in results.iter().enumerate() {
+            match (index, result) {
+                (3, Some(Err(error))) => assert_eq!(error, "upstream timeout"),
+                (index, Some(Ok(names))) => assert_eq!(names, &[format!("pkg{index}")]),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_scan_starts_no_further_osv_lookups() {
+        use std::sync::atomic::AtomicBool;
+        let lookups: Vec<_> = (0..5).map(|i| lookup(&format!("pkg{i}"))).collect();
+        let results = run_osv_lookups(
+            &lookups,
+            &AtomicBool::new(true),
+            &|_| {},
+            |_dependency: Dependency| async { Ok::<Vec<String>, String>(Vec::new()) },
+        )
+        .await;
+        assert!(results.iter().all(Option::is_none));
     }
 
     #[test]
@@ -1218,6 +1351,30 @@ mod tests {
         );
         assert!(
             enrichment.notes[0].contains("Debian"),
+            "{:?}",
+            enrichment.notes
+        );
+    }
+
+    #[test]
+    fn a_rhel_component_missing_streams_is_counted_once() {
+        // Only baseos is in the database; the component is still one
+        // component, not one per missing stream.
+        let db = advisory_db_fixture("Red Hat:enterprise_linux:9::baseos", "openssl-libs");
+        let queries = vec![query(
+            Some("Red Hat:enterprise_linux:9"),
+            "openssl-libs",
+            "1:3.0.1-1.el9",
+        )];
+        let enrichment = enrich_local(&db, &queries);
+        assert_eq!(enrichment.notes.len(), 1, "{:?}", enrichment.notes);
+        assert!(
+            enrichment.notes[0].starts_with("1 component"),
+            "{:?}",
+            enrichment.notes
+        );
+        assert!(
+            enrichment.notes[0].contains("::appstream"),
             "{:?}",
             enrichment.notes
         );

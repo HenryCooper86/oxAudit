@@ -137,6 +137,10 @@ async fn scan_agent_dependencies(
                 "id":v.id, "package":v.package_name, "installed":v.installed_version,
                 "severity":v.severity, "cvss":v.cvss_score, "fixed":v.fixed_versions,
                 "summary":truncate(&v.summary, 160),
+                // Dismissed by the project's advisory policy: still reported,
+                // never gating, so not a fix to recommend first.
+                "dismissed": v.review.is_some(),
+                "review_state": v.review.as_ref().map(|review| review.state),
             })
         })
         .collect();

@@ -93,6 +93,37 @@ lists what each release ships.
 
 ### Fixed
 
+- Image scans report only the topmost copy of a package database when a later
+  layer rewrites it at the same location (layer order from the registry pull
+  or a saved image's `manifest.json`), so an upgraded package no longer also
+  appears at its old version; a chroot or sysroot database elsewhere in a
+  layer never replaces the OS's own.
+- Online image scans look up OSV with up to eight requests in flight,
+  keeping results in order; images full of Go binaries finish in seconds.
+- OpenVEX and CycloneDX VEX exports carry advisory-policy dismissals: a false
+  positive is `not_affected`/`false_positive`, an accepted or suppressed risk
+  is stated with its reason.
+- CBL-Mariner 2.0 images map to `Azure Linux:2` and openSUSE Tumbleweed to
+  `openSUSE:Tumbleweed`; a RHEL component missing streams in an offline
+  database is counted once.
+- .NET: conditional `<Version>` children and `<Choose>` blocks are noted, an
+  id pinned twice in `Directory.Packages.props` is noted, and a symlinked
+  nearest `Directory.*` file stops the search with a note.
+- Go: unframed module information is ignored like Go's own reader does, and
+  the standard library is shown as `go-stdlib`.
+- `--advisory-policy` may name a symlinked file; policy and config read
+  errors say what is wrong once ("is a directory, not a file"); an unreadable
+  `.oxaudit` directory is a failure (exit 3) again; config TOML errors name
+  the line; the agent's dependency tool marks dismissed advisories; the
+  "Dismissed by policy" badge exposes its reason to assistive technology.
+- SARIF URI prefixes are percent-encoded; grype keeps `1.0~rc1` apart from
+  `1.0`; the pre-commit block goes after a hook's plain environment setup
+  (`export`, assignments, `set`) and before any sourced file or command;
+  `core.hooksPath` is found in every git config scope and `include` file;
+  flow-style workflow steps (`- {run: …}`) are checked for script injection
+  (a `run:` whose script holds a `{…}` literal is still a script);
+  credential URLs are judged by their password, not a placeholder-looking
+  user name; `.pre-commit-hooks.yaml` declares pre-commit 3.2.0.
 - A requirements file line of `-` followed by a non-ASCII character no longer
   aborts the dependency scan (found by fuzzing).
 - Debian, Ubuntu and Alpine image packages are now looked up by their source

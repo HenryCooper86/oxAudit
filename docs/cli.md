@@ -330,7 +330,7 @@ one is scanned on text alone.
 
 | Subcommand | Meaning |
 | --- | --- |
-| `hook install` | Write, or idempotently refresh, the oxAudit block in `.git/hooks/pre-commit`, preserving any hook already there. The block goes directly after the shebang, before the existing hook, so a hook that ends in `exec` cannot skip it |
+| `hook install` | Write, or idempotently refresh, the oxAudit block in `.git/hooks/pre-commit`, preserving any hook already there. The block goes after the shebang and any plain environment setup (`export`, assignments, `set`), before the first command or sourced file, so a hook that ends in `exec` cannot skip it |
 | `hook uninstall` | Remove the oxAudit block from the pre-commit hook, leaving the rest of the hook — and the file, when anything else remains — untouched |
 | `hook status` | Report whether the hook is installed and the exact command it runs, or that it is not active because `core.hooksPath` is set |
 

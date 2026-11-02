@@ -603,13 +603,23 @@ fn managed_block_span(content: &str) -> Option<(usize, usize)> {
 /// `.git/hooks`, so a block installed there would never run. Hook managers
 /// such as husky set it.
 fn configured_hooks_path(root: &Path, global: impl FnOnce() -> Option<String>) -> Option<String> {
-    let local = git_output(root, &["config", "--local", "--get", "core.hooksPath"])
+    // Every scope git reads, nearest first: worktree, local, the user's
+    // global config (injected, so tests do not depend on the machine), then
+    // system — each with `include` files followed.
+    let scope = |flag: &str| {
+        git_output(
+            root,
+            &["config", flag, "--includes", "--get", "core.hooksPath"],
+        )
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty());
-    local
+        .filter(|text| !text.is_empty())
+    };
+    scope("--worktree")
+        .or_else(|| scope("--local"))
         .or_else(global)
+        .or_else(|| scope("--system"))
         .filter(|hooks_path| !names_standard_hooks_dir(root, hooks_path))
 }
 
@@ -641,7 +651,13 @@ fn names_standard_hooks_dir(root: &Path, hooks_path: &str) -> bool {
 /// global configuration.
 fn global_hooks_path() -> Option<String> {
     let output = std::process::Command::new("git")
-        .args(["config", "--global", "--get", "core.hooksPath"])
+        .args([
+            "config",
+            "--global",
+            "--includes",
+            "--get",
+            "core.hooksPath",
+        ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -675,22 +691,66 @@ fn describe_hook_status(root: &Path, hooks_path: Option<&str>) -> Result<String,
 /// the top when there is none), so it runs before the user's own hook, which
 /// may end in `exec`.
 fn with_block_first(content: &str, block: &str) -> String {
-    let mut out = String::with_capacity(content.len() + block.len());
-    if content.starts_with("#!") {
-        let (first, rest) = match content.find('\n') {
-            Some(index) => content.split_at(index + 1),
-            None => (content, ""),
-        };
-        out.push_str(first);
-        if !first.ends_with('\n') {
-            out.push('\n');
+    // The block goes after the shebang and after the hook's environment
+    // setup (comments, blank lines, `export`, plain assignments and `set`),
+    // so a `PATH` the user sets is in place when `oxaudit-cli` runs — and
+    // before the first command, so a hook that ends in `exec` cannot skip
+    // it. A sourced file is a command: it can `exit` or `exec`.
+    fn is_setup(line: &str) -> bool {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return true;
         }
-        out.push_str(block);
-        out.push_str(rest);
-    } else {
-        out.push_str(block);
-        out.push_str(content);
+        // A continued line, an open quote or a chained command is not plain
+        // setup, whatever it starts with.
+        if line.ends_with('\\') || line.contains([';', '&', '|']) || !quotes_close(line) {
+            return false;
+        }
+        if line.starts_with("export ") || line.starts_with("set -") || line.starts_with("set +") {
+            return true;
+        }
+        // `NAME=value` with nothing after it: an assignment, not a command.
+        match line.split_once('=') {
+            Some((name, value)) => {
+                !name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && !name.starts_with(|c: char| c.is_ascii_digit())
+                    && !value.contains(char::is_whitespace)
+            }
+            None => false,
+        }
     }
+    fn quotes_close(line: &str) -> bool {
+        let (mut single, mut double, mut escaped) = (false, false, false);
+        for c in line.chars() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if !single => escaped = true,
+                '\'' if !double => single = !single,
+                '"' if !single => double = !double,
+                _ => {}
+            }
+        }
+        !single && !double
+    }
+    let mut split = 0;
+    let mut first_line = true;
+    for line in content.split_inclusive('\n') {
+        let shebang = first_line && line.starts_with("#!");
+        first_line = false;
+        if !shebang && !is_setup(line) {
+            break;
+        }
+        split += line.len();
+    }
+    let (head, rest) = content.split_at(split);
+    let mut out = String::with_capacity(content.len() + block.len() + 1);
+    out.push_str(head);
+    if !head.is_empty() && !head.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(block);
+    out.push_str(rest);
     out
 }
 
@@ -997,6 +1057,55 @@ mod tests {
         assert!(uninstall_hook(root.path()).expect("uninstall succeeds"));
         // The user's hook survives byte for byte; only our block is gone.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn the_block_is_placed_after_the_user_s_environment_setup() {
+        let content = "#!/bin/sh\n# Tools live in ~/bin\nexport PATH=\"$HOME/bin:$PATH\"\nNODE_OPTIONS=--max-old-space-size=4096\nset -e\n\nnpm test\nexec npx lint-staged\n";
+        let placed = with_block_first(content, "BLOCK\n");
+        let block = placed.find("BLOCK").unwrap();
+        assert!(block > placed.find("set -e").unwrap(), "{placed}");
+        assert!(block < placed.find("npm test").unwrap(), "{placed}");
+        // A sourced file is arbitrary code that can `exit` or `exec`, and a
+        // line that continues, leaves a quote open or chains a command is
+        // not plain setup: the block goes before each of them.
+        for user in [
+            ". \"$(dirname \"$0\")/husky.sh\"\n",
+            "source ~/.hookrc\n",
+            "export X=1; exec y\n",
+            "export X=1 && exec y\n",
+            "X=1 || exec y\n",
+            "export X=1 | y\n",
+            "export X=1 \\\n  exec y\n",
+            "MSG=\"first\nexec y\"\n",
+        ] {
+            let content = format!("#!/bin/sh\nexport PATH=/opt/bin:$PATH\n{user}");
+            assert_eq!(
+                with_block_first(&content, "BLOCK\n"),
+                format!("#!/bin/sh\nexport PATH=/opt/bin:$PATH\nBLOCK\n{user}"),
+                "{user:?}"
+            );
+        }
+        // Without setup lines, the block still goes right after the shebang.
+        assert_eq!(
+            with_block_first("#!/bin/sh\nexec x\n", "BLOCK\n"),
+            "#!/bin/sh\nBLOCK\nexec x\n"
+        );
+    }
+
+    #[test]
+    fn a_hooks_path_from_an_included_config_is_honoured() {
+        let root = repository();
+        let included = root.path().join("shared.gitconfig");
+        std::fs::write(&included, "[core]\n\thooksPath = .shared-hooks\n").unwrap();
+        crate::git_context::tests::git(
+            root.path(),
+            &["config", "include.path", included.to_str().unwrap()],
+        );
+        assert_eq!(
+            configured_hooks_path(root.path(), || None).as_deref(),
+            Some(".shared-hooks")
+        );
     }
 
     #[test]

@@ -14,6 +14,25 @@ use serde::Deserialize;
 
 use super::FailOn;
 
+/// Why the config could not be used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigError {
+    /// The file is wrong (bad TOML, unknown key, refused file): a usage
+    /// error, exit 2.
+    Invalid(String),
+    /// The file or its directory exists but cannot be read: a failure,
+    /// exit 3, as an unreadable `.oxaudit` was before the config existed.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(message) | Self::Unreadable(message) => f.write_str(message),
+        }
+    }
+}
+
 /// Where the file lives, relative to the scan root.
 pub const PROJECT_CONFIG_PATH: &str = ".oxaudit/config.toml";
 const FILE_NAME: &str = "config.toml";
@@ -61,16 +80,36 @@ pub struct DepsConfig {
 
 /// Read `<root>/.oxaudit/config.toml`. `Ok(None)` when there is none; an
 /// `Err` names what is wrong, and callers treat it as a usage error.
-pub fn load_project_config(root: &Path) -> Result<Option<ProjectConfig>, String> {
-    let invalid = |reason: String| format!("invalid {PROJECT_CONFIG_PATH}: {reason}");
-    let Some(bytes) = crate::findings::policy::read_project_file(root, FILE_NAME, MAX_CONFIG_BYTES)
-        .map_err(|reason| format!("{reason} (at most {MAX_CONFIG_BYTES} bytes, not a symlink)"))?
-    else {
-        return Ok(None);
+pub fn load_project_config(root: &Path) -> Result<Option<ProjectConfig>, ConfigError> {
+    let invalid =
+        |reason: String| ConfigError::Invalid(format!("invalid {PROJECT_CONFIG_PATH}: {reason}"));
+    use crate::findings::policy::ProjectFileError;
+    let bytes = match crate::findings::policy::read_project_file(root, FILE_NAME, MAX_CONFIG_BYTES)
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Ok(None),
+        Err(ProjectFileError::Refused(reason)) => {
+            return Err(ConfigError::Invalid(format!(
+                "{PROJECT_CONFIG_PATH} {reason}"
+            )))
+        }
+        Err(ProjectFileError::Unreadable(reason)) => {
+            return Err(ConfigError::Unreadable(format!(
+                "{PROJECT_CONFIG_PATH} {reason}"
+            )))
+        }
     };
     let text = std::str::from_utf8(&bytes).map_err(|_| invalid("it is not UTF-8".into()))?;
-    let raw: RawConfig =
-        toml::from_str(text).map_err(|error| invalid(error.message().to_string()))?;
+    let raw: RawConfig = toml::from_str(text).map_err(|error| {
+        // Point at the line, so the fix is one look away.
+        let line = error
+            .span()
+            .map(|span| text[..span.start.min(text.len())].matches('\n').count() + 1);
+        match line {
+            Some(line) => invalid(format!("line {line}: {}", error.message())),
+            None => invalid(error.message().to_string()),
+        }
+    })?;
     match raw.version {
         Some(1) => {}
         Some(other) => {
@@ -144,7 +183,7 @@ mod tests {
 
     fn error(root: &Path, body: &str) -> String {
         write_config(root, body);
-        load_project_config(root).expect_err(body)
+        load_project_config(root).expect_err(body).to_string()
     }
 
     #[test]
@@ -211,6 +250,8 @@ fail_on_new = "high"
         let root = tempfile::tempdir().unwrap();
         let typo = error(root.path(), "version = 1\n[scan]\nfail_onn = \"high\"\n");
         assert!(typo.contains("fail_onn"), "{typo}");
+        // The error points at the line.
+        assert!(typo.contains("line 3"), "{typo}");
         let table = error(root.path(), "version = 1\n[image]\nfail_on = \"high\"\n");
         assert!(table.contains("image"), "{table}");
         let value = error(root.path(), "version = 1\n[scan]\nfail_on = \"severe\"\n");

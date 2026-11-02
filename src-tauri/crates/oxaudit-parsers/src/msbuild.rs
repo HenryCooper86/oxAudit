@@ -22,9 +22,16 @@ pub struct CentralVersions {
     versions: BTreeMap<String, String>,
     /// `<GlobalPackageReference>` items: packages every project references.
     globals: Vec<(String, String)>,
+    /// Caveats about the pins themselves (an id pinned more than once).
+    notes: Vec<String>,
 }
 
 impl CentralVersions {
+    /// Caveats to carry into each project's inventory notes.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
+    }
+
     /// `(package id, version)` of every `<GlobalPackageReference>`.
     pub fn global_references(&self) -> Vec<(String, String)> {
         self.globals.clone()
@@ -55,12 +62,21 @@ pub fn is_msbuild_project(path: &std::path::Path) -> bool {
 /// Read the `<PackageVersion>` pins of a `Directory.Packages.props`.
 pub fn parse_central_versions(content: &str) -> Result<CentralVersions, String> {
     let mut versions = BTreeMap::new();
+    let mut notes = Vec::new();
     // Include declares a pin, Update changes one; either sets the version.
     for item in read_items(content, "PackageVersion", "Directory.Packages.props")? {
         if item.action == Action::Remove {
             versions.remove(&item.include.to_ascii_lowercase());
         } else if let Some(version) = item.version {
-            versions.insert(item.include.to_ascii_lowercase(), version);
+            let previous = versions.insert(item.include.to_ascii_lowercase(), version);
+            // Two Include pins of one id: conditions are not evaluated, so
+            // which one applies is not known; the last is used.
+            if previous.is_some() && item.action == Action::Include {
+                notes.push(format!(
+                    "{} is pinned more than once in Directory.Packages.props; the last pin is used",
+                    item.include
+                ));
+            }
         }
     }
     let globals = read_items(
@@ -72,7 +88,11 @@ pub fn parse_central_versions(content: &str) -> Result<CentralVersions, String> 
     .filter(|item| item.action == Action::Include)
     .filter_map(|item| item.version.map(|version| (item.include, version)))
     .collect();
-    Ok(CentralVersions { versions, globals })
+    Ok(CentralVersions {
+        versions,
+        globals,
+        notes,
+    })
 }
 
 /// A legacy `packages.config`: `<packages><package id=… version=…/></packages>`.
@@ -336,7 +356,9 @@ fn read_items(content: &str, item: &str, what: &str) -> Result<Vec<Item>, String
             }
             *saw_root = true;
         }
-        let conditional = attribute(element, "Condition")?.is_some();
+        // `<Otherwise>` carries no Condition attribute but is just as
+        // conditional as its sibling `<When>`.
+        let conditional = attribute(element, "Condition")?.is_some() || name == "Otherwise";
         let found = if name == item {
             let mut named = None;
             for (key, action) in [
@@ -396,13 +418,20 @@ fn read_items(content: &str, item: &str, what: &str) -> Result<Vec<Item>, String
             }
             Ok(Event::End(_)) => {
                 let depth = stack.len();
-                let (name, _) = stack
+                let (name, child_conditional) = stack
                     .pop()
                     .ok_or_else(|| invalid("unbalanced elements".into()))?;
                 let value = std::mem::take(&mut text).trim().to_string();
                 if let Some((open_items, item_depth)) = &mut current {
                     if depth == *item_depth + 1 && !value.is_empty() {
                         for open_item in open_items.iter_mut() {
+                            // A version chosen under a condition makes the
+                            // reference conditional too.
+                            if child_conditional
+                                && matches!(name.as_str(), "Version" | "VersionOverride")
+                            {
+                                open_item.conditional = true;
+                            }
                             match name.as_str() {
                                 "Version" => open_item.version = Some(value.clone()),
                                 "VersionOverride" => {
@@ -670,6 +699,55 @@ mod tests {
             .iter()
             .any(|note| note.contains("Floating")));
         assert!(parse_packages_config("<notpackages/>").is_err());
+    }
+
+    #[test]
+    fn conditional_version_children_and_choose_blocks_are_noted() {
+        let inventory = parse_project(
+            &project(
+                r#"    <PackageReference Include="A">
+      <Version Condition="'$(X)' == 'y'">1.0.0</Version>
+    </PackageReference>
+  </ItemGroup>
+  <Choose>
+    <When Condition="'$(Os)' == 'win'">
+      <ItemGroup><PackageReference Include="B" Version="2.0.0" /></ItemGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup><PackageReference Include="C" Version="3.0.0" /></ItemGroup>
+    </Otherwise>
+  </Choose>
+  <ItemGroup>"#,
+            ),
+            None,
+        )
+        .expect("project");
+        for id in ["A", "B", "C"] {
+            assert!(
+                inventory
+                    .unchecked
+                    .iter()
+                    .any(|note| note.starts_with(&format!("{id} ")) && note.contains("condition")),
+                "{id}: {:?}",
+                inventory.unchecked
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_central_pins_are_noted() {
+        let central = parse_central_versions(
+            "<Project><ItemGroup><PackageVersion Include=\"A\" Version=\"1.0.0\" Condition=\"'$(X)'=='1'\" /><PackageVersion Include=\"A\" Version=\"2.0.0\" /></ItemGroup></Project>",
+        )
+        .expect("props");
+        assert!(
+            central
+                .notes()
+                .iter()
+                .any(|note| note.contains("A") && note.contains("pinned more than once")),
+            "{:?}",
+            central.notes()
+        );
     }
 
     #[test]

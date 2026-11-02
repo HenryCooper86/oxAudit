@@ -237,3 +237,32 @@ async fn dependency_tool_preserves_authorized_and_ignored_subdirectory_scope() {
     .unwrap_err();
     assert!(error.contains("outside the authorized project"), "{error}");
 }
+
+#[tokio::test]
+async fn dependency_tool_says_which_advisories_the_policy_dismissed() {
+    let directory = tempfile::tempdir().unwrap();
+    project(directory.path());
+    std::fs::create_dir_all(directory.path().join(".oxaudit")).unwrap();
+    std::fs::write(
+        directory.path().join(".oxaudit/advisory-policy.json"),
+        r#"{"version":1,"entries":[{"advisory":"GHSA-tool","state":"acceptedRisk","reason":"Test fixture"}]}"#,
+    )
+    .unwrap();
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let cancel = AtomicBool::new(false);
+    let result = scan(
+        directory.path(),
+        &repo,
+        &Provider {
+            mode: "full",
+            cancel: &cancel,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["top_vulnerabilities"][0]["dismissed"], true);
+    assert_eq!(
+        result["top_vulnerabilities"][0]["review_state"],
+        "acceptedRisk"
+    );
+}

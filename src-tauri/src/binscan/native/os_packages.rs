@@ -41,6 +41,8 @@ mod tests {
             b"ID=\"almalinux\"\nVERSION_ID=\"9.4\"\n",
             b"ID=\"opensuse-leap\"\nVERSION_ID=\"15.5\"\n",
             b"ID=azurelinux\nVERSION_ID=\"3.0\"\n",
+            b"ID=mariner\nVERSION_ID=2.0\n",
+            b"ID=\"opensuse-tumbleweed\"\nVERSION_ID=\"20251030\"\n",
             b"ID=\"openEuler\"\nVERSION=\"22.03 (LTS-SP4)\"\nVERSION_ID=\"22.03\"\n",
         ] {
             for ecosystem in osv_query_ecosystems(&ecosystem_of(os_release)) {

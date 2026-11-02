@@ -3923,7 +3923,7 @@ fn image_scans_answer_go_stdlib_offline() {
         std::fs::write(&path, builder.into_inner().expect("image tar")).expect("write image");
         path
     });
-    let stdlib = component(&document, "stdlib");
+    let stdlib = component(&document, "go-stdlib");
     let vulnerabilities = stdlib["vulnerabilities"].as_array().unwrap();
     assert_eq!(vulnerabilities.len(), 1, "{stdlib}");
     assert_eq!(vulnerabilities[0]["cveId"], "CVE-2099-4444");
@@ -3932,4 +3932,232 @@ fn image_scans_answer_go_stdlib_offline() {
     // unknown and does not trip a severity gate (as with other unrated
     // distribution records); the docs say so.
     assert_eq!(vulnerabilities[0]["severity"], "unknown");
+}
+
+/// An advisory database with two npm advisories: the fixture
+/// `GHSA-e2e-fixture` on `example` below 2.0.0 and `GHSA-e2e-second` on
+/// `other` below 2.0.0.
+fn two_advisory_dump_zip() -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (id, package) in [
+        ("GHSA-e2e-fixture", "example"),
+        ("GHSA-e2e-second", "other"),
+    ] {
+        let advisory = serde_json::json!({
+            "id": id, "summary": "fixture",
+            "severity": [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+            "affected": [{ "package": { "ecosystem": "npm", "name": package },
+                "ranges": [{ "type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "2.0.0"}] }] }]
+        })
+        .to_string();
+        writer
+            .start_file(
+                format!("{id}.json"),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("zip member");
+        std::io::Write::write_all(&mut writer, advisory.as_bytes()).expect("zip body");
+    }
+    writer.finish().expect("zip").into_inner()
+}
+
+fn two_advisory_db(workspace: &Path) -> PathBuf {
+    let server = DumpServer::start(two_advisory_dump_zip());
+    let db = workspace.join("advisories.sqlite3");
+    let output = run(&[
+        "advisory-db",
+        "update",
+        "--db",
+        &db.to_string_lossy(),
+        "--source",
+        &server.base(),
+        "--ecosystem",
+        "npm",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    db
+}
+
+#[test]
+fn fail_on_new_gates_the_undismissed_and_not_the_dismissed_in_one_run() {
+    let workspace = tempfile::tempdir().unwrap();
+    let db = two_advisory_db(workspace.path());
+    let empty = empty_dependency_project();
+    let output = offline_deps(empty.path(), &db, &["--format", "json"]);
+    let baseline = workspace.path().join("baseline.json");
+    std::fs::write(&baseline, &output.stdout).unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"node_modules/example":{"version":"1.0.0"},"node_modules/other":{"version":"1.0.0"}}}"#,
+    )
+    .unwrap();
+    write_project_advisory_policy(
+        project.path(),
+        r#"{"version":1,"entries":[{"advisory":"GHSA-e2e-fixture","state":"acceptedRisk","reason":"Build only"}]}"#,
+    );
+    let new_only = [
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--fail-on-new",
+        "low",
+        "--format",
+        "json",
+    ];
+    let output = offline_deps(project.path(), &db, &new_only);
+    assert_eq!(code(&output), 1, "the undismissed new advisory still gates");
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let reviewed: Vec<(&str, bool)> = document["vulnerabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| (v["id"].as_str().unwrap(), v.get("review").is_some()))
+        .collect();
+    assert!(
+        reviewed.contains(&("GHSA-e2e-fixture", true)),
+        "{reviewed:?}"
+    );
+    assert!(
+        reviewed.contains(&("GHSA-e2e-second", false)),
+        "{reviewed:?}"
+    );
+}
+
+#[test]
+fn a_version_narrowed_entry_dismisses_only_that_version() {
+    let workspace = tempfile::tempdir().unwrap();
+    let db = two_advisory_db(workspace.path());
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"node_modules/example":{"version":"1.0.0"},"node_modules/nested/node_modules/example":{"version":"1.5.0"}}}"#,
+    )
+    .unwrap();
+    write_project_advisory_policy(
+        project.path(),
+        r#"{"version":1,"entries":[{"advisory":"GHSA-e2e-fixture","version":"1.0.0","state":"falsePositive","reason":"Patched copy"}]}"#,
+    );
+    let output = offline_deps(project.path(), &db, &["--format", "json"]);
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut versions: Vec<(String, bool)> = document["vulnerabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["id"] == "GHSA-e2e-fixture")
+        .map(|v| {
+            (
+                v["installedVersion"].as_str().unwrap().to_string(),
+                v.get("review").is_some(),
+            )
+        })
+        .collect();
+    versions.sort();
+    assert_eq!(
+        versions,
+        [("1.0.0".to_string(), true), ("1.5.0".to_string(), false)]
+    );
+}
+
+#[test]
+fn a_directory_at_the_policy_path_is_refused() {
+    let (_workspace, db, project) = advisory_policy_fixture();
+    std::fs::create_dir_all(project.path().join(".oxaudit/advisory-policy.json")).unwrap();
+    let output = offline_deps(project.path(), &db, &["-q"]);
+    assert_eq!(code(&output), 3);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is a directory, not a file"), "{stderr}");
+}
+
+#[test]
+fn config_rule_pack_files_are_applied() {
+    let project = rule_pack_project();
+    // The pack lives inside the project, as a committed config requires.
+    let packs = project.path().join("security");
+    std::fs::create_dir_all(&packs).unwrap();
+    rule_pack_fixture(&packs);
+    write_project_config(
+        project.path(),
+        "version = 1\n[scan]\nrule_pack_files = [\"security/pack.toml\"]\n",
+    );
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--format",
+        "json",
+        "-q",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["ruleId"] == "rulepack.e2e/source.e2e-marker"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("1 rule pack(s)"), "{stderr}");
+}
+
+#[test]
+fn the_config_notice_reaches_the_github_step_summary() {
+    let project = project();
+    write_project_config(
+        project.path(),
+        "version = 1\n[scan]\nfail_on = \"critical\"\n",
+    );
+    let summary = tempfile::NamedTempFile::new().unwrap();
+    let output = cli()
+        .args(["scan", &project.path().to_string_lossy(), "-q"])
+        .env("GITHUB_ACTIONS", "true")
+        .env_remove("GITHUB_WORKSPACE")
+        .env("GITHUB_STEP_SUMMARY", summary.path())
+        .output()
+        .expect("cli runs");
+    assert!(output.status.code().is_some());
+    let written = std::fs::read_to_string(summary.path()).unwrap();
+    assert!(
+        written.contains("Settings from .oxaudit/config.toml: --fail-on critical"),
+        "{written}"
+    );
+}
+
+#[test]
+fn a_deps_fail_on_flag_overrides_the_config() {
+    let (_workspace, db, project) = advisory_policy_fixture();
+    write_project_config(project.path(), "version = 1\n[deps]\nfail_on = \"low\"\n");
+    assert_eq!(code(&offline_deps(project.path(), &db, &["-q"])), 1);
+    assert_eq!(
+        code(&offline_deps(
+            project.path(),
+            &db,
+            &["-q", "--fail-on", "none"]
+        )),
+        0
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_oxaudit_directory_is_a_failure_not_a_usage_error() {
+    let project = project();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), project.path().join(".oxaudit")).unwrap();
+    let output = run(&["scan", &project.path().to_string_lossy(), "-q"]);
+    assert_eq!(
+        code(&output),
+        3,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("at most"), "{stderr}");
 }

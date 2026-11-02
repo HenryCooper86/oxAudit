@@ -33,6 +33,12 @@ pub fn values(bytes: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
 /// Every key and value in the database, in page order. Keys stored off-page
 /// (which rpm never writes) come back empty.
 pub fn entries(bytes: &[u8]) -> Result<Vec<Entry>, &'static str> {
+    entries_and_skipped(bytes).map(|(entries, _)| entries)
+}
+
+/// [`entries`], plus how many values were of a kind this reader does not
+/// decode (duplicate sets, `H_DUPLICATE`/`H_OFFDUP`), so callers can say so.
+pub fn entries_and_skipped(bytes: &[u8]) -> Result<(Vec<Entry>, usize), &'static str> {
     const HASH_MAGIC: u32 = 0x0006_1561;
     const PAGE_HEADER: usize = 26;
     const P_HASH_UNSORTED: u8 = 2;
@@ -91,6 +97,7 @@ pub fn entries(bytes: &[u8]) -> Result<Vec<Entry>, &'static str> {
     // and keeps a crafted file from multiplying one chain into many values.
     let mut claimed = vec![false; page_count];
     let mut values = Vec::new();
+    let mut skipped = 0usize;
     for number in 1..=last_page {
         let hash_page = page(number).ok_or("Berkeley DB page is out of range")?;
         if !matches!(hash_page[25], P_HASH | P_HASH_UNSORTED) {
@@ -176,11 +183,11 @@ pub fn entries(bytes: &[u8]) -> Result<Vec<Entry>, &'static str> {
                     }
                     values.push((key, value));
                 }
-                _ => {}
+                _ => skipped += 1,
             }
         }
     }
-    Ok(values)
+    Ok((values, skipped))
 }
 
 /// Encode values as a little-endian hash database with off-page values.
@@ -382,6 +389,27 @@ mod tests {
         }
         file[page..].copy_from_slice(&hash);
         assert!(values(&file).is_err());
+    }
+
+    #[test]
+    fn duplicate_value_items_are_counted_not_dropped() {
+        // H_DUPLICATE (2) and H_OFFDUP (4) values are not read; they must be
+        // counted so the caller can say so, not silently vanish.
+        let mut file = Writer::new(512, false).build(&[
+            (1, header_like(20, 11), true),
+            (2, header_like(20, 12), true),
+        ]);
+        let page = file.len() - 512;
+        let offsets: Vec<usize> = (0..4)
+            .map(|i| {
+                u16::from_le_bytes([file[page + HEADER + i * 2], file[page + HEADER + i * 2 + 1]])
+                    as usize
+            })
+            .collect();
+        file[page + offsets[3]] = 2; // the second value becomes H_DUPLICATE
+        let (entries, skipped) = entries_and_skipped(&file).expect("readable");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(skipped, 1);
     }
 
     #[test]

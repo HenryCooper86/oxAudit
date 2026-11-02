@@ -173,9 +173,11 @@ pub fn parse_msbuild_inventory(path: &Path, scan_root: &Path) -> Result<Lockfile
     // and Directory.Build.targets above a project; each is looked for
     // separately, and nothing above the scan root is read.
     let mut central_file = None;
+    let mut found_central = false;
     let mut build_files: Vec<std::path::PathBuf> = Vec::new();
     let mut found_props = false;
     let mut found_targets = false;
+    let mut symlink_notes = Vec::new();
     let mut directory = path.parent();
     while let Some(dir) = directory {
         let canonical = match dir.canonicalize() {
@@ -185,26 +187,34 @@ pub fn parse_msbuild_inventory(path: &Path, scan_root: &Path) -> Result<Lockfile
         if !canonical.starts_with(&scan_root) {
             break;
         }
-        let present = |name: &str| {
+        // The nearest file of each name is the one MSBuild uses. A symlink
+        // is not read, but it still ends that file's search: falling through
+        // to an outer file would apply pins this project does not use.
+        let mut nearest = |name: &str, found: &mut bool| -> Option<std::path::PathBuf> {
+            if *found {
+                return None;
+            }
             let candidate = canonical.join(name);
-            std::fs::symlink_metadata(&candidate)
-                .is_ok_and(|metadata| metadata.is_file())
-                .then_some(candidate)
+            let metadata = std::fs::symlink_metadata(&candidate).ok()?;
+            *found = true;
+            if metadata.file_type().is_symlink() {
+                symlink_notes.push(format!(
+                    "{} is a symlink and was not read; the packages it declares or pins are not checked",
+                    candidate.display()
+                ));
+                None
+            } else {
+                metadata.is_file().then_some(candidate)
+            }
         };
-        if central_file.is_none() {
-            central_file = present("Directory.Packages.props");
+        if let Some(file) = nearest("Directory.Packages.props", &mut found_central) {
+            central_file = Some(file);
         }
-        if !found_props {
-            if let Some(file) = present("Directory.Build.props") {
-                build_files.push(file);
-                found_props = true;
-            }
+        if let Some(file) = nearest("Directory.Build.props", &mut found_props) {
+            build_files.push(file);
         }
-        if !found_targets {
-            if let Some(file) = present("Directory.Build.targets") {
-                build_files.push(file);
-                found_targets = true;
-            }
+        if let Some(file) = nearest("Directory.Build.targets", &mut found_targets) {
+            build_files.push(file);
         }
         if canonical == scan_root {
             break;
@@ -230,7 +240,9 @@ pub fn parse_msbuild_inventory(path: &Path, scan_root: &Path) -> Result<Lockfile
         project.merge(crate::msbuild::MsbuildInventory::from_pins(
             central.global_references(),
         ));
+        project.unchecked.extend(central.notes().iter().cloned());
     }
+    project.unchecked.extend(symlink_notes);
     let packages_config = path.with_file_name("packages.config");
     if std::fs::symlink_metadata(&packages_config).is_ok_and(|metadata| metadata.is_file()) {
         project.merge(crate::msbuild::parse_packages_config(&read_bounded_text(
@@ -247,7 +259,16 @@ pub fn parse_msbuild_inventory(path: &Path, scan_root: &Path) -> Result<Lockfile
     ))
 }
 
+/// Read a dependency file as text, refusing one larger than `max_bytes`
+/// before reading it whole: the one bounded read every lockfile goes through.
 fn read_bounded_text(path: &Path, max_bytes: u64) -> Result<String, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| format!("read failed: {error}"))?;
+    if metadata.len() > max_bytes {
+        return Err(format!(
+            "{RESOURCE_LIMIT_PREFIX} lockfile exceeds {max_bytes} bytes; scan a smaller \
+             subdirectory or exclude that generated/vendor path"
+        ));
+    }
     let file = std::fs::File::open(path).map_err(|error| format!("read failed: {error}"))?;
     let mut content = String::new();
     file.take(max_bytes.saturating_add(1))
@@ -313,24 +334,7 @@ fn parse_lockfile_inventory_with_limit(
         .or_else(|| (kind == "pip").then_some("requirements.txt"))
         .unwrap_or(file_name);
     let lockfile = path.to_string_lossy().replace('\\', "/");
-    let metadata = std::fs::metadata(path).map_err(|error| format!("read failed: {error}"))?;
-    if metadata.len() > max_bytes {
-        return Err(format!(
-            "{RESOURCE_LIMIT_PREFIX} lockfile exceeds {max_bytes} bytes; scan a smaller \
-             subdirectory or exclude that generated/vendor path"
-        ));
-    }
-    let file = std::fs::File::open(path).map_err(|error| format!("read failed: {error}"))?;
-    let mut content = String::new();
-    file.take(max_bytes.saturating_add(1))
-        .read_to_string(&mut content)
-        .map_err(|error| format!("read failed: {error}"))?;
-    if content.len() as u64 > max_bytes {
-        return Err(format!(
-            "{RESOURCE_LIMIT_PREFIX} lockfile exceeds {max_bytes} bytes; scan a smaller \
-             subdirectory or exclude that generated/vendor path"
-        ));
-    }
+    let content = read_bounded_text(path, max_bytes)?;
     if name == "go.sum" && !path.with_file_name("go.mod").is_file() {
         return Err(
             "go.sum is checksum history, not an installed inventory; supply the sibling go.mod"
@@ -4613,6 +4617,41 @@ url = "https://example.com/wheel_only-0.3.0-py3-none-any.whl"
                 ("System.Net.Http".to_string(), "4.3.0".to_string()),
                 ("System.Text.Encodings.Web".to_string(), "4.5.0".to_string()),
             ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_nearest_props_file_stops_the_walk_with_a_note() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("src/App");
+        std::fs::create_dir_all(&app).unwrap();
+        // The outer file would pin A; the nearer one is a symlink and is not
+        // read, so falling through to the outer file would apply wrong pins.
+        std::fs::write(root.path().join("Directory.Packages.props"), "<Project><ItemGroup><PackageVersion Include=\"A\" Version=\"9.9.9\" /></ItemGroup></Project>").unwrap();
+        let target = root.path().join("real.props");
+        std::fs::write(&target, "<Project><ItemGroup><PackageVersion Include=\"A\" Version=\"1.0.0\" /></ItemGroup></Project>").unwrap();
+        std::os::unix::fs::symlink(&target, root.path().join("src/Directory.Packages.props"))
+            .unwrap();
+        let project = app.join("App.csproj");
+        std::fs::write(
+            &project,
+            "<Project><ItemGroup><PackageReference Include=\"A\" /></ItemGroup></Project>",
+        )
+        .unwrap();
+        let inventory = super::parse_msbuild_inventory(&project, root.path()).expect("project");
+        assert!(
+            inventory.dependencies.is_empty(),
+            "{:?}",
+            inventory.dependencies
+        );
+        assert!(
+            inventory
+                .notes
+                .iter()
+                .any(|note| note.contains("Directory.Packages.props") && note.contains("symlink")),
+            "{:?}",
+            inventory.notes
         );
     }
 

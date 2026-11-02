@@ -1897,3 +1897,55 @@ async fn a_project_with_only_a_binary_bun_lockfile_still_says_why() {
         result.summary.inventory_notes
     );
 }
+
+#[tokio::test]
+async fn a_dotnet_project_is_parsed_with_its_central_versions_in_a_scan() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(
+        root.join("Directory.Packages.props"),
+        r#"<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("App")).unwrap();
+    std::fs::write(
+        root.join("App/App.csproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    let mut db = crate::advisories::store::AdvisoryDb::open_in_memory().unwrap();
+    let record = serde_json::json!({
+        "id": "GHSA-nuget-fixture", "summary": "fixture",
+        "affected": [{ "package": { "ecosystem": "NuGet", "name": "Newtonsoft.Json" },
+            "ranges": [{ "type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "13.0.1"}] }] }]
+    });
+    db.insert_record(
+        "GHSA-nuget-fixture",
+        None,
+        &record,
+        &[("NuGet".to_string(), "Newtonsoft.Json".to_string())],
+    )
+    .unwrap();
+    db.finish_update(&["NuGet".to_string()], 1, 1).unwrap();
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let provider = provider();
+    let result = scan(ScanRequest {
+        project_root: root,
+        root,
+        repository: &repo,
+        providers: &provider,
+        offline: true,
+        advisory_db: Some(&db),
+        cancel: &AtomicBool::new(false),
+        events: &events(),
+        cache_path: root,
+        ignored_dirs: &[],
+        advisory_policy: AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.vulnerabilities.len(), 1, "{:?}", result.summary);
+    assert_eq!(result.vulnerabilities[0].package_name, "Newtonsoft.Json");
+    assert_eq!(result.vulnerabilities[0].installed_version, "12.0.1");
+}

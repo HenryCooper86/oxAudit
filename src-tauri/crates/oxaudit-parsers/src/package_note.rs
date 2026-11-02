@@ -200,46 +200,50 @@ fn scan_notes(segment: &[u8], little_endian: bool) -> Option<PackageNote> {
     None
 }
 
+/// Build a 64-bit little-endian ELF carrying one PT_NOTE segment. Test
+/// support for the image scanner as well as this module.
+#[doc(hidden)]
+pub fn encode_elf_with_note_for_tests(owner: &[u8], note_type: u32, payload: &[u8]) -> Vec<u8> {
+    let mut note = Vec::new();
+    let mut owner_field = owner.to_vec();
+    owner_field.push(0);
+    note.extend_from_slice(&(owner_field.len() as u32).to_le_bytes());
+    note.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    note.extend_from_slice(&note_type.to_le_bytes());
+    note.extend_from_slice(&owner_field);
+    while note.len() % 4 != 0 {
+        note.push(0);
+    }
+    note.extend_from_slice(payload);
+    while note.len() % 4 != 0 {
+        note.push(0);
+    }
+
+    let phoff = 0x40usize;
+    let phentsize = 56usize;
+    let note_offset = phoff + phentsize;
+
+    let mut elf = vec![0u8; note_offset];
+    elf[0..4].copy_from_slice(b"\x7fELF");
+    elf[4] = 2; // 64-bit
+    elf[5] = 1; // little-endian
+    elf[0x20..0x28].copy_from_slice(&(phoff as u64).to_le_bytes());
+    elf[0x36..0x38].copy_from_slice(&(phentsize as u16).to_le_bytes());
+    elf[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes());
+
+    elf[phoff..phoff + 4].copy_from_slice(&PT_NOTE.to_le_bytes());
+    elf[phoff + 0x08..phoff + 0x10].copy_from_slice(&(note_offset as u64).to_le_bytes());
+    elf[phoff + 0x20..phoff + 0x28].copy_from_slice(&(note.len() as u64).to_le_bytes());
+
+    elf.extend_from_slice(&note);
+    elf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build a 64-bit little-endian ELF carrying one PT_NOTE segment.
-    fn elf_with_note(owner: &[u8], note_type: u32, payload: &[u8]) -> Vec<u8> {
-        let mut note = Vec::new();
-        let mut owner_field = owner.to_vec();
-        owner_field.push(0);
-        note.extend_from_slice(&(owner_field.len() as u32).to_le_bytes());
-        note.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        note.extend_from_slice(&note_type.to_le_bytes());
-        note.extend_from_slice(&owner_field);
-        while note.len() % 4 != 0 {
-            note.push(0);
-        }
-        note.extend_from_slice(payload);
-        while note.len() % 4 != 0 {
-            note.push(0);
-        }
-
-        let phoff = 0x40usize;
-        let phentsize = 56usize;
-        let note_offset = phoff + phentsize;
-
-        let mut elf = vec![0u8; note_offset];
-        elf[0..4].copy_from_slice(b"\x7fELF");
-        elf[4] = 2; // 64-bit
-        elf[5] = 1; // little-endian
-        elf[0x20..0x28].copy_from_slice(&(phoff as u64).to_le_bytes());
-        elf[0x36..0x38].copy_from_slice(&(phentsize as u16).to_le_bytes());
-        elf[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes());
-
-        elf[phoff..phoff + 4].copy_from_slice(&PT_NOTE.to_le_bytes());
-        elf[phoff + 0x08..phoff + 0x10].copy_from_slice(&(note_offset as u64).to_le_bytes());
-        elf[phoff + 0x20..phoff + 0x28].copy_from_slice(&(note.len() as u64).to_le_bytes());
-
-        elf.extend_from_slice(&note);
-        elf
-    }
+    use super::encode_elf_with_note_for_tests as elf_with_note;
 
     const REAL_PAYLOAD: &[u8] = br#"{"type":"deb","os":"Debian","name":"libzstd","version":"1.5.7+dfsg-1","architecture":"arm64","debugInfoUrl":"https://debuginfod.debian.net"}"#;
 

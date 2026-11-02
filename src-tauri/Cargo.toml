@@ -95,6 +95,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Reads a saved image's manifest.json for layer order (already used by
+# oxaudit-archive).
+tar = "0.4.46"
 tempfile = "3"
 oxaudit-domain = { path = "crates/oxaudit-domain" }
 oxaudit-application = { path = "crates/oxaudit-application" }

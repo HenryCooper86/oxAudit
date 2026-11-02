@@ -659,6 +659,7 @@ name = "oxaudit-parsers"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "memchr",
  "once_cell",
  "quick-xml",
  "regex",

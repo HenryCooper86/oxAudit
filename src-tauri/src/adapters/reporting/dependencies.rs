@@ -64,13 +64,9 @@ struct DetailKey<'a> {
     install_path: Option<&'a str>,
 }
 
-pub(super) fn sarif_results(data: &ReportData) -> Result<Vec<serde_json::Value>, String> {
-    let components = ComponentIndex::new(data);
-    let artifacts: HashMap<_, _> = data
-        .artifacts
-        .iter()
-        .map(|artifact| (artifact.id.as_str(), artifact))
-        .collect();
+/// The projection's vulnerability entries, keyed by advisory, package,
+/// version, ecosystem, lockfile and install path.
+fn details_map(data: &ReportData) -> HashMap<DetailKey<'_>, &serde_json::Value> {
     let mut details = HashMap::new();
     if let Some(entries) = data
         .projection
@@ -101,6 +97,60 @@ pub(super) fn sarif_results(data: &ReportData) -> Result<Vec<serde_json::Value>,
                 .or_insert(entry);
         }
     }
+    details
+}
+
+/// The advisory-policy review recorded for each affected component of each
+/// advisory observation in a dependency run, keyed by (observation id,
+/// component id).
+pub(super) fn policy_reviews(data: &ReportData) -> HashMap<(String, String), serde_json::Value> {
+    let components = ComponentIndex::new(data);
+    let artifacts: HashMap<_, _> = data
+        .artifacts
+        .iter()
+        .map(|artifact| (artifact.id.as_str(), artifact))
+        .collect();
+    let details = details_map(data);
+    let mut reviews = HashMap::new();
+    for record in data
+        .observations
+        .iter()
+        .filter(|record| record.observation.kind == oxaudit_domain::ObservationKind::AdvisoryMatch)
+    {
+        let Some(artifact) = artifacts.get(record.observation.artifact_id.as_str()) else {
+            continue;
+        };
+        for (component, advisory) in components.affected_advisories(record) {
+            let key = DetailKey {
+                advisory: &advisory.advisory_id,
+                package: &component.name,
+                version: component.version.as_deref(),
+                ecosystem: component.ecosystem.as_deref(),
+                lockfile: &artifact.location.normalized_path,
+                install_path: advisory.install_path.as_deref(),
+            };
+            if let Some(review) = details.get(&key).and_then(|detail| detail.get("review")) {
+                reviews.insert(
+                    (
+                        record.observation.id.as_str().to_string(),
+                        component.id.as_str().to_string(),
+                    ),
+                    review.clone(),
+                );
+            }
+        }
+    }
+    reviews
+}
+
+pub(super) fn sarif_results(data: &ReportData) -> Result<Vec<serde_json::Value>, String> {
+    let components = ComponentIndex::new(data);
+    let artifacts: HashMap<_, _> = data
+        .artifacts
+        .iter()
+        .map(|artifact| (artifact.id.as_str(), artifact))
+        .collect();
+    let details = details_map(data);
     let mut results = Vec::new();
     for record in data
         .observations
@@ -240,6 +290,75 @@ mod tests {
             findings: Vec::new(),
             projection,
         }
+    }
+
+    fn reviewed_report(state: &str, reason: &str) -> ReportData {
+        dependency_report(Some(serde_json::json!({
+            "vulnerabilities": [{
+                "id": "GHSA-test",
+                "packageName": "leaf",
+                "installedVersion": "1.0.0",
+                "ecosystem": "npm",
+                "lockfile": "package-lock.json",
+                "severity": "high",
+                "fixedVersions": ["1.0.1"],
+                "review": { "state": state, "reason": reason }
+            }]
+        })))
+    }
+
+    fn exported(data: &ReportData, format: super::super::ReportFormat) -> serde_json::Value {
+        let report = super::super::generate(data, format).expect("export");
+        let value: serde_json::Value = serde_json::from_slice(&report.bytes).unwrap();
+        super::super::validate(&value, format).expect("valid against the bundled schema");
+        value
+    }
+
+    #[test]
+    fn openvex_marks_policy_false_positives_not_affected() {
+        let value = exported(
+            &reviewed_report("falsePositive", "Not reachable"),
+            super::super::ReportFormat::OpenVex,
+        );
+        let statement = &value["statements"][0];
+        assert_eq!(statement["status"], "not_affected");
+        assert_eq!(statement["impact_statement"], "Not reachable");
+        let accepted = exported(
+            &reviewed_report("acceptedRisk", "Build only"),
+            super::super::ReportFormat::OpenVex,
+        );
+        assert_eq!(accepted["statements"][0]["status"], "affected");
+        assert_eq!(
+            accepted["statements"][0]["action_statement"],
+            "Risk accepted: Build only"
+        );
+        // Undismissed advisories keep today's statement.
+        let plain = exported(
+            &dependency_report(None),
+            super::super::ReportFormat::OpenVex,
+        );
+        assert_eq!(plain["statements"][0]["status"], "affected");
+        assert!(plain["statements"][0].get("impact_statement").is_none());
+    }
+
+    #[test]
+    fn cyclonedx_vex_carries_policy_analysis() {
+        let value = exported(
+            &reviewed_report("acceptedRisk", "Build only"),
+            super::super::ReportFormat::CycloneDxVex,
+        );
+        let analysis = &value["vulnerabilities"][0]["analysis"];
+        assert_eq!(analysis["state"], "exploitable");
+        assert_eq!(analysis["response"], serde_json::json!(["will_not_fix"]));
+        assert_eq!(analysis["detail"], "Build only");
+        let false_positive = exported(
+            &reviewed_report("falsePositive", "Not reachable"),
+            super::super::ReportFormat::CycloneDxVex,
+        );
+        assert_eq!(
+            false_positive["vulnerabilities"][0]["analysis"]["state"],
+            "false_positive"
+        );
     }
 
     #[test]

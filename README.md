@@ -1389,6 +1389,16 @@ are dismissed from their own committed file, `.oxaudit/advisory-policy.json`:
 - **An invalid file stops the scan**, as `policy.json` does; pass
   `--ignore-invalid-policy` to scan anyway, with a note saying it was ignored.
 
+- **Scope with care.** An entry with only `advisory` dismisses that advisory
+  in every package and version, including ones added later; narrow it with
+  `package` (and `version`) unless that is what you mean. "The project root"
+  is the directory passed to `deps`: `deps services/api` reads
+  `services/api/.oxaudit/advisory-policy.json`. `monitor` does not apply the
+  policy.
+- **Treat the file as part of your gate.** A pull request can add its own
+  dismissal, so protect `.oxaudit/` with CODEOWNERS, or have CI pass
+  `--advisory-policy` pointing at a file the pull request cannot change.
+
 It is a separate file rather than a new entry kind in `policy.json` because
 `policy.json`'s schema is closed: an older oxAudit refuses to run source
 scans when the file holds an entry kind it does not know, which would break a

@@ -630,6 +630,25 @@ pub fn is_placeholder(value: &str) -> bool {
     false
 }
 
+/// The password of `scheme://user:password@`, as matched by `basic-auth-url`.
+fn url_password(matched: &str) -> Option<&str> {
+    let rest = matched.split_once("://")?.1;
+    let credentials = rest.strip_suffix('@').unwrap_or(rest);
+    Some(credentials.split_once(':')?.1)
+}
+
+/// A URL password that is a stand-in, not a credential: an exact
+/// placeholder word (`password`, `changeme`) or a fill (`xxxxx`, `*****`).
+/// Weak real passwords (`Password1`) are still credentials.
+fn is_placeholder_password(password: &str) -> bool {
+    let lower = password.to_ascii_lowercase();
+    (!password.is_empty()
+        && password
+            .chars()
+            .all(|c| matches!(c, 'x' | 'X' | '*' | '.' | '0' | '-')))
+        || PLACEHOLDERS.iter().any(|placeholder| lower == *placeholder)
+}
+
 /// A single secret hit produced by the engine.
 pub(super) struct SecretHit {
     pub(super) rule_index: usize,
@@ -655,7 +674,14 @@ pub(super) fn scan_content_bounded(content: &str, limit: usize) -> (Vec<SecretHi
                 .get(rule.secret_group)
                 .map(|m| m.as_str())
                 .unwrap_or(whole);
-            if is_placeholder(secret) {
+            // A credential URL is judged by its password: a placeholder word
+            // in the user name (`test`, `example`) says nothing about it.
+            let placeholder = if rule.id == "basic-auth-url" {
+                url_password(secret).is_some_and(is_placeholder_password)
+            } else {
+                is_placeholder(secret)
+            };
+            if placeholder {
                 continue;
             }
             if rule.min_entropy > 0.0 {
@@ -1050,6 +1076,26 @@ mod tests {
             "postgres://app:latest2024x@db/app",
         ] {
             assert!(rule_ids(url).contains(&"basic-auth-url"), "{url}");
+        }
+    }
+
+    #[test]
+    fn short_credential_urls_are_judged_by_their_password() {
+        // A short URL whose user name contains a word like "test" was
+        // dropped whole; the password is what decides.
+        for url in [
+            "ftp://test:Hunter2x@h/",
+            "http://example:S3cure!x@h/",
+            "redis://:pw@cache/",
+        ] {
+            assert!(rule_ids(url).contains(&"basic-auth-url"), "{url}");
+        }
+        for url in [
+            "http://u:password@host/",
+            "http://u:changeme@h/",
+            "http://u:xxxxxx@h/",
+        ] {
+            assert!(!rule_ids(url).contains(&"basic-auth-url"), "{url}");
         }
     }
 

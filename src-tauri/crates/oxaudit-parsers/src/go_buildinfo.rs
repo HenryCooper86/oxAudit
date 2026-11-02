@@ -48,7 +48,7 @@ pub fn read(bytes: &[u8]) -> Result<Option<GoBuildInfo>, &'static str> {
     let (version, mut modinfo) = loop {
         let Some(found) = bytes
             .get(search..)
-            .and_then(|rest| rest.windows(MAGIC.len()).position(|window| window == MAGIC))
+            .and_then(|rest| memchr::memmem::find(rest, MAGIC))
         else {
             return Ok(None);
         };
@@ -76,9 +76,13 @@ pub fn read(bytes: &[u8]) -> Result<Option<GoBuildInfo>, &'static str> {
         break (version, inline_string(bytes, &mut at)?);
     };
     // The linker wraps module information in 16-byte sentinels.
-    if modinfo.len() >= 33 && modinfo[modinfo.len() - 17] == b'\n' {
-        modinfo = &modinfo[16..modinfo.len() - 16];
-    }
+    // The linker wraps module information in 16-byte sentinels; anything
+    // else is not trusted as module information (as Go's own reader does).
+    modinfo = if modinfo.len() >= 33 && modinfo[modinfo.len() - 17] == b'\n' {
+        &modinfo[16..modinfo.len() - 16]
+    } else {
+        &[]
+    };
     let version = std::str::from_utf8(version).map_err(|_| "Go version is not UTF-8")?;
     let modinfo = std::str::from_utf8(modinfo).map_err(|_| "Go module information is not UTF-8")?;
 
@@ -119,23 +123,30 @@ pub fn read(bytes: &[u8]) -> Result<Option<GoBuildInfo>, &'static str> {
 
 /// One varint-length-prefixed string at `*at`, advancing past it.
 fn inline_string<'a>(bytes: &'a [u8], at: &mut usize) -> Result<&'a [u8], &'static str> {
-    let mut length: usize = 0;
+    // Accumulate in u64 with checked shifts, so a long varint cannot
+    // overflow on any target width.
+    let mut length: u64 = 0;
     let mut shift = 0u32;
     loop {
         let byte = *bytes.get(*at).ok_or("Go build info is truncated")?;
         *at += 1;
-        if shift >= 63 {
-            return Err("Go build info length does not terminate");
-        }
-        length |= usize::from(byte & 0x7f) << shift;
+        let part = u64::from(byte & 0x7f)
+            .checked_shl(shift)
+            .filter(|_| shift < 64)
+            .ok_or("Go build info length does not terminate")?;
+        length |= part;
         if byte & 0x80 == 0 {
             break;
         }
         shift += 7;
+        if shift >= 64 {
+            return Err("Go build info length does not terminate");
+        }
     }
-    if length > MAX_STRING_BYTES {
-        return Err("Go build info string is larger than the cap");
-    }
+    let length = usize::try_from(length)
+        .ok()
+        .filter(|length| *length <= MAX_STRING_BYTES)
+        .ok_or("Go build info string is larger than the cap")?;
     let end = at.checked_add(length).ok_or("Go build info is truncated")?;
     let value = bytes.get(*at..end).ok_or("Go build info is truncated")?;
     *at = end;
@@ -282,6 +293,37 @@ pub(crate) mod tests {
         bytes.extend_from_slice(b"on is not UTF-8");
         bytes.push(0);
         assert_eq!(read(&bytes), Ok(None));
+    }
+
+    #[test]
+    fn unframed_module_information_is_ignored() {
+        // Go's own reader drops module information whose sentinel framing
+        // does not check out, rather than parsing whatever is there.
+        let mut bytes = b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&[8, FLAG_INLINE_STRINGS]);
+        bytes.resize(16 + HEADER_LEN, 0);
+        let version = b"go1.22.4";
+        varint(version.len(), &mut bytes);
+        bytes.extend_from_slice(version);
+        let unframed =
+            b"path\tx\nmod\tx\tv1.0.0\t\ndep\tgolang.org/x/net\tv0.17.0\th1:a=\nxxxxxxxxxxxxxxxxxx";
+        varint(unframed.len(), &mut bytes);
+        bytes.extend_from_slice(unframed);
+        let info = read(&bytes).unwrap().unwrap();
+        assert_eq!(info.go_version, "go1.22.4");
+        assert!(info.deps.is_empty(), "{:?}", info.deps);
+        assert_eq!(info.main, None);
+    }
+
+    #[test]
+    fn varints_never_overflow_the_accumulator() {
+        let good = blob("go1.22.4", MODINFO);
+        let start = good.windows(MAGIC.len()).position(|w| w == MAGIC).unwrap();
+        let mut long = good[..start + HEADER_LEN].to_vec();
+        long.extend_from_slice(&[0xff; 9]);
+        long.push(0x01);
+        assert_eq!(read(&long), Ok(None));
     }
 
     #[test]

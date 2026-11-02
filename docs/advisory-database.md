@@ -66,8 +66,12 @@ databases (dpkg, apk, rpm's SQLite and Berkeley DB files) against its
 `os-release` and answers those packages from a local database with
 `--advisory-db` — a fully offline image scan. Packages are asked about under
 the name each distribution files advisories by: the source package for
-Debian, Ubuntu, Alpine, Rocky Linux, openSUSE, Azure Linux and openEuler
-(`glibc`, not `libc6`), the binary package for Red Hat and AlmaLinux. A RHEL
+Debian, Ubuntu, Alpine, Rocky Linux, openSUSE (Leap and Tumbleweed), Azure
+Linux (including CBL-Mariner 2.0, filed as `Azure Linux:2`) and openEuler
+(`glibc`, not `libc6`), the binary package for Red Hat and AlmaLinux. The
+image's query receipt records what was asked: for a Debian binNMU package
+(`2.36-9+deb12u4+b1`) its `rawVersion` is the source version that was looked
+up (`2.36-9+deb12u4`), while the component keeps the installed version. A RHEL
 image is asked about everywhere its packages can be filed: the `baseos`,
 `appstream` and `crb` streams for RHEL 8 and 9, the `server` variant for
 RHEL 6 and 7, and the minor release (`Red Hat:enterprise_linux:10.0`) from

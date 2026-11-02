@@ -181,6 +181,53 @@ pub(crate) fn test_policy_authority_is_available() -> bool {
     POLICY_UPDATE_LOCK.try_lock().is_ok()
 }
 
+/// Why a committed `.oxaudit` file could not be used. Messages name the
+/// problem, not the path: callers add the path once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProjectFileError {
+    /// The file is there but is not something oxAudit reads: a symlink, a
+    /// directory, another non-regular file, or too large.
+    Refused(String),
+    /// The `.oxaudit` directory or the file exists but could not be read.
+    Unreadable(String),
+}
+
+impl ProjectFileError {
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Refused(message) | Self::Unreadable(message) => message,
+        }
+    }
+}
+
+/// Describe why `path` is not a readable regular file, from its metadata,
+/// or fall back to the I/O error.
+fn refusal(path: &Path, max: u64, follow: bool, error: &std::io::Error) -> ProjectFileError {
+    let metadata = if follow {
+        std::fs::metadata(path)
+    } else {
+        std::fs::symlink_metadata(path)
+    };
+    match metadata {
+        Ok(metadata) if metadata.file_type().is_symlink() => ProjectFileError::Refused(
+            "is a symlink, which is not followed for committed files".into(),
+        ),
+        Ok(metadata) if metadata.is_dir() => {
+            ProjectFileError::Refused("is a directory, not a file".into())
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            ProjectFileError::Refused("is not a regular file".into())
+        }
+        Ok(metadata) if metadata.len() > max => {
+            ProjectFileError::Refused(format!("is larger than {max} bytes"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ProjectFileError::Unreadable("does not exist".into())
+        }
+        _ => ProjectFileError::Unreadable(format!("cannot be read: {error}")),
+    }
+}
+
 /// Read another committed file from the project's `.oxaudit` directory with
 /// the same guarantees as `policy.json`: no symlinks at either level, a
 /// regular file only, and the size bounded before it is read. `Ok(None)`
@@ -189,76 +236,87 @@ pub(crate) fn read_project_file(
     project_root: &Path,
     name: &str,
     max: u64,
-) -> Result<Option<Vec<u8>>, String> {
-    let refused = |error: std::io::Error| format!(".oxaudit/{name} cannot be read safely: {error}");
+) -> Result<Option<Vec<u8>>, ProjectFileError> {
+    let path = project_root.join(".oxaudit").join(name);
+    let directory_unreadable = |error: std::io::Error| {
+        ProjectFileError::Unreadable(format!(
+            "cannot be read because the .oxaudit directory cannot be opened safely ({error})"
+        ))
+    };
     #[cfg(unix)]
     {
         let (_, directory, _) = match unix_fs::open_project_policy_dir(project_root, false) {
             Ok(handles) => handles,
             Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(None),
-            Err(error) => return Err(refused(error)),
+            Err(error) => return Err(directory_unreadable(error)),
         };
         let mut file = match unix_fs::open_regular_at(&directory, name, true) {
             Ok(file) => file,
             Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(None),
-            Err(error) => return Err(refused(error)),
+            Err(error) => return Err(refusal(&path, max, false, &error)),
         };
         unix_fs::read_bounded(&mut file, max)
             .map(Some)
-            .map_err(refused)
+            .map_err(|error| refusal(&path, max, false, &error))
     }
     #[cfg(windows)]
     {
         let directory = project_root.join(".oxaudit");
         if let Err(error) = windows_fs::open_directory(&directory) {
             return if directory.exists() {
-                Err(refused(error))
+                Err(directory_unreadable(error))
             } else {
                 Ok(None)
             };
         }
-        let mut file = match windows_fs::open_regular(&directory.join(name)) {
+        let mut file = match windows_fs::open_regular(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(refused(error)),
+            Err(error) => return Err(refusal(&path, max, false, &error)),
         };
         windows_fs::read_bounded(&mut file, max)
             .map(Some)
-            .map_err(refused)
+            .map_err(|error| refusal(&path, max, false, &error))
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let path = project_root.join(".oxaudit").join(name);
-        read_regular_file(&path, max).map_err(refused)
+        let _ = directory_unreadable;
+        match read_regular_file(&path, max, false) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(ProjectFileError::Unreadable(message)) if message == "does not exist" => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }
 
-/// Read a file named on the command line: a regular file (not a symlink),
-/// bounded in size. A missing file is an error — the user asked for it.
-pub(crate) fn read_regular_file(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+/// Read a file: a regular file, bounded in size. A file named on the command
+/// line (`follow`) may be a symlink — a mounted ConfigMap or a Nix store
+/// path; a committed file may not. A missing file is an error here: the
+/// caller asked for it.
+pub(crate) fn read_regular_file(
+    path: &Path,
+    max: u64,
+    follow: bool,
+) -> Result<Vec<u8>, ProjectFileError> {
     use std::io::Read as _;
-    let metadata = std::fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
+    let not_found = std::io::Error::from(std::io::ErrorKind::NotFound);
+    let metadata = if follow {
+        std::fs::metadata(path)
+    } else {
+        std::fs::symlink_metadata(path)
     }
-    if metadata.len() > max {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("larger than {max} bytes"),
-        ));
+    .map_err(|error| refusal(path, max, follow, &error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max {
+        return Err(refusal(path, max, follow, &not_found));
     }
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(max + 1)
-        .read_to_end(&mut bytes)?;
+    std::fs::File::open(path)
+        .and_then(|file| file.take(max + 1).read_to_end(&mut bytes))
+        .map_err(|error| refusal(path, max, follow, &error))?;
     if bytes.len() as u64 > max {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("larger than {max} bytes"),
-        ));
+        return Err(ProjectFileError::Refused(format!(
+            "is larger than {max} bytes"
+        )));
     }
     Ok(bytes)
 }

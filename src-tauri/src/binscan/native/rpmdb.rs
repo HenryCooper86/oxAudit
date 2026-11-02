@@ -102,8 +102,12 @@ pub fn read_sqlite(bytes: &[u8]) -> Result<RpmDatabase, String> {
 /// Read every installed package from a Berkeley DB `Packages` file (RHEL 7
 /// and 8, Rocky and Alma 8, Amazon Linux 2).
 pub fn read_bdb(bytes: &[u8]) -> Result<RpmDatabase, String> {
-    let entries = oxaudit_parsers::bdb_hash::entries(bytes).map_err(str::to_string)?;
+    let (entries, skipped) =
+        oxaudit_parsers::bdb_hash::entries_and_skipped(bytes).map_err(str::to_string)?;
     let mut database = RpmDatabase::default();
+    // Values stored as duplicate sets are not decoded: count them as
+    // unreadable so the scan's note says some packages were not read.
+    database.unreadable += skipped;
     // Key 0 is rpm's next-instance counter, not a package.
     for (_, value) in entries.iter().filter(|(key, _)| key.as_slice() != [0u8; 4]) {
         if !database.add(Some(value)) {
@@ -261,7 +265,10 @@ pub(crate) mod tests {
         let mut bytes = rpmdb_sqlite(&[]);
         let tail = bytes.len() / 2;
         bytes.truncate(tail);
-        assert!(read_sqlite(&bytes).is_err() || read_sqlite(&bytes).unwrap().packages.is_empty());
+        assert!(
+            read_sqlite(&bytes).is_err(),
+            "a half-truncated database is an error"
+        );
         // A real SQLite file without rpm's table.
         let other = rusqlite::Connection::open_in_memory().expect("memory db");
         other.execute_batch("CREATE TABLE t (x);").expect("schema");

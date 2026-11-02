@@ -88,17 +88,15 @@ pub fn load_project_advisory_policy(project_root: &Path) -> AdvisoryPolicyStatus
     match super::policy::read_project_file(project_root, FILE_NAME, MAX_ADVISORY_POLICY_BYTES) {
         Ok(None) => AdvisoryPolicyStatus::Missing,
         Ok(Some(bytes)) => parse(&bytes),
-        Err(reason) => AdvisoryPolicyStatus::Invalid(reason),
+        Err(error) => AdvisoryPolicyStatus::Invalid(error.message().to_string()),
     }
 }
 
 /// Load an advisory policy from an explicit path (`--advisory-policy`).
 pub fn load_advisory_policy_file(path: &Path) -> AdvisoryPolicyStatus {
-    match super::policy::read_regular_file(path, MAX_ADVISORY_POLICY_BYTES) {
+    match super::policy::read_regular_file(path, MAX_ADVISORY_POLICY_BYTES, true) {
         Ok(bytes) => parse(&bytes),
-        Err(error) => {
-            AdvisoryPolicyStatus::Invalid(format!("{} cannot be read: {error}", path.display()))
-        }
+        Err(error) => AdvisoryPolicyStatus::Invalid(error.message().to_string()),
     }
 }
 
@@ -484,6 +482,28 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn policy_read_errors_name_the_problem_plainly() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join(ADVISORY_POLICY_PATH)).unwrap();
+        let AdvisoryPolicyStatus::Invalid(reason) = load_project_advisory_policy(root.path())
+        else {
+            panic!("a directory is not a policy");
+        };
+        assert!(reason.contains("is a directory, not a file"), "{reason}");
+        assert!(!reason.contains("os error"), "{reason}");
+        assert!(
+            !reason.contains("advisory-policy.json"),
+            "the caller names the path once: {reason}"
+        );
+        let AdvisoryPolicyStatus::Invalid(reason) =
+            load_advisory_policy_file(&root.path().join(ADVISORY_POLICY_PATH))
+        else {
+            panic!("a directory is not a policy");
+        };
+        assert!(reason.contains("is a directory, not a file"), "{reason}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_symlinked_policy_is_refused() {
@@ -500,9 +520,11 @@ mod tests {
             load_project_advisory_policy(root.path()),
             AdvisoryPolicyStatus::Invalid(_)
         ));
+        // A path named on the command line may be a symlink (a mounted
+        // ConfigMap, a Nix store path); the committed project file may not.
         assert!(matches!(
             load_advisory_policy_file(&root.path().join(ADVISORY_POLICY_PATH)),
-            AdvisoryPolicyStatus::Invalid(_)
+            AdvisoryPolicyStatus::Loaded(_)
         ));
     }
 }

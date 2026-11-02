@@ -353,6 +353,10 @@ lookups and *says so* when it caps, rather than returning a short list.
   nothing, so `stdlib` and `toolchain` findings are reported as `unknown` and
   do not trip `--fail-on`, like other unrated distribution records. Module
   advisories that come from GitHub's database do carry one.
-- **Layer whiteouts are not applied.** Every layer's package database is
-  read, so a package upgraded or removed in a later layer can still be
-  reported at its earlier version.
+- **Layer whiteouts are applied to package databases only by replacement.**
+  When a later layer rewrites a package database (dpkg, apk or rpm), only the
+  topmost copy counts, so an upgraded package is reported once at its new
+  version; layer order comes from the registry pull or a saved image's
+  `manifest.json`. A database deleted outright by a whiteout marker in a
+  later layer is still read, and OCI layout directories (whose blobs are
+  scanned separately) are not ordered.
