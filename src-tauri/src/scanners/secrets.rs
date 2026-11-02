@@ -1,6 +1,42 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+/// Rules whose matches stand even inside a source comment.
+///
+/// Comments usually hold prose about credentials, so most rules are
+/// suppressed there. A vendor-prefixed token or a PEM key is different: its
+/// shape alone proves what it is, and a commented-out credential is still a
+/// leaked credential. History scans and `--staged` already report these.
+const REPORTED_IN_COMMENTS: &[&str] = &[
+    "aws-access-key-id",
+    "github-token",
+    "github-fine-grained-token",
+    "gitlab-pat",
+    "slack-token",
+    "slack-webhook",
+    "stripe-key",
+    "google-api-key",
+    "openai-api-key",
+    "anthropic-api-key",
+    "huggingface-token",
+    "npm-token",
+    "pypi-token",
+    "private-key",
+    "sendgrid-api-key",
+    "discord-webhook",
+    "digitalocean-token",
+    "shopify-token",
+    "vault-token",
+    "telegram-bot-token",
+    "sentry-token",
+    "newrelic-api-key",
+    "postman-api-key",
+    "linear-api-key",
+    "figma-token",
+    "grafana-service-account-token",
+    "square-access-token",
+];
+
 /// A compiled secret-detection rule.
 pub struct SecretRule {
     pub id: &'static str,
@@ -16,6 +52,13 @@ pub struct SecretRule {
     pub severity: &'static str,
     pub description: &'static str,
     pub recommendation: &'static str,
+}
+
+impl SecretRule {
+    /// Whether a match inside a source comment is still reported.
+    pub fn reported_in_comments(&self) -> bool {
+        REPORTED_IN_COMMENTS.contains(&self.id)
+    }
 }
 
 macro_rules! rule {
@@ -292,7 +335,7 @@ pub static SECRET_RULES: Lazy<Vec<SecretRule>> = Lazy::new(|| {
         rule!(
             "vault-token",
             "HashiCorp Vault Token",
-            r"\bs\.[A-Za-z0-9]{24,}\b",
+            r"\b(?:hv[sbr]\.[A-Za-z0-9_\-]{24,}|s\.[A-Za-z0-9]{24,})\b",
             &[],
             0.0,
             0,
@@ -314,7 +357,7 @@ pub static SECRET_RULES: Lazy<Vec<SecretRule>> = Lazy::new(|| {
         rule!(
             "basic-auth-url",
             "Credentials in URL",
-            r"(?:https?|ftp)://[^/\s:@]+:[^@\s/]+@",
+            r"(?i)\b(?:https?|ftp|postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?)://[^/\s:@]*:[^@\s/$%{<][^@\s/]*@",
             &[],
             0.0,
             0,
@@ -667,5 +710,358 @@ pub fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALNUM: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const UPPER_DIGITS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const LOWER_HEX: &str = "0123456789abcdef";
+    const BASE64: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const DIGITS: &str = "0123456789";
+
+    /// A deterministic high-entropy run, so samples are built at test time
+    /// and no credential-shaped literal sits in the source tree.
+    fn mix(seed: u64, len: usize, alphabet: &str) -> String {
+        let alphabet = alphabet.as_bytes();
+        let mut state = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                alphabet[((state >> 33) % alphabet.len() as u64) as usize] as char
+            })
+            .collect()
+    }
+
+    fn uuid(seed: u64) -> String {
+        let hex = mix(seed, 32, LOWER_HEX);
+        format!(
+            "{}-{}-{}-{}-{}",
+            &hex[..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..]
+        )
+    }
+
+    fn rule_ids(content: &str) -> Vec<&'static str> {
+        scan_content(content)
+            .into_iter()
+            .map(|hit| SECRET_RULES[hit.rule_index].id)
+            .collect()
+    }
+
+    fn samples() -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "aws-access-key-id",
+                format!(
+                    "key = {}{}",
+                    "AK",
+                    ["IA", &mix(1, 16, UPPER_DIGITS)].concat()
+                ),
+            ),
+            (
+                "aws-secret-key",
+                format!("aws_secret_key = \"{}\"", mix(2, 40, BASE64)),
+            ),
+            (
+                "github-token",
+                format!("token = {}_{}", "ghp", mix(3, 36, ALNUM)),
+            ),
+            (
+                "github-fine-grained-token",
+                format!("token = {}_pat_{}", "github", mix(4, 82, ALNUM)),
+            ),
+            (
+                "gitlab-pat",
+                format!("token = {}-{}", "glpat", mix(5, 20, ALNUM)),
+            ),
+            (
+                "slack-token",
+                format!("token = {}-{}", "xoxb", mix(6, 40, ALNUM)),
+            ),
+            (
+                "slack-webhook",
+                format!(
+                    "url = https://hooks.slack.com/services/T{}/B{}/{}",
+                    mix(7, 10, UPPER_DIGITS),
+                    mix(8, 10, UPPER_DIGITS),
+                    mix(9, 24, ALNUM)
+                ),
+            ),
+            (
+                "stripe-key",
+                format!("key = {}_live_{}", "sk", mix(10, 24, ALNUM)),
+            ),
+            (
+                "google-api-key",
+                format!("key = {}{}", "AI", ["za", &mix(11, 35, ALNUM)].concat()),
+            ),
+            (
+                "openai-api-key",
+                format!("key = {}-proj-{}", "sk", mix(12, 40, ALNUM)),
+            ),
+            (
+                "anthropic-api-key",
+                format!("key = {}-ant-{}", "sk", mix(13, 40, ALNUM)),
+            ),
+            (
+                "huggingface-token",
+                format!("token = {}_{}", "hf", mix(14, 34, ALNUM)),
+            ),
+            (
+                "npm-token",
+                format!(
+                    "//registry.npmjs.org/:_authToken={}_{}",
+                    "npm",
+                    mix(15, 36, ALNUM)
+                ),
+            ),
+            (
+                "pypi-token",
+                format!(
+                    "password = {}-AgEIcHlwaS5vcmc{}",
+                    "pypi",
+                    mix(16, 50, ALNUM)
+                ),
+            ),
+            (
+                "private-key",
+                format!(
+                    "-----BEGIN RSA {} KEY-----\n{}\n-----END RSA {} KEY-----",
+                    "PRIVATE",
+                    mix(17, 64, BASE64),
+                    "PRIVATE"
+                ),
+            ),
+            ("heroku-api-key", format!("HEROKU_API_KEY={}", uuid(18))),
+            (
+                "twilio-api-key",
+                format!("key = {}{}", "SK", mix(19, 32, LOWER_HEX)),
+            ),
+            (
+                "sendgrid-api-key",
+                format!(
+                    "key = {}.{}.{}",
+                    "SG",
+                    mix(20, 22, ALNUM),
+                    mix(21, 43, ALNUM)
+                ),
+            ),
+            (
+                "mailgun-api-key",
+                format!("key = {}-{}", "key", mix(22, 32, ALNUM)),
+            ),
+            (
+                "discord-webhook",
+                format!(
+                    "url = https://discord.com/api/webhooks/{}/{}",
+                    mix(23, 18, DIGITS),
+                    mix(24, 68, ALNUM)
+                ),
+            ),
+            (
+                "digitalocean-token",
+                format!("token = {}_v1_{}", "dop", mix(25, 64, LOWER_HEX)),
+            ),
+            (
+                "shopify-token",
+                format!("token = {}_{}", "shpat", mix(26, 32, LOWER_HEX)),
+            ),
+            (
+                "cloudflare-api-key",
+                format!("CLOUDFLARE_API_KEY={}", mix(27, 37, ALNUM)),
+            ),
+            (
+                "vault-token",
+                format!("VAULT_TOKEN={}.{}", "hvs", mix(28, 90, ALNUM)),
+            ),
+            (
+                "jwt-token",
+                format!(
+                    "token = {}{}.{}{}.{}",
+                    "ey",
+                    ["J", &mix(29, 20, ALNUM)].concat(),
+                    "eyJ",
+                    mix(30, 30, ALNUM),
+                    mix(31, 43, ALNUM)
+                ),
+            ),
+            (
+                "basic-auth-url",
+                format!(
+                    "url = https://deploy:{}@example.com/repo",
+                    mix(32, 16, ALNUM)
+                ),
+            ),
+            (
+                "bearer-token",
+                format!("authorization = {}", mix(33, 40, ALNUM)),
+            ),
+            (
+                "generic-api-key",
+                format!("api_key = \"{}\"", mix(34, 32, ALNUM)),
+            ),
+            (
+                "generic-password",
+                format!("password = \"{}\"", mix(35, 16, ALNUM)),
+            ),
+            (
+                "json-credential",
+                format!("{{\"client_secret\": \"{}\"}}", mix(36, 24, ALNUM)),
+            ),
+            (
+                "google-oauth-client-id",
+                format!(
+                    "id = {}-{}.apps.googleusercontent.com",
+                    mix(37, 12, DIGITS),
+                    mix(38, 32, "abcdefghijklmnopqrstuvwxyz0123456789")
+                ),
+            ),
+            (
+                "telegram-bot-token",
+                format!("token = {}:AA{}", mix(39, 9, DIGITS), mix(40, 33, ALNUM)),
+            ),
+            (
+                "sentry-token",
+                format!("token = {}_{}", "sntrys", mix(41, 60, ALNUM)),
+            ),
+            (
+                "newrelic-api-key",
+                format!("key = {}-{}", "NRAK", mix(42, 27, UPPER_DIGITS)),
+            ),
+            (
+                "postman-api-key",
+                format!("key = {}-{}-{}", "PMAK", uuid(43), mix(44, 64, ALNUM)),
+            ),
+            (
+                "linear-api-key",
+                format!("key = {}_api_{}", "lin", mix(45, 40, ALNUM)),
+            ),
+            (
+                "figma-token",
+                format!("token = {}_{}", "figd", mix(46, 40, ALNUM)),
+            ),
+            (
+                "grafana-service-account-token",
+                format!("token = {}_{}", "glsa", mix(47, 32, ALNUM)),
+            ),
+            (
+                "square-access-token",
+                format!("token = {}-{}", "sq0atp", mix(48, 30, ALNUM)),
+            ),
+            (
+                "plaid-api-key",
+                format!("secret = {}_{}", "production", uuid(49)),
+            ),
+            (
+                "datadog-api-key",
+                format!("datadog_api_key = \"{}\"", mix(50, 32, LOWER_HEX)),
+            ),
+            (
+                "azure-storage-account-key",
+                format!("AccountKey={}==", mix(51, 86, BASE64)),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_rule_detects_its_canonical_example() {
+        let samples = samples();
+        let mut sampled: Vec<&str> = samples.iter().map(|(id, _)| *id).collect();
+        let mut rules: Vec<&str> = SECRET_RULES.iter().map(|rule| rule.id).collect();
+        sampled.sort_unstable();
+        rules.sort_unstable();
+        assert_eq!(sampled, rules, "every secret rule needs a sample here");
+        let missed: Vec<String> = samples
+            .iter()
+            .filter_map(|(id, sample)| {
+                let fired = rule_ids(sample);
+                (!fired.contains(id)).then(|| format!("{id} (fired {fired:?})"))
+            })
+            .collect();
+        assert!(
+            missed.is_empty(),
+            "rules that missed their sample: {missed:#?}"
+        );
+    }
+
+    #[test]
+    fn comment_exemptions_name_existing_rules() {
+        for id in REPORTED_IN_COMMENTS {
+            assert!(SECRET_RULES.iter().any(|rule| rule.id == *id), "{id}");
+        }
+    }
+
+    #[test]
+    fn vault_service_batch_and_recovery_tokens_match() {
+        for prefix in ["hvs", "hvb", "hvr"] {
+            let line = format!("VAULT_TOKEN={prefix}.{}", mix(60, 90, ALNUM));
+            assert!(rule_ids(&line).contains(&"vault-token"), "{prefix}");
+        }
+        let legacy = format!("VAULT_TOKEN={}.{}", "s", mix(61, 24, ALNUM));
+        assert!(rule_ids(&legacy).contains(&"vault-token"));
+    }
+
+    #[test]
+    fn database_connection_string_passwords_match() {
+        let password = mix(62, 18, ALNUM);
+        for url in [
+            format!("postgres://app:{password}@db:5432/app"),
+            format!("postgresql://app:{password}@db/app"),
+            format!("mysql://root:{password}@127.0.0.1/app"),
+            format!("mongodb+srv://admin:{password}@cluster0.example.net/app"),
+            format!("redis://:{password}@cache:6379/0"),
+            format!("amqp://guest:{password}@rabbit:5672/"),
+        ] {
+            let line = format!("DATABASE_URL = \"{url}\"");
+            assert!(rule_ids(&line).contains(&"basic-auth-url"), "{url}");
+        }
+    }
+
+    #[test]
+    fn url_credentials_redact_the_whole_match_as_before() {
+        // Fingerprints hash the redacted context, so changing what is
+        // redacted would orphan every saved review decision for this rule.
+        let line = format!(
+            "url = https://deploy:{}@example.com/repo",
+            mix(70, 16, ALNUM)
+        );
+        let hit = scan_content(&line)
+            .into_iter()
+            .find(|hit| SECRET_RULES[hit.rule_index].id == "basic-auth-url")
+            .expect("basic-auth-url fires");
+        assert_eq!(hit.secret_value, hit.match_text);
+    }
+
+    #[test]
+    fn weak_real_url_passwords_are_still_reported() {
+        for url in [
+            "https://deploy-bot:Password1@intranet.example/",
+            "postgres://app:latest2024x@db/app",
+        ] {
+            assert!(rule_ids(url).contains(&"basic-auth-url"), "{url}");
+        }
+    }
+
+    #[test]
+    fn templated_url_passwords_are_not_secrets() {
+        for url in [
+            "postgres://app:${DB_PASSWORD}@db/app",
+            "postgres://app:%(password)s@db/app",
+            "mysql://root:{{password}}@db/app",
+            "https://deploy:<password>@example.com/",
+        ] {
+            assert!(!rule_ids(url).contains(&"basic-auth-url"), "{url}");
+        }
     }
 }

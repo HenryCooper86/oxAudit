@@ -28,12 +28,14 @@ address in a browser and paste the token at the gate.
 Each published release since v0.2.0 comes with a multi-architecture image
 (linux/amd64, linux/arm64) carrying both `oxaudit-cli` and `oxaudit-server`
 with the built GUI. The release asset `oxaudit-container.txt` holds its reference pinned by
-digest; for [v0.2.6](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.6)
+digest; for [v0.2.7](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.7)
 that is
-`ghcr.io/henrycooper86/oxaudit@sha256:173ebb003c1e9855d3e07ff7140b7f6b827e52f088ce954af98bec9e44ceb4cf`.
+`ghcr.io/henrycooper86/oxaudit@sha256:c078067e3dcfc2055c3475462d7d80d10bd50874a2429741bf02b9c1e99e518c`.
 Use the digest, not a tag, and verify the image's signature as shown in the
 [installation guide](getting-started.md#what-verification-proves). An
-anonymous pull by that digest succeeded on 2026-10-29.
+anonymous lookup of that digest on 2026-11-02 resolved its linux/amd64 and
+linux/arm64 manifests; running the v0.2.7 image has not been recorded yet
+(v0.2.6's image was pulled and run on 2026-10-29).
 
 The image's entrypoint is the CLI, so the server is one flag away. Inside the
 container the server binds `0.0.0.0:8080`, serves the GUI from `/app/dist`,
@@ -42,11 +44,11 @@ user, which must own the `/data` volume. Images up to and including v0.2.6
 do not create `/data`, so a fresh named volume is owned by root and the
 server exits with "cannot prepare the data directory". With those images,
 give the volume to `scanner` once before the first start (the `chown` line
-below); later images create `/data` owned by `scanner` and need no extra
-step:
+below); v0.2.7 and later images are built to create `/data` owned by
+`scanner`, and running the `chown` line against them is harmless:
 
 ```bash
-IMAGE=ghcr.io/henrycooper86/oxaudit@sha256:173ebb003c1e9855d3e07ff7140b7f6b827e52f088ce954af98bec9e44ceb4cf
+IMAGE=ghcr.io/henrycooper86/oxaudit@sha256:c078067e3dcfc2055c3475462d7d80d10bd50874a2429741bf02b9c1e99e518c
 docker run --rm --user 0 -v oxaudit-data:/data --entrypoint chown "$IMAGE" scanner:scanner /data
 docker run -d --name oxaudit -p 127.0.0.1:8080:8080 -v oxaudit-data:/data \
   --entrypoint oxaudit-server "$IMAGE"

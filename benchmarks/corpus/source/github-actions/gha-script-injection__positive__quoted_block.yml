@@ -1,0 +1,10 @@
+name: greet
+on: pull_request_target
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: quoting does not protect an expanded expression
+        run: |
+          echo "Thanks for the pull request"
+          echo "${{ github.event.pull_request.title }}"

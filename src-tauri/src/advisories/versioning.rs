@@ -21,10 +21,12 @@ pub enum VersionFamily {
     Debian,
     Maven,
     Gem,
-    /// Dotted-numeric with an optional prerelease suffix — the shape NuGet and
-    /// Composer pin in practice. SemVer covers most of it; this handles the
-    /// fourth revision segment NuGet allows.
-    Loose,
+    /// NuGet's SemVer 2.0 dialect: up to four release segments and
+    /// case-insensitive prerelease labels.
+    NuGet,
+    /// Composer's stability-aware ordering
+    /// (`dev < alpha < beta < RC < release < patch`).
+    Composer,
     /// SemVer with build metadata ordered after the release, as Dart's
     /// `pub_semver` (and OSV's Pub ecosystem) compare it.
     Pub,
@@ -50,7 +52,8 @@ pub fn family_for(range_type: &str, ecosystem: &str) -> Option<VersionFamily> {
             // Elixir's `Version` is SemVer 2.0, build metadata ignored.
             "npm" | "crates.io" | "Go" | "Hex" => Some(VersionFamily::SemVer),
             "Pub" => Some(VersionFamily::Pub),
-            "Packagist" | "NuGet" => Some(VersionFamily::Loose),
+            "NuGet" => Some(VersionFamily::NuGet),
+            "Packagist" => Some(VersionFamily::Composer),
             // Distribution ecosystems name the distribution, optionally
             // followed by `:release` (`Debian:12`, `Alpine:v3.20`,
             // `Rocky Linux:9`, `Red Hat:enterprise_linux:9::appstream`). The
@@ -120,7 +123,8 @@ pub fn compare(family: VersionFamily, a: &str, b: &str) -> Option<Ordering> {
         VersionFamily::Debian => debian::compare(a, b),
         VersionFamily::Maven => maven::compare(a, b),
         VersionFamily::Gem => gem::compare(a, b),
-        VersionFamily::Loose => loose::compare(a, b),
+        VersionFamily::NuGet => nuget::compare(a, b),
+        VersionFamily::Composer => composer::compare(a, b),
         VersionFamily::Pub => semver::compare_pub(a, b),
         VersionFamily::Rpm => rpm::compare(a, b),
         VersionFamily::Apk => apk::compare(a, b),
@@ -907,80 +911,203 @@ pub mod gem {
     }
 }
 
-pub mod loose {
-    //! Dotted numeric versions with up to four release segments and an
-    //! optional prerelease suffix — the concrete shape NuGet and Composer
-    //! lockfiles pin. Comparison: numeric segments left to right, a release
-    //! above its prereleases (semver rules for the suffix), then the fourth
-    //! segment numerically.
+/// Compare two runs of ASCII digits by numeric value, without overflow.
+fn cmp_digit_runs(a: &str, b: &str) -> Ordering {
+    let a = a.trim_start_matches('0');
+    let b = b.trim_start_matches('0');
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
+pub mod nuget {
+    //! NuGet's version order (`NuGet.Versioning`'s `VersionComparer`): up to
+    //! four numeric release segments, missing ones count as zero, so
+    //! `1.0 == 1.0.0.0`. The fourth (revision) segment is part of the release
+    //! and compares before the prerelease. A release outranks its
+    //! prereleases; prerelease labels compare identifier by identifier, numeric
+    //! identifiers by value and below alphanumeric ones, alphanumeric ones
+    //! case-insensitively, and a shorter label that is a prefix of a longer
+    //! one sorts first. Build metadata (`+…`) is ignored.
 
     use std::cmp::Ordering;
 
-    /// Release segments (major, minor, patch, revision) and an optional
-    /// prerelease suffix string.
+    struct Parsed<'a> {
+        release: [u64; 4],
+        pre: Option<Vec<&'a str>>,
+    }
+
+    fn parse(raw: &str) -> Option<Parsed<'_>> {
+        let s = raw.trim().trim_start_matches(['v', 'V']);
+        let s = s.split_once('+').map_or(s, |(version, _)| version);
+        let (core, pre) = match s.split_once('-') {
+            Some((core, pre)) => (core, Some(pre)),
+            None => (s, None),
+        };
+        let mut release = [0u64; 4];
+        for (index, token) in core.split('.').enumerate() {
+            if index == 4 || token.is_empty() || !token.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            release[index] = token.parse().ok()?;
+        }
+        // The revision is an i64 in the frontend mirror and in NuGet itself.
+        if release[3] > i64::MAX as u64 {
+            return None;
+        }
+        let pre = match pre {
+            None => None,
+            Some(label) => {
+                let identifiers: Vec<&str> = label.split('.').collect();
+                if identifiers.iter().any(|identifier| {
+                    identifier.is_empty()
+                        || !identifier
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                }) {
+                    return None;
+                }
+                Some(identifiers)
+            }
+        };
+        Some(Parsed { release, pre })
+    }
+
+    fn cmp_identifier(a: &str, b: &str) -> Ordering {
+        let numeric = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+        match (numeric(a), numeric(b)) {
+            (true, true) => super::cmp_digit_runs(a, b),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()),
+        }
+    }
+
+    pub fn compare(a: &str, b: &str) -> Option<Ordering> {
+        let a = parse(a)?;
+        let b = parse(b)?;
+        Some(a.release.cmp(&b.release).then_with(|| {
+            match (&a.pre, &b.pre) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(x), Some(y)) => x
+                    .iter()
+                    .zip(y.iter())
+                    .map(|(x, y)| cmp_identifier(x, y))
+                    .find(|order| *order != Ordering::Equal)
+                    .unwrap_or_else(|| x.len().cmp(&y.len())),
+            }
+        }))
+    }
+}
+
+pub mod composer {
+    //! Composer's version order: `VersionParser::normalize` followed by PHP's
+    //! `version_compare`. Up to four numeric segments (missing ones are
+    //! zero), then an optional stability suffix ranked
+    //! `dev < alpha|a < beta|b < RC < (release) < patch|pl|p`, matched
+    //! case-insensitively, each with optional numbers (`RC2 < RC10`), and an
+    //! optional trailing `-dev` that sorts just below the same version without
+    //! it. Branch names (`dev-main`) and wildcard branches (`1.0.x-dev`) are
+    //! not releases and refuse to order. Build metadata is ignored.
+
+    use std::cmp::Ordering;
+
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
     struct Parsed {
-        release: (u64, u64, u64, i64),
-        pre: Option<String>,
+        release: [u64; 4],
+        stability: u8,
+        numbers: Vec<u64>,
+        /// 0 for a trailing `-dev` on a stability suffix, 1 otherwise.
+        not_dev: u8,
+    }
+
+    const DEV: u8 = 0;
+    const RELEASE: u8 = 4;
+
+    fn stability_rank(word: &str) -> Option<u8> {
+        match word.to_ascii_lowercase().as_str() {
+            "dev" => Some(DEV),
+            "alpha" | "a" => Some(1),
+            "beta" | "b" => Some(2),
+            "rc" => Some(3),
+            "stable" => Some(RELEASE),
+            "patch" | "pl" | "p" => Some(5),
+            _ => None,
+        }
     }
 
     fn parse(raw: &str) -> Option<Parsed> {
         let s = raw.trim().trim_start_matches(['v', 'V']);
-        let (core, pre) = match s.split_once(['-', '+']) {
-            Some((core, pre)) if s.contains('-') => {
-                let pre = pre.split_once('+').map_or(pre, |(pre, _)| pre);
-                (core, Some(pre.to_string()))
+        let s = s.split_once('+').map_or(s, |(version, _)| version);
+        if s.is_empty() || s.to_ascii_lowercase().starts_with("dev-") {
+            return None;
+        }
+        let digits_end = s
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(s.len());
+        let (core, rest) = s.split_at(digits_end);
+        // A separator before the suffix belongs to the suffix, not the core.
+        let core = core.strip_suffix('.').unwrap_or(core);
+        let mut release = [0u64; 4];
+        for (index, token) in core.split('.').enumerate() {
+            if index == 4 || token.is_empty() {
+                return None;
             }
-            _ => (s.split_once('+').map_or(s, |(core, _)| core), None),
-        };
-        let mut numbers = core.split('.');
-        let mut parts = [0u64, 0, 0];
-        let mut revision = -1i64;
-        for (index, slot) in parts.iter_mut().enumerate() {
-            let token = match numbers.next() {
-                Some(token) => token,
-                None => {
-                    if index == 0 {
-                        return None;
-                    }
-                    break;
+            release[index] = token.parse().ok()?;
+        }
+        let mut rest = rest.trim_start_matches(['.', '-', '_']);
+        if rest.is_empty() {
+            return Some(Parsed {
+                release,
+                stability: RELEASE,
+                numbers: Vec::new(),
+                not_dev: 1,
+            });
+        }
+        let word_end = rest
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(rest.len());
+        let stability = stability_rank(&rest[..word_end])?;
+        rest = &rest[word_end..];
+        let mut numbers = Vec::new();
+        let mut not_dev = 1;
+        while !rest.is_empty() {
+            let trimmed = rest.trim_start_matches(['.', '-', '_']);
+            let separated = trimmed.len() != rest.len();
+            rest = trimmed;
+            if let Some(after) = rest
+                .strip_prefix("dev")
+                .or_else(|| rest.strip_prefix("DEV"))
+            {
+                if !separated || !after.is_empty() || stability == DEV {
+                    return None;
                 }
-            };
-            if token.is_empty() || !token.chars().all(|c| c.is_ascii_digit()) {
+                not_dev = 0;
+                rest = after;
+                continue;
+            }
+            let number_end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            if number_end == 0 {
                 return None;
             }
-            *slot = token.parse().ok()?;
+            numbers.push(rest[..number_end].parse().ok()?);
+            rest = &rest[number_end..];
         }
-        if let Some(token) = numbers.next() {
-            if token.is_empty() || !token.chars().all(|c| c.is_ascii_digit()) {
-                return None;
-            }
-            revision = token.parse::<i64>().ok()?;
-        }
-        if numbers.next().is_some() {
+        if stability == RELEASE && !numbers.is_empty() {
             return None;
         }
         Some(Parsed {
-            release: (parts[0], parts[1], parts[2], revision),
-            pre,
+            release,
+            stability,
+            numbers,
+            not_dev,
         })
     }
 
     pub fn compare(a: &str, b: &str) -> Option<Ordering> {
-        let parsed_a = parse(a)?;
-        let parsed_b = parse(b)?;
-        let (pa, sa) = (parsed_a.release, parsed_a.pre);
-        let (pb, sb) = (parsed_b.release, parsed_b.pre);
-        let pre_key = |pre: &Option<String>| match pre {
-            None => (1u8, String::new()),
-            Some(p) => (0u8, p.clone()),
-        };
-        Some(
-            pa.0.cmp(&pb.0)
-                .then(pa.1.cmp(&pb.1))
-                .then(pa.2.cmp(&pb.2))
-                .then(pre_key(&sa).cmp(&pre_key(&sb)))
-                .then(pa.3.cmp(&pb.3)),
-        )
+        Some(parse(a)?.cmp(&parse(b)?))
     }
 }
 
@@ -1607,22 +1734,41 @@ mod tests {
     }
 
     #[test]
-    fn loose_ordering_handles_nuget_and_composer_pins() {
+    fn nuget_ordering_follows_nuget_semver() {
         table(
-            VersionFamily::Loose,
+            VersionFamily::NuGet,
             &[
                 ("1.0.0", "1.0.0.1", Less),
                 ("1.0.0.1", "1.0.1", Less),
-                ("1.0.0.1", "1.0.0.2", Less),
-                ("1.0.0-beta.1", "1.0.0", Less),
-                ("1.0.0-beta.1", "1.0.0-beta.2", Less),
-                ("1.0.0-beta.2", "1.0.0-rc", Less),
-                ("1.0", "1.0.0", Equal),
-                ("v1.2.3", "1.2.3", Equal),
+                ("1.0.0-rc.9", "1.0.0-rc.10", Less),
+                ("1.0.0-Beta", "1.0.0-beta", Equal),
+                ("1.0.0-alpha", "1.0.0-alpha.1", Less),
+                ("1.2.3.5-beta", "1.2.3.4", Greater),
+                ("1.0", "1.0.0.0", Equal),
                 ("1.2.3+build", "1.2.3", Equal),
             ],
         );
-        unparseable(VersionFamily::Loose, &["", "dev-main", "1.0.x"]);
+        unparseable(VersionFamily::NuGet, &["", "dev-main", "1.0.x", "1.0.0-"]);
+    }
+
+    #[test]
+    fn composer_ordering_follows_composer_stability() {
+        table(
+            VersionFamily::Composer,
+            &[
+                ("1.0.0-RC1", "1.0.0-beta2", Greater),
+                ("1.0.0-alpha9", "1.0.0-alpha10", Less),
+                ("2.0.0-p1", "2.0.0", Greater),
+                ("2.0.0-patch1", "2.0.0-RC5", Greater),
+                ("1.0.0-dev", "1.0.0-alpha", Less),
+                ("1.0.0-beta2-dev", "1.0.0-beta2", Less),
+                ("v1.2", "1.2.0", Equal),
+            ],
+        );
+        unparseable(
+            VersionFamily::Composer,
+            &["", "dev-main", "1.0.x-dev", "1.0.0-gamma"],
+        );
     }
 
     #[test]
@@ -1646,10 +1792,10 @@ mod tests {
             family_for("ECOSYSTEM", "Rocky Linux:9"),
             Some(VersionFamily::Rpm)
         );
-        assert_eq!(family_for("ECOSYSTEM", "NuGet"), Some(VersionFamily::Loose));
+        assert_eq!(family_for("ECOSYSTEM", "NuGet"), Some(VersionFamily::NuGet));
         assert_eq!(
             family_for("ECOSYSTEM", "Packagist"),
-            Some(VersionFamily::Loose)
+            Some(VersionFamily::Composer)
         );
         assert_eq!(family_for("GIT", "npm"), None);
     }
@@ -1959,7 +2105,8 @@ mod tests {
             "debian" => VersionFamily::Debian,
             "maven" => VersionFamily::Maven,
             "gem" => VersionFamily::Gem,
-            "loose" => VersionFamily::Loose,
+            "nuget" => VersionFamily::NuGet,
+            "composer" => VersionFamily::Composer,
             "pub" => VersionFamily::Pub,
             "rpm" => VersionFamily::Rpm,
             "apk" => VersionFamily::Apk,

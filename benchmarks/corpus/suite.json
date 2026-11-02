@@ -1290,7 +1290,7 @@
     {
       "id": "gha-script-injection.negative.bound",
       "inputPath": "source/github-actions/gha-script-injection__negative__bound.yml",
-      "inputSha256": "48be4cd8feb699eaf20974d01b653c10d279b39b49947492e9e4d85a12280fad",
+      "inputSha256": "c5d7477f95fff424998d83f3f559faa63e404ea35a0b0062b5e2cc2081a043be",
       "language": "github-actions",
       "scannerFamilies": [
         "source-pattern"
@@ -1307,6 +1307,23 @@
       "id": "gha-script-injection.positive.title",
       "inputPath": "source/github-actions/gha-script-injection__positive__title.yml",
       "inputSha256": "242b19393ca0df3052082471f398fd63b8a490f8b23bf884ec38eafe07c65b04",
+      "language": "github-actions",
+      "scannerFamilies": [
+        "source-pattern"
+      ],
+      "ruleId": "gha-script-injection",
+      "expected": [
+        {
+          "ruleId": "gha-script-injection",
+          "minimum": 1
+        }
+      ],
+      "expectedAbsent": []
+    },
+    {
+      "id": "gha-script-injection.positive.quoted_block",
+      "inputPath": "source/github-actions/gha-script-injection__positive__quoted_block.yml",
+      "inputSha256": "80d14c0b616f28a1ce8d44108061ef0a8f0255087a9a3fe2920f8957afdd2bcf",
       "language": "github-actions",
       "scannerFamilies": [
         "source-pattern"

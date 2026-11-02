@@ -5,7 +5,7 @@ Notable changes to oxAudit, newest first. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Not every tag became a GitHub release. Published releases are v0.1.0,
-v0.2.0, v0.2.1 and v0.2.6. The v0.2.2 release exists only as an unpublished
+v0.2.0, v0.2.1, v0.2.6 and v0.2.7. The v0.2.2 release exists only as an unpublished
 draft, the v0.2.3 and v0.2.5 release workflows were cancelled before
 publication, and 0.2.4 was prepared but never tagged. A user moving between
 published releases receives every intermediate entry below. The
@@ -16,7 +16,82 @@ lists what each release ships.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- `--sarif-uri-prefix` on `scan`, `deps` and `export` prefixes SARIF result
+  paths, so GitHub code scanning places alerts correctly when a subdirectory
+  was scanned. Under GitHub Actions, `scan` and `deps` apply the scan root's
+  path inside `GITHUB_WORKSPACE` automatically, as workflow annotations
+  already did; `--sarif-uri-prefix ""` turns that off. The example workflow
+  keeps its `jq` prefix step until a published release carries the flag.
+- `tools/check-versions.mjs` (run by CI) fails when the README, the
+  installation guide, the consumer CI example or the CLI reference name a
+  release other than the latest published one listed above, or a CLI
+  version other than `Cargo.toml`'s.
+- `export` and `--format` accept `github-issues-csv` and `jira-csv`, the
+  ticket hand-off formats the desktop Export Center already offered, so CI
+  can produce them.
+- `.pre-commit-hooks.yaml` defines an `oxaudit-secrets` hook for the
+  pre-commit framework, running the installed `oxaudit-cli scan --staged`.
+
+### Fixed
+
+- The README, installation guide, server guide, CLI reference, release
+  checklist and consumer CI example named v0.2.6 as the latest release after
+  v0.2.7 was published, so copy-paste installs and the example CI gate
+  pinned a CLI without 0.2.7's fixes. They now point at v0.2.7, with its
+  commit, checksum and image digest, and the release checklist records what
+  was verified for it on 2026-11-02.
+- Offline (`--advisory-db`) matching no longer reports advisories that OSV
+  marks withdrawn, and sorts a range's events by version before evaluating
+  them; a record that listed its events out of order could previously miss
+  an affected version.
+- NuGet and Packagist versions are compared in their registries' own orders.
+  The shared "loose" ordering compared prerelease labels as plain text
+  (`rc.10` before `rc.9`, Composer `RC1` before `beta2`), sorted Composer
+  `-patch` releases below the release they patch, and ranked a NuGet
+  prerelease above a higher fourth segment. Offline matching and the desktop
+  fix-candidate proofs both use the corrected orders.
+- yarn workspace, `file:`, `link:`, `portal:`, git and tarball entries,
+  Composer path repositories and `dev-*` branch versions, and Pub git
+  packages are inventoried but no longer queried against the public registry,
+  where an internal package sharing a public name produced false positives.
+  Yarn `patch:` entries are checked as the package they patch instead of
+  under a garbled name.
+- Workflow script-injection detection (`gha-script-injection`) covers
+  multi-line `run: |` blocks, quoted expressions, `github.head_ref` and
+  `actions/github-script` scripts. It previously fired only on an unquoted
+  expression on the `run:` line itself, and treated
+  `run: echo "${{ github.event.issue.title }}"` as safe, though GitHub
+  expands the expression before the shell sees the quotes. The benchmark
+  corpus's negative fixture carried the same mistake and is corrected.
+- Working-tree scans report vendor-prefixed tokens (`ghp_…`, `AKIA…`,
+  `xoxb-…` and the like) and private keys found inside comments. Every secret
+  in a comment was dropped, so a commented-out credential went unreported,
+  although history and `--staged` scans found it. Generic `password =` and
+  `api_key =` matches in comments stay suppressed.
+- HashiCorp Vault's current `hvs.`/`hvb.`/`hvr.` tokens are detected (only the
+  legacy `s.` form was), and credentials in PostgreSQL, MySQL/MariaDB,
+  MongoDB, Redis and AMQP connection strings are reported alongside HTTP and
+  FTP URLs. Templated passwords (`${DB_PASSWORD}`, `%(pw)s`, `{{password}}`,
+  `<password>`) are not.
+- The README's secret-rule count is corrected to 42, and every secret rule
+  now has a regression test.
+- grype's Debian, RPM and apk components merge with oxAudit's native and
+  cve-bin-tool rows: their epoch and packaging revision
+  (`1:11.8.6-0+deb13u1`) are reduced to the upstream version before merging,
+  so one component no longer appears twice with its CVEs split between rows.
+- Findings dismissed in `.oxaudit/policy.json` (false positive, accepted risk,
+  suppressed) no longer become GitHub pull-request annotations or VS Code
+  diagnostics. They never failed `--fail-on`, but were still shown as errors.
+  The job summary lists them as a count.
+- `hook install` no longer reports success where git never looks. With
+  `core.hooksPath` set (husky sets it), git ignores `.git/hooks`; install now
+  refuses and names the line to add to the configured hook instead, and
+  `hook status` says the hook is not active. The managed block now goes
+  directly after the shebang and no longer uses `exec`, so a user hook that
+  ends in `exec` cannot skip the scan and lines after the block still run;
+  reinstalling moves a block that earlier releases appended.
 
 ## [0.2.7] - 2026-10-29
 

@@ -95,8 +95,15 @@ been downloaded, PyPI queries still fail as uncovered.
 ## Matching rules and stated limits
 
 - **Ranges follow the OSV schema**: `introduced`/`fixed` intervals are
-  half-open, `last_affected` is inclusive, `limit` is exclusive, intervals
-  union in event order, and explicit `versions` lists add exact matches.
+  half-open, `last_affected` is inclusive, `limit` is an exclusive upper
+  gate, events are sorted by version before they are walked (as OSV's own
+  evaluation does; two transitions at the same version are undetermined
+  rather than guessed), intervals union, and explicit `versions` lists add
+  exact matches.
+- **Withdrawn records never match.** OSV dumps keep advisories their
+  publisher withdrew, marked with a `withdrawn` timestamp; the online API
+  stops returning them, and local matching ignores them too and says how many
+  it skipped.
 - **Version comparison is per ecosystem spec**: semver (npm, crates.io, Go,
   Hex, and `SEMVER`-typed ranges anywhere), Dart's `pub_semver` ordering
   (Pub: build metadata is significant and sorts after the release it
@@ -107,7 +114,10 @@ been downloaded, PyPI queries still fail as uncovered.
   Containers), rpm's `rpmvercmp` over `[epoch:]version[-release]` (Rocky
   Linux, AlmaLinux, Red Hat, SUSE, openSUSE, Mageia, Photon OS, Azure Linux
   and openEuler), Maven `ComparableVersion` (Maven), RubyGems (RubyGems),
-  and dotted-numeric-with-prerelease (NuGet, Packagist). A distribution
+  NuGet's own order (NuGet: four release segments, case-insensitive
+  prerelease labels, `rc.9 < rc.10`) and Composer's stability order
+  (Packagist: `dev < alpha < beta < RC < release < patch`, so `-p1` follows
+  its release; `dev-main` branches are not ordered). A distribution
   ecosystem takes its comparator bare or release-qualified (`Debian`,
   `Alpine:v3.20`, `Rocky Linux:9`, `Red Hat:enterprise_linux:9::appstream`,
   `SUSE:Linux Enterprise Server 15 SP5`); the release never changes the

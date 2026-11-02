@@ -3,8 +3,9 @@
 //! This is the matching OSV's server performs for online queries, restated
 //! locally so an advisory database can answer without the network. The
 //! evaluation follows the OSV schema's documented semantics: ranges are unions
-//! of `introduced`/`fixed`/`last_affected`/`limit` intervals walked in event
-//! order, explicit `versions` lists add exact matches, and `GIT` ranges —
+//! of `introduced`/`fixed`/`last_affected` intervals walked in sorted version
+//! order and capped by any `limit`, records marked `withdrawn` never match,
+//! explicit `versions` lists add exact matches, and `GIT` ranges —
 //! which name commits, not releases — are skipped, so a GIT-only advisory
 //! matches only through its explicit versions.
 //!
@@ -42,6 +43,8 @@ pub struct MatchNotes {
     pub undetermined_examples: Vec<String>,
     /// Ranges skipped because they name commits instead of releases.
     pub git_ranges_skipped: usize,
+    /// Records ignored because OSV marks them withdrawn.
+    pub withdrawn_skipped: usize,
 }
 
 impl MatchNotes {
@@ -63,6 +66,12 @@ impl MatchNotes {
                 self.undetermined
             ));
         }
+        if self.withdrawn_skipped > 0 {
+            warnings.push(format!(
+                "{} withdrawn advisory record(s) were ignored",
+                self.withdrawn_skipped
+            ));
+        }
         if self.git_ranges_skipped > 0 {
             warnings.push(format!(
                 "{} GIT range(s) were skipped; those advisories match only through explicit affected versions",
@@ -82,34 +91,100 @@ fn event_boundary<'a>(event: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn range_affects(events: &[Value], family: versioning::VersionFamily, version: &str) -> Verdict {
-    let mut affected = false;
+    // Follows the same sorted evaluation as `affectedBy` in
+    // src/features/dependencies/decisions.ts (which additionally refuses a
+    // few malformed range shapes outright): OSV evaluates a range over its
+    // events *sorted* by version (the schema only
+    // recommends that dumps store them sorted), with `limit` as a separate
+    // upper gate rather than a transition.
+    let mut transitions: Vec<(&str, &str)> = Vec::new();
+    let mut limits: Vec<&str> = Vec::new();
     for event in events {
-        if let Some(introduced) = event_boundary(event, "introduced") {
-            if introduced == "0" {
-                affected = true;
-            } else {
-                match cmp(family, version, introduced) {
-                    Some(Ordering::Greater) | Some(Ordering::Equal) => affected = true,
-                    Some(Ordering::Less) => {}
-                    None => return Verdict::Undetermined,
-                }
-            }
+        if let Some(limit) = event_boundary(event, "limit") {
+            limits.push(limit);
         }
-        for (key, clears_when) in [
-            ("fixed", [Ordering::Greater, Ordering::Equal].as_slice()),
-            ("limit", [Ordering::Greater, Ordering::Equal].as_slice()),
-            ("last_affected", [Ordering::Greater].as_slice()),
-        ] {
-            if let Some(boundary) = event_boundary(event, key) {
-                match cmp(family, version, boundary) {
-                    Some(order) if clears_when.contains(&order) => affected = false,
-                    Some(_) => {}
-                    None => return Verdict::Undetermined,
-                }
+        for kind in ["introduced", "fixed", "last_affected"] {
+            if let Some(boundary) = event_boundary(event, kind) {
+                transitions.push((kind, boundary));
             }
         }
     }
-    if affected {
+    let is_zero = |(kind, boundary): &(&str, &str)| *kind == "introduced" && *boundary == "0";
+    // Every pairwise order is decided before sorting: a boundary the
+    // comparator refuses makes the range undetermined, and the sort itself
+    // only ever reads settled answers. The standard sort may panic on a
+    // comparator that is not a total order, so this one is a plain insertion
+    // sort over the table (ranges hold a handful of events).
+    let count = transitions.len();
+    let mut order = vec![Ordering::Equal; count * count];
+    for i in 0..count {
+        for j in 0..count {
+            order[i * count + j] = match (is_zero(&transitions[i]), is_zero(&transitions[j])) {
+                (true, true) => Ordering::Equal,
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                (false, false) => match cmp(family, transitions[i].1, transitions[j].1) {
+                    Some(ordering) => ordering,
+                    None => return Verdict::Undetermined,
+                },
+            };
+        }
+    }
+    let mut sorted: Vec<usize> = Vec::with_capacity(count);
+    for index in 0..count {
+        let at = sorted
+            .iter()
+            .position(|&placed| order[index * count + placed] == Ordering::Less)
+            .unwrap_or(sorted.len());
+        sorted.insert(at, index);
+    }
+    // Two transitions at the same version leave the order ambiguous; do not
+    // guess which one wins.
+    if sorted
+        .windows(2)
+        .any(|pair| order[pair[0] * count + pair[1]] == Ordering::Equal)
+    {
+        return Verdict::Undetermined;
+    }
+    let transitions: Vec<(&str, &str)> =
+        sorted.into_iter().map(|index| transitions[index]).collect();
+
+    let mut affected = false;
+    for transition in &transitions {
+        let order = if is_zero(transition) {
+            Ordering::Greater
+        } else {
+            match cmp(family, version, transition.1) {
+                Some(order) => order,
+                None => return Verdict::Undetermined,
+            }
+        };
+        match transition.0 {
+            "introduced" if order != Ordering::Less => affected = true,
+            "fixed" if order != Ordering::Less => affected = false,
+            "last_affected" if order == Ordering::Greater => affected = false,
+            _ => {}
+        }
+    }
+    if !affected {
+        return Verdict::NotAffected;
+    }
+    if limits.is_empty() {
+        return Verdict::Affected;
+    }
+    let mut below_a_limit = false;
+    for limit in limits {
+        if limit == "*" {
+            below_a_limit = true;
+            continue;
+        }
+        match cmp(family, version, limit) {
+            Some(Ordering::Less) => below_a_limit = true,
+            Some(_) => {}
+            None => return Verdict::Undetermined,
+        }
+    }
+    if below_a_limit {
         Verdict::Affected
     } else {
         Verdict::NotAffected
@@ -125,6 +200,14 @@ pub fn record_affects(
     version: &str,
     notes: &mut MatchNotes,
 ) -> Verdict {
+    if record
+        .get("withdrawn")
+        .and_then(Value::as_str)
+        .is_some_and(|stamp| !stamp.trim().is_empty())
+    {
+        notes.withdrawn_skipped += 1;
+        return Verdict::NotAffected;
+    }
     let mut any_undetermined = false;
     let normalized = versioning::normalize_package(ecosystem, name);
     for affected in record
@@ -295,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn introduced_fixed_intervals_walk_in_event_order() {
+    fn introduced_fixed_intervals_union() {
         let advisory = npm_range(&[
             ("introduced", "0"),
             ("fixed", "1.0.1"),
@@ -325,6 +408,125 @@ mod tests {
         assert_eq!(
             affects(advisory.clone(), "npm", "lodash", "3.0.0"),
             Verdict::NotAffected
+        );
+    }
+
+    #[test]
+    fn withdrawn_records_never_affect() {
+        let mut advisory = npm_range(&[("introduced", "0")]);
+        advisory["withdrawn"] = serde_json::json!("2024-01-01T00:00:00Z");
+        let mut notes = MatchNotes::default();
+        let verdict = record_affects(&advisory, "npm", "lodash", "1.0.0", &mut notes);
+        assert_eq!(verdict, Verdict::NotAffected);
+        assert_eq!(notes.withdrawn_skipped, 1);
+        assert!(notes
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains("withdrawn")));
+    }
+
+    #[test]
+    fn unsorted_events_are_sorted_before_walking() {
+        let advisory = npm_range(&[
+            ("introduced", "2.0.0"),
+            ("fixed", "2.5.0"),
+            ("introduced", "0"),
+            ("fixed", "1.0.0"),
+        ]);
+        assert_eq!(
+            affects(advisory.clone(), "npm", "lodash", "2.2.0"),
+            Verdict::Affected
+        );
+        assert_eq!(
+            affects(advisory.clone(), "npm", "lodash", "1.5.0"),
+            Verdict::NotAffected
+        );
+        assert_eq!(
+            affects(advisory, "npm", "lodash", "0.5.0"),
+            Verdict::Affected
+        );
+    }
+
+    #[test]
+    fn limit_is_an_upper_gate_not_an_event() {
+        // A limit listed before the introduction still caps the range.
+        let advisory = npm_range(&[("limit", "2.0.0"), ("introduced", "0")]);
+        assert_eq!(
+            affects(advisory.clone(), "npm", "lodash", "1.0.0"),
+            Verdict::Affected
+        );
+        assert_eq!(
+            affects(advisory, "npm", "lodash", "2.0.0"),
+            Verdict::NotAffected
+        );
+    }
+
+    #[test]
+    fn unorderable_boundaries_are_undetermined() {
+        let advisory = npm_range(&[
+            ("introduced", "0"),
+            ("fixed", "not-a-version"),
+            ("introduced", "3.0.0"),
+        ]);
+        assert_eq!(
+            affects(advisory, "npm", "lodash", "1.0.0"),
+            Verdict::Undetermined
+        );
+    }
+
+    #[test]
+    fn an_unorderable_boundary_among_many_events_is_undetermined_not_a_panic() {
+        // Twenty-one events reach the standard library's non-insertion sort,
+        // which may panic on a comparator that is not a total order.
+        let boundaries = [
+            "9.0.0",
+            "2.0.0",
+            "10.0.0",
+            "7.0.0",
+            "20.0.0",
+            "15.0.0",
+            "16.0.0",
+            "14.0.0",
+            "3.0.0",
+            "13.0.0",
+            "not-a-version",
+            "11.0.0",
+            "19.0.0",
+            "1.0.0",
+            "5.0.0",
+            "4.0.0",
+            "17.0.0",
+            "6.0.0",
+            "21.0.0",
+            "12.0.0",
+            "18.0.0",
+        ];
+        let events: Vec<(&str, &str)> = boundaries
+            .iter()
+            .enumerate()
+            .map(|(index, boundary)| {
+                (
+                    if index % 2 == 0 {
+                        "introduced"
+                    } else {
+                        "fixed"
+                    },
+                    *boundary,
+                )
+            })
+            .collect();
+        assert_eq!(
+            affects(npm_range(&events), "npm", "lodash", "8.5.0"),
+            Verdict::Undetermined
+        );
+    }
+
+    #[test]
+    fn simultaneous_transitions_are_undetermined() {
+        let advisory = npm_range(&[("introduced", "1.0.0"), ("fixed", "1.0.0")]);
+        assert_eq!(
+            affects(advisory, "npm", "lodash", "1.0.0"),
+            Verdict::Undetermined
         );
     }
 

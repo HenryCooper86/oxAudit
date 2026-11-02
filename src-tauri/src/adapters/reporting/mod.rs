@@ -631,7 +631,7 @@ fn vex_statements(data: &ReportData) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn validate(value: &serde_json::Value, format: ReportFormat) -> Result<(), String> {
+pub(crate) fn validate(value: &serde_json::Value, format: ReportFormat) -> Result<(), String> {
     let valid = match format {
         // Ticket CSVs carry their own structural check in generate_ticket_csv.
         ReportFormat::GithubIssuesCsv | ReportFormat::JiraCsv => true,

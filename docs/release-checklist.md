@@ -1,25 +1,28 @@
 # Release checklist
 
-Last reviewed **2026-10-29** against the GitHub repository/release API, the
+Last reviewed **2026-11-02** against the GitHub repository/release API, the
 release workflow runs, the container registry, and a live download-and-verify
 exercise. The repository is public and
-[v0.2.6](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.6) is the
-latest published release. `main` at `e9b8de6` and later is unreleased work on
-top of the v0.2.6 tag; the [changelog](../CHANGELOG.md) lists it. Earlier
-reviews (2026-10-10, 2026-10-20) covered the v0.1.0-only state; their
+[v0.2.7](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.7) is the
+latest published release (GitHub's latest-release response on 2026-11-02).
+Work on `main` after the v0.2.7 tag (`063b07e`) is unreleased; the
+[changelog](../CHANGELOG.md) lists it under Unreleased. Earlier reviews
+(2026-10-10, 2026-10-20, 2026-10-29) covered earlier release states; their
 exercised evidence is kept below.
 
 ## Observed release state
 
 - [The repository](https://github.com/HenryCooper86/oxAudit) is public
   (API `visibility: public`, default branch `main`).
-- Tags: `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.5`, `v0.2.6`.
+- Tags: `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.5`, `v0.2.6`,
+  `v0.2.7`.
   There is no `v0.2.4` tag: commit `7b5e1b8` ("prepare 0.2.4") moved the
   version declarations to 0.2.4 but was never tagged; `v0.2.5` followed it.
 
 | Tag | Commit | Release workflow | GitHub release |
 | --- | --- | --- | --- |
-| `v0.2.6` | `c9f0568` | succeeded | Published 2026-10-26 08:58:36 UTC (release ID `423719831`, 25 uploaded assets); GitHub's latest-release response on 2026-10-29 |
+| `v0.2.7` | `063b07e` | succeeded | Published 2026-10-29 08:43:55 UTC (release ID `427621649`, 25 uploaded assets); GitHub's latest-release response on 2026-11-02 |
+| `v0.2.6` | `c9f0568` | succeeded | Published 2026-10-26 08:58:36 UTC (release ID `423719831`, 25 uploaded assets) |
 | `v0.2.5` | `b9a1012` | cancelled | None. Its SBOM selection bug was fixed in v0.2.6 (see [the v0.2.6 notes](releases/v0.2.6.md)); the tag is preserved |
 | `v0.2.3` | `27cd5e8` | cancelled | None |
 | `v0.2.2` | `460808b` | succeeded | **Draft only** (release ID `423497431`, 25 assets), never published |
@@ -42,7 +45,7 @@ and artifacts:
   UTC; on 2026-10-29 the release API still lists it with nine assets. It is
   not evidence that the published v0.1.0 release is incomplete.
 
-The published v0.2.6 release carries **twenty-five uploaded assets**: four
+The published v0.2.7 release, like v0.2.6, carries **twenty-five uploaded assets**: four
 CLIs with three signature sidecars each, three Linux desktop packages, two
 SBOMs, `oxaudit-container.txt`, and `SHA256SUMS.txt` with its minisign and
 Sigstore signatures. The release page's larger count includes GitHub's two
@@ -55,6 +58,36 @@ to which file — is the single matrix in
 Update that matrix instead of copying inventories here.
 
 ### Exercised verification
+
+#### 2026-11-02, v0.2.7, macOS arm64
+
+Observed on one macOS arm64 machine, isolated to temporary directories (no
+system PATH or user-directory changes):
+
+- `OXAUDIT_VERSION=v0.2.7 sh scripts/install.sh` with a temporary
+  `OXAUDIT_INSTALL_DIR` installed a binary that printed `oxaudit 0.2.7`.
+- `shasum -a 256 -c` over the release `SHA256SUMS.txt` passed for the
+  downloaded `oxaudit-cli-linux-x86_64` and `oxaudit-cli-macos-universal`;
+  the downloaded macOS binary printed `oxaudit 0.2.7`.
+- `minisign -Vm` against the committed `minisign.pub` verified
+  `SHA256SUMS.txt`, `oxaudit-cli-linux-x86_64` and
+  `oxaudit-cli-macos-universal`.
+- `gh attestation verify oxaudit-cli-linux-x86_64 --repo HenryCooper86/oxAudit`
+  with `--cert-identity` set to the `refs/tags/v0.2.7` release workflow,
+  `--source-ref refs/tags/v0.2.7` and `--source-digest
+  063b07e220b65310d84d317e15ee4ad2021709dc` exited 0, as did the same
+  check (without `--cert-identity`) on `oxaudit-cli-macos-universal`; that
+  binary checked against `--source-ref refs/tags/v0.2.6` exited 1.
+- `docker buildx imagetools inspect` of
+  `ghcr.io/henrycooper86/oxaudit@sha256:c078067e3dcfc2055c3475462d7d80d10bd50874a2429741bf02b9c1e99e518c`
+  (the reference in `oxaudit-container.txt`) resolved an OCI image index with
+  linux/amd64 and linux/arm64 manifests.
+
+Not exercised on 2026-11-02: pulling or running the v0.2.7 image (so its
+`/data` ownership fix is not yet observed), `cosign verify-blob` and `cosign
+verify` (cosign was not installed), Linux or Windows execution of any asset,
+the composite Action or the consumer CI example in a real GitHub repository,
+and native codesigning or notarization state.
 
 #### 2026-10-29, v0.2.6, macOS arm64
 
@@ -214,10 +247,20 @@ part of the next release's container check.
    and the container pull on macOS arm64 only; cosign, Linux and Windows
    execution, and the Action are still unexercised. Confirm a container pull
    by the released digest without credentials.
-7. Record the tested version, platform, checks, and remaining limitations,
-   update the [changelog](../CHANGELOG.md), and update the pinned version,
-   commit and digest in [the consumer CI example](../examples/ci/oxaudit.yml)
-   once the release is verified.
+7. Record the tested version, platform, checks, and remaining limitations.
+   Once the release is verified, add it to the changelog preamble's
+   "Published releases are …" sentence and move every pointer to it.
+   `tools/check-versions.mjs` (run by CI) fails while one of these still
+   names another release: the README's latest-release link, Action example
+   and consumer-workflow summary; the installation guide's latest-release
+   link and platform-matrix check; and `OXAUDIT_TOOL_VERSION` in
+   [the consumer CI example](../examples/ci/oxaudit.yml). The script does not
+   check commits, checksums or digests, so update these by hand from the
+   release itself: the CI example's `OXAUDIT_TOOL_COMMIT` and
+   `OXAUDIT_TOOL_SHA256`, the installation guide's tagged commit and image
+   digest, and the [server guide](headless-server.md#container)'s image
+   digest. Switch the CI example from its `jq` SARIF prefix step to
+   `--sarif-uri-prefix` once the published CLI has that flag.
    Brew tap and Action Marketplace publication remain optional owner work.
 
 ## Current distribution limits

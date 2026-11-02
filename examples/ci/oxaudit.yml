@@ -21,9 +21,9 @@ env:
   #   OXAUDIT_TOOL_COMMIT   `git rev-list -n1 <tag>` in the oxAudit repository;
   #   OXAUDIT_TOOL_SHA256   the oxaudit-cli-linux-x86_64 line of that release's
   #                         SHA256SUMS.txt (minisign-signed; see the guide).
-  OXAUDIT_TOOL_VERSION: v0.2.6
-  OXAUDIT_TOOL_COMMIT: c9f0568dc3ac890fcd9122e08f58cf92c9141b47
-  OXAUDIT_TOOL_SHA256: e09259dab733c7b23fa6dc06679e6b9e47971d9997ff5f819291b699b54281f0
+  OXAUDIT_TOOL_VERSION: v0.2.7
+  OXAUDIT_TOOL_COMMIT: 063b07e220b65310d84d317e15ee4ad2021709dc
+  OXAUDIT_TOOL_SHA256: 3713eb067c64a58fe93273d5a6a5815c1e328c852f0826a1faafacae68851f42
 
 jobs:
   source:

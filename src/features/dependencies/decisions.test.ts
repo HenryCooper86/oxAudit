@@ -142,13 +142,21 @@ describe('ecosystem version comparators (ported from advisories/versioning.rs)',
     ]);
     for (const bad of ['','1.0-beta.1','dev-main']) expect(compareVersions('gem',bad,'1.0.0')).toBeNull();
   });
-  it('loose handles NuGet four-segment and Composer prerelease pins',()=>{
-    table('loose',[
-      ['1.0.0','1.0.0.1',-1],['1.0.0.1','1.0.1',-1],['1.0.0.1','1.0.0.2',-1],
-      ['1.0.0-beta.1','1.0.0',-1],['1.0.0-beta.1','1.0.0-beta.2',-1],['1.0.0-beta.2','1.0.0-rc',-1],
-      ['1.0','1.0.0',0],['v1.2.3','1.2.3',0],['1.2.3+build','1.2.3',0],
+  it('nuget follows NuGet SemVer: revision before prerelease, labels case-insensitive',()=>{
+    table('nuget',[
+      ['1.0.0','1.0.0.1',-1],['1.0.0.1','1.0.1',-1],['1.0.0-rc.9','1.0.0-rc.10',-1],
+      ['1.0.0-Beta','1.0.0-beta',0],['1.0.0-alpha','1.0.0-alpha.1',-1],['1.2.3.5-beta','1.2.3.4',1],
+      ['1.0','1.0.0.0',0],['1.2.3+build','1.2.3',0],
     ]);
-    for (const bad of ['','dev-main','1.0.x']) expect(compareVersions('loose',bad,'1.0.0')).toBeNull();
+    for (const bad of ['','dev-main','1.0.x','1.0.0-']) expect(compareVersions('nuget',bad,'1.0.0')).toBeNull();
+  });
+  it('composer follows Composer stability: dev < alpha < beta < RC < release < patch',()=>{
+    table('composer',[
+      ['1.0.0-RC1','1.0.0-beta2',1],['1.0.0-alpha9','1.0.0-alpha10',-1],['2.0.0-p1','2.0.0',1],
+      ['2.0.0-patch1','2.0.0-RC5',1],['1.0.0-dev','1.0.0-alpha',-1],['1.0.0-beta2-dev','1.0.0-beta2',-1],
+      ['v1.2','1.2.0',0],
+    ]);
+    for (const bad of ['','dev-main','1.0.x-dev','1.0.0-gamma']) expect(compareVersions('composer',bad,'1.0.0')).toBeNull();
   });
   it('rpm follows rpmvercmp over epoch, version and release',()=>{
     table('rpm',[
@@ -183,8 +191,8 @@ describe('ecosystem version comparators (ported from advisories/versioning.rs)',
     expect(versionFamilyForEcosystem('npm')).toBe('semver');
     expect(versionFamilyForEcosystem('crates.io')).toBe('semver');
     expect(versionFamilyForEcosystem('Go')).toBe('semver');
-    expect(versionFamilyForEcosystem('NuGet')).toBe('loose');
-    expect(versionFamilyForEcosystem('Packagist')).toBe('loose');
+    expect(versionFamilyForEcosystem('NuGet')).toBe('nuget');
+    expect(versionFamilyForEcosystem('Packagist')).toBe('composer');
     expect(versionFamilyForEcosystem('Debian:12')).toBe('debian');
     expect(versionFamilyForEcosystem('Alpine:v3.20')).toBe('apk');
     expect(versionFamilyForEcosystem('Hex')).toBe('semver');

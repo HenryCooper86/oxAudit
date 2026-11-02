@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Findings that the project's review policy (`.oxaudit/policy.json`) marks as
+  false positive, accepted risk or suppressed are no longer shown as
+  diagnostics. They never failed the CLI's build gate, and now they no longer
+  appear in the editor either.
+
+## 0.2.7
+
+- Version aligned with oxAudit 0.2.7. No extension changes; install the
+  matching CLI for that release's scanner fixes.
+
 ## 0.2.6
 
 - Align with the corrected oxAudit release, which selects and verifies the application

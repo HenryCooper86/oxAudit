@@ -3,10 +3,12 @@
 // shell) and parses its stable JSON contract:
 //   oxaudit-cli scan <dir> --format json --quiet
 //     stdout: { "summary": ScanSummary, "findings": Finding[] }
-//     exit 0: clean, exit 1: findings present, exit 2: usage, exit 3: failure
+//     exit 0: scan completed (with or without findings: no --fail-on is
+//     passed), exit 1: a --fail-on gate tripped, exit 2: usage, exit 3: failure
 
 import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
+import { reportableFindings } from './findings';
 
 const INSTALL_URL = 'https://github.com/HenryCooper86/oxAudit#install';
 const DIAGNOSTIC_SOURCE = 'oxaudit';
@@ -21,6 +23,7 @@ interface CliFinding {
   title: string;
   description: string;
   matchText: string;
+  review?: { state?: string } | null;
 }
 
 interface CliReport {
@@ -183,9 +186,11 @@ async function scanWorkspace(): Promise<void> {
       folder.uri.fsPath,
     );
     const report = parseReport(stdout);
+    // Findings the project's review policy dismissed are not diagnostics.
+    const findings = reportableFindings(report.findings);
 
-    const truncated = report.findings.length > maxFindings;
-    const capped = truncated ? report.findings.slice(0, maxFindings) : report.findings;
+    const truncated = findings.length > maxFindings;
+    const capped = truncated ? findings.slice(0, maxFindings) : findings;
 
     // Finding filePath values are scan-root-relative; join with the folder.
     const byFile = new Map<string, vscode.Diagnostic[]>();

@@ -13,6 +13,13 @@
  *   rust-toolchain.toml    [toolchain] channel <- authoritative
  *   Dockerfile             ARG RUST_IMAGE      <- rust:<channel>[-variant]
  *
+ * and for the published release the documentation points users at:
+ *
+ *   CHANGELOG.md  "Published releases are …" <- authoritative (its last entry)
+ *   README.md, docs/getting-started.md, examples/ci/oxaudit.yml, and the
+ *   README's composite-Action example                <- must name it
+ *   docs/cli.md   "(`oxaudit X`)" help header      <- must match Cargo.toml
+ *
  * Run by CI on every push. Exits non-zero with an actionable message when the
  * declarations drift, which is the failure this file exists to prevent.
  */
@@ -96,6 +103,52 @@ if (!rustImageVersion) {
   );
 }
 
+// The docs name the latest *published* release, which is not the version on
+// main: a release is prepared, tagged and published before the docs move.
+// The changelog preamble's list of published releases is the one place that
+// is edited when a release goes out; every pointer below must follow it.
+const changelog = readFileSync("CHANGELOG.md", "utf8");
+// The sentence ends at the first full stop followed by whitespace; the
+// version numbers' own dots are followed by digits.
+const publishedList = changelog.match(/Published releases are ([\s\S]*?)\.(?:\s|$)/);
+const published = publishedList
+  ? [...publishedList[1].matchAll(/v(\d+\.\d+\.\d+)/g)].map((match) => match[1])
+  : [];
+const latestPublished = published.at(-1) ?? null;
+if (!latestPublished) {
+  problems.push('CHANGELOG.md: no "Published releases are v…" sentence found in the preamble.');
+} else {
+  const pointers = [
+    ["README.md", /\[latest release\]\([^)]*\)\s*\n\s*— \[v(\d+\.\d+\.\d+)\]/, "its latest-release link"],
+    ["README.md", /^\s*version: v(\d+\.\d+\.\d+)\s+# release tag of the CLI/m, "its composite-Action example"],
+    ["README.md", /installs the published v(\d+\.\d+\.\d+) Linux CLI/, "its consumer-workflow summary"],
+    ["docs/getting-started.md", /\[latest release\]\([^)]*\)\s*\n\s*— \[v(\d+\.\d+\.\d+)\]/, "its latest-release link"],
+    ["docs/getting-started.md", /against published v(\d+\.\d+\.\d+) \(/, "its platform-matrix check"],
+    ["examples/ci/oxaudit.yml", /^\s*OXAUDIT_TOOL_VERSION: v(\d+\.\d+\.\d+)\s*$/m, "OXAUDIT_TOOL_VERSION"],
+  ];
+  for (const [file, pattern, what] of pointers) {
+    const match = readFileSync(file, "utf8").match(pattern);
+    if (!match) {
+      problems.push(`${file}: ${what} was not found; tools/check-versions.mjs expects it.`);
+    } else if (match[1] !== latestPublished) {
+      problems.push(
+        `${file}: ${what} names v${match[1]}, but CHANGELOG.md lists v${latestPublished} as the ` +
+          `latest published release. Update it (and its pinned commit/digest) once that release is verified.`,
+      );
+    }
+  }
+}
+
+const cliHeader = readFileSync("docs/cli.md", "utf8").match(/\(`oxaudit (\d+\.\d+\.\d+)`\)/);
+if (!cliHeader) {
+  problems.push("docs/cli.md: no (`oxaudit X.Y.Z`) --help header found.");
+} else if (cargoVersion && cliHeader[1] !== cargoVersion) {
+  problems.push(
+    `docs/cli.md says it was taken from oxaudit ${cliHeader[1]} --help, but src-tauri/Cargo.toml ` +
+      `declares ${cargoVersion}. Regenerate it from the current CLI's --help.`,
+  );
+}
+
 if (problems.length > 0) {
   console.error("Version declarations have drifted:\n");
   for (const problem of problems) console.error(`  - ${problem}`);
@@ -104,5 +157,6 @@ if (problems.length > 0) {
 }
 
 console.log(
-  `Version declarations agree on ${cargoVersion}; Dockerfile and rust-toolchain.toml agree on Rust ${toolchainChannel}.`,
+  `Version declarations agree on ${cargoVersion}; docs point at published v${latestPublished}; ` +
+    `Dockerfile and rust-toolchain.toml agree on Rust ${toolchainChannel}.`,
 );

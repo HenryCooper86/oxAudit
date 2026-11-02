@@ -1,0 +1,16 @@
+# Hook definition for the pre-commit framework (https://pre-commit.com).
+# It runs the oxaudit-cli already installed on PATH; see the README's
+# Install section. Consumers reference it from .pre-commit-config.yaml:
+#
+#   - repo: https://github.com/HenryCooper86/oxAudit
+#     rev: <a release tag or commit>
+#     hooks:
+#       - id: oxaudit-secrets
+- id: oxaudit-secrets
+  name: oxAudit staged secrets scan
+  description: Scan the staged index for secrets and block the commit on high-severity findings.
+  entry: oxaudit-cli scan --staged --quiet
+  language: system
+  pass_filenames: false
+  always_run: true
+  stages: [pre-commit]

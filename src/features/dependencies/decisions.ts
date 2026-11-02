@@ -23,7 +23,7 @@ export type VersionOrdering = -1 | 0 | 1;
  * vectors in src-tauri/tests/fixtures/version-ordering-vectors.json, which
  * both test suites run.
  */
-export type VersionFamily = 'semver' | 'pep440' | 'debian' | 'maven' | 'gem' | 'loose' | 'pub' | 'rpm' | 'apk';
+export type VersionFamily = 'semver' | 'pep440' | 'debian' | 'maven' | 'gem' | 'nuget' | 'composer' | 'pub' | 'rpm' | 'apk';
 
 /**
  * Pick the comparator for an OSV range. Mirrors `versioning::family_for`:
@@ -54,7 +54,8 @@ export function versionFamilyForEcosystem(ecosystem: string): VersionFamily | nu
     case 'RubyGems': return 'gem';
     case 'npm': case 'crates.io': case 'Go': case 'Hex': return 'semver';
     case 'Pub': return 'pub';
-    case 'Packagist': case 'NuGet': return 'loose';
+    case 'NuGet': return 'nuget';
+    case 'Packagist': return 'composer';
     default: {
       // The release never changes the version scheme, so only the name
       // before the first `:` decides.
@@ -81,7 +82,8 @@ export function compareVersions(family: VersionFamily, a: string, b: string): Ve
     case 'debian': return compareDebian(a, b);
     case 'maven': return compareMaven(a, b);
     case 'gem': return compareGem(a, b);
-    case 'loose': return compareLoose(a, b);
+    case 'nuget': return compareNuget(a, b);
+    case 'composer': return compareComposer(a, b);
     case 'pub': return comparePub(a, b);
     case 'rpm': return compareRpm(a, b);
     case 'apk': return compareApk(a, b);
@@ -802,56 +804,135 @@ function compareGem(a: string, b: string): VersionOrdering | null {
   return 0;
 }
 
-// --- Loose: NuGet/Composer dotted numeric pins (up to four segments) plus a prerelease suffix ---
-
-type LooseVersion = { release: [bigint, bigint, bigint, bigint]; pre: string | null };
-
-function parseLoose(raw: string): LooseVersion | null {
-  const s = rustTrim(raw).replace(/^[vV]+/, '');
-  const dash = s.indexOf('-'), plus = s.indexOf('+');
-  const firstSep = dash === -1 ? plus : plus === -1 ? dash : Math.min(dash, plus);
-  let core = s, pre: string | null = null;
-  if (firstSep !== -1 && dash !== -1) {
-    core = s.slice(0, firstSep);
-    let suffix = s.slice(firstSep + 1);
-    const suffixPlus = suffix.indexOf('+');
-    if (suffixPlus !== -1) suffix = suffix.slice(0, suffixPlus);
-    pre = suffix;
-  } else if (plus !== -1) {
-    core = s.slice(0, plus);
-  }
-  const tokens = core.split('.');
-  if (tokens.length > 4) return null;
-  const parts: bigint[] = [];
-  for (let index = 0; index < Math.min(tokens.length, 3); index++) {
-    const parsed = parseDigitsU64(tokens[index]);
-    if (parsed === null) return null;
-    parts.push(parsed);
-  }
-  while (parts.length < 3) parts.push(0n);
-  // The revision is an i64 on the Rust side, -1 when absent.
-  let revision = -1n;
-  if (tokens.length === 4) {
-    const parsed = parseDigitsU64(tokens[3]);
-    if (parsed === null || parsed > I64_MAX) return null;
-    revision = parsed;
-  }
-  return { release: [parts[0], parts[1], parts[2], revision], pre };
+/** Compare two runs of ASCII digits by value, without overflow (Rust's `cmp_digit_runs`). */
+function cmpDigitRuns(a: string, b: string): VersionOrdering {
+  const x = a.replace(/^0+/, ''), y = b.replace(/^0+/, '');
+  return cmpNum(x.length, y.length) || cmpStr(x, y);
 }
 
-function compareLoose(a: string, b: string): VersionOrdering | null {
-  const pa = parseLoose(a), pb = parseLoose(b);
-  if (!pa || !pb) return null;
-  const release = cmpNum(pa.release[0], pb.release[0]) || cmpNum(pa.release[1], pb.release[1]) || cmpNum(pa.release[2], pb.release[2]);
-  if (release !== 0) return release;
-  // A release outranks its prereleases; prerelease suffixes compare lexically.
-  if (pa.pre !== null || pb.pre !== null) {
-    if (pa.pre === null) return 1;
-    if (pb.pre === null) return -1;
-    const preOrder = cmpStr(pa.pre, pb.pre);
-    if (preOrder !== 0) return preOrder;
+// --- NuGet: NuGet.Versioning order (Rust `nuget`) ---
+
+type NugetVersion = { release: [bigint, bigint, bigint, bigint]; pre: string[] | null };
+
+function parseNuget(raw: string): NugetVersion | null {
+  let s = rustTrim(raw).replace(/^[vV]+/, '');
+  const plus = s.indexOf('+');
+  if (plus !== -1) s = s.slice(0, plus);
+  const dash = s.indexOf('-');
+  const core = dash === -1 ? s : s.slice(0, dash);
+  const label = dash === -1 ? null : s.slice(dash + 1);
+  const tokens = core.split('.');
+  if (tokens.length > 4) return null;
+  const release: [bigint, bigint, bigint, bigint] = [0n, 0n, 0n, 0n];
+  for (let index = 0; index < tokens.length; index++) {
+    const parsed = parseDigitsU64(tokens[index]);
+    if (parsed === null) return null;
+    release[index] = parsed;
   }
-  return cmpNum(pa.release[3], pb.release[3]);
+  if (release[3] > I64_MAX) return null;
+  if (label === null) return { release, pre: null };
+  const identifiers = label.split('.');
+  if (identifiers.some((identifier) => !/^[A-Za-z0-9-]+$/.test(identifier))) return null;
+  return { release, pre: identifiers };
+}
+
+function compareNuget(a: string, b: string): VersionOrdering | null {
+  const pa = parseNuget(a), pb = parseNuget(b);
+  if (!pa || !pb) return null;
+  for (let index = 0; index < 4; index++) {
+    const order = cmpNum(pa.release[index], pb.release[index]);
+    if (order !== 0) return order;
+  }
+  if (pa.pre === null || pb.pre === null) return pa.pre === null ? (pb.pre === null ? 0 : 1) : -1;
+  const numeric = (s: string) => /^[0-9]+$/.test(s);
+  for (let index = 0; index < Math.min(pa.pre.length, pb.pre.length); index++) {
+    const x = pa.pre[index], y = pb.pre[index];
+    const order = numeric(x) && numeric(y) ? cmpDigitRuns(x, y)
+      : numeric(x) ? -1 : numeric(y) ? 1 : cmpStr(asciiLower(x), asciiLower(y));
+    if (order !== 0) return order;
+  }
+  return cmpNum(pa.pre.length, pb.pre.length);
+}
+
+// --- Composer: VersionParser::normalize + version_compare (Rust `composer`) ---
+
+type ComposerVersion = { release: bigint[]; stability: number; numbers: bigint[]; notDev: number };
+const COMPOSER_DEV = 0, COMPOSER_RELEASE = 4;
+
+function composerStability(word: string): number | null {
+  switch (asciiLower(word)) {
+    case 'dev': return COMPOSER_DEV;
+    case 'alpha': case 'a': return 1;
+    case 'beta': case 'b': return 2;
+    case 'rc': return 3;
+    case 'stable': return COMPOSER_RELEASE;
+    case 'patch': case 'pl': case 'p': return 5;
+    default: return null;
+  }
+}
+
+function parseComposer(raw: string): ComposerVersion | null {
+  let s = rustTrim(raw).replace(/^[vV]+/, '');
+  const plus = s.indexOf('+');
+  if (plus !== -1) s = s.slice(0, plus);
+  if (s === '' || asciiLower(s).startsWith('dev-')) return null;
+  const digitsEnd = s.search(/[^0-9.]/);
+  let core = digitsEnd === -1 ? s : s.slice(0, digitsEnd);
+  let rest = digitsEnd === -1 ? '' : s.slice(digitsEnd);
+  if (core.endsWith('.')) core = core.slice(0, -1);
+  const tokens = core.split('.');
+  if (tokens.length > 4) return null;
+  const release: bigint[] = [0n, 0n, 0n, 0n];
+  for (let index = 0; index < tokens.length; index++) {
+    if (tokens[index] === '') return null;
+    const parsed = parseDigitsU64(tokens[index]);
+    if (parsed === null) return null;
+    release[index] = parsed;
+  }
+  rest = rest.replace(/^[.\-_]+/, '');
+  if (rest === '') return { release, stability: COMPOSER_RELEASE, numbers: [], notDev: 1 };
+  const wordMatch = /^[A-Za-z]*/.exec(rest)![0];
+  const stability = composerStability(wordMatch);
+  if (stability === null) return null;
+  rest = rest.slice(wordMatch.length);
+  const numbers: bigint[] = [];
+  let notDev = 1;
+  while (rest !== '') {
+    const trimmed = rest.replace(/^[.\-_]+/, '');
+    const separated = trimmed.length !== rest.length;
+    rest = trimmed;
+    if (rest.startsWith('dev') || rest.startsWith('DEV')) {
+      const after = rest.slice(3);
+      if (!separated || after !== '' || stability === COMPOSER_DEV) return null;
+      notDev = 0;
+      rest = after;
+      continue;
+    }
+    const number = /^[0-9]*/.exec(rest)![0];
+    if (number === '') return null;
+    const parsed = parseDigitsU64(number);
+    if (parsed === null) return null;
+    numbers.push(parsed);
+    rest = rest.slice(number.length);
+  }
+  if (stability === COMPOSER_RELEASE && numbers.length) return null;
+  return { release, stability, numbers, notDev };
+}
+
+function compareComposer(a: string, b: string): VersionOrdering | null {
+  const pa = parseComposer(a), pb = parseComposer(b);
+  if (!pa || !pb) return null;
+  for (let index = 0; index < 4; index++) {
+    const order = cmpNum(pa.release[index], pb.release[index]);
+    if (order !== 0) return order;
+  }
+  const stability = cmpNum(pa.stability, pb.stability);
+  if (stability !== 0) return stability;
+  for (let index = 0; index < Math.min(pa.numbers.length, pb.numbers.length); index++) {
+    const order = cmpNum(pa.numbers[index], pb.numbers[index]);
+    if (order !== 0) return order;
+  }
+  return cmpNum(pa.numbers.length, pb.numbers.length) || cmpNum(pa.notDev, pb.notDev);
 }
 
 /** OSV evaluation over matching records: versions union ranges, with sorted events

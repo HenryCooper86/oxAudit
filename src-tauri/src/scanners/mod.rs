@@ -33,6 +33,7 @@ pub fn benchmark_observations(
         let (mut hits, _) =
             patterns::scan_content_bounded_with_syntax(content, language, usize::MAX, spans);
         hits.retain(|hit| pattern_hit_stays_in_sink(&parsed, hit));
+        hits.retain(|hit| workflow_hit_in_script(content, hit));
         parsed.drop_nested_duplicates(&mut hits);
         observations.extend(
             hits.into_iter()
@@ -61,11 +62,81 @@ pub fn benchmark_observations(
 }
 
 fn secret_hit_is_reportable(parsed: &syntax::FileSyntax, hit: &secrets::SecretHit) -> bool {
-    parsed.spans().allows_secret_match(hit.offset)
+    let rule = &secrets::SECRET_RULES[hit.rule_index];
+    (rule.reported_in_comments() || parsed.spans().allows_secret_match(hit.offset))
         && (!matches!(
-            secrets::SECRET_RULES[hit.rule_index].id,
+            rule.id,
             "generic-password" | "generic-api-key" | "json-credential"
         ) || !parsed.crosses_label_branches(hit.offset, hit.secret_offset))
+}
+
+/// Does a workflow expression at `offset` sit inside code GitHub runs — a
+/// `run:` shell script or an `actions/github-script` `script:`?
+///
+/// First find whether the expression's line sits inside a block scalar
+/// (`key: |` / `key: >`): walk up through lines indented less than any seen
+/// so far, skipping script text, until a YAML key line. If that key opens a
+/// block scalar, it owns the expression, whatever the script line itself
+/// looks like (`title:` in a heredoc, `body:` in a JS object). Otherwise
+/// the expression is in YAML structure: the key on its own line owns it
+/// when the expression follows `key:` there, else the parent key does (a
+/// plain scalar continued onto the next line). A leading `- ` list marker is
+/// not part of a key.
+fn workflow_expression_in_script(content: &str, offset: usize) -> bool {
+    fn split_key(line: &str) -> Option<(&str, &str)> {
+        let line = line.trim_start();
+        let line = line.strip_prefix("- ").unwrap_or(line).trim_start();
+        let (key, value) = line.split_once(':')?;
+        let key = key.trim();
+        (!key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .then_some((key, value))
+    }
+    fn opens_block_scalar(value: &str) -> bool {
+        let value = value
+            .split_once(" #")
+            .map_or(value, |(value, _)| value)
+            .trim();
+        let mut chars = value.chars();
+        matches!(chars.next(), Some('|' | '>'))
+            && chars.all(|c| matches!(c, '-' | '+') || c.is_ascii_digit())
+    }
+    fn indent(line: &str) -> usize {
+        line.len() - line.trim_start().len()
+    }
+    let is_script = |key: &str| matches!(key, "run" | "script");
+    let line_start = content[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = content[offset..]
+        .find('\n')
+        .map_or(content.len(), |i| offset + i);
+    let mut deepest = indent(&content[line_start..line_end]);
+    let mut parent: Option<(&str, &str)> = None;
+    for line in content[..line_start].lines().rev() {
+        if line.trim().is_empty() || indent(line) >= deepest {
+            continue;
+        }
+        deepest = indent(line);
+        if let Some((key, value)) = split_key(line) {
+            if opens_block_scalar(value) {
+                return is_script(key);
+            }
+            parent = Some((key, value));
+            break;
+        }
+    }
+    if let Some((key, _)) = split_key(&content[line_start..offset]) {
+        return is_script(key);
+    }
+    parent.is_some_and(|(key, _)| is_script(key))
+}
+
+/// Keep a `gha-script-injection` hit only when the expression is inside a
+/// script; every other hit passes through.
+fn workflow_hit_in_script(content: &str, hit: &patterns::PatternHit) -> bool {
+    patterns::SOURCE_RULES[hit.rule_index].id != "gha-script-injection"
+        || workflow_expression_in_script(content, hit.offset)
 }
 
 fn pattern_hit_stays_in_sink(parsed: &syntax::FileSyntax, hit: &patterns::PatternHit) -> bool {
@@ -622,6 +693,7 @@ fn scan_file_in_project_and_limit(
             // Drop out-of-argument regex spans first, so a safe outer call
             // cannot suppress an unsafe SQL call nested in its parameters.
             hits.retain(|hit| pattern_hit_stays_in_sink(&parsed, hit));
+            hits.retain(|hit| workflow_hit_in_script(&content, hit));
             parsed.drop_nested_duplicates(&mut hits);
             for hit in hits {
                 // A rule matching inside a comment or a string literal is
@@ -1182,6 +1254,31 @@ mod tests {
             .collect();
         rules.sort();
         rules
+    }
+
+    fn secret_rules_in_python(source: &str) -> Vec<&'static str> {
+        super::benchmark_observations(source, "python", false, true)
+            .into_iter()
+            .map(|(rule, _)| rule)
+            .collect()
+    }
+
+    #[test]
+    fn prefixed_tokens_in_comments_are_reported() {
+        // Built at test time so no credential-shaped literal sits in the tree.
+        let token = format!("{}_{}", "ghp", "Zx9Qw3Rt7Yu1Io5Pa8Sd2Fg6Hj4Kl0Mn3Bv7");
+        let rules = secret_rules_in_python(&format!("# old token = \"{token}\"\nDEBUG = False\n"));
+        assert!(rules.contains(&"github-token"), "{rules:?}");
+    }
+
+    #[test]
+    fn generic_passwords_in_comments_stay_suppressed() {
+        let assignment = "password = \"Hq7Lm2Vx9Zr4Tp\"\n";
+        // The same line as code is a finding, so the comment case below is
+        // suppressed by the comment rule and not by anything else.
+        assert!(secret_rules_in_python(assignment).contains(&"generic-password"));
+        let rules = secret_rules_in_python(&format!("# {assignment}DEBUG = False\n"));
+        assert!(!rules.contains(&"generic-password"), "{rules:?}");
     }
 
     /// Scan one source file beside one properties file, and list the rules
@@ -2258,11 +2355,73 @@ mod tests {
         }
     }
 
+    fn injection_fires(source: &str) -> bool {
+        workflow_rules_firing("ci.yml", source)
+            .iter()
+            .any(|rule| rule == "gha-script-injection")
+    }
+
+    #[test]
+    fn workflow_injection_fires_inside_block_scripts() {
+        assert!(injection_fires(
+            "on: pull_request_target\njobs:\n  greet:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Greet\n        run: |\n          echo \"Thanks\"\n          echo \"${{ github.event.pull_request.title }}\"\n"
+        ));
+    }
+
+    #[test]
+    fn workflow_injection_fires_on_quoted_and_head_ref_forms() {
+        // GitHub expands the expression before the shell parses the script,
+        // so the quotes are part of the attacker's input, not protection.
+        assert!(injection_fires(
+            "jobs:\n  a:\n    steps:\n      - run: echo \"${{ github.event.issue.title }}\"\n"
+        ));
+        assert!(injection_fires(
+            "jobs:\n  a:\n    steps:\n      - run: git checkout ${{ github.head_ref }}\n"
+        ));
+    }
+
+    #[test]
+    fn workflow_injection_fires_in_github_script() {
+        assert!(injection_fires(
+            "jobs:\n  a:\n    steps:\n      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea\n        with:\n          script: |\n            const body = \"${{ github.event.comment.body }}\"\n"
+        ));
+    }
+
+    #[test]
+    fn workflow_injection_fires_in_nested_script_lines() {
+        // Shell control flow, a continued command, a JS object key and a
+        // heredoc line all sit inside the run:/script: block even though
+        // their own text is indented under other script lines.
+        for script in [
+            "        run: |\n          if true; then\n            echo \"${{ github.event.issue.title }}\"\n          fi\n",
+            "        run: |\n          gh pr comment 1 \\\n            --body \"${{ github.event.comment.body }}\"\n",
+            "        run: |\n          cat <<EOF > notes.md\n          title: ${{ github.event.issue.title }}\n          EOF\n",
+            "        with:\n          script: |\n            github.rest.issues.createComment({\n              body: `${{ github.event.comment.body }}`\n            })\n",
+        ] {
+            let workflow = format!("jobs:\n  a:\n    steps:\n      - name: step\n{script}");
+            assert!(injection_fires(&workflow), "{workflow}");
+        }
+    }
+
+    #[test]
+    fn workflow_injection_matches_contexts_case_insensitively() {
+        assert!(injection_fires(
+            "jobs:\n  a:\n    steps:\n      - run: echo ${{ GitHub.Event.issue.title }}\n"
+        ));
+    }
+
+    #[test]
+    fn workflow_expressions_outside_scripts_stay_quiet() {
+        assert!(!injection_fires(
+            "jobs:\n  a:\n    if: ${{ github.event.pull_request.draft == false }}\n    steps:\n      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11\n        with:\n          ref: ${{ github.head_ref }}\n      - env:\n          TITLE: ${{ github.event.issue.title }}\n        run: |\n          echo \"$TITLE\"\n"
+        ));
+    }
+
     #[test]
     fn workflow_rules_stand_down_on_pinned_actions_and_bound_expressions() {
         let rules = workflow_rules_firing(
             "build.yml",
-            "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\n      - uses: ./local/action\n      - run: echo \"${{ github.event.issue.title }}\"\n      - env:\n          TITLE: ${{ github.event.issue.title }}\n        run: echo \"$TITLE\"\n",
+            "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\n      - uses: ./local/action\n      - env:\n          TITLE: ${{ github.event.issue.title }}\n        run: echo \"$TITLE\"\n",
         );
         assert!(rules.is_empty(), "{rules:?}");
     }

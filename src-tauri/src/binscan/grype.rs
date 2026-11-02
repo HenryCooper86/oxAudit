@@ -136,6 +136,9 @@ struct Artifact {
     name: String,
     #[serde(default)]
     version: String,
+    /// grype's package type (`deb`, `rpm`, `apk`, `npm`, `binary`, ...).
+    #[serde(default, rename = "type")]
+    kind: String,
     #[serde(default)]
     locations: Vec<Location>,
 }
@@ -172,13 +175,23 @@ pub fn parse_report(raw: &str, target: &str, duration_ms: u64) -> Result<BinaryS
         std::collections::BTreeMap::new();
 
     for entry in report.matches {
-        let key = (entry.artifact.name.clone(), entry.artifact.version.clone());
+        // Distribution packages carry an epoch and packaging revision
+        // (`1:11.8.6-0+deb13u1`) that native detection and cve-bin-tool never
+        // report, so the merge would keep two rows for one component. Only
+        // distribution package types are reduced: a language package's
+        // `-rc.1` is part of its version.
+        let version = if matches!(entry.artifact.kind.as_str(), "deb" | "rpm" | "apk") {
+            oxaudit_parsers::package_note::upstream_version(&entry.artifact.version)
+        } else {
+            entry.artifact.version.clone()
+        };
+        let key = (entry.artifact.name.clone(), version.clone());
         let component = grouped.entry(key).or_insert_with(|| BinaryComponent {
             // grype does not report a vendor; leaving it blank lets the merge
             // take cve-bin-tool's when both saw the component.
             vendor: String::new(),
             product: entry.artifact.name.clone(),
-            version: entry.artifact.version.clone(),
+            version,
             paths: Vec::new(),
             vulnerabilities: Vec::new(),
             detected_by: vec![GRYPE.to_string()],
@@ -309,6 +322,61 @@ mod tests {
     /// A hand-written sample cannot catch a field grype renames or nests
     /// differently; this can.
     const REAL_REPORT: &str = include_str!("../../tests/fixtures/grype-real.json");
+
+    fn one_match(name: &str, version: &str, kind: &str) -> String {
+        format!(
+            r#"{{"matches": [{{
+              "vulnerability": {{"id": "CVE-2025-0001", "severity": "High", "cvss": []}},
+              "artifact": {{"name": "{name}", "version": "{version}", "type": "{kind}",
+                           "locations": [{{"path": "/usr/lib/{name}"}}]}}
+            }}]}}"#
+        )
+    }
+
+    #[test]
+    fn grype_distro_versions_merge_with_native_upstream_versions() {
+        let grype = parse_report(
+            &one_match("mariadb", "1:11.8.6-0+deb13u1", "deb"),
+            "/img",
+            1,
+        )
+        .unwrap();
+        assert_eq!(grype.components[0].version, "11.8.6");
+
+        let native = BinaryScanResult {
+            target: "/img".into(),
+            components: vec![crate::binscan::report::BinaryComponent {
+                vendor: "mariadb".into(),
+                product: "mariadb".into(),
+                version: "11.8.6".into(),
+                paths: vec!["/usr/lib/mariadb".into()],
+                vulnerabilities: Vec::new(),
+                detected_by: vec!["oxaudit".into()],
+            }],
+            summary: Default::default(),
+            database_last_updated: None,
+            duration_ms: 1,
+            scanners: vec!["oxaudit".into()],
+            semantic_analysis: None,
+        };
+        let merged = crate::binscan::report::merge_results(vec![native, grype]);
+        assert_eq!(merged.components.len(), 1, "{:?}", merged.components);
+        assert!(merged.components[0]
+            .detected_by
+            .contains(&GRYPE.to_string()));
+        assert!(merged.components[0]
+            .detected_by
+            .contains(&"oxaudit".to_string()));
+    }
+
+    #[test]
+    fn grype_keeps_language_package_versions_verbatim() {
+        for kind in ["npm", "binary", "java-archive"] {
+            let result =
+                parse_report(&one_match("left-pad", "1.0.0-rc.1", kind), "/img", 1).unwrap();
+            assert_eq!(result.components[0].version, "1.0.0-rc.1", "{kind}");
+        }
+    }
 
     #[test]
     fn a_real_grype_report_parses_with_every_field_we_rely_on() {

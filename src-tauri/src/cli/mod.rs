@@ -419,6 +419,13 @@ struct ScanArgs {
     #[arg(long, short)]
     output: Option<PathBuf>,
 
+    /// Prefix SARIF result paths with this directory, so code scanning
+    /// resolves them from the repository root when the scanned directory is
+    /// a subdirectory. Defaults to the scan root's path inside
+    /// GITHUB_WORKSPACE under GitHub Actions; pass "" to turn it off.
+    #[arg(long, value_name = "PREFIX")]
+    sarif_uri_prefix: Option<String>,
+
     /// Exit 1 when a finding at this severity or higher is reported.
     /// Defaults to none — reporting should not break a build — except with
     /// --staged, where the default is high.
@@ -550,6 +557,13 @@ struct DepsArgs {
     #[arg(long, short)]
     output: Option<PathBuf>,
 
+    /// Prefix SARIF result paths with this directory, so code scanning
+    /// resolves them from the repository root when the scanned directory is
+    /// a subdirectory. Defaults to the scan root's path inside
+    /// GITHUB_WORKSPACE under GitHub Actions; pass "" to turn it off.
+    #[arg(long, value_name = "PREFIX")]
+    sarif_uri_prefix: Option<String>,
+
     /// Exit 1 when a vulnerability at this severity or higher is reported.
     #[arg(long, value_enum, default_value_t = FailOn::None)]
     fail_on: FailOn,
@@ -611,6 +625,13 @@ struct ExportArgs {
     /// Write here instead of stdout.
     #[arg(long, short)]
     output: Option<PathBuf>,
+
+    /// Prefix SARIF result paths with this directory (the scanned
+    /// directory's path inside the repository), so code scanning resolves
+    /// them from the repository root. No default: the stored run does not
+    /// know where its scan root sits in a checkout.
+    #[arg(long, value_name = "PREFIX")]
+    sarif_uri_prefix: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -660,6 +681,12 @@ enum OutputFormat {
     Openvex,
     /// CycloneDX VEX assertions.
     CyclonedxVex,
+    /// GitHub Issues import CSV (`title,description,labels`), one row per
+    /// finding.
+    GithubIssuesCsv,
+    /// Jira import CSV (`Summary,Issue Type,Description,Priority,Labels`),
+    /// one row per finding.
+    JiraCsv,
 }
 
 impl OutputFormat {
@@ -674,6 +701,8 @@ impl OutputFormat {
             Self::Spdx => Some(ReportFormat::Spdx),
             Self::Openvex => Some(ReportFormat::OpenVex),
             Self::CyclonedxVex => Some(ReportFormat::CycloneDxVex),
+            Self::GithubIssuesCsv => Some(ReportFormat::GithubIssuesCsv),
+            Self::JiraCsv => Some(ReportFormat::JiraCsv),
         }
     }
 }
@@ -686,6 +715,10 @@ enum ExportFormat {
     Spdx,
     Openvex,
     CyclonedxVex,
+    /// GitHub Issues import CSV, one row per finding.
+    GithubIssuesCsv,
+    /// Jira import CSV, one row per finding.
+    JiraCsv,
 }
 
 impl From<ExportFormat> for ReportFormat {
@@ -697,6 +730,8 @@ impl From<ExportFormat> for ReportFormat {
             ExportFormat::Spdx => Self::Spdx,
             ExportFormat::Openvex => Self::OpenVex,
             ExportFormat::CyclonedxVex => Self::CycloneDxVex,
+            ExportFormat::GithubIssuesCsv => Self::GithubIssuesCsv,
+            ExportFormat::JiraCsv => Self::JiraCsv,
         }
     }
 }
@@ -1419,6 +1454,14 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
         }
     };
 
+    let rendered = if args.format == OutputFormat::Sarif {
+        let prefix = sarif_prefix(args.sarif_uri_prefix.as_deref(), || {
+            automatic_sarif_prefix(path)
+        });
+        prefix_sarif_uris(&rendered, &prefix)?
+    } else {
+        rendered
+    };
     write_output(args.output.as_deref(), &rendered)?;
 
     // GitHub integration is environment-gated: workflow annotations go to
@@ -1787,6 +1830,14 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
             quiet,
         )?,
     };
+    let rendered = if args.format == OutputFormat::Sarif {
+        let prefix = sarif_prefix(args.sarif_uri_prefix.as_deref(), || {
+            automatic_sarif_prefix(&root)
+        });
+        prefix_sarif_uris(&rendered, &prefix)?
+    } else {
+        rendered
+    };
     write_output(args.output.as_deref(), &rendered)?;
     let existing = gate(
         result
@@ -1956,6 +2007,10 @@ fn format_vulnerability_counts(summary: &crate::binscan::report::BinaryScanSumma
 fn run_export(args: &ExportArgs) -> CliResult {
     let service = FindingsService::new(open_repository(&args.db)?);
     let rendered = render_stored_run(&service, &args.run, args.format.into(), false)?;
+    let rendered = match (&args.format, args.sarif_uri_prefix.as_deref()) {
+        (ExportFormat::Sarif, Some(prefix)) => prefix_sarif_uris(&rendered, prefix)?,
+        _ => rendered,
+    };
     write_output(args.output.as_deref(), &rendered)?;
     Ok(EXIT_OK)
 }
@@ -2624,12 +2679,92 @@ fn emit_github_annotations(findings: &[crate::models::Finding], scan_root: &Path
         return;
     }
     let prefix = github_workspace_prefix(scan_root);
-    for finding in findings {
-        eprintln!(
-            "{}",
-            github_annotation(finding, &format!("{prefix}{}", finding.file_path))
-        );
+    for line in github_annotation_lines(findings, &prefix) {
+        eprintln!("{line}");
     }
+}
+
+/// The prefix SARIF artifact URIs get: `--sarif-uri-prefix` when given (an
+/// empty value turns prefixing off), otherwise `automatic`, which callers
+/// derive from GITHUB_WORKSPACE under GitHub Actions.
+fn sarif_prefix(explicit: Option<&str>, automatic: impl FnOnce() -> String) -> String {
+    match explicit {
+        Some(prefix) => prefix.to_string(),
+        None => automatic(),
+    }
+}
+
+/// The automatic SARIF prefix for a scan of `root`: the scan root's path
+/// inside GITHUB_WORKSPACE under GitHub Actions, the same prefix workflow
+/// annotations get, and nothing elsewhere.
+fn automatic_sarif_prefix(root: &Path) -> String {
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        github_workspace_prefix(root)
+    } else {
+        String::new()
+    }
+}
+
+/// Prefix every relative result location URI in a SARIF log.
+///
+/// oxAudit writes paths relative to the scan root; code scanning resolves
+/// them against the repository root, so a scan of a subdirectory needs the
+/// subdirectory in front. URIs that are absolute (a scheme or a leading `/`)
+/// are left alone. Every relative URI is prefixed, even one that already
+/// starts with the prefix's name (`mysite/settings.py` inside a scan of
+/// `mysite/`), so apply it once per report. An empty prefix returns the
+/// input unchanged.
+fn prefix_sarif_uris(sarif: &[u8], prefix: &str) -> Result<Vec<u8>, CliError> {
+    if prefix.is_empty() {
+        return Ok(sarif.to_vec());
+    }
+    let prefix = if prefix.ends_with('/') {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/")
+    };
+    let mut log: serde_json::Value = serde_json::from_slice(sarif).map_err(|error| {
+        failure(format!(
+            "cannot read the SARIF report to prefix it: {error}"
+        ))
+    })?;
+    let rewrite = |location: &mut serde_json::Value| {
+        if let Some(uri) = location.pointer_mut("/physicalLocation/artifactLocation/uri") {
+            if let Some(text) = uri.as_str() {
+                let absolute =
+                    text.starts_with('/') || text.contains("://") || text.starts_with("file:");
+                if !absolute {
+                    *uri = serde_json::Value::String(format!("{prefix}{text}"));
+                }
+            }
+        }
+    };
+    for run in log["runs"].as_array_mut().into_iter().flatten() {
+        for result in run["results"].as_array_mut().into_iter().flatten() {
+            for key in ["locations", "relatedLocations"] {
+                for location in result[key].as_array_mut().into_iter().flatten() {
+                    rewrite(location);
+                }
+            }
+        }
+    }
+    // The rewritten log is checked against the bundled SARIF schema, as every
+    // generated report is, before anything is written.
+    reporting::validate(&log, ReportFormat::Sarif)
+        .map_err(|error| failure(format!("prefixed SARIF failed validation: {error}")))?;
+    serde_json::to_vec_pretty(&log).map_err(|error| failure(error.to_string()))
+}
+
+/// One workflow annotation line per finding that still gates the build, with
+/// paths under `prefix`. Findings dismissed in the review policy (false
+/// positive, accepted risk, suppressed) do not fail the build, so they do not
+/// become pull-request annotations either.
+fn github_annotation_lines(findings: &[crate::models::Finding], prefix: &str) -> Vec<String> {
+    findings
+        .iter()
+        .filter(|finding| gates_the_build(finding))
+        .map(|finding| github_annotation(finding, &format!("{prefix}{}", finding.file_path)))
+        .collect()
 }
 
 /// A Markdown job summary: heading, severity table, then the same per-file
@@ -2657,6 +2792,13 @@ fn render_summary_markdown(
         ("Info", summary.info),
     ] {
         let _ = writeln!(out, "| {label} | {count} |");
+    }
+    let dismissed = findings
+        .iter()
+        .filter(|finding| !gates_the_build(finding))
+        .count();
+    if dismissed > 0 {
+        let _ = writeln!(out, "\n{dismissed} dismissed by policy (not annotated).");
     }
     if findings.is_empty() {
         let _ = writeln!(out, "\nNo findings.");
@@ -2925,6 +3067,7 @@ mod tests {
         let sarif = output.path().join("history.sarif");
         assert_eq!(
             run_export(&ExportArgs {
+                sarif_uri_prefix: None,
                 db: database,
                 run: json["runId"].as_str().unwrap().into(),
                 format: ExportFormat::Sarif,
@@ -3080,6 +3223,7 @@ mod tests {
         let lockfile = directory.path().join("package-lock.json");
         std::fs::write(&lockfile, "{ this is not JSON").expect("invalid fixture");
         let args = DepsArgs {
+            sarif_uri_prefix: None,
             advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
@@ -3123,6 +3267,7 @@ mod tests {
         std::fs::write(directory.path().join("package-lock.json"), "{ malformed")
             .expect("invalid fixture");
         let args = DepsArgs {
+            sarif_uri_prefix: None,
             advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
@@ -3154,6 +3299,7 @@ mod tests {
         )
         .expect("valid empty lockfile");
         let args = DepsArgs {
+            sarif_uri_prefix: None,
             advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
@@ -3182,6 +3328,7 @@ mod tests {
         )
         .expect("malformed lockfile");
         let args = DepsArgs {
+            sarif_uri_prefix: None,
             advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
@@ -3216,6 +3363,7 @@ mod tests {
         std::fs::write(directory.path().join("Cargo.lock"), "not valid TOML [")
             .expect("malformed fixture");
         let args = DepsArgs {
+            sarif_uri_prefix: None,
             advisory_db: None,
             path: directory.path().to_path_buf(),
             format: OutputFormat::Text,
@@ -3269,6 +3417,270 @@ mod tests {
             panic!("expected scan");
         };
         assert_eq!(args.max_file_size.max(1), 1);
+    }
+
+    fn reviewed(
+        mut finding: crate::models::Finding,
+        state: crate::findings::domain::ReviewState,
+    ) -> crate::models::Finding {
+        finding.review = Some(crate::findings::domain::ReviewRecord {
+            id: "review-1".into(),
+            project_id: "project".into(),
+            fingerprint_version: 1,
+            fingerprint: "fp".into(),
+            state,
+            reason: "reviewed".into(),
+            evidence: None,
+            entry_point: None,
+            data_flow: None,
+            gates: Vec::new(),
+            deciding_gate: None,
+            expires_at: None,
+            origin: crate::findings::domain::ReviewOrigin::ProjectPolicy,
+            policy_hash: None,
+            updated_at: "2026-11-02T00:00:00Z".into(),
+            superseded_at: None,
+        });
+        finding
+    }
+
+    fn sarif_with_uris(uris: &[&str]) -> Vec<u8> {
+        let results: Vec<serde_json::Value> = uris
+            .iter()
+            .map(|uri| {
+                serde_json::json!({
+                    "message": {"text": "m"},
+                    "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}}}],
+                    "relatedLocations": [{"physicalLocation": {"artifactLocation": {"uri": uri}}}]
+                })
+            })
+            .collect();
+        serde_json::to_vec(&serde_json::json!({
+            "version": "2.1.0",
+            "runs": [{"tool": {"driver": {"name": "oxAudit"}}, "results": results}]
+        }))
+        .unwrap()
+    }
+
+    fn sarif_uris(bytes: &[u8]) -> Vec<String> {
+        let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        value["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|result| {
+                ["locations", "relatedLocations"].map(|key| {
+                    result[key][0]["physicalLocation"]["artifactLocation"]["uri"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sarif_uris_gain_the_prefix_exactly_once_per_application() {
+        // A Django project scanned from mysite/ holds mysite/settings.py; its
+        // repository path is mysite/mysite/settings.py, so a path that
+        // already starts with the prefix's name still gets the prefix.
+        let sarif = sarif_with_uris(&[
+            "manage.py",
+            "mysite/settings.py",
+            "file:///abs/x.rs",
+            "/abs/y.rs",
+        ]);
+        let prefixed = prefix_sarif_uris(&sarif, "mysite").unwrap();
+        assert_eq!(
+            sarif_uris(&prefixed),
+            vec![
+                "mysite/manage.py",
+                "mysite/manage.py",
+                "mysite/mysite/settings.py",
+                "mysite/mysite/settings.py",
+                "file:///abs/x.rs",
+                "file:///abs/x.rs",
+                "/abs/y.rs",
+                "/abs/y.rs",
+            ]
+        );
+        assert_eq!(prefix_sarif_uris(&sarif, "").unwrap(), sarif);
+    }
+
+    #[test]
+    fn an_explicit_sarif_prefix_overrides_the_automatic_one() {
+        assert_eq!(sarif_prefix(Some("sub/"), || "auto/".into()), "sub/");
+        assert_eq!(sarif_prefix(Some(""), || "auto/".into()), "");
+        assert_eq!(sarif_prefix(None, || "auto/".into()), "auto/");
+    }
+
+    #[test]
+    fn scan_deps_and_export_accept_a_sarif_prefix() {
+        for argv in [
+            vec![
+                "oxaudit",
+                "scan",
+                ".",
+                "--format",
+                "sarif",
+                "--sarif-uri-prefix",
+                "app/",
+            ],
+            vec![
+                "oxaudit",
+                "deps",
+                ".",
+                "--format",
+                "sarif",
+                "--sarif-uri-prefix",
+                "app/",
+            ],
+            vec![
+                "oxaudit",
+                "export",
+                "--db",
+                "r.sqlite",
+                "--run",
+                "id",
+                "--sarif-uri-prefix",
+                "app/",
+            ],
+        ] {
+            Cli::try_parse_from(&argv).unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+        }
+    }
+
+    #[test]
+    fn export_writes_ticket_csv_formats() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".env"),
+            "AWS_ACCESS_KEY_ID=AKIAZ9X8W7U6T5S4R3Q2\n",
+        )
+        .unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let database = output.path().join("private/runs.sqlite");
+        let cli = Cli::try_parse_from([
+            "oxaudit",
+            "scan",
+            project.path().to_str().unwrap(),
+            "--db",
+            database.to_str().unwrap(),
+            "--format",
+            "json",
+            "--output",
+            output.path().join("scan.json").to_str().unwrap(),
+        ])
+        .unwrap();
+        let Command::Scan(args) = cli.command else {
+            panic!("scan command expected");
+        };
+        run_scan(&args, true).unwrap();
+        let run_id = FindingsService::new(open_repository(&database).unwrap())
+            .repository()
+            .canonical_list_runs(Some("source"), 1)
+            .unwrap()[0]
+            .id
+            .to_string();
+
+        for (flag, header) in [
+            ("github-issues-csv", "title,description,labels"),
+            ("jira-csv", "Summary,Issue Type,Description,Priority,Labels"),
+        ] {
+            let csv = output.path().join(format!("{flag}.csv"));
+            let cli = Cli::try_parse_from([
+                "oxaudit",
+                "export",
+                "--db",
+                database.to_str().unwrap(),
+                "--run",
+                &run_id,
+                "--format",
+                flag,
+                "--output",
+                csv.to_str().unwrap(),
+            ])
+            .unwrap_or_else(|error| panic!("{flag}: {error}"));
+            let Command::Export(args) = cli.command else {
+                panic!("export command expected");
+            };
+            assert_eq!(run_export(&args).unwrap(), EXIT_OK);
+            let text = std::fs::read_to_string(csv).unwrap();
+            assert!(text.starts_with(header), "{flag}: {text}");
+            // Records end in CRLF; quoted fields may hold bare newlines.
+            let records = text
+                .split("\r\n")
+                .filter(|record| !record.is_empty())
+                .count();
+            assert_eq!(records, 2, "{flag}: header plus one finding: {text}");
+            assert!(
+                !text.contains("AKIAZ9X8W7U6T5S4R3Q2"),
+                "{flag} leaked the secret"
+            );
+        }
+    }
+
+    #[test]
+    fn annotations_skip_dismissed_findings() {
+        use crate::findings::domain::ReviewState;
+        let findings = vec![
+            reviewed(
+                test_finding("high", "kept", "Confirmed", "a.rs"),
+                ReviewState::Confirmed,
+            ),
+            test_finding("high", "undecided", "Undecided", "b.rs"),
+            reviewed(
+                test_finding("high", "fp", "False positive", "c.rs"),
+                ReviewState::FalsePositive,
+            ),
+            reviewed(
+                test_finding("high", "risk", "Accepted", "d.rs"),
+                ReviewState::AcceptedRisk,
+            ),
+            reviewed(
+                test_finding("high", "quiet", "Suppressed", "e.rs"),
+                ReviewState::Suppressed,
+            ),
+        ];
+        let lines = github_annotation_lines(&findings, "sub/");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("file=sub/a.rs"), "{}", lines[0]);
+        assert!(lines[1].contains("file=sub/b.rs"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn step_summary_counts_dismissed_findings_separately() {
+        use crate::findings::domain::ReviewState;
+        let findings = vec![
+            test_finding("high", "kept", "Kept", "a.rs"),
+            reviewed(
+                test_finding("high", "quiet", "Quiet", "b.rs"),
+                ReviewState::Suppressed,
+            ),
+        ];
+        let summary = crate::models::ScanSummary {
+            coverage_warnings: Vec::new(),
+            git_context: None,
+            path: ".".into(),
+            files_scanned: 2,
+            files_skipped: 0,
+            bytes_scanned: 42,
+            duration_ms: 5,
+            secrets_found: 0,
+            vulnerabilities_found: 2,
+            total_findings: 2,
+            critical: 0,
+            high: 2,
+            medium: 0,
+            low: 0,
+            info: 0,
+            rules_fired: std::collections::BTreeMap::new(),
+        };
+        let markdown = render_summary_markdown(&summary, &findings);
+        assert!(
+            markdown.contains("1 dismissed by policy (not annotated)"),
+            "{markdown}"
+        );
     }
 
     fn test_finding(

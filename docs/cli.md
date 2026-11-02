@@ -1,7 +1,7 @@
 # oxaudit-cli reference
 
 Every subcommand and option of `oxaudit-cli`, taken from its `--help` output
-(`oxaudit 0.2.6`). `oxaudit-cli <command> --help` prints the same text for
+(`oxaudit 0.2.7`). `oxaudit-cli <command> --help` prints the same text for
 the binary you have installed, and is authoritative if the two ever differ.
 The [README](../README.md#command-line) shows the common workflows; this page
 is the complete list.
@@ -38,6 +38,8 @@ stderr; report output on stdout is unaffected. `-h`/`--help` and
 | `spdx` | SPDX 2.3 inventory |
 | `openvex` | OpenVEX assertions |
 | `cyclonedx-vex` | CycloneDX VEX assertions |
+| `github-issues-csv` | GitHub Issues import CSV (`title,description,labels`), one row per finding; completed runs only |
+| `jira-csv` | Jira import CSV (`Summary,Issue Type,Description,Priority,Labels`), one row per finding; completed runs only |
 
 **Severities** (`--fail-on`, `--fail-on-new`): `none`, `info`, `low`,
 `medium`, `high`, `critical`. `none` never fails on findings and is the
@@ -79,6 +81,7 @@ repository and defaults to the current directory.
 | `--staged` | off | Scan the staged Git index — what a commit would record — for secrets instead of the working tree. In memory only, so `--format` is limited to `text` and `json`, and `--fail-on` defaults to `high`. Intended for pre-commit hooks; see [`hook`](#hook) |
 | `--format <FORMAT>` | `text` | Output format |
 | `-o`, `--output <FILE>` | stdout | Write the report here |
+| `--sarif-uri-prefix <PREFIX>` | scan root inside `GITHUB_WORKSPACE` under GitHub Actions, else none | Prefix SARIF result paths so code scanning resolves them from the repository root when `PATH` is a subdirectory. `""` turns it off. Every relative path is prefixed once; absolute URIs are left alone. Do not prefix the report again afterwards |
 | `--fail-on <SEVERITY>` | `none` (`high` with `--staged`) | Exit 1 when a finding at this severity or higher is reported |
 | `--baseline <FILE>` | — | A previous `--format json` report; findings present in it are pre-existing, the rest are new |
 | `--fail-on-new <SEVERITY>` | `none` | Exit 1 only for findings this change introduced, at this severity or higher. Requires `--baseline` |
@@ -135,6 +138,7 @@ oxaudit-cli deps [OPTIONS] <PATH>
 | `--fail-on-new <SEVERITY>` | `none` | Gate only advisory/package/version identities absent from `--baseline` |
 | `--format <FORMAT>` | `text` | Output format, including canonical standards exports |
 | `-o`, `--output <FILE>` | stdout | Write the report here |
+| `--sarif-uri-prefix <PREFIX>` | scan root inside `GITHUB_WORKSPACE` under GitHub Actions, else none | Prefix SARIF result paths so code scanning resolves them from the repository root when `PATH` is a subdirectory. `""` turns it off. Every relative path is prefixed once; absolute URIs are left alone. Do not prefix the report again afterwards |
 | `--fail-on <SEVERITY>` | `none` | Exit 1 when a vulnerability at this severity or higher is reported |
 | `--ignore-dir <NAME>` | — | Directory name to ignore. Repeatable |
 
@@ -168,8 +172,9 @@ oxaudit-cli export [OPTIONS] --db <DB> --run <RUN>
 | --- | --- | --- |
 | `--db <DB>` | required | Database holding the run |
 | `--run <RUN>` | required | Run to export |
-| `--format <FORMAT>` | `sarif` | One of `sarif`, `oxaudit-json`, `cyclonedx`, `spdx`, `openvex`, `cyclonedx-vex` |
+| `--format <FORMAT>` | `sarif` | One of `sarif`, `oxaudit-json`, `cyclonedx`, `spdx`, `openvex`, `cyclonedx-vex`, `github-issues-csv`, `jira-csv` |
 | `-o`, `--output <FILE>` | stdout | Write here |
+| `--sarif-uri-prefix <PREFIX>` | none | Prefix SARIF result paths with the scanned directory's path inside the repository. There is no automatic default: a stored run does not record where its scan root sits in a checkout |
 
 ## runs
 
@@ -267,11 +272,20 @@ one is scanned on text alone.
 
 | Subcommand | Meaning |
 | --- | --- |
-| `hook install` | Write, or idempotently refresh, the oxAudit block in `.git/hooks/pre-commit`, preserving any hook already there |
+| `hook install` | Write, or idempotently refresh, the oxAudit block in `.git/hooks/pre-commit`, preserving any hook already there. The block goes directly after the shebang, before the existing hook, so a hook that ends in `exec` cannot skip it |
 | `hook uninstall` | Remove the oxAudit block from the pre-commit hook, leaving the rest of the hook — and the file, when anything else remains — untouched |
-| `hook status` | Report whether the hook is installed and the exact command it runs |
+| `hook status` | Report whether the hook is installed and the exact command it runs, or that it is not active because `core.hooksPath` is set |
 
-The hook runs `scan --staged`.
+The hook runs `scan --staged --quiet` and stops the commit with that
+command's exit code.
+
+When `core.hooksPath` is set (in the repository or globally; hook managers
+such as husky set it), git never runs `.git/hooks/pre-commit`, so `hook
+install` refuses and says what to add to the configured directory's
+`pre-commit` hook instead. A `core.hooksPath` that names `.git/hooks` itself
+is not refused. For the [pre-commit](https://pre-commit.com) framework, the
+repository root's `.pre-commit-hooks.yaml` defines the hook `oxaudit-secrets`,
+which runs the `oxaudit-cli` on `PATH`.
 
 ## external-benchmark
 

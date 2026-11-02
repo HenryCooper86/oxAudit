@@ -23,8 +23,8 @@ and a finding on a workstation are the same finding.
 Two real paths, and they are different builds:
 
 - **Published release.** The [latest release](https://github.com/HenryCooper86/oxAudit/releases/latest)
-  — [v0.2.6](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.6)
-  (2026-10-26) at the time of writing — ships prebuilt `oxaudit-cli`
+  — [v0.2.7](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.7)
+  (2026-10-29) at the time of writing — ships prebuilt `oxaudit-cli`
   binaries for Linux x86_64 and aarch64, macOS (one universal x86_64 + arm64
   binary), and Windows x86_64, unsigned Linux x86_64 desktop packages, and a
   linux/amd64 + linux/arm64 container image with the CLI and the headless
@@ -380,9 +380,13 @@ oxaudit-cli rule-pack update --db packs.sqlite3 --feed https://example.com/oxaud
 # --staged fails on high-or-above findings by default.
 oxaudit-cli scan --staged
 
-# Install the pre-commit hook that runs exactly that. Idempotent; appends to
-# an existing hook without touching its contents, and uninstall removes only
-# oxAudit's marked block.
+# Install the pre-commit hook that runs exactly that. Idempotent; the block
+# goes first in an existing hook, so it runs even when that hook ends in
+# `exec`, and uninstall removes only oxAudit's marked block. With a hook
+# manager that sets core.hooksPath (husky), install refuses and names the
+# line to add to that manager's pre-commit hook instead; the pre-commit
+# framework can use this repository's .pre-commit-hooks.yaml (id
+# oxaudit-secrets).
 oxaudit-cli hook install
 oxaudit-cli hook status
 oxaudit-cli hook uninstall
@@ -534,7 +538,7 @@ Parser and range semantics follow the [npm lockfile documentation](https://githu
 ### In GitHub Actions
 
 For a complete pull-request gate, use the [complete consumer workflow](examples/ci/oxaudit.yml).
-It installs the published v0.2.6 Linux CLI, checks it against a pinned SHA-256
+It installs the published v0.2.7 Linux CLI, checks it against a pinned SHA-256
 and its build-provenance attestation, and needs no repository secret. The
 [installation guide](docs/getting-started.md#complete-consumer-ci-example) explains
 the tool pin, fork pull requests, main baseline authority, canonical single-run
@@ -549,7 +553,7 @@ verifies it against the release's `SHA256SUMS.txt`, and runs
 - uses: actions/checkout@<full-commit-sha>
 - uses: HenryCooper86/oxAudit/action@<full-commit-sha>   # a reviewed oxAudit commit
   with:
-    version: v0.2.6          # release tag of the CLI; default `latest`
+    version: v0.2.7          # release tag of the CLI; default `latest`
     target: .                # source path to scan; default `.`
     args: --fail-on high --format sarif -o oxaudit.sarif
 ```
@@ -559,9 +563,9 @@ dependency, image or registry scan. `args` are extra `scan` flags, split on
 whitespace with no shell evaluation, so quotes, globs and `$()` stay literal.
 `repo` (default `HenryCooper86/oxAudit`) names the repository hosting the
 releases. Pin the action to a full commit you have reviewed, not a branch:
-the copy of the action at the v0.2.6 tag predates this input handling — it
-substitutes `target` and `args` into its shell script and has no Linux ARM64
-mapping — so pin a later commit of `main` that includes it.
+the v0.2.7 tag's commit (`063b07e`) is the first release that includes this
+input handling and the Linux ARM64 mapping; copies at v0.2.6 and earlier
+substitute `target` and `args` into their shell script, so do not pin those.
 Setting the repository variable `OXAUDIT_CODE_SCANNING=true` additionally
 uploads the SARIF to code
 scanning, so findings appear inline in pull requests and in the Security tab —
@@ -951,7 +955,7 @@ absolutes:
 | Stage | Throughput |
 |---|---|
 | Source pattern rules | 400–840 MiB/s |
-| Secret rules (44 rules over every file) | 210–290 MiB/s |
+| Secret rules (42 rules over every file) | 210–290 MiB/s |
 | Syntax analysis (tree-sitter parse + span collection) | 15–21 MiB/s |
 
 Throughput is flat across three orders of magnitude of input size, which is the
@@ -1158,8 +1162,10 @@ Four limits, stated because they bound what the result means:
 - **Reachable objects only.** Dangling objects that no ref points at are not
   enumerated; `git fsck --lost-found` is the tool for those.
 - **Text blobs at the text tier.** Non-UTF-8 content is skipped, and there is
-  no grammar parse, so a credential in a comment is still reported — history
-  scanning errs toward recall.
+  no grammar parse, so every credential in a comment is still reported —
+  history scanning errs toward recall. (Working-tree scans report
+  vendor-prefixed tokens and private keys inside comments too, but suppress
+  generic `password =`-style matches there.)
 - **Bounded work.** Distinct blobs (100,000), per-blob size (1 MiB), total
   scanned bytes (256 MiB), and wall clock (120 s) all have budgets. Exceeding
   one keeps the findings already collected and reports `truncated` with the

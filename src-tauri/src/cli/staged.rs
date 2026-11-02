@@ -520,7 +520,8 @@ pub(super) fn run_hook(command: &HookCommand) -> CliResult {
     })?;
     match command {
         HookCommand::Install => {
-            let path = install_hook(&root)?;
+            let hooks_path = configured_hooks_path(&root, global_hooks_path);
+            let path = install_hook_with(&root, hooks_path.as_deref())?;
             println!("Installed `{HOOK_COMMAND}` in {}", path.display());
         }
         HookCommand::Uninstall => {
@@ -531,12 +532,8 @@ pub(super) fn run_hook(command: &HookCommand) -> CliResult {
             }
         }
         HookCommand::Status => {
-            let (path, installed) = hook_status(&root)?;
-            if installed {
-                println!("Installed: {} runs `{HOOK_COMMAND}`", path.display());
-            } else {
-                println!("Not installed: no oxaudit block in {}", path.display());
-            }
+            let hooks_path = configured_hooks_path(&root, global_hooks_path);
+            println!("{}", describe_hook_status(&root, hooks_path.as_deref())?);
         }
     }
     Ok(EXIT_OK)
@@ -544,15 +541,14 @@ pub(super) fn run_hook(command: &HookCommand) -> CliResult {
 
 fn managed_block() -> String {
     format!(
-        "{HOOK_BEGIN}\n# Managed by `oxaudit hook install`; edit outside the markers.\nexec {HOOK_COMMAND}\n{HOOK_END}\n"
+        "{HOOK_BEGIN}\n# Managed by `oxaudit hook install`; edit outside the markers.\n{HOOK_COMMAND} || exit $?\n{HOOK_END}\n"
     )
 }
 
 /// The pre-commit hook path: the common git dir's hooks/pre-commit. Resolved
-/// through git so linked worktrees land in the shared hooks directory. A
-/// repo-configured core.hooksPath is deliberately not honored — oxAudit's own
-/// git invocations neutralize hooks paths, and the installer manages the
-/// standard location.
+/// through git so linked worktrees land in the shared hooks directory. The
+/// installer never writes into a configured core.hooksPath directory, which
+/// a hook manager owns; it refuses instead (see `configured_hooks_path`).
 fn hook_path(root: &Path) -> Result<PathBuf, CliError> {
     let bytes = git_output(root, &["rev-parse", "--git-common-dir"])?;
     let text = String::from_utf8(bytes).map_err(|_| failure(UNAVAILABLE))?;
@@ -582,8 +578,114 @@ fn managed_block_span(content: &str) -> Option<(usize, usize)> {
     Some((start, stop))
 }
 
-fn install_hook(root: &Path) -> Result<PathBuf, CliError> {
+/// The `core.hooksPath` git would use for this repository: the repository's
+/// own setting, else `global` (the user's global setting in production).
+///
+/// When it is set, git runs hooks from that directory and never from
+/// `.git/hooks`, so a block installed there would never run. Hook managers
+/// such as husky set it.
+fn configured_hooks_path(root: &Path, global: impl FnOnce() -> Option<String>) -> Option<String> {
+    let local = git_output(root, &["config", "--local", "--get", "core.hooksPath"])
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    local
+        .or_else(global)
+        .filter(|hooks_path| !names_standard_hooks_dir(root, hooks_path))
+}
+
+/// Whether a configured hooks path is the standard hooks directory itself,
+/// where the installer writes anyway. Relative paths resolve from the
+/// worktree root, as git resolves them; `~/` from the home directory.
+fn names_standard_hooks_dir(root: &Path, hooks_path: &str) -> bool {
+    let configured = match hooks_path.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => PathBuf::from(home).join(rest),
+            None => return false,
+        },
+        None => root.join(hooks_path),
+    };
+    let Some(standard) = hook_path(root)
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+    else {
+        return false;
+    };
+    match (configured.canonicalize(), standard.canonicalize()) {
+        (Ok(configured), Ok(standard)) => configured == standard,
+        _ => false,
+    }
+}
+
+/// The user's global `core.hooksPath`. Read-only `git config` query with the
+/// user's own environment, since the hardened git command deliberately hides
+/// global configuration.
+fn global_hooks_path() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["config", "--global", "--get", "core.hooksPath"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+fn describe_hook_status(root: &Path, hooks_path: Option<&str>) -> Result<String, CliError> {
+    let (path, installed) = hook_status(root)?;
+    Ok(match hooks_path {
+        Some(hooks_path) => format!(
+            "Not active: core.hooksPath is {hooks_path}; git does not run {}{}",
+            path.display(),
+            if installed {
+                " (it holds an oxaudit block that will not run)"
+            } else {
+                ""
+            }
+        ),
+        None if installed => format!("Installed: {} runs `{HOOK_COMMAND}`", path.display()),
+        None => format!("Not installed: no oxaudit block in {}", path.display()),
+    })
+}
+
+/// Insert the managed block directly after the hook's shebang line (or at
+/// the top when there is none), so it runs before the user's own hook, which
+/// may end in `exec`.
+fn with_block_first(content: &str, block: &str) -> String {
+    let mut out = String::with_capacity(content.len() + block.len());
+    if content.starts_with("#!") {
+        let (first, rest) = match content.find('\n') {
+            Some(index) => content.split_at(index + 1),
+            None => (content, ""),
+        };
+        out.push_str(first);
+        if !first.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(block);
+        out.push_str(rest);
+    } else {
+        out.push_str(block);
+        out.push_str(content);
+    }
+    out
+}
+
+fn install_hook_with(root: &Path, hooks_path: Option<&str>) -> Result<PathBuf, CliError> {
     let path = hook_path(root)?;
+    if let Some(hooks_path) = hooks_path {
+        return Err(failure(format!(
+            "core.hooksPath is set to {hooks_path}, so git runs hooks from there and never \
+             from {}. Add `{HOOK_COMMAND}` to the pre-commit hook in {hooks_path} instead \
+             (for husky: .husky/pre-commit).",
+            path.display()
+        )));
+    }
     let existing = match std::fs::read_to_string(&path) {
         Ok(content) => Some(content),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -593,7 +695,8 @@ fn install_hook(root: &Path) -> Result<PathBuf, CliError> {
     };
     let block = managed_block();
     let content = match existing {
-        // Refresh in place: replace the managed block, keep everything else.
+        // Refresh: take the old block out wherever it sits (earlier releases
+        // appended it after the user's hook) and put it back first.
         Some(content) if content.contains(HOOK_BEGIN) => {
             let (start, stop) = managed_block_span(&content).ok_or_else(|| {
                 failure(format!(
@@ -601,23 +704,19 @@ fn install_hook(root: &Path) -> Result<PathBuf, CliError> {
                     path.display()
                 ))
             })?;
-            let mut refreshed = String::with_capacity(content.len() + block.len());
-            refreshed.push_str(&content[..start]);
-            refreshed.push_str(&block);
-            refreshed.push_str(&content[stop..]);
-            refreshed
+            let mut rest = String::with_capacity(content.len());
+            rest.push_str(&content[..start]);
+            rest.push_str(&content[stop..]);
+            // The old append left one blank separator line behind it.
+            if stop == content.len() && rest.ends_with("\n\n") {
+                rest.pop();
+            }
+            with_block_first(&rest, &block)
         }
         // An empty hook file gets the full skeleton, like an absent one.
         Some(content) if content.trim().is_empty() => format!("{SHEBANG}\n{block}"),
-        // An existing hook is the user's: append our block after it.
-        Some(mut content) => {
-            if !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push('\n');
-            content.push_str(&block);
-            content
-        }
+        // An existing hook is the user's: our block goes first, theirs after.
+        Some(content) => with_block_first(&content, &block),
         None => format!("{SHEBANG}\n{block}"),
     };
     if let Some(parent) = path.parent() {
@@ -784,14 +883,24 @@ mod tests {
         assert!(error.message.contains("--staged"), "{}", error.message);
     }
 
+    /// Install as `hook install` does, ignoring the developer's own global
+    /// git config so the tests are hermetic.
+    fn install(root: &std::path::Path) -> Result<std::path::PathBuf, CliError> {
+        install_hook_with(root, configured_hooks_path(root, || None).as_deref())
+    }
+
+    fn status(root: &std::path::Path) -> String {
+        describe_hook_status(root, configured_hooks_path(root, || None).as_deref()).unwrap()
+    }
+
     #[test]
     fn hook_install_refresh_and_uninstall_roundtrip() {
         let root = repository();
-        let path = install_hook(root.path()).expect("install succeeds");
+        let path = install(root.path()).expect("install succeeds");
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("#!/bin/sh\n"));
         assert!(content.contains(HOOK_BEGIN));
-        assert!(content.contains(&format!("exec {HOOK_COMMAND}")));
+        assert!(content.contains(&format!("{HOOK_COMMAND} || exit $?")));
         assert!(content.contains(HOOK_END));
         #[cfg(unix)]
         {
@@ -803,37 +912,125 @@ mod tests {
         }
 
         // Re-install refreshes in place: identical content, one block.
-        install_hook(root.path()).expect("reinstall succeeds");
+        install(root.path()).expect("reinstall succeeds");
         let refreshed = std::fs::read_to_string(&path).unwrap();
         assert_eq!(refreshed, content);
         assert_eq!(refreshed.matches(HOOK_BEGIN).count(), 1);
 
-        let (status_path, installed) = hook_status(root.path()).unwrap();
-        assert_eq!(status_path, path);
-        assert!(installed);
+        assert!(status(root.path()).starts_with("Installed: "));
 
         // Only the shebang remained, so uninstall deletes the file.
         assert!(uninstall_hook(root.path()).expect("uninstall succeeds"));
         assert!(!path.exists());
         assert!(!uninstall_hook(root.path()).expect("uninstall is idempotent"));
-        let (_, installed) = hook_status(root.path()).unwrap();
-        assert!(!installed);
+        assert!(status(root.path()).starts_with("Not installed: "));
     }
 
     #[test]
     fn hook_install_preserves_an_existing_hook() {
         let root = repository();
         let path = root.path().join(".git/hooks/pre-commit");
-        std::fs::write(&path, "#!/bin/sh\necho user-hook\n").unwrap();
-        install_hook(root.path()).expect("install appends");
+        let original = "#!/bin/sh\necho user-hook\n";
+        std::fs::write(&path, original).unwrap();
+        install(root.path()).expect("install succeeds");
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with("#!/bin/sh\necho user-hook\n"));
+        assert!(content.contains("echo user-hook\n"));
         assert!(content.contains(HOOK_BEGIN));
 
         assert!(uninstall_hook(root.path()).expect("uninstall succeeds"));
-        // The user's hook survives; only our block is gone.
-        let remaining = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(remaining, "#!/bin/sh\necho user-hook\n\n");
-        assert!(!remaining.contains(HOOK_BEGIN));
+        // The user's hook survives byte for byte; only our block is gone.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn hook_block_runs_before_a_user_hook_that_execs() {
+        let root = repository();
+        let path = root.path().join(".git/hooks/pre-commit");
+        std::fs::write(&path, "#!/bin/sh\nexec npx lint-staged\n").unwrap();
+        install(root.path()).expect("install succeeds");
+        let content = std::fs::read_to_string(&path).unwrap();
+        let block = content.find(HOOK_BEGIN).expect("block present");
+        let user = content
+            .find("exec npx lint-staged")
+            .expect("user hook kept");
+        assert!(content.starts_with("#!/bin/sh\n"), "{content}");
+        assert!(block < user, "{content}");
+    }
+
+    #[test]
+    fn managed_block_does_not_exec() {
+        let block = managed_block();
+        assert!(
+            block.contains(&format!("{HOOK_COMMAND} || exit $?")),
+            "{block}"
+        );
+        assert!(!block.contains("exec "), "{block}");
+    }
+
+    #[test]
+    fn reinstall_moves_an_appended_block_above_the_user_hook() {
+        let root = repository();
+        let path = root.path().join(".git/hooks/pre-commit");
+        // What earlier releases wrote: the block appended after the user's
+        // hook, where its `exec` line means the block never runs.
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\nexec npx lint-staged\n\n{HOOK_BEGIN}\n# Managed by `oxaudit hook install`; edit outside the markers.\nexec {HOOK_COMMAND}\n{HOOK_END}\n"),
+        )
+        .unwrap();
+        install(root.path()).expect("reinstall succeeds");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.matches(HOOK_BEGIN).count(), 1);
+        assert!(
+            content.find(HOOK_BEGIN).unwrap() < content.find("exec npx lint-staged").unwrap(),
+            "{content}"
+        );
+        assert!(
+            !content.contains(&format!("exec {HOOK_COMMAND}")),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn install_refuses_when_core_hooks_path_is_set() {
+        let root = repository();
+        crate::git_context::tests::git(root.path(), &["config", "core.hooksPath", ".husky"]);
+        let error = install(root.path()).expect_err("git would never run .git/hooks");
+        assert!(error.message.contains(".husky"), "{}", error.message);
+        assert!(error.message.contains(HOOK_COMMAND), "{}", error.message);
+        assert!(!root.path().join(".git/hooks/pre-commit").exists());
+    }
+
+    #[test]
+    fn status_reports_inactive_under_core_hooks_path() {
+        let root = repository();
+        crate::git_context::tests::git(root.path(), &["config", "core.hooksPath", ".husky"]);
+        let message = status(root.path());
+        assert!(
+            message.starts_with("Not active: core.hooksPath is .husky"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_global_hooks_path_is_honoured_when_no_local_one_is_set() {
+        let root = repository();
+        assert_eq!(
+            configured_hooks_path(root.path(), || Some("~/.githooks".into())).as_deref(),
+            Some("~/.githooks")
+        );
+        crate::git_context::tests::git(root.path(), &["config", "core.hooksPath", ".husky"]);
+        assert_eq!(
+            configured_hooks_path(root.path(), || Some("~/.githooks".into())).as_deref(),
+            Some(".husky")
+        );
+    }
+
+    #[test]
+    fn a_hooks_path_naming_the_standard_directory_is_not_refused() {
+        let root = repository();
+        crate::git_context::tests::git(root.path(), &["config", "core.hooksPath", ".git/hooks"]);
+        install(root.path()).expect("the configured path is where we install");
+        assert!(status(root.path()).starts_with("Installed: "));
     }
 }

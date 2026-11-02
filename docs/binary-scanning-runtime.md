@@ -331,11 +331,8 @@ lookups and *says so* when it caps, rather than returning a short list.
 
 ### Still open
 
-- **Signature coverage.** 22 against cve-bin-tool's 365. `tools/derive-signatures.py`
+- **Signature coverage.** 71 against cve-bin-tool's 365 (see
+  [binary-signatures.md](binary-signatures.md)). `tools/derive-signatures.py`
   makes extending this mechanical.
-- **Merge keys ignore version normalization.** `grype.rs` stores
-  `artifact.version` verbatim, so grype's `mariadb 1:11.8.6-0+deb13u1` will never
-  merge with a native or cve-bin-tool `11.8.6`. `package_note::upstream_version`
-  is the function that fixes it; it is not yet applied on the grype path.
 - **No LICENCE file.** oxAudit has none, so it is all-rights-reserved by
   default and its relationship to GPL tooling is undefined.

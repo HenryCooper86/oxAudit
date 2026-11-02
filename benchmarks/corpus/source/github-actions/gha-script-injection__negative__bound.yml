@@ -8,4 +8,3 @@ jobs:
         env:
           TITLE: ${{ github.event.issue.title }}
         run: echo "$TITLE"
-      - run: echo "${{ github.event.issue.title }}"

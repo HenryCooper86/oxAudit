@@ -266,11 +266,11 @@ fn parse_lockfile_text(
     let mut notes = Vec::new();
     let packages = match name {
         "package-lock.json" => registry_packages(parse_package_lock(content)?),
-        "yarn.lock" => registry_packages(parse_yarn_lock(content)?),
+        "yarn.lock" => parse_yarn_lock(content)?,
         "pnpm-lock.yaml" => registry_packages(parse_pnpm_lock(content)?),
         "Cargo.lock" => parse_cargo_lock(content)?,
         "Pipfile.lock" => registry_packages(parse_pipfile_lock(content)?),
-        "composer.lock" => registry_packages(parse_composer_lock(content)?),
+        "composer.lock" => parse_composer_lock(content)?,
         "pom.xml" => {
             let (packages, pom_notes) = parse_pom(content)?;
             notes = pom_notes;
@@ -287,7 +287,7 @@ fn parse_lockfile_text(
         "uv.lock" => parse_uv_lock(content)?,
         "bun.lock" => registry_packages(parse_bun_lock(content)?),
         "mix.lock" => registry_packages(parse_mix_lock(content)?),
-        "pubspec.lock" => registry_packages(parse_pubspec_lock(content)?),
+        "pubspec.lock" => parse_pubspec_lock(content)?,
         _ => return Err("unsupported lockfile".into()),
     };
 
@@ -443,7 +443,118 @@ fn parse_package_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-fn parse_yarn_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+/// Decode `%XX` escapes, as yarn writes the descriptor inside a `patch:`.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && bytes[index + 1].is_ascii_hexdigit()
+            && bytes[index + 2].is_ascii_hexdigit()
+        {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("0");
+            out.push(u8::from_str_radix(hex, 16).unwrap_or(b'%'));
+            index += 3;
+            continue;
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The package name and registry source of one yarn block selector.
+///
+/// `range` is everything after the package name's `@`. Yarn (Berry and
+/// classic) names non-registry resolutions by protocol; a `patch:` wraps the
+/// descriptor of the package it patches, which is still that registry
+/// release.
+fn yarn_selector(selector: &str, classic: bool) -> Option<(String, Option<&'static str>)> {
+    // Yarn writes one `patch:` around a patched descriptor; a second level is
+    // tolerated, and anything deeper is not a lockfile yarn wrote. Bounded so
+    // a hostile lockfile cannot recurse or re-decode without end.
+    const MAX_PATCH_DEPTH: usize = 2;
+    let mut owned: Option<String> = None;
+    for _ in 0..=MAX_PATCH_DEPTH {
+        let current = owned.as_deref().unwrap_or(selector);
+        let (name, range) = split_yarn_selector(current);
+        if let Some(inner) = range.strip_prefix("patch:") {
+            let inner = inner
+                .split_once('#')
+                .map_or(inner, |(descriptor, _)| descriptor);
+            owned = Some(percent_decode(inner));
+            continue;
+        }
+        return yarn_resolution(name, range, classic);
+    }
+    None
+}
+
+/// Split a yarn selector into its package name and the range after the
+/// name's `@` (a scoped name's leading `@` is part of the name).
+fn split_yarn_selector(selector: &str) -> (&str, &str) {
+    match selector
+        .get(1..)
+        .and_then(|rest| rest.find('@'))
+        .map(|at| at + 1)
+    {
+        Some(at) => (&selector[..at], &selector[at + 1..]),
+        None => (selector, ""),
+    }
+}
+
+/// The package name and registry source for a selector whose range is not a
+/// `patch:`.
+fn yarn_resolution(
+    name: &str,
+    range: &str,
+    classic: bool,
+) -> Option<(String, Option<&'static str>)> {
+    if let Some(target) = range.strip_prefix("npm:") {
+        // Classic's npm: descriptor names the aliased package. Berry also
+        // uses npm: for ordinary semver descriptors.
+        let name = if classic || target.contains('@') {
+            split_name_range(target).0
+        } else {
+            name.to_string()
+        };
+        return (!name.is_empty()).then_some((name, None));
+    }
+    let source = if ["workspace:", "file:", "link:", "portal:", "exec:"]
+        .iter()
+        .any(|protocol| range.starts_with(protocol))
+    {
+        Some("local")
+    } else if [
+        "git+",
+        "git:",
+        "git@",
+        "ssh:",
+        "github:",
+        "gitlab:",
+        "bitbucket:",
+    ]
+    .iter()
+    .any(|protocol| range.starts_with(protocol))
+    {
+        Some("git")
+    } else if range.starts_with("http://") || range.starts_with("https://") {
+        let location = range.split_once('#').map_or(range, |(url, _)| url);
+        if location.ends_with(".git") || range.contains("#commit=") {
+            Some("git")
+        } else {
+            Some("url")
+        }
+    } else {
+        None
+    };
+    let name = name.to_string();
+    (!name.is_empty()).then_some((name, source))
+}
+
+fn parse_yarn_lock(content: &str) -> Result<Vec<LockedPackage>, String> {
     let mut out = Vec::new();
     let mut current_names: Vec<String> = Vec::new();
     let mut current_version: Option<String> = None;
@@ -454,20 +565,24 @@ fn parse_yarn_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         names: &[String],
         version: Option<&String>,
         classic: bool,
-        out: &mut Vec<(String, String)>,
+        out: &mut Vec<LockedPackage>,
     ) {
-        if let Some(v) = version {
-            for selector in names {
-                // Classic's npm: descriptor names the aliased package.
-                // Berry also uses npm: for ordinary semver descriptors.
-                let target = match selector.split_once("@npm:") {
-                    Some((_, target)) if classic || target.contains('@') => target,
-                    _ => selector.as_str(),
+        let Some(version) = version else {
+            return;
+        };
+        for selector in names {
+            if let Some((name, source)) = yarn_selector(selector, classic) {
+                // Berry records workspace members with this placeholder.
+                let source = if version == "0.0.0-use.local" {
+                    Some("local")
+                } else {
+                    source
                 };
-                let name = split_name_range(target).0;
-                if !name.is_empty() {
-                    out.push((name, v.clone()));
-                }
+                out.push(LockedPackage {
+                    name,
+                    version: version.clone(),
+                    source,
+                });
             }
         }
     }
@@ -1053,10 +1168,12 @@ fn parse_mix_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-/// `pubspec.lock`: YAML, one entry per package under `packages:`. Hosted and
-/// git packages carry a registry version; `path` is local code and `sdk` is
-/// the Dart/Flutter SDK itself — neither is a Pub advisory target.
-fn parse_pubspec_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+/// `pubspec.lock`: YAML, one entry per package under `packages:`. Hosted
+/// packages carry a registry version. `git` packages are inventoried as git
+/// code: their version is the pubspec's claim, not a pub.dev release. `path`
+/// is local code and `sdk` is the Dart/Flutter SDK itself — neither is
+/// inventoried.
+fn parse_pubspec_lock(content: &str) -> Result<Vec<LockedPackage>, String> {
     let root: YamlPackageLockfile = parse_yaml_lockfile(content, "pubspec.lock")?;
     let packages = root
         .packages
@@ -1083,7 +1200,11 @@ fn parse_pubspec_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         if name.trim().is_empty() {
             return Err("invalid pubspec.lock package: name must be nonempty".into());
         }
-        out.push((name.to_string(), version.to_string()));
+        out.push(LockedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            source: (source == "git").then_some("git"),
+        });
     }
     // A packages map holding only SDK and path packages is complete and empty.
     Ok(out)
@@ -1213,7 +1334,10 @@ fn parse_gemfile_lock(content: &str, lockfile: &str) -> Result<Vec<Dependency>, 
     Ok(out)
 }
 
-fn parse_composer_lock(content: &str) -> Result<Vec<(String, String)>, String> {
+/// `composer.lock`. Path repositories (`dist`/`source` type `path`) are local
+/// code, and a `dev-*` or `*-dev` version is a VCS branch rather than a
+/// Packagist release; both are inventoried but not registry queries.
+fn parse_composer_lock(content: &str) -> Result<Vec<LockedPackage>, String> {
     let root: serde_json::Value =
         serde_json::from_str(content).map_err(|e| format!("invalid composer.lock: {e}"))?;
     // Composer always writes the `packages` array, empty for a project with
@@ -1245,7 +1369,25 @@ fn parse_composer_lock(content: &str) -> Result<Vec<(String, String)>, String> {
                     .filter(|value| !value.trim_start_matches('v').trim().is_empty())
                     .ok_or_else(|| format!("invalid composer.lock package {name}: version must be a nonempty string"))?
                     .trim_start_matches('v').to_string();
-                out.push((name, version));
+                let repository_type = |key: &str| {
+                    pkg.get(key)
+                        .and_then(|value| value.get("type"))
+                        .and_then(|value| value.as_str())
+                };
+                let source = if repository_type("dist") == Some("path")
+                    || repository_type("source") == Some("path")
+                {
+                    Some("local")
+                } else if version.starts_with("dev-") || version.ends_with("-dev") {
+                    Some("git")
+                } else {
+                    None
+                };
+                out.push(LockedPackage {
+                    name,
+                    version,
+                    source,
+                });
             }
         }
     }
@@ -3804,6 +3946,186 @@ mod coverage_gap_tests {
     }
 
     // ------------------------------------- item 3: non-registry sources
+
+    fn sources(deps: &[crate::models::Dependency]) -> Vec<(String, Option<String>)> {
+        deps.iter()
+            .map(|d| (d.name.clone(), d.occurrence.source.clone()))
+            .collect()
+    }
+
+    fn queried(deps: &[crate::models::Dependency]) -> Vec<&str> {
+        crate::models::queryable_dependencies(deps)
+            .map(|d| d.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn yarn_berry_workspace_file_link_portal_and_git_entries_are_not_registry_queries() {
+        let deps = parsed(
+            "yarn.lock",
+            r#"__metadata:
+  version: 8
+
+"my-app@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "my-app@workspace:."
+
+"ui@workspace:packages/ui":
+  version: 1.4.0
+  resolution: "ui@workspace:packages/ui"
+
+"vendored@file:./vendor/vendored.tgz::locator=my-app%40workspace%3A.":
+  version: 1.0.0
+
+"linked@link:../linked::locator=my-app%40workspace%3A.":
+  version: 0.0.0-use.local
+
+"portaled@portal:../portaled::locator=my-app%40workspace%3A.":
+  version: 2.0.0
+
+"forked@https://github.com/acme/forked.git#commit=0123456789abcdef":
+  version: 3.0.0
+
+"shorthand@github:acme/shorthand#v1":
+  version: 4.0.0
+
+"tarball@https://example.com/tarball-5.0.0.tgz":
+  version: 5.0.0
+
+"lodash@npm:^4.17.21":
+  version: 4.17.21
+"#,
+        )
+        .unwrap();
+        let by_name = |name: &str| {
+            deps.iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("{name} missing: {:?}", sources(&deps)))
+                .occurrence
+                .source
+                .clone()
+        };
+        assert_eq!(by_name("my-app").as_deref(), Some("local"));
+        assert_eq!(by_name("ui").as_deref(), Some("local"));
+        assert_eq!(by_name("vendored").as_deref(), Some("local"));
+        assert_eq!(by_name("linked").as_deref(), Some("local"));
+        assert_eq!(by_name("portaled").as_deref(), Some("local"));
+        assert_eq!(by_name("forked").as_deref(), Some("git"));
+        assert_eq!(by_name("shorthand").as_deref(), Some("git"));
+        assert_eq!(by_name("tarball").as_deref(), Some("url"));
+        assert_eq!(by_name("lodash"), None);
+        assert_eq!(queried(&deps), vec!["lodash"]);
+    }
+
+    #[test]
+    fn yarn_patch_descriptors_name_the_patched_package() {
+        let deps = parsed(
+            "yarn.lock",
+            r#"__metadata:
+  version: 8
+
+"resolve@npm:^1.22.1":
+  version: 1.22.8
+
+"resolve@patch:resolve@npm%3A^1.22.1#~builtin<compat/resolve>":
+  version: 1.22.8
+"#,
+        )
+        .unwrap();
+        assert!(
+            deps.iter().all(|d| d.name == "resolve"),
+            "{:?}",
+            sources(&deps)
+        );
+        assert!(deps.iter().all(|d| d.occurrence.source.is_none()));
+    }
+
+    #[test]
+    fn deeply_nested_yarn_patch_descriptors_cannot_exhaust_the_stack() {
+        let header = format!("\"{}a@npm:1\":", "a@patch:".repeat(50_000));
+        let lockfile = format!("__metadata:\n  version: 8\n\n{header}\n  version: 1.0.0\n");
+        let started = std::time::Instant::now();
+        let deps = parsed("yarn.lock", &lockfile).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(
+            crate::models::queryable_dependencies(&deps)
+                .next()
+                .is_none(),
+            "{:?}",
+            sources(&deps)
+        );
+    }
+
+    #[test]
+    fn yarn_classic_git_and_tarball_entries_are_not_registry_queries() {
+        let deps = parsed(
+            "yarn.lock",
+            r#"# yarn lockfile v1
+
+"forked@git+https://github.com/acme/forked.git#v1":
+  version "1.0.0"
+  resolved "git+https://github.com/acme/forked.git#0123456789abcdef"
+
+"tarball@https://example.com/tarball-2.0.0.tgz":
+  version "2.0.0"
+
+"local@file:../local":
+  version "3.0.0"
+
+lodash@^4.17.21:
+  version "4.17.21"
+"#,
+        )
+        .unwrap();
+        assert_eq!(queried(&deps), vec!["lodash"], "{:?}", sources(&deps));
+    }
+
+    #[test]
+    fn composer_path_repositories_and_dev_branches_are_not_registry_queries() {
+        let deps = parsed(
+            "composer.lock",
+            r#"{"packages":[
+  {"name":"acme/local","version":"dev-main","dist":{"type":"path","url":"../local"}},
+  {"name":"acme/pathed","version":"1.0.0","dist":{"type":"path","url":"../pathed"}},
+  {"name":"acme/branch","version":"dev-feature","source":{"type":"git","url":"https://github.com/acme/branch.git"}},
+  {"name":"acme/alias","version":"2.x-dev","source":{"type":"git","url":"https://github.com/acme/alias.git"}},
+  {"name":"monolog/monolog","version":"3.5.0","dist":{"type":"zip"}}
+],"packages-dev":[]}"#,
+        )
+        .unwrap();
+        let by_name = |name: &str| {
+            deps.iter()
+                .find(|d| d.name == name)
+                .unwrap()
+                .occurrence
+                .source
+                .clone()
+        };
+        assert_eq!(by_name("acme/local").as_deref(), Some("local"));
+        assert_eq!(by_name("acme/pathed").as_deref(), Some("local"));
+        assert_eq!(by_name("acme/branch").as_deref(), Some("git"));
+        assert_eq!(by_name("acme/alias").as_deref(), Some("git"));
+        assert_eq!(queried(&deps), vec!["monolog/monolog"]);
+    }
+
+    #[test]
+    fn pub_git_packages_are_not_registry_queries() {
+        let deps = parsed(
+            "pubspec.lock",
+            "packages:\n  http:\n    dependency: transitive\n    source: hosted\n    version: \"1.1.2\"\n  forked:\n    dependency: \"direct main\"\n    description:\n      url: \"https://github.com/acme/forked.git\"\n      ref: main\n    source: git\n    version: \"0.4.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            deps.iter()
+                .find(|d| d.name == "forked")
+                .unwrap()
+                .occurrence
+                .source
+                .as_deref(),
+            Some("git")
+        );
+        assert_eq!(queried(&deps), vec!["http"]);
+    }
 
     #[test]
     fn cargo_workspace_members_and_git_sources_are_not_registry_queries() {
