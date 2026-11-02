@@ -1776,3 +1776,124 @@ fn stale_reviews_are_cleared_before_the_current_policy_applies() {
     assert_eq!(counts, (0, 0));
     assert!(vulnerabilities[0].review.is_none());
 }
+
+#[tokio::test]
+async fn a_shrinkwrap_shadows_the_package_lock_beside_it() {
+    // npm installs from npm-shrinkwrap.json when both exist; reading both
+    // would count every package twice.
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    std::fs::copy(
+        root.join("package-lock.json"),
+        root.join("npm-shrinkwrap.json"),
+    )
+    .unwrap();
+    let result = policy_scan(root, AdvisoryPolicySource::Project, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.summary.packages_found, 1,
+        "{:?}",
+        result.summary.lockfiles_found
+    );
+    assert_eq!(result.summary.lockfiles_found.len(), 1);
+    assert!(result.summary.lockfiles_found[0].ends_with("npm-shrinkwrap.json"));
+    assert!(
+        result
+            .summary
+            .inventory_notes
+            .iter()
+            .any(|note| note.contains(
+                "package-lock.json was skipped because npm-shrinkwrap.json takes precedence"
+            )),
+        "{:?}",
+        result.summary.inventory_notes
+    );
+}
+
+#[test]
+fn a_packages_lock_json_makes_the_project_file_redundant() {
+    use std::path::PathBuf;
+    let mut files = vec![
+        PathBuf::from("/repo/App/App.csproj"),
+        PathBuf::from("/repo/App/packages.lock.json"),
+        PathBuf::from("/repo/Lib/Lib.fsproj"),
+        PathBuf::from("/repo/web/package-lock.json"),
+        PathBuf::from("/repo/web/npm-shrinkwrap.json"),
+    ];
+    let notes = crate::deps::drop_shadowed_lockfiles(&mut files);
+    assert_eq!(
+        files,
+        [
+            PathBuf::from("/repo/App/packages.lock.json"),
+            PathBuf::from("/repo/Lib/Lib.fsproj"),
+            PathBuf::from("/repo/web/npm-shrinkwrap.json"),
+        ]
+    );
+    assert!(notes
+        .iter()
+        .any(|note| note
+            .contains("App.csproj was skipped because packages.lock.json takes precedence")));
+}
+
+#[tokio::test]
+async fn a_binary_bun_lockfile_is_named_not_silently_skipped() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    std::fs::create_dir_all(root.join("bun-app")).unwrap();
+    std::fs::write(root.join("bun-app/bun.lockb"), [0u8, 159, 146, 150]).unwrap();
+    // A sibling text lockfile means the binary one says nothing new.
+    std::fs::create_dir_all(root.join("both")).unwrap();
+    std::fs::write(root.join("both/bun.lockb"), [0u8, 1]).unwrap();
+    std::fs::write(
+        root.join("both/bun.lock"),
+        r#"{"lockfileVersion":1,"workspaces":{"":{}},"packages":{}}"#,
+    )
+    .unwrap();
+    let result = policy_scan(root, AdvisoryPolicySource::Project, false)
+        .await
+        .unwrap();
+    let binary_notes: Vec<&String> = result
+        .summary
+        .inventory_notes
+        .iter()
+        .filter(|note| note.contains("bun.lockb"))
+        .collect();
+    assert_eq!(
+        binary_notes.len(),
+        1,
+        "{:?}",
+        result.summary.inventory_notes
+    );
+    assert!(binary_notes[0].contains("bun-app"));
+    assert!(binary_notes[0].contains(
+        "bun.lockb is Bun's binary lockfile and is not read; run \"bun install --save-text-lockfile\" to write bun.lock"
+    ));
+    assert!(!result
+        .summary
+        .lockfiles_found
+        .iter()
+        .any(|path| path.ends_with("bun.lockb")));
+}
+
+#[tokio::test]
+async fn a_project_with_only_a_binary_bun_lockfile_still_says_why() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::write(root.join("bun.lockb"), [0u8, 159, 146, 150]).unwrap();
+    let result = policy_scan(root, AdvisoryPolicySource::Project, false)
+        .await
+        .unwrap();
+    assert_eq!(result.summary.packages_found, 0);
+    assert!(
+        result
+            .summary
+            .inventory_notes
+            .iter()
+            .any(|note| note.contains("bun.lockb")),
+        "{:?}",
+        result.summary.inventory_notes
+    );
+}

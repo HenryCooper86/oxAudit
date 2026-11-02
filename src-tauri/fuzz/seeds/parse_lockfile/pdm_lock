@@ -1,0 +1,12 @@
+[metadata]
+lock_version = "4.5.0"
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+
+[[package]]
+name = "mylib"
+version = "0.1.0"
+path = "./mylib"
+editable = true

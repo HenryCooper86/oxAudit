@@ -1,0 +1,11 @@
+{
+  "name": "app", "lockfileVersion": 3,
+  "packages": {
+    "": { "name": "app", "version": "1.0.0", "workspaces": ["packages/*"], "dependencies": { "lodash": "^4.17.0", "alias": "npm:@scope/tool@^2" } },
+    "packages/member": { "name": "member", "version": "0.1.0" },
+    "node_modules/member": { "resolved": "packages/member", "link": true },
+    "node_modules/lodash": { "version": "4.17.21", "license": "MIT" },
+    "node_modules/alias": { "name": "@scope/tool", "version": "2.3.0", "dev": true },
+    "node_modules/alias/node_modules/lodash": { "version": "4.17.20", "optional": true }
+  }
+}

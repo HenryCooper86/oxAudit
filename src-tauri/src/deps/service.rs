@@ -470,7 +470,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             Some(request.cancel),
         )
         .map_err(|error| error.to_string())?;
-        let expanded = crate::deps::expand_requirement_includes(
+        let expanded = crate::deps::prepare_lockfiles(
             request.project_root,
             discovered,
             crate::deps::lockfiles::MAX_LOCKFILES,
@@ -526,7 +526,8 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
         if name == "go.mod" {
             inventory_notes.insert(format!("{}: {}", lf.display(), crate::deps::go_inventory::SCOPE_NOTE));
         }
-        match crate::deps::lockfiles::parse_lockfile_inventory(lf, kind) {
+        let parsed = crate::deps::parse_inventory(lf, kind, &canonical_root);
+        match parsed {
             Ok(crate::deps::lockfiles::LockfileInventory { dependencies: deps, notes }) => {
                 for note in notes {
                     inventory_notes.insert(format!("{}: {note}", lf.display()));

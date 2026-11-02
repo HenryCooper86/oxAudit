@@ -18,6 +18,17 @@ lists what each release ships.
 
 ### Added
 
+- Dependency scans read `npm-shrinkwrap.json`, `gems.locked`, `pdm.lock`,
+  `deno.lock` (npm packages; JSR and remote modules are counted in a note)
+  and .NET project files (`*.csproj`, `*.fsproj`, `*.vbproj`) with what
+  MSBuild brings in beside them: central versions and global references from
+  the nearest `Directory.Packages.props`, references in the nearest
+  `Directory.Build.props`/`.targets`, and a sibling `packages.config`. Only exact .NET
+  versions are queried; floating, ranged and property versions are listed as
+  unchecked. A shrinkwrap shadows its sibling `package-lock.json`, `gems.locked`
+  its `Gemfile.lock` and a `packages.lock.json` its project file, each with a
+  note. A lone binary `bun.lockb` is named in the notes instead of silently
+  skipped.
 - `scan` (including `--staged`) and `deps` read a committed
   `.oxaudit/config.toml` from the scanned directory: ignored directories,
   `fail_on` and `fail_on_new` gates, maximum file size, the secret and
@@ -70,6 +81,8 @@ lists what each release ships.
 
 ### Fixed
 
+- A requirements file line of `-` followed by a non-ASCII character no longer
+  aborts the dependency scan (found by fuzzing).
 - Debian, Ubuntu and Alpine image packages are now looked up by their source
   package (dpkg `Source:`, apk origin), which is what OSV files those
   distributions' advisories under. Packages whose binary name differs from

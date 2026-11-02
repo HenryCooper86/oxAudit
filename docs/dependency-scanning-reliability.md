@@ -56,6 +56,48 @@ CLI text reports print these inventory notes as well. Dependency baselines
 accept explicitly local, unversioned Go replacements while still rejecting
 registry dependencies whose versions are missing.
 
+**Alternative lockfile names.** `npm-shrinkwrap.json` is read like
+`package-lock.json` and `gems.locked` like `Gemfile.lock`. When both files of a
+pair sit in one directory, the one the package manager installs from
+(`npm-shrinkwrap.json`, `gems.locked`) is read and the other is skipped with an
+inventory note, so no package is counted twice.
+
+**`pdm.lock`** needs its `[metadata]` table. Packages with `path` (often
+`editable`) are project code, a VCS key (`git`, `hg`, `svn`, `bzr`) a checkout
+and `url` a direct archive; they are inventoried but never queried. Extras
+variants of one release count once. A package without a version fails the
+file.
+
+**`deno.lock`** contributes its npm packages, from `npm.packages` (v2),
+`packages.npm` (v3) or the top-level `npm` section (v4 and v5); peer suffixes
+(`react-dom@18.2.0_react@18.2.0`) are stripped and peer variants of one
+release count once. Version 1 locks hold only remote modules. JSR and remote
+modules have no npm advisories and are counted in one inventory note instead;
+a lock version newer than this build knows is named in a note rather than
+failing the scan.
+
+**.NET project files** (`*.csproj`, `*.fsproj`, `*.vbproj`) contribute their
+`<PackageReference>` items, plus what MSBuild brings in beside them: the
+nearest `Directory.Build.props` and `Directory.Build.targets`, the
+`<GlobalPackageReference>` items and `<PackageVersion>` pins of the nearest
+`Directory.Packages.props`, and a sibling legacy `packages.config`. Each of
+those is looked for between the project and the scan root, nothing above the
+scan root is read, and a nearer file wins outright (explicit `<Import>` chains
+are not followed). `Include="A;B"` declares two packages; `Update` sets the
+version of a declared or implicit reference (F#'s `FSharp.Core`) and `Remove`
+drops one; `VersionOverride` wins over a central pin; ids are compared without
+case. Only exact versions are queried: floating versions (`1.*`), ranges
+(`[1.0,2.0)`), `$(Property)` versions and ids, and references with no version
+anywhere are listed as unchecked notes, and references under an MSBuild
+`Condition` are read as if the condition held, with a note. A project file
+beside a `packages.lock.json` is skipped, since the lock file is
+authoritative; project files have their own discovery budget, so a large
+solution's project files do not crowd out its lock files.
+
+**`bun.lockb`**, Bun's binary lockfile, is not read. When a directory has one
+and no text `bun.lock`, an inventory note names it, so the project's npm
+packages are not mistaken for a clean result.
+
 ## Complete, bounded advisory queries
 
 Both version-specific queries and package searches follow OSV pagination,

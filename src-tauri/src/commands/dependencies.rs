@@ -198,17 +198,14 @@ pub(crate) fn find_lockfiles_inner(
         None,
     )
     .map_err(|error| error.to_string())?;
-    let expanded = crate::deps::expand_requirement_includes(
-        root,
-        discovered,
-        crate::deps::lockfiles::MAX_LOCKFILES,
-    )?;
+    let expanded =
+        crate::deps::prepare_lockfiles(root, discovered, crate::deps::lockfiles::MAX_LOCKFILES)?;
     let mut out = Vec::new();
     for f in &expanded.files {
         let f = f.clone();
         let kind = expanded.kind_for(&f);
-        let (count, parse_error) = match crate::deps::lockfiles::parse_lockfile(&f, kind) {
-            Ok(dependencies) => (Some(dependencies.len()), None),
+        let (count, parse_error) = match crate::deps::parse_inventory(&f, kind, root) {
+            Ok(inventory) => (Some(inventory.dependencies.len()), None),
             Err(error) if crate::deps::lockfiles::is_resource_limit_error(&error) => {
                 return Err(format!("{}: {error}", f.display()));
             }

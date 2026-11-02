@@ -1,0 +1,1 @@
+ÿ<Project Sdk="Microsoft.NET.Sdk"><ItemGroup Condition="'$(X)' == 'y'"><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /><PackageReference Include="Serilog"><Version>3.1.1</Version></PackageReference><PackageReference Include="F" Version="1.*" /><PackageVersion Include="A" Version="1.0.0" /></ItemGroup></Project>

@@ -24,6 +24,92 @@ impl ExpandedLockfiles {
     }
 }
 
+/// Lockfiles a sibling takes precedence over, with the sibling that wins:
+/// npm installs from `npm-shrinkwrap.json` when both exist, and Bundler
+/// reads `gems.locked` before `Gemfile.lock`. Reading both would count every
+/// package twice.
+const SHADOWED_BY: [(&str, &str); 2] = [
+    ("package-lock.json", "npm-shrinkwrap.json"),
+    ("Gemfile.lock", "gems.locked"),
+];
+
+/// Drop discovered lockfiles that a sibling in the same directory takes
+/// precedence over, returning a note for each.
+pub fn drop_shadowed_lockfiles(files: &mut Vec<std::path::PathBuf>) -> Vec<String> {
+    let present: std::collections::BTreeSet<std::path::PathBuf> = files.iter().cloned().collect();
+    let mut notes = Vec::new();
+    files.retain(|file| {
+        let Some(name) = file.file_name().and_then(|name| name.to_str()) else {
+            return true;
+        };
+        // Bun's binary lockfile is never parsed. Beside a text bun.lock it
+        // adds nothing; alone, the project's npm packages go unchecked, and
+        // the scan says so rather than looking clean.
+        if name == "bun.lockb" {
+            if !present.contains(&file.with_file_name("bun.lock")) {
+                notes.push(format!(
+                    "{}: bun.lockb is Bun's binary lockfile and is not read; run \"bun install --save-text-lockfile\" to write bun.lock",
+                    file.display()
+                ));
+            }
+            return false;
+        }
+        let winner = if lockfiles::is_msbuild_project(file) {
+            // A NuGet lock file beside a project is authoritative.
+            "packages.lock.json"
+        } else {
+            match SHADOWED_BY.iter().find(|(shadowed, _)| *shadowed == name) {
+                Some((_, winner)) => winner,
+                None => return true,
+            }
+        };
+        if present.contains(&file.with_file_name(winner)) {
+            notes.push(format!(
+                "{}: {name} was skipped because {winner} takes precedence",
+                file.display()
+            ));
+            false
+        } else {
+            true
+        }
+    });
+    notes
+}
+
+/// Turn discovered files into the lockfiles a scan reads: drop the ones a
+/// sibling makes redundant (noted), enforce the lockfile budget on what is
+/// left, and follow requirements includes. The dependency scan and the
+/// desktop's project check both use this, so they agree on what is read.
+pub fn prepare_lockfiles(
+    project_root: &std::path::Path,
+    mut discovered: Vec<std::path::PathBuf>,
+    max_lockfiles: usize,
+) -> Result<ExpandedLockfiles, String> {
+    let shadowed = drop_shadowed_lockfiles(&mut discovered);
+    if discovered.len() > max_lockfiles {
+        return Err(format!(
+            "resource limit: more than {max_lockfiles} lockfiles; scan a smaller subdirectory"
+        ));
+    }
+    let mut expanded = expand_requirement_includes(project_root, discovered, max_lockfiles)?;
+    expanded.notes.splice(0..0, shadowed);
+    Ok(expanded)
+}
+
+/// Parse one prepared lockfile. .NET project files need the scan root, to
+/// find their `Directory.*` files without reading above it.
+pub fn parse_inventory(
+    path: &std::path::Path,
+    kind: &str,
+    scan_root: &std::path::Path,
+) -> Result<lockfiles::LockfileInventory, String> {
+    if kind == "msbuild" {
+        lockfiles::parse_msbuild_inventory(path, scan_root)
+    } else {
+        lockfiles::parse_lockfile_inventory(path, kind)
+    }
+}
+
 /// Follow `-r` includes from every requirements file, so packages listed in
 /// an included file are scanned even when its name is not one discovery
 /// recognises. Only files inside `project_root` are read; remote, missing and

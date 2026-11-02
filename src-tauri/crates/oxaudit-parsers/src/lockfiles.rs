@@ -14,7 +14,7 @@ pub fn is_resource_limit_error(error: &str) -> bool {
 }
 
 /// Every lockfile name [`parse_lockfile_content`] has a parser for.
-pub const LOCKFILE_NAMES: [&str; 18] = [
+pub const LOCKFILE_NAMES: [&str; 22] = [
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
@@ -33,6 +33,10 @@ pub const LOCKFILE_NAMES: [&str; 18] = [
     "mix.lock",
     "pubspec.lock",
     "uv.lock",
+    "npm-shrinkwrap.json",
+    "gems.locked",
+    "pdm.lock",
+    "deno.lock",
 ];
 
 /// Kind identifiers returned to the UI.
@@ -56,6 +60,13 @@ pub fn lockfile_kind(name: &str) -> &'static str {
         "mix.lock" => "mix",
         "pubspec.lock" => "pubspec",
         "uv.lock" => "uv",
+        // The publishable form of package-lock.json, and Bundler's
+        // alternative name for Gemfile.lock: same formats, same parsers.
+        "npm-shrinkwrap.json" => "npm",
+        "gems.locked" => "bundler",
+        "pdm.lock" => "pdm",
+        "deno.lock" => "deno",
+        MSBUILD_FORMAT => "msbuild",
         _ => "unknown",
     }
 }
@@ -83,6 +94,12 @@ pub fn is_requirements_file(path: &Path) -> bool {
                 == Some("requirements"))
 }
 
+pub use crate::msbuild::is_msbuild_project;
+
+/// The format name every .NET project file (`*.csproj`, `*.fsproj`,
+/// `*.vbproj`) is parsed as.
+pub const MSBUILD_FORMAT: &str = "project.csproj";
+
 /// The parser format for a discovered file: its own name for the fixed
 /// lockfile names, and `requirements.txt` for every pip requirements file.
 pub fn lockfile_format(path: &Path) -> Option<&'static str> {
@@ -92,6 +109,7 @@ pub fn lockfile_format(path: &Path) -> Option<&'static str> {
         .copied()
         .find(|known| *known == name)
         .or_else(|| is_requirements_file(path).then_some("requirements.txt"))
+        .or_else(|| is_msbuild_project(path).then_some(MSBUILD_FORMAT))
 }
 
 /// [`lockfile_kind`] for a discovered path, so requirements variants such as
@@ -106,15 +124,15 @@ pub fn ecosystem_for_kind(kind: &str) -> &'static str {
         "npm" | "yarn" | "pnpm" => "npm",
         "cargo" => "crates.io",
         "go" => "Go",
-        "pipenv" | "pip" | "poetry" | "uv" => "PyPI",
+        "pipenv" | "pip" | "poetry" | "uv" | "pdm" => "PyPI",
         "bundler" => "RubyGems",
         "gomod" => "Go",
-        "bun" => "npm",
+        "bun" | "deno" => "npm",
         "mix" => "Hex",
         "pubspec" => "Pub",
         "composer" => "Packagist",
         "maven" | "gradle" => "Maven",
-        "nuget" => "NuGet",
+        "nuget" | "msbuild" => "NuGet",
         _ => "unknown",
     }
 }
@@ -140,6 +158,108 @@ pub struct LockfileInventory {
 /// Like [`parse_lockfile`], but keeps the inventory notes.
 pub fn parse_lockfile_inventory(path: &Path, kind: &str) -> Result<LockfileInventory, String> {
     parse_lockfile_inventory_with_limit(path, kind, MAX_LOCKFILE_BYTES)
+}
+
+/// Parse a .NET project file, resolving centrally managed versions from the
+/// nearest `Directory.Packages.props` between the project's directory and
+/// `scan_root` (inclusive). Nothing above the scan root is read; a symlinked
+/// props file is ignored.
+pub fn parse_msbuild_inventory(path: &Path, scan_root: &Path) -> Result<LockfileInventory, String> {
+    let content = read_bounded_text(path, MAX_LOCKFILE_BYTES)?;
+    let scan_root = scan_root
+        .canonicalize()
+        .map_err(|error| format!("read failed: {error}"))?;
+    // MSBuild imports the nearest Directory.Packages.props, Directory.Build.props
+    // and Directory.Build.targets above a project; each is looked for
+    // separately, and nothing above the scan root is read.
+    let mut central_file = None;
+    let mut build_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut found_props = false;
+    let mut found_targets = false;
+    let mut directory = path.parent();
+    while let Some(dir) = directory {
+        let canonical = match dir.canonicalize() {
+            Ok(canonical) => canonical,
+            Err(_) => break,
+        };
+        if !canonical.starts_with(&scan_root) {
+            break;
+        }
+        let present = |name: &str| {
+            let candidate = canonical.join(name);
+            std::fs::symlink_metadata(&candidate)
+                .is_ok_and(|metadata| metadata.is_file())
+                .then_some(candidate)
+        };
+        if central_file.is_none() {
+            central_file = present("Directory.Packages.props");
+        }
+        if !found_props {
+            if let Some(file) = present("Directory.Build.props") {
+                build_files.push(file);
+                found_props = true;
+            }
+        }
+        if !found_targets {
+            if let Some(file) = present("Directory.Build.targets") {
+                build_files.push(file);
+                found_targets = true;
+            }
+        }
+        if canonical == scan_root {
+            break;
+        }
+        directory = dir.parent();
+    }
+    let central = match &central_file {
+        Some(file) => Some(crate::msbuild::parse_central_versions(&read_bounded_text(
+            file,
+            MAX_LOCKFILE_BYTES,
+        )?)?),
+        None => None,
+    };
+    let mut project = crate::msbuild::parse_project(&content, central.as_ref())?;
+    for file in &build_files {
+        let shared = read_bounded_text(file, MAX_LOCKFILE_BYTES)?;
+        project.merge(
+            crate::msbuild::parse_project(&shared, central.as_ref())
+                .map_err(|error| format!("{}: {error}", file.display()))?,
+        );
+    }
+    if let Some(central) = &central {
+        project.merge(crate::msbuild::MsbuildInventory::from_pins(
+            central.global_references(),
+        ));
+    }
+    let packages_config = path.with_file_name("packages.config");
+    if std::fs::symlink_metadata(&packages_config).is_ok_and(|metadata| metadata.is_file()) {
+        project.merge(crate::msbuild::parse_packages_config(&read_bounded_text(
+            &packages_config,
+            MAX_LOCKFILE_BYTES,
+        )?)?);
+    }
+    let lockfile = path.to_string_lossy().replace('\\', "/");
+    Ok(inventory_from(
+        registry_packages(project.packages),
+        project.unchecked,
+        "NuGet",
+        &lockfile,
+    ))
+}
+
+fn read_bounded_text(path: &Path, max_bytes: u64) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|error| format!("read failed: {error}"))?;
+    let mut content = String::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_string(&mut content)
+        .map_err(|error| format!("read failed: {error}"))?;
+    if content.len() as u64 > max_bytes {
+        return Err(format!(
+            "{RESOURCE_LIMIT_PREFIX} lockfile exceeds {max_bytes} bytes; scan a smaller \
+             subdirectory or exclude that generated/vendor path"
+        ));
+    }
+    Ok(content)
 }
 
 #[cfg(test)]
@@ -239,10 +359,20 @@ fn parse_lockfile_text(
     lockfile: &str,
     content: &str,
 ) -> Result<LockfileInventory, String> {
+    parse_lockfile_text_with(name, kind, lockfile, content, None)
+}
+
+fn parse_lockfile_text_with(
+    name: &str,
+    kind: &str,
+    lockfile: &str,
+    content: &str,
+    central: Option<&crate::msbuild::CentralVersions>,
+) -> Result<LockfileInventory, String> {
     let ecosystem = ecosystem_for_kind(kind).to_string();
     let lockfile = lockfile.to_string();
 
-    if name == "package-lock.json" {
+    if name == "package-lock.json" || name == "npm-shrinkwrap.json" {
         let root: serde_json::Value = serde_json::from_str(content)
             .map_err(|error| format!("invalid package-lock.json: {error}"))?;
         if root.get("packages").is_some() {
@@ -260,12 +390,14 @@ fn parse_lockfile_text(
         super::go_inventory::validate_sums(content)?;
         return Ok(LockfileInventory::default());
     }
-    if name == "Gemfile.lock" {
+    if name == "Gemfile.lock" || name == "gems.locked" {
         return parse_gemfile_lock(content, &lockfile).map(complete);
     }
     let mut notes = Vec::new();
     let packages = match name {
-        "package-lock.json" => registry_packages(parse_package_lock(content)?),
+        "package-lock.json" | "npm-shrinkwrap.json" => {
+            registry_packages(parse_package_lock(content)?)
+        }
         "yarn.lock" => parse_yarn_lock(content)?,
         "pnpm-lock.yaml" => registry_packages(parse_pnpm_lock(content)?),
         "Cargo.lock" => parse_cargo_lock(content)?,
@@ -285,12 +417,36 @@ fn parse_lockfile_text(
         "packages.lock.json" => registry_packages(parse_packages_lock_json(content)?),
         "poetry.lock" => parse_poetry_lock(content)?,
         "uv.lock" => parse_uv_lock(content)?,
+        "pdm.lock" => parse_pdm_lock(content)?,
+        "deno.lock" => {
+            let (packages, deno_notes) = parse_deno_lock(content)?;
+            notes = deno_notes;
+            packages
+        }
+        MSBUILD_FORMAT => {
+            let project = crate::msbuild::parse_project(content, central)?;
+            notes = project.unchecked;
+            registry_packages(project.packages)
+        }
         "bun.lock" => registry_packages(parse_bun_lock(content)?),
         "mix.lock" => registry_packages(parse_mix_lock(content)?),
         "pubspec.lock" => parse_pubspec_lock(content)?,
         _ => return Err("unsupported lockfile".into()),
     };
 
+    Ok(inventory_from(packages, notes, &ecosystem, &lockfile))
+}
+
+/// Turn parsed packages into inventory dependencies: non-registry sources
+/// are marked and warned about, so they are inventoried but never queried.
+fn inventory_from(
+    packages: Vec<LockedPackage>,
+    notes: Vec<String>,
+    ecosystem: &str,
+    lockfile: &str,
+) -> LockfileInventory {
+    let ecosystem = ecosystem.to_string();
+    let lockfile = lockfile.to_string();
     let dependencies = packages
         .into_iter()
         .map(|package| {
@@ -318,10 +474,10 @@ fn parse_lockfile_text(
             }
         })
         .collect();
-    Ok(LockfileInventory {
+    LockfileInventory {
         dependencies,
         notes,
-    })
+    }
 }
 
 pub fn extend_dependencies_bounded(
@@ -1745,8 +1901,12 @@ fn requirement_option(line: &str) -> Option<(&str, &str)> {
             return Some((option, value.trim()));
         }
     }
-    if !token.starts_with("--") && token.len() > 2 {
-        return Some((&token[..2], token[2..].trim()));
+    if !token.starts_with("--") {
+        // `-rfile`: the option is the first two characters. Split on a
+        // character boundary, not byte 2, so `-é…` cannot cut a character.
+        if let Some((split, _)) = token.char_indices().nth(2) {
+            return Some((&token[..split], token[split..].trim()));
+        }
     }
     Some((token, rest.trim()))
 }
@@ -2055,6 +2215,167 @@ fn parse_poetry_lock(content: &str) -> Result<Vec<LockedPackage>, String> {
                     _ => None,
                 }
             }
+        };
+        out.push(LockedPackage {
+            name,
+            version,
+            source,
+        });
+    }
+    Ok(out)
+}
+
+/// Deno's lock file, versions 3 to 5. Its npm packages live under
+/// `packages.npm` (v3) or a top-level `npm` (v4+), keyed `name@version`
+/// with an optional peer suffix (`react-dom@18.2.0_react@18.2.0`). JSR and
+/// remote modules have no npm advisories and are counted in a note.
+fn parse_deno_lock(content: &str) -> Result<(Vec<LockedPackage>, Vec<String>), String> {
+    let root: serde_json::Value =
+        serde_json::from_str(content).map_err(|e| format!("invalid deno.lock: {e}"))?;
+    let Some(version) = root.get("version").and_then(serde_json::Value::as_str) else {
+        // Version 1 had no version field: a flat map of remote module URLs to
+        // hashes, so remote modules only.
+        let remote = root
+            .as_object()
+            .filter(|object| object.values().all(serde_json::Value::is_string))
+            .ok_or("invalid deno.lock: missing version")?;
+        let notes = if remote.is_empty() {
+            Vec::new()
+        } else {
+            vec![format!(
+                "{} Deno jsr/remote module(s) are not checked against npm advisories",
+                remote.len()
+            )]
+        };
+        return Ok((Vec::new(), notes));
+    };
+    let (npm, jsr) = match version {
+        // Version 2 nests npm entries one level down.
+        "2" => (root.get("npm").and_then(|npm| npm.get("packages")), None),
+        "3" => {
+            let packages = root.get("packages");
+            (
+                packages.and_then(|packages| packages.get("npm")),
+                packages.and_then(|packages| packages.get("jsr")),
+            )
+        }
+        "4" | "5" => (root.get("npm"), root.get("jsr")),
+        // A newer format than this build knows: say so and let the rest of
+        // the scan proceed, rather than failing every other lockfile with it.
+        other => {
+            return Ok((
+                Vec::new(),
+                vec![format!(
+                    "deno.lock version {other} is not supported; its npm packages were not checked"
+                )],
+            ))
+        }
+    };
+    let section = |value: Option<&serde_json::Value>, what: &str| -> Result<usize, String> {
+        match value {
+            None => Ok(0),
+            Some(value) => value
+                .as_object()
+                .map(|object| object.len())
+                .ok_or_else(|| format!("invalid deno.lock: {what} must be an object")),
+        }
+    };
+    let mut packages = Vec::new();
+    if let Some(npm) = npm {
+        let npm = npm
+            .as_object()
+            .ok_or("invalid deno.lock: npm must be an object")?;
+        for key in npm.keys() {
+            let (name, version) = deno_npm_key(key)
+                .ok_or_else(|| format!("invalid deno.lock: npm entry {key} is not name@version"))?;
+            // Peer variants of one release are one package.
+            if packages
+                .iter()
+                .any(|known: &LockedPackage| known.name == name && known.version == version)
+            {
+                continue;
+            }
+            packages.push(LockedPackage {
+                name: name.to_string(),
+                version: version.to_string(),
+                source: None,
+            });
+        }
+    }
+    let unchecked = section(jsr, "jsr")? + section(root.get("remote"), "remote")?;
+    let notes = if unchecked > 0 {
+        vec![format!(
+            "{unchecked} Deno jsr/remote module(s) are not checked against npm advisories"
+        )]
+    } else {
+        Vec::new()
+    };
+    Ok((packages, notes))
+}
+
+/// `chalk@5.3.0`, `@scope/pkg@1.0.0_react@18.2.0` → name and version. The
+/// version ends at the peer suffix's `_`; a scope's leading `@` is not the
+/// separator.
+fn deno_npm_key(key: &str) -> Option<(&str, &str)> {
+    let at = key.get(1..)?.find('@')? + 1;
+    let name = &key[..at];
+    let version = key[at + 1..].split('_').next()?;
+    (!name.is_empty() && !version.is_empty()).then_some((name, version))
+}
+
+/// PDM's lock format: a `[metadata]` table and `[[package]]` tables. A
+/// package with `path` (often `editable`) is project code, `git` a checkout
+/// and `url` a direct archive; the rest are PyPI-compatible releases.
+fn parse_pdm_lock(content: &str) -> Result<Vec<LockedPackage>, String> {
+    let root: toml::Table =
+        toml::from_str(content).map_err(|e| format!("invalid pdm.lock: {e}"))?;
+    if !root.get("metadata").is_some_and(toml::Value::is_table) {
+        return Err("invalid pdm.lock: missing [metadata] table".into());
+    }
+    let packages = match root.get("package") {
+        None => &[][..],
+        Some(packages) => packages
+            .as_array()
+            .ok_or("invalid pdm.lock: package must be an array of tables")?
+            .as_slice(),
+    };
+    let mut out = Vec::new();
+    for pkg in packages {
+        let pkg = pkg
+            .as_table()
+            .ok_or("invalid pdm.lock: package must be an array of tables")?;
+        let name = pkg
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("invalid pdm.lock package: name must be a nonempty string")?
+            .to_string();
+        let version = pkg
+            .get("version")
+            .and_then(toml::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                format!("invalid pdm.lock package {name}: version must be a nonempty string")
+            })?
+            .to_string();
+        // One [[package]] per extras variant of the same release.
+        if out
+            .iter()
+            .any(|known: &LockedPackage| known.name == name && known.version == version)
+        {
+            continue;
+        }
+        let source = if ["git", "hg", "svn", "bzr"]
+            .iter()
+            .any(|vcs| pkg.contains_key(*vcs))
+        {
+            Some("git")
+        } else if pkg.contains_key("path") {
+            Some("local")
+        } else if pkg.contains_key("url") {
+            Some("url")
+        } else {
+            None
         };
         out.push(LockedPackage {
             name,
@@ -3748,6 +4069,68 @@ mod coverage_gap_tests {
         parse_lockfile_inventory(&path, super::lockfile_kind(name))
     }
 
+    // ------------------------------------------------ alternative lockfile names
+
+    fn name_version(dependencies: &[crate::models::Dependency]) -> Vec<(String, String, String)> {
+        dependencies
+            .iter()
+            .map(|d| (d.ecosystem.clone(), d.name.clone(), d.version.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_short_option_with_a_non_ascii_tail_does_not_panic() {
+        // Found by fuzzing: `-` then a multi-byte character used to slice the
+        // option inside that character and abort the whole scan.
+        for content in [
+            "-\u{e9}\u{e9}\n",
+            "-r\u{e9}.txt\n",
+            "-\u{fffd}\u{fffd}\u{fffd}\n",
+        ] {
+            let _ = super::parse_lockfile_content("requirements.txt", content);
+            let _ = super::requirements_includes(content);
+        }
+        assert_eq!(
+            super::requirements_includes("-r\u{e9}.txt\n"),
+            ["\u{e9}.txt"]
+        );
+    }
+
+    #[test]
+    fn npm_shrinkwrap_parses_as_a_package_lock() {
+        let dependencies = parsed(
+            "npm-shrinkwrap.json",
+            r#"{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/example":{"version":"1.2.3"}}}"#,
+        )
+        .expect("shrinkwrap");
+        assert_eq!(
+            name_version(&dependencies),
+            [(
+                "npm".to_string(),
+                "example".to_string(),
+                "1.2.3".to_string()
+            )]
+        );
+        assert_eq!(super::lockfile_kind("npm-shrinkwrap.json"), "npm");
+    }
+
+    #[test]
+    fn gems_locked_parses_as_a_gemfile_lock() {
+        let dependencies = parsed(
+            "gems.locked",
+            "GEM\n  remote: https://rubygems.org/\n  specs:\n    rack (3.0.8)\n\nPLATFORMS\n  ruby\n\nDEPENDENCIES\n  rack\n",
+        )
+        .expect("gems.locked");
+        assert_eq!(
+            name_version(&dependencies),
+            [(
+                "RubyGems".to_string(),
+                "rack".to_string(),
+                "3.0.8".to_string()
+            )]
+        );
+    }
+
     // ------------------------------------------------ item 1: valid empties
 
     #[test]
@@ -3957,6 +4340,322 @@ mod coverage_gap_tests {
         crate::models::queryable_dependencies(deps)
             .map(|d| d.name.as_str())
             .collect()
+    }
+
+    const PDM_LOCK: &str = r#"# This file is @generated by PDM.
+[metadata]
+groups = ["default", "dev"]
+strategy = ["inherit_metadata"]
+lock_version = "4.5.0"
+content_hash = "sha256:0000"
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+requires_python = ">=3.7"
+summary = "Python HTTP for Humans."
+groups = ["default"]
+dependencies = ["urllib3<3,>=1.21.1"]
+files = [{file = "requests-2.31.0-py3-none-any.whl", hash = "sha256:58cd"}]
+
+[[package]]
+name = "mylib"
+version = "0.1.0"
+path = "./packages/mylib"
+editable = true
+summary = "Local package"
+
+[[package]]
+name = "forked"
+version = "1.2.0"
+git = "https://github.com/example/forked.git"
+revision = "abc123"
+
+[[package]]
+name = "wheel-only"
+version = "0.3.0"
+url = "https://example.com/wheel_only-0.3.0-py3-none-any.whl"
+"#;
+
+    #[test]
+    fn pdm_lock_reads_registry_packages_and_marks_local_git_and_url_sources() {
+        let deps = parsed("pdm.lock", PDM_LOCK).expect("pdm.lock");
+        assert_eq!(
+            sources(&deps),
+            [
+                ("requests".to_string(), None),
+                ("mylib".to_string(), Some("local".to_string())),
+                ("forked".to_string(), Some("git".to_string())),
+                ("wheel-only".to_string(), Some("url".to_string())),
+            ]
+        );
+        assert_eq!(queried(&deps), ["requests"]);
+        assert!(deps.iter().all(|d| d.ecosystem == "PyPI"));
+    }
+
+    #[test]
+    fn pdm_lock_kind_maps_to_pypi() {
+        assert_eq!(super::lockfile_kind("pdm.lock"), "pdm");
+        assert_eq!(super::ecosystem_for_kind("pdm"), "PyPI");
+    }
+
+    #[test]
+    fn pdm_lock_empty_and_malformed_documents() {
+        assert!(parsed("pdm.lock", "[metadata]\nlock_version = \"4.5.0\"\n")
+            .unwrap()
+            .is_empty());
+        let missing_version =
+            "[metadata]\nlock_version = \"4.5.0\"\n\n[[package]]\nname = \"requests\"\n";
+        assert!(parsed("pdm.lock", missing_version)
+            .unwrap_err()
+            .starts_with("invalid pdm.lock"));
+        assert!(
+            parsed("pdm.lock", "[[package]]\nname = \"a\"\nversion = \"1\"\n")
+                .unwrap_err()
+                .starts_with("invalid pdm.lock")
+        );
+        assert!(parsed("pdm.lock", "not = [toml")
+            .unwrap_err()
+            .starts_with("invalid pdm.lock"));
+    }
+
+    fn npm_names(deps: &[crate::models::Dependency]) -> Vec<(String, String)> {
+        let mut names: Vec<(String, String)> = deps
+            .iter()
+            .inspect(|d| assert_eq!(d.ecosystem, "npm"))
+            .map(|d| (d.name.clone(), d.version.clone()))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn deno_lock_v3_reads_packages_npm() {
+        let deps = parsed(
+            "deno.lock",
+            r#"{"version":"3","packages":{"specifiers":{"npm:chalk@5":"npm:chalk@5.3.0"},
+                "npm":{"chalk@5.3.0":{"integrity":"sha512-x","dependencies":{}}}},
+                "remote":{}}"#,
+        )
+        .expect("deno.lock v3");
+        assert_eq!(
+            npm_names(&deps),
+            [("chalk".to_string(), "5.3.0".to_string())]
+        );
+    }
+
+    #[test]
+    fn deno_lock_v4_reads_top_level_npm_and_strips_peer_suffixes() {
+        let deps = parsed(
+            "deno.lock",
+            r#"{"version":"4","specifiers":{},
+                "npm":{"chalk@5.3.0":{"integrity":"sha512-x"},
+                       "@scope/pkg@1.0.0_react@18.2.0":{"integrity":"sha512-y"},
+                       "react-dom@18.2.0_react@18.2.0":{"integrity":"sha512-z"}}}"#,
+        )
+        .expect("deno.lock v4");
+        assert_eq!(
+            npm_names(&deps),
+            [
+                ("@scope/pkg".to_string(), "1.0.0".to_string()),
+                ("chalk".to_string(), "5.3.0".to_string()),
+                ("react-dom".to_string(), "18.2.0".to_string()),
+            ]
+        );
+        // v5 has the same shape.
+        assert!(parsed("deno.lock", r#"{"version":"5","npm":{"a@1.0.0":{}}}"#).is_ok());
+    }
+
+    #[test]
+    fn deno_lock_counts_jsr_and_remote_entries_in_a_note() {
+        let inventory = inventory(
+            "deno.lock",
+            r#"{"version":"4","jsr":{"@std/assert@1.0.0":{},"@std/path@1.0.2":{}},
+                "remote":{"https://deno.land/std@0.200.0/fmt/colors.ts":"abc"},
+                "npm":{"chalk@5.3.0":{}}}"#,
+        )
+        .expect("deno.lock");
+        assert_eq!(inventory.dependencies.len(), 1);
+        assert_eq!(
+            inventory.notes,
+            ["3 Deno jsr/remote module(s) are not checked against npm advisories"]
+        );
+    }
+
+    #[test]
+    fn deno_lock_rejects_malformed_documents_and_keys() {
+        assert!(parsed("deno.lock", r#"{"npm":{}}"#)
+            .unwrap_err()
+            .starts_with("invalid deno.lock"));
+        assert!(parsed("deno.lock", r#"{"version":"4","npm":{"chalk":{}}}"#)
+            .unwrap_err()
+            .starts_with("invalid deno.lock"));
+        assert!(
+            parsed("deno.lock", r#"{"version":"4","npm":{"@scope/pkg":{}}}"#)
+                .unwrap_err()
+                .starts_with("invalid deno.lock")
+        );
+        assert!(parsed("deno.lock", "not json")
+            .unwrap_err()
+            .starts_with("invalid deno.lock"));
+        // A lock with no npm section is a valid empty inventory.
+        assert!(parsed("deno.lock", r#"{"version":"4","remote":{}}"#)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn dotnet_project_files_map_to_nuget() {
+        let path = std::path::Path::new("src/App/App.csproj");
+        assert_eq!(super::lockfile_kind_for_path(path), "msbuild");
+        assert_eq!(super::ecosystem_for_kind("msbuild"), "NuGet");
+    }
+
+    #[test]
+    fn the_nearest_directory_packages_props_wins_and_nothing_above_the_root_is_read() {
+        let outer = tempfile::tempdir().unwrap();
+        let props = |pins: &str| format!("<Project><ItemGroup>{pins}</ItemGroup></Project>");
+        let pin = |id: &str, version: &str| {
+            format!("<PackageVersion Include=\"{id}\" Version=\"{version}\" />")
+        };
+        let scan = outer.path().join("scan");
+        let app = scan.join("src/App");
+        std::fs::create_dir_all(&app).unwrap();
+        // Above the scan root: never read.
+        std::fs::write(
+            outer.path().join("Directory.Packages.props"),
+            props(&pin("C", "3.0.0")),
+        )
+        .unwrap();
+        // At the root, and nearer the project: the nearer one wins outright.
+        std::fs::write(
+            scan.join("Directory.Packages.props"),
+            props(&(pin("A", "1.0.0") + &pin("B", "1.0.0"))),
+        )
+        .unwrap();
+        std::fs::write(
+            scan.join("src/Directory.Packages.props"),
+            props(&pin("A", "2.0.0")),
+        )
+        .unwrap();
+        let project = app.join("App.csproj");
+        std::fs::write(
+            &project,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"A\" /><PackageReference Include=\"B\" /><PackageReference Include=\"C\" /></ItemGroup></Project>",
+        )
+        .unwrap();
+        let inventory = super::parse_msbuild_inventory(&project, &scan).expect("project");
+        let found: Vec<(String, String, String)> = inventory
+            .dependencies
+            .iter()
+            .map(|d| (d.ecosystem.clone(), d.name.clone(), d.version.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            [("NuGet".to_string(), "A".to_string(), "2.0.0".to_string())]
+        );
+        assert!(
+            inventory.notes.iter().any(|note| note.starts_with("B ")),
+            "{:?}",
+            inventory.notes
+        );
+        assert!(
+            inventory.notes.iter().any(|note| note.starts_with("C ")),
+            "{:?}",
+            inventory.notes
+        );
+    }
+
+    #[test]
+    fn dotnet_packages_declared_beside_the_project_are_read() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("src/App");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            root.path().join("Directory.Build.props"),
+            "<Project><ItemGroup><PackageReference Include=\"System.Net.Http\" Version=\"4.3.0\" /></ItemGroup></Project>",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("src/Directory.Build.targets"),
+            "<Project><ItemGroup><PackageReference Include=\"Analyzer\" Version=\"1.0.0\" /></ItemGroup></Project>",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("Directory.Packages.props"),
+            "<Project><ItemGroup><GlobalPackageReference Include=\"System.Text.Encodings.Web\" Version=\"4.5.0\" /></ItemGroup></Project>",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("packages.config"),
+            "<packages><package id=\"Newtonsoft.Json\" version=\"12.0.1\" /></packages>",
+        )
+        .unwrap();
+        let project = app.join("App.csproj");
+        std::fs::write(&project, "<Project><ItemGroup><PackageReference Include=\"Serilog\" Version=\"3.1.1\" /></ItemGroup></Project>").unwrap();
+        let inventory = super::parse_msbuild_inventory(&project, root.path()).expect("project");
+        let mut found: Vec<(String, String)> = inventory
+            .dependencies
+            .iter()
+            .map(|d| (d.name.clone(), d.version.clone()))
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                ("Analyzer".to_string(), "1.0.0".to_string()),
+                ("Newtonsoft.Json".to_string(), "12.0.1".to_string()),
+                ("Serilog".to_string(), "3.1.1".to_string()),
+                ("System.Net.Http".to_string(), "4.3.0".to_string()),
+                ("System.Text.Encodings.Web".to_string(), "4.5.0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pdm_and_deno_variants_of_one_release_are_one_package() {
+        let pdm = parsed(
+            "pdm.lock",
+            "[metadata]\nlock_version = \"4.5.0\"\n\n[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n\n[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\nextras = [\"socks\"]\n",
+        )
+        .unwrap();
+        assert_eq!(pdm.len(), 1);
+        let deno = parsed(
+            "deno.lock",
+            r#"{"version":"4","npm":{"minimist@1.2.0_react@18.2.0":{},"minimist@1.2.0_react@18.3.0":{}}}"#,
+        )
+        .unwrap();
+        assert_eq!(deno.len(), 1);
+    }
+
+    #[test]
+    fn older_and_unknown_deno_lock_versions_do_not_fail_the_scan() {
+        // v2 keeps npm entries under npm.packages.
+        let v2 = parsed(
+            "deno.lock",
+            r#"{"version":"2","remote":{},"npm":{"specifiers":{"chalk@5":"chalk@5.3.0"},"packages":{"chalk@5.3.0":{"integrity":"x","dependencies":{}}}}}"#,
+        )
+        .expect("v2");
+        assert_eq!(npm_names(&v2), [("chalk".to_string(), "5.3.0".to_string())]);
+        // v1 is a flat map of remote module URLs to hashes.
+        let v1 = inventory("deno.lock", r#"{"https://deno.land/std@0.100.0/fmt/colors.ts":"abc","https://deno.land/x/y.ts":"def"}"#).expect("v1");
+        assert!(v1.dependencies.is_empty());
+        assert_eq!(
+            v1.notes,
+            ["2 Deno jsr/remote module(s) are not checked against npm advisories"]
+        );
+        // A future version is named, not a scan-stopping error.
+        let future =
+            inventory("deno.lock", r#"{"version":"9","npm":{"a@1.0.0":{}}}"#).expect("future");
+        assert!(future.dependencies.is_empty());
+        assert!(
+            future
+                .notes
+                .iter()
+                .any(|note| note.contains("version 9") && note.contains("not checked")),
+            "{:?}",
+            future.notes
+        );
     }
 
     #[test]

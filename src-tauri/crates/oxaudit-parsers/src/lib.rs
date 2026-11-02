@@ -11,6 +11,7 @@ pub mod bdb_hash;
 pub mod go_inventory;
 pub mod lockfiles;
 pub mod models;
+pub mod msbuild;
 pub mod os_packages;
 pub mod package_note;
 pub mod relationships;

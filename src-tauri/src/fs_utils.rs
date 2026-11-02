@@ -165,6 +165,12 @@ pub fn is_lockfile_name(name: &str) -> bool {
             | "mix.lock"
             | "pubspec.lock"
             | "uv.lock"
+            | "npm-shrinkwrap.json"
+            | "gems.locked"
+            | "pdm.lock"
+            | "deno.lock"
+            // Not parsed: discovered so the scan can say it was not read.
+            | "bun.lockb"
     )
 }
 
@@ -614,6 +620,10 @@ pub fn discover_lockfiles_bounded(
         return Ok(Vec::new());
     };
     let mut out = BTreeSet::new();
+    // .NET project files and Bun's binary lockfile are often made redundant
+    // by a sibling (packages.lock.json, bun.lock) and dropped after the walk,
+    // so they get their own budget instead of crowding out real lockfiles.
+    let mut secondary = BTreeSet::new();
     let ignored: Vec<String> = extra_ignored.to_vec();
     // A directory that cannot be read may hold lockfiles. Report it instead of
     // returning what was readable as if it were the whole project.
@@ -677,6 +687,7 @@ pub fn discover_lockfiles_bounded(
             if let Some(name) = entry.file_name().to_str() {
                 if is_lockfile_name(name)
                     || crate::deps::lockfiles::is_requirements_file(entry.path())
+                    || crate::deps::lockfiles::is_msbuild_project(entry.path())
                 {
                     let canonical_path = entry.path().canonicalize().map_err(|error| {
                         CollectionError::LockfileDiscoveryIncomplete {
@@ -684,12 +695,19 @@ pub fn discover_lockfiles_bounded(
                             reason: error.to_string(),
                         }
                     })?;
-                    if !out.contains(&canonical_path) && out.len() >= max_lockfiles {
+                    let set = if name == "bun.lockb"
+                        || crate::deps::lockfiles::is_msbuild_project(entry.path())
+                    {
+                        &mut secondary
+                    } else {
+                        &mut out
+                    };
+                    if !set.contains(&canonical_path) && set.len() >= max_lockfiles {
                         return Err(CollectionError::FileLimitExceeded {
                             limit: max_lockfiles,
                         });
                     }
-                    out.insert(canonical_path);
+                    set.insert(canonical_path);
                 }
             }
         }
@@ -697,6 +715,7 @@ pub fn discover_lockfiles_bounded(
     if let Some(error) = unreadable.into_inner() {
         return Err(error);
     }
+    out.extend(secondary);
     Ok(out.into_iter().collect())
 }
 
@@ -1482,5 +1501,31 @@ mod tests {
     #[test]
     fn uv_lock_is_a_discovered_lockfile() {
         assert!(super::is_lockfile_name("uv.lock"));
+    }
+}
+
+#[cfg(test)]
+mod project_file_budget_tests {
+    #[test]
+    fn project_files_beside_lock_files_do_not_exhaust_the_lockfile_budget() {
+        // Every locked .NET project has a project file next to its
+        // packages.lock.json; counting both against one budget halved what a
+        // solution could hold before the scan refused.
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..3 {
+            let project = root.path().join(format!("P{index}"));
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(format!("P{index}.csproj")), "<Project />").unwrap();
+            std::fs::write(
+                project.join("packages.lock.json"),
+                "{\"version\":1,\"dependencies\":{}}",
+            )
+            .unwrap();
+        }
+        let mut found = super::discover_lockfiles_bounded(root.path(), root.path(), &[], 4, None)
+            .expect("three lock files fit a budget of four");
+        assert_eq!(found.len(), 6);
+        crate::deps::drop_shadowed_lockfiles(&mut found);
+        assert_eq!(found.len(), 3);
     }
 }
