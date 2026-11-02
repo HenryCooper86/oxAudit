@@ -51,14 +51,10 @@ jobs:
 
       - name: Scan
         run: |
+          # Ignored directories come from .oxaudit/config.toml.
           ./src-tauri/target/release/oxaudit-cli scan . \
             --format sarif \
-            --output oxaudit.sarif \
-            --ignore-dir benchmarks \
-            --ignore-dir pilot \
-            --ignore-dir node_modules \
-            --ignore-dir target \
-            --ignore-dir dist
+            --output oxaudit.sarif
 
       - name: Retain self-scan SARIF
         if: always()

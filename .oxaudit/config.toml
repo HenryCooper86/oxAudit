@@ -1,0 +1,8 @@
+# oxAudit settings for this repository, read by `oxaudit-cli scan` and `deps`
+# (and so by CI, the pre-commit hook and the editor). A flag on the command
+# line wins over a value here. See docs/cli.md#project-config.
+version = 1
+
+[scan]
+# Test corpora, the pilot harness and build output: not shipped source.
+ignore_dirs = ["benchmarks", "pilot", "node_modules", "target", "dist"]

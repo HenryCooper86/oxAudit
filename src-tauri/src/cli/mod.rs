@@ -23,6 +23,7 @@
 pub mod baseline;
 mod compliance;
 mod dependency_baseline;
+mod project_config;
 mod staged;
 
 use std::io::Write;
@@ -439,9 +440,10 @@ struct ScanArgs {
     baseline: Option<PathBuf>,
 
     /// Exit 1 only for findings this change introduced, at this severity or
-    /// higher. Requires --baseline.
-    #[arg(long, value_enum, default_value_t = FailOn::None, value_name = "SEVERITY")]
-    fail_on_new: FailOn,
+    /// higher. Requires --baseline. Defaults to `none`, or the project
+    /// config's `fail_on_new`.
+    #[arg(long, value_enum, value_name = "SEVERITY")]
+    fail_on_new: Option<FailOn>,
 
     /// Keep the run in this database so the desktop app can open it.
     /// Without it the scan runs in memory and leaves nothing behind.
@@ -464,9 +466,14 @@ struct ScanArgs {
     #[arg(long)]
     follow_symlinks: bool,
 
-    /// Skip files larger than this, in kilobytes.
-    #[arg(long, default_value_t = 1024, value_name = "KB")]
-    max_file_size: u64,
+    /// Skip files larger than this, in kilobytes. Defaults to 1024, or the
+    /// project config's `max_file_size_kb`.
+    #[arg(long, value_name = "KB")]
+    max_file_size: Option<u64>,
+
+    /// Ignore the project's `.oxaudit/config.toml`.
+    #[arg(long)]
+    no_config: bool,
 
     /// Directory name to ignore. Repeat for more.
     #[arg(long = "ignore-dir", value_name = "NAME")]
@@ -543,8 +550,9 @@ struct DepsArgs {
     #[arg(long, value_name = "FILE")]
     baseline: Option<PathBuf>,
     /// Gate only advisory/package/version identities absent from --baseline.
-    #[arg(long, value_enum, default_value_t = FailOn::None)]
-    fail_on_new: FailOn,
+    /// Defaults to `none`, or the project config's `[deps] fail_on_new`.
+    #[arg(long, value_enum)]
+    fail_on_new: Option<FailOn>,
 
     /// Directory to search for lockfiles.
     path: PathBuf,
@@ -565,8 +573,9 @@ struct DepsArgs {
     sarif_uri_prefix: Option<String>,
 
     /// Exit 1 when a vulnerability at this severity or higher is reported.
-    #[arg(long, value_enum, default_value_t = FailOn::None)]
-    fail_on: FailOn,
+    /// Defaults to `none`, or the project config's `[deps] fail_on`.
+    #[arg(long, value_enum)]
+    fail_on: Option<FailOn>,
 
     /// Directory name to ignore. Repeat for more.
     #[arg(long = "ignore-dir", value_name = "NAME")]
@@ -581,6 +590,10 @@ struct DepsArgs {
     /// Run even when the advisory policy file is invalid.
     #[arg(long)]
     ignore_invalid_policy: bool,
+
+    /// Ignore the project's `.oxaudit/config.toml`.
+    #[arg(long)]
+    no_config: bool,
 }
 
 #[derive(Args, Debug)]
@@ -756,7 +769,8 @@ impl From<ExportFormat> for ReportFormat {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum FailOn {
     /// Never fail on findings. The default: reporting should not break a build
     /// until someone asks it to.
@@ -1332,15 +1346,20 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     if !path.is_dir() {
         return Err(usage(format!("{} is not a directory", path.display())));
     }
-    let fail_on = args.fail_on.unwrap_or(FailOn::None);
-    if args.no_secrets && args.no_patterns {
-        return Err(usage(
-            "--no-secrets and --no-patterns together leave nothing to scan",
-        ));
+    let config = load_config(path, args.no_config)?;
+    let merged = merge_scan(
+        args,
+        config.as_ref().map(|config| &config.scan),
+        FailOn::None,
+        false,
+    )?;
+    if let Some(notice) = config_notice(&merged.from_config) {
+        eprintln!("{notice}");
     }
+    let fail_on = merged.fail_on;
     // Retain the pre-scan report even when output aliases its path (including
     // symlinks/hard links). Invalid gates must not scan or write anything.
-    if args.fail_on_new != FailOn::None && args.baseline.is_none() {
+    if merged.fail_on_new != FailOn::None && args.baseline.is_none() {
         return Err(usage("--fail-on-new needs --baseline to compare against"));
     }
     let previous = args
@@ -1367,10 +1386,10 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
         path: path.to_string_lossy().into_owned(),
         include_git: args.include_git,
         follow_symlinks: args.follow_symlinks,
-        max_file_size_kb: args.max_file_size.max(1),
-        scan_secrets: !args.no_secrets,
-        scan_vulnerabilities: !args.no_patterns,
-        extra_ignored_dirs: args.ignore_dirs.clone(),
+        max_file_size_kb: merged.max_file_size_kb,
+        scan_secrets: merged.scan_secrets,
+        scan_vulnerabilities: merged.scan_patterns,
+        extra_ignored_dirs: merged.ignore_dirs.clone(),
         ignore_invalid_policy: args.ignore_invalid_policy,
         extra_rule_pack_files: Vec::new(),
     };
@@ -1389,7 +1408,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     // that cannot be applied fails loudly (exit 3) rather than letting a
     // pipeline report clean with rules silently missing.
     let mut compiled_packs = Vec::new();
-    for pack_path in &args.rule_pack_files {
+    for pack_path in &merged.rule_pack_files {
         let pack_path = pack_path
             .canonicalize()
             .map_err(|error| usage(format!("cannot resolve the rule pack: {error}")))?;
@@ -1488,7 +1507,11 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     // stderr and the job summary is appended to its file only under Actions,
     // so local runs and piped stdout are untouched.
     emit_github_annotations(&detail.findings, path);
-    write_step_summary(&render_summary_markdown(summary, &detail.findings), quiet);
+    let mut step_summary = render_summary_markdown(summary, &detail.findings);
+    if let Some(notice) = config_notice(&merged.from_config) {
+        step_summary.push_str(&format!("\n{notice}\n"));
+    }
+    write_step_summary(&step_summary, quiet);
 
     if let Some(db_path) = &args.db {
         if !quiet {
@@ -1525,7 +1548,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
                 .iter()
                 .filter(|finding| gates_the_build(finding))
                 .map(|finding| severity_rank(&finding.severity)),
-            args.fail_on_new,
+            merged.fail_on_new,
             quiet,
         ),
         None => EXIT_OK,
@@ -1750,8 +1773,29 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
     if !args.path.is_dir() {
         return Err(usage(format!("{} is not a directory", args.path.display())));
     }
-    if args.fail_on_new != FailOn::None && args.baseline.is_none() {
+    let config = load_config(&args.path, args.no_config)?
+        .map(|config| config.deps)
+        .unwrap_or_default();
+    let (fail_on, fail_on_source) = pick(args.fail_on, config.fail_on, FailOn::None);
+    // A config fail_on_new applies only with --baseline, as for `scan`.
+    let config_new = args.baseline.as_ref().and(config.fail_on_new);
+    let (fail_on_new, fail_on_new_source) = pick(args.fail_on_new, config_new, FailOn::None);
+    let ignore_dirs = combined(&config.ignore_dirs, &args.ignore_dirs);
+    if fail_on_new != FailOn::None && args.baseline.is_none() {
         return Err(usage("--fail-on-new needs --baseline to compare against"));
+    }
+    let mut from_config = Vec::new();
+    if fail_on_source == GateSource::Config {
+        from_config.push(format!("--fail-on {}", fail_on.label()));
+    }
+    if fail_on_new_source == GateSource::Config {
+        from_config.push(format!("--fail-on-new {}", fail_on_new.label()));
+    }
+    if !config.ignore_dirs.is_empty() {
+        from_config.push(format!("ignore_dirs {}", config.ignore_dirs.join(", ")));
+    }
+    if let Some(notice) = config_notice(&from_config) {
+        eprintln!("{notice}");
     }
     // Read and validate before opening storage or writing output, including aliases.
     let previous = args
@@ -1795,7 +1839,7 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
         crate::deps::service::ScanRequest {
             project_root: &root,
             root: &root,
-            ignored_dirs: &args.ignore_dirs,
+            ignored_dirs: &ignore_dirs,
             offline: args.offline,
             advisory_db: advisory_db.as_ref(),
             repository: service.repository(),
@@ -1864,11 +1908,7 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
         rendered
     };
     write_output(args.output.as_deref(), &rendered)?;
-    let existing = gate(
-        gating_ranks(result.vulnerabilities.iter()),
-        args.fail_on,
-        quiet,
-    );
+    let existing = gate(gating_ranks(result.vulnerabilities.iter()), fail_on, quiet);
     let new = gate(
         gating_ranks(
             result
@@ -1876,7 +1916,7 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
                 .iter()
                 .filter(|v| previous.as_ref().is_some_and(|p| !p.contains(v))),
         ),
-        args.fail_on_new,
+        fail_on_new,
         quiet,
     );
     Ok(if existing == EXIT_OK { new } else { existing })
@@ -2561,6 +2601,149 @@ fn gates_the_build(finding: &crate::models::Finding) -> bool {
 }
 
 /// Decide the exit code from the severities reported and the requested gate.
+/// Where a gate threshold came from, so a config-set gate is visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateSource {
+    Flag,
+    Config,
+    Default,
+}
+
+/// `scan` settings after the project config is merged in: an explicit flag
+/// wins, then the config, then the built-in default; ignore lists combine.
+#[derive(Debug)]
+struct EffectiveScan {
+    ignore_dirs: Vec<String>,
+    fail_on: FailOn,
+    fail_on_new: FailOn,
+    max_file_size_kb: u64,
+    scan_secrets: bool,
+    scan_patterns: bool,
+    rule_pack_files: Vec<PathBuf>,
+    /// What the project config changed, for [`config_notice`].
+    from_config: Vec<String>,
+}
+
+/// Read the scan root's `.oxaudit/config.toml`, unless `--no-config`. An
+/// invalid file is a usage error: a typo must not silently loosen a gate.
+fn load_config(
+    root: &Path,
+    no_config: bool,
+) -> Result<Option<project_config::ProjectConfig>, CliError> {
+    if no_config {
+        return Ok(None);
+    }
+    project_config::load_project_config(root).map_err(usage)
+}
+
+/// An explicit value, else the config's, else the default — with its source.
+fn pick<T>(flag: Option<T>, config: Option<T>, default: T) -> (T, GateSource) {
+    match (flag, config) {
+        (Some(value), _) => (value, GateSource::Flag),
+        (None, Some(value)) => (value, GateSource::Config),
+        (None, None) => (default, GateSource::Default),
+    }
+}
+
+/// Config entries first, then flags, each name once.
+fn combined(config: &[String], flags: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in config.iter().chain(flags) {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    names
+}
+
+/// Merge flags, the project config and defaults for `scan` (`staged` for
+/// `scan --staged`, whose default gate is `default_fail_on` and which only
+/// takes the gate from the config). A config `fail_on_new` applies only when
+/// `--baseline` is given: without one there is nothing to be new against,
+/// and a push build, the editor or a local run must not turn into a usage
+/// error over a setting nobody passed.
+fn merge_scan(
+    args: &ScanArgs,
+    config: Option<&project_config::ScanConfig>,
+    default_fail_on: FailOn,
+    staged: bool,
+) -> Result<EffectiveScan, CliError> {
+    let empty = project_config::ScanConfig::default();
+    let config = config.unwrap_or(&empty);
+    let (fail_on, fail_on_source) = pick(args.fail_on, config.fail_on, default_fail_on);
+    let config_new = if staged || args.baseline.is_none() {
+        None
+    } else {
+        config.fail_on_new
+    };
+    let (fail_on_new, fail_on_new_source) = pick(args.fail_on_new, config_new, FailOn::None);
+    let (max_file_size_kb, size_source) = pick(args.max_file_size, config.max_file_size_kb, 1024);
+    let scan_secrets = !args.no_secrets && config.secrets != Some(false);
+    let scan_patterns = !args.no_patterns && config.patterns != Some(false);
+    if !scan_secrets && !scan_patterns {
+        return Err(usage(
+            "--no-secrets and --no-patterns (or the project config's secrets = false and patterns = false) together leave nothing to scan",
+        ));
+    }
+    let mut rule_pack_files = config.rule_pack_files.clone();
+    for path in &args.rule_pack_files {
+        if !rule_pack_files.contains(path) {
+            rule_pack_files.push(path.clone());
+        }
+    }
+
+    // Everything the config changed, announced even under --quiet: a
+    // committed change that loosens or narrows the scan must leave a trace in
+    // CI logs and in the hook's output.
+    let mut from_config = Vec::new();
+    if fail_on_source == GateSource::Config && !(staged && fail_on == default_fail_on) {
+        from_config.push(format!("--fail-on {}", fail_on.label()));
+    }
+    if fail_on_new_source == GateSource::Config {
+        from_config.push(format!("--fail-on-new {}", fail_on_new.label()));
+    }
+    if !staged {
+        if !config.ignore_dirs.is_empty() {
+            from_config.push(format!("ignore_dirs {}", config.ignore_dirs.join(", ")));
+        }
+        if config.secrets == Some(false) && !args.no_secrets {
+            from_config.push("secrets off".into());
+        }
+        if config.patterns == Some(false) && !args.no_patterns {
+            from_config.push("patterns off".into());
+        }
+        if size_source == GateSource::Config {
+            from_config.push(format!("max_file_size_kb {max_file_size_kb}"));
+        }
+        if !config.rule_pack_files.is_empty() {
+            from_config.push(format!("{} rule pack(s)", config.rule_pack_files.len()));
+        }
+    }
+    Ok(EffectiveScan {
+        ignore_dirs: combined(&config.ignore_dirs, &args.ignore_dirs),
+        fail_on,
+        fail_on_new,
+        // Zero would skip every file and report a clean scan.
+        max_file_size_kb: max_file_size_kb.max(1),
+        scan_secrets,
+        scan_patterns,
+        rule_pack_files,
+        from_config,
+    })
+}
+
+/// `Settings from .oxaudit/config.toml: --fail-on high; ignore_dirs vendor`
+/// when the config changed anything, else nothing.
+fn config_notice(from_config: &[String]) -> Option<String> {
+    (!from_config.is_empty()).then(|| {
+        format!(
+            "Settings from {}: {}",
+            project_config::PROJECT_CONFIG_PATH,
+            from_config.join("; ")
+        )
+    })
+}
+
 /// Severity ranks of the dependency advisories that can gate the build: an
 /// advisory dismissed by the advisory policy is reported but never gates.
 fn gating_ranks<'a, I>(vulnerabilities: I) -> impl Iterator<Item = u8> + 'a
@@ -3250,6 +3433,135 @@ mod tests {
         assert_eq!(gate(ranks(), FailOn::Low, true), EXIT_FINDINGS);
     }
 
+    fn scan_args(argv: &[&str]) -> ScanArgs {
+        let mut full = vec!["oxaudit-cli", "scan"];
+        full.extend_from_slice(argv);
+        match Cli::try_parse_from(full).expect("scan args").command {
+            Command::Scan(args) => args,
+            _ => panic!("scan"),
+        }
+    }
+
+    #[test]
+    fn flags_override_config_and_config_overrides_defaults() {
+        use project_config::ScanConfig;
+        let config = ScanConfig {
+            ignore_dirs: vec!["vendored".into(), "dist".into()],
+            fail_on: Some(FailOn::High),
+            fail_on_new: Some(FailOn::Medium),
+            max_file_size_kb: Some(2048),
+            secrets: Some(false),
+            patterns: None,
+            rule_pack_files: Vec::new(),
+        };
+        // Config fills what no flag set.
+        let merged =
+            merge_scan(&scan_args(&["."]), Some(&config), FailOn::None, false).expect("merge");
+        assert_eq!(merged.fail_on, FailOn::High);
+        assert_eq!(
+            merged.from_config,
+            [
+                "--fail-on high",
+                "ignore_dirs vendored, dist",
+                "secrets off",
+                "max_file_size_kb 2048"
+            ]
+        );
+        // No --baseline: the config's fail_on_new has nothing to compare
+        // against and is left out rather than becoming a usage error.
+        assert_eq!(merged.fail_on_new, FailOn::None);
+        assert_eq!(merged.max_file_size_kb, 2048);
+        let with_baseline = merge_scan(
+            &scan_args(&[".", "--baseline", "b.json"]),
+            Some(&config),
+            FailOn::None,
+            false,
+        )
+        .expect("merge");
+        assert_eq!(with_baseline.fail_on_new, FailOn::Medium);
+        assert!(with_baseline
+            .from_config
+            .contains(&"--fail-on-new medium".to_string()));
+        // Staged scans take only the gate, and only when it differs from
+        // their own default.
+        let staged = merge_scan(&scan_args(&["--staged"]), Some(&config), FailOn::High, true)
+            .expect("merge");
+        assert!(staged.from_config.is_empty(), "{:?}", staged.from_config);
+        assert!(!merged.scan_secrets);
+        assert!(merged.scan_patterns);
+        assert_eq!(merged.ignore_dirs, ["vendored", "dist"]);
+        // Flags win; ignore lists combine, config first, without repeats.
+        let merged = merge_scan(
+            &scan_args(&[
+                ".",
+                "--fail-on",
+                "low",
+                "--fail-on-new",
+                "critical",
+                "--max-file-size",
+                "10",
+                "--ignore-dir",
+                "dist",
+                "--ignore-dir",
+                "build",
+            ]),
+            Some(&config),
+            FailOn::None,
+            false,
+        )
+        .expect("merge");
+        assert_eq!(merged.fail_on, FailOn::Low);
+        assert_eq!(
+            merged.from_config,
+            ["ignore_dirs vendored, dist", "secrets off"]
+        );
+        assert_eq!(merged.fail_on_new, FailOn::Critical);
+        assert_eq!(merged.max_file_size_kb, 10);
+        assert_eq!(merged.ignore_dirs, ["vendored", "dist", "build"]);
+        // No config: today's defaults.
+        let merged = merge_scan(&scan_args(&["."]), None, FailOn::None, false).expect("merge");
+        assert_eq!(merged.fail_on, FailOn::None);
+        assert!(merged.from_config.is_empty());
+        assert_eq!(merged.fail_on_new, FailOn::None);
+        assert_eq!(merged.max_file_size_kb, 1024);
+        assert!(merged.scan_secrets && merged.scan_patterns);
+        assert!(merged.ignore_dirs.is_empty());
+    }
+
+    #[test]
+    fn config_disabling_both_scanners_is_a_usage_error() {
+        let config = project_config::ScanConfig {
+            secrets: Some(false),
+            patterns: Some(false),
+            ..Default::default()
+        };
+        let error = merge_scan(&scan_args(&["."]), Some(&config), FailOn::None, false).unwrap_err();
+        assert_eq!(error.exit_code, EXIT_USAGE);
+        let error = merge_scan(
+            &scan_args(&[".", "--no-secrets"]),
+            Some(&project_config::ScanConfig {
+                patterns: Some(false),
+                ..Default::default()
+            }),
+            FailOn::None,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(error.exit_code, EXIT_USAGE);
+    }
+
+    #[test]
+    fn scan_and_deps_accept_no_config() {
+        assert!(scan_args(&[".", "--no-config"]).no_config);
+        let Command::Deps(args) = Cli::try_parse_from(["oxaudit-cli", "deps", ".", "--no-config"])
+            .expect("deps")
+            .command
+        else {
+            panic!("deps")
+        };
+        assert!(args.no_config);
+    }
+
     #[test]
     fn the_argument_parser_is_internally_consistent() {
         // Catches duplicate short flags, bad defaults, and malformed help long
@@ -3370,10 +3682,11 @@ mod tests {
             offline: false,
             advisory_policy: None,
             ignore_invalid_policy: false,
+            no_config: false,
             baseline: None,
-            fail_on_new: FailOn::None,
+            fail_on_new: Some(FailOn::None),
             output: None,
-            fail_on: FailOn::None,
+            fail_on: Some(FailOn::None),
             ignore_dirs: Vec::new(),
         };
 
@@ -3416,10 +3729,11 @@ mod tests {
             offline: false,
             advisory_policy: None,
             ignore_invalid_policy: false,
+            no_config: false,
             baseline: None,
-            fail_on_new: FailOn::None,
+            fail_on_new: Some(FailOn::None),
             output: None,
-            fail_on: FailOn::None,
+            fail_on: Some(FailOn::None),
             ignore_dirs: Vec::new(),
         };
 
@@ -3450,10 +3764,11 @@ mod tests {
             offline: false,
             advisory_policy: None,
             ignore_invalid_policy: false,
+            no_config: false,
             baseline: None,
-            fail_on_new: FailOn::None,
+            fail_on_new: Some(FailOn::None),
             output: None,
-            fail_on: FailOn::None,
+            fail_on: Some(FailOn::None),
             ignore_dirs: Vec::new(),
         };
 
@@ -3481,10 +3796,11 @@ mod tests {
             offline: false,
             advisory_policy: None,
             ignore_invalid_policy: false,
+            no_config: false,
             baseline: None,
-            fail_on_new: FailOn::None,
+            fail_on_new: Some(FailOn::None),
             output: None,
-            fail_on: FailOn::None,
+            fail_on: Some(FailOn::None),
             ignore_dirs: Vec::new(),
         };
 
@@ -3518,10 +3834,11 @@ mod tests {
             offline: false,
             advisory_policy: None,
             ignore_invalid_policy: false,
+            no_config: false,
             baseline: None,
-            fail_on_new: FailOn::None,
+            fail_on_new: Some(FailOn::None),
             output: None,
-            fail_on: FailOn::None,
+            fail_on: Some(FailOn::None),
             ignore_dirs: Vec::new(),
         };
 
@@ -3552,7 +3869,7 @@ mod tests {
         };
         assert!(args.no_secrets);
         assert!(args.include_git);
-        assert_eq!(args.max_file_size, 64);
+        assert_eq!(args.max_file_size, Some(64));
         assert_eq!(args.ignore_dirs, ["vendor", "third_party"]);
     }
 
@@ -3565,7 +3882,12 @@ mod tests {
         let Command::Scan(args) = &cli.command else {
             panic!("expected scan");
         };
-        assert_eq!(args.max_file_size.max(1), 1);
+        assert_eq!(
+            merge_scan(args, None, FailOn::None, false)
+                .unwrap()
+                .max_file_size_kb,
+            1
+        );
     }
 
     fn reviewed(

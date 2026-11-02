@@ -18,6 +18,17 @@ lists what each release ships.
 
 ### Added
 
+- `scan` (including `--staged`) and `deps` read a committed
+  `.oxaudit/config.toml` from the scanned directory: ignored directories,
+  `fail_on` and `fail_on_new` gates, maximum file size, the secret and
+  pattern scanners, and rule-pack files. A flag wins over the file and ignore
+  lists combine; unknown keys are a usage error; every setting the file
+  changes is printed on stderr even with `--quiet` (and in the `scan` step
+  summary); `fail_on_new` applies only with `--baseline`; `scan --staged`
+  takes only `fail_on`; `--no-config` ignores the file. The consumer CI
+  example passes `--fail-on none` so a target's config cannot change its
+  new-findings-only gate. The repository's own self-scan now takes its ignored directories from
+  it.
 - A committed `.oxaudit/advisory-policy.json` dismisses dependency and
   container-image advisories by advisory id or alias, optionally narrowed to
   a package, ecosystem and installed version, with a required reason and an

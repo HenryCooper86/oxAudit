@@ -73,7 +73,7 @@ pub(super) fn run_staged(args: &ScanArgs, quiet: bool) -> CliResult {
             "--staged scans staged content for secrets; --no-secrets leaves nothing to scan",
         ));
     }
-    if args.baseline.is_some() || args.fail_on_new != FailOn::None {
+    if args.baseline.is_some() || args.fail_on_new.is_some_and(|gate| gate != FailOn::None) {
         return Err(usage(
             "--staged reports the current stage only; --baseline and --fail-on-new compare working-tree runs",
         ));
@@ -89,6 +89,20 @@ pub(super) fn run_staged(args: &ScanArgs, quiet: bool) -> CliResult {
             return Ok(EXIT_OK);
         }
     };
+
+    // The config is read before anything is scanned or written: an invalid
+    // one must not leave a report behind.
+    let config = super::load_config(&root, args.no_config)?;
+    let merged = super::merge_scan(
+        args,
+        config.as_ref().map(|config| &config.scan),
+        FailOn::High,
+        true,
+    )?;
+    let notice = super::config_notice(&merged.from_config);
+    if let Some(notice) = &notice {
+        eprintln!("{notice}");
+    }
 
     let started = Instant::now();
     let entries = parse_index(&git_output(&root, &["ls-files", "--stage", "-z", "--"])?)?;
@@ -225,11 +239,15 @@ pub(super) fn run_staged(args: &ScanArgs, quiet: bool) -> CliResult {
     write_output(args.output.as_deref(), &rendered)?;
 
     emit_github_annotations(&findings, &root);
-    write_step_summary(&render_summary_markdown(&summary, &findings), quiet);
+    let mut step_summary = render_summary_markdown(&summary, &findings);
+    if let Some(notice) = &notice {
+        step_summary.push_str(&format!("\n{notice}\n"));
+    }
+    write_step_summary(&step_summary, quiet);
 
     // Secrets fire at high severity, so a staged scan gates on high unless
-    // the caller deliberately asked otherwise.
-    let fail_on = args.fail_on.unwrap_or(FailOn::High);
+    // the caller (or the repository's config) deliberately asked otherwise.
+    let fail_on = merged.fail_on;
     Ok(gate(
         findings
             .iter()
@@ -838,6 +856,45 @@ mod tests {
         assert_eq!(json["summary"]["high"], 1);
         // The staged content, not a report, may hold the credential.
         assert!(!json.to_string().contains("AKIAZ9X8W7U6T5S4R3Q2"));
+    }
+
+    #[test]
+    fn staged_scans_take_the_gate_from_config() {
+        let root = repository();
+        let git = |args: &[&str]| crate::git_context::tests::git(root.path(), args);
+        std::fs::write(
+            root.path().join(".env"),
+            "AWS_ACCESS_KEY_ID=AKIAZ9X8W7U6T5S4R3Q2\n",
+        )
+        .unwrap();
+        git(&["add", ".env"]);
+        std::fs::create_dir_all(root.path().join(".oxaudit")).unwrap();
+        std::fs::write(
+            root.path().join(".oxaudit/config.toml"),
+            "version = 1\n[scan]\nfail_on = \"critical\"\n",
+        )
+        .unwrap();
+        let scan = |extra: &[&str]| {
+            let mut argv = vec![
+                "oxaudit",
+                "scan",
+                root.path().to_str().unwrap(),
+                "--staged",
+                "--quiet",
+            ];
+            argv.extend_from_slice(extra);
+            let cli = super::super::Cli::try_parse_from(argv).expect("staged flags parse");
+            let super::super::Command::Scan(args) = &cli.command else {
+                panic!("scan command expected");
+            };
+            super::super::run_scan(args, true).unwrap()
+        };
+        // The high-severity secret no longer reaches the configured gate…
+        assert_eq!(scan(&[]), super::super::EXIT_OK);
+        // …a flag still wins over the config…
+        assert_eq!(scan(&["--fail-on", "high"]), super::super::EXIT_FINDINGS);
+        // …and --no-config restores the staged default of high.
+        assert_eq!(scan(&["--no-config"]), super::super::EXIT_FINDINGS);
     }
 
     #[test]

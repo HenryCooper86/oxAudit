@@ -46,6 +46,58 @@ stderr; report output on stdout is unaffected. `-h`/`--help` and
 default everywhere except `scan --staged`: reporting does not break a build
 until someone asks it to.
 
+### Project config
+
+`scan` (including `scan --staged`) and `deps` read `.oxaudit/config.toml` from
+the directory they scan — for `--staged`, the repository root — so CI, the
+pre-commit hook, the GitHub Action and the VS Code extension share one set of
+settings without repeating flags:
+
+```toml
+version = 1
+
+[scan]
+ignore_dirs = ["node_modules", "target", "dist"]  # added to any --ignore-dir
+fail_on = "high"            # applies to --staged too
+fail_on_new = "medium"      # used only with --baseline
+max_file_size_kb = 2048
+secrets = true              # false acts like --no-secrets
+patterns = true             # false acts like --no-patterns
+rule_pack_files = ["security/team-rules.toml"]  # inside the project only
+
+[deps]
+ignore_dirs = ["examples"]
+fail_on = "critical"
+fail_on_new = "high"
+```
+
+- **A flag wins over the file, and the file over the default.** Ignore lists
+  are the exception: the file's and the flags' are combined. `--no-config`
+  ignores the file.
+- **The file is strict.** `version = 1` is required, and an unknown table or
+  key (a misspelt `fail_onn`) is a usage error, exit 2 — a typo must not
+  silently loosen a gate. It is read like `.oxaudit/policy.json`: no
+  symlinks, at most 256 KiB. `rule_pack_files` must be relative paths that
+  stay inside the project.
+- **Everything the file changes is printed**, even with `--quiet` —
+  `Settings from .oxaudit/config.toml: --fail-on high; ignore_dirs vendor;
+  secrets off` on stderr, and in the GitHub step summary for `scan` — so a
+  change that loosens or narrows the scan shows up in CI logs and in the
+  pre-commit hook. Review changes to `.oxaudit/config.toml` as changes to
+  your security gate; a CI job that must not be loosened by the repository it
+  scans can pass explicit flags (a flag wins) or `--no-config`.
+- **`fail_on_new` applies only with `--baseline`.** Without a baseline there
+  is nothing to be new against, so the key is left out rather than turning a
+  push build, the editor or a local run into an error.
+- **`scan --staged` takes only `fail_on`** from `[scan]`, and announces it
+  only when it differs from the hook's own default of `high`; the other keys
+  do not apply to the staged index.
+- Only the directory being scanned is consulted, not its parents: `scan
+  services/api` reads `services/api/.oxaudit/config.toml`.
+- Machine-specific settings (`--db`, `--advisory-db`, `--offline`, output
+  paths) stay on the command line. `image` and the desktop app do not read
+  the file.
+
 ## Commands
 
 | Command | Purpose |
@@ -93,6 +145,7 @@ repository and defaults to the current directory.
 | `--max-file-size <KB>` | `1024` | Skip files larger than this many kilobytes (see below) |
 | `--ignore-dir <NAME>` | — | Directory name to ignore. Repeatable |
 | `--ignore-invalid-policy` | off | Run even when the project's policy file is invalid |
+| `--no-config` | off | Ignore the scan root's [project config](#project-config) |
 | `--rule-pack-file <FILE>` | — | Validate and apply this rule-pack file for this run only, never installing it. Repeatable; fixtures resolve beside the file |
 | `--rule-pack <ID>` | — | Apply these pack ids from the store named by `--rule-pack-db`. Explicit selection applies the pack as stored, enabled or not |
 | `--rule-pack-db <FILE>` | — | Rule-pack store holding the packs `--rule-pack` selects |
@@ -143,6 +196,7 @@ oxaudit-cli deps [OPTIONS] <PATH>
 | `--ignore-dir <NAME>` | — | Directory name to ignore. Repeatable |
 | `--advisory-policy <FILE>` | `.oxaudit/advisory-policy.json` | Dismiss advisories by this policy file instead of the project's. Dismissed advisories are still reported but never gate; see [Suppressing a finding](../README.md#dependency-and-image-advisories) |
 | `--ignore-invalid-policy` | off | Run even when the advisory policy file is invalid |
+| `--no-config` | off | Ignore the scan root's [project config](#project-config) |
 
 ## image
 

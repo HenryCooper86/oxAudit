@@ -112,3 +112,9 @@ test("consumer workflow shell against supplied real CLI", {skip: !process.env.PI
     await shell(gateShell,ctx.root,{...ctx.env,COMPLETED:"true",SCAN_EXIT:"0"});
   } finally {await rm(ctx.root,{recursive:true,force:true});}
 });
+
+test("the scan pins --fail-on none so a target's config cannot change the new-only gate", () => {
+  const scanLine = scanShell.split("\n").find((line) => line.startsWith("args=(scan "));
+  assert.ok(scanLine, "the scan command line");
+  assert.match(scanLine, /--fail-on none\)$/);
+});

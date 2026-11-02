@@ -1267,6 +1267,28 @@ a *Validate live against providers* switch, off by default, with the same
 fixed endpoints, the same twenty-credential cap, and a verdict banner
 (`live / rejected / no answer / not attempted`) plus per-finding badges.
 
+## Project config
+
+Commit `.oxaudit/config.toml` to give `scan` and `deps` their settings —
+ignored directories, `fail_on` gates, file-size limits, rule-pack files — so
+CI, the pre-commit hook, the GitHub Action and the VS Code extension behave
+the same without repeating flags:
+
+```toml
+version = 1
+
+[scan]
+ignore_dirs = ["node_modules", "target", "dist"]
+fail_on = "high"
+
+[deps]
+fail_on = "critical"
+```
+
+A flag on the command line wins over the file; unknown keys are an error, and
+every setting the file changes is printed, even with `--quiet`. See
+[docs/cli.md](docs/cli.md#project-config) for every key.
+
 ## Suppressing a finding
 
 A finding that has been reviewed and dismissed should not be raised again on

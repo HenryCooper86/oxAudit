@@ -48,6 +48,11 @@ test("CI-installed Rust security tools use exact versions", () => {
   assert.match(securityWorkflow, /cargo install cargo-fuzz --version 0\.13\.2 --locked/);
 });
 
-test("self-scan excludes the intentionally vulnerable benchmark corpus", () => {
-  assert.match(selfScanWorkflow, /--ignore-dir benchmarks/);
+test("self-scan excludes the intentionally vulnerable benchmark corpus", async () => {
+  // The exclusion lives in the repository's own project config, which the
+  // self-scan reads; the workflow must not opt out of it.
+  const config = await readFile(new URL("../.oxaudit/config.toml", import.meta.url), "utf8");
+  const ignored = config.match(/^ignore_dirs\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "";
+  assert.match(ignored, /"benchmarks"/);
+  assert.doesNotMatch(selfScanWorkflow, /--no-config/);
 });

@@ -3602,3 +3602,280 @@ fn an_image_advisory_policy_stops_the_image_gating() {
         "{notes:?}"
     );
 }
+
+// --------------------------------------------------------- project config
+
+fn write_project_config(root: &Path, body: &str) {
+    std::fs::create_dir_all(root.join(".oxaudit")).unwrap();
+    std::fs::write(root.join(".oxaudit/config.toml"), body).unwrap();
+}
+
+/// `project()` plus a finding under `vendored/`.
+fn project_with_vendored() -> tempfile::TempDir {
+    let project = project();
+    std::fs::create_dir_all(project.path().join("vendored")).unwrap();
+    std::fs::write(
+        project.path().join("vendored/legacy.js"),
+        "export function legacy(input) {\n  return eval(input);\n}\n",
+    )
+    .unwrap();
+    project
+}
+
+fn finding_paths(output: &Output) -> Vec<String> {
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    document["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|finding| finding["filePath"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+#[test]
+fn a_committed_config_ignores_directories_and_sets_the_gate() {
+    let project = project_with_vendored();
+    write_project_config(
+        project.path(),
+        "version = 1\n[scan]\nignore_dirs = [\"vendored\"]\nfail_on = \"high\"\n",
+    );
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        1,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let paths = finding_paths(&output);
+    assert!(!paths.is_empty());
+    assert!(
+        !paths.iter().any(|path| path.contains("vendored")),
+        "{paths:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Settings from .oxaudit/config.toml: --fail-on high; ignore_dirs vendored"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn no_config_ignores_the_file() {
+    let project = project_with_vendored();
+    write_project_config(
+        project.path(),
+        "version = 1\n[scan]\nignore_dirs = [\"vendored\"]\nfail_on = \"high\"\n",
+    );
+    let output = run(&[
+        "scan",
+        &project.path().to_string_lossy(),
+        "--format",
+        "json",
+        "--no-config",
+        "-q",
+    ]);
+    assert_eq!(code(&output), 0, "no gate without the config");
+    assert!(finding_paths(&output)
+        .iter()
+        .any(|path| path.contains("vendored")));
+}
+
+#[test]
+fn an_invalid_config_is_a_usage_error() {
+    let project = project();
+    write_project_config(project.path(), "version = 1\n[scan]\nfail_onn = \"high\"\n");
+    let output = run(&["scan", &project.path().to_string_lossy(), "-q"]);
+    assert_eq!(code(&output), 2);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("config.toml") && stderr.contains("fail_onn"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_subdirectory_scan_reads_its_own_config() {
+    let project = project_with_vendored();
+    // The scanned subdirectory's own config applies, not the repository
+    // root's: only the subdirectory's sets a gate.
+    write_project_config(project.path(), "version = 1\n[scan]\nfail_on = \"none\"\n");
+    write_project_config(
+        &project.path().join("src"),
+        "version = 1\n[scan]\nfail_on = \"low\"\n",
+    );
+    let output = run(&["scan", &project.path().join("src").to_string_lossy(), "-q"]);
+    assert_eq!(
+        code(&output),
+        1,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn deps_reads_its_gate_and_ignores_from_config() {
+    let (_workspace, db, project) = advisory_policy_fixture();
+    std::fs::create_dir_all(project.path().join("examples")).unwrap();
+    std::fs::write(
+        project.path().join("examples/package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"node_modules/example":{"version":"1.0.0"}}}"#,
+    )
+    .unwrap();
+    write_project_config(
+        project.path(),
+        "version = 1\n[deps]\nignore_dirs = [\"examples\"]\nfail_on = \"low\"\n",
+    );
+    let output = offline_deps(project.path(), &db, &["--format", "json"]);
+    assert_eq!(
+        code(&output),
+        1,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let lockfiles = document["summary"]["lockfilesFound"].as_array().unwrap();
+    assert_eq!(lockfiles.len(), 1, "{lockfiles:?}");
+    assert!(!lockfiles[0].as_str().unwrap().contains("examples"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Settings from .oxaudit/config.toml: --fail-on low; ignore_dirs examples"),
+        "{stderr}"
+    );
+
+    let output = offline_deps(project.path(), &db, &["--no-config", "--format", "json"]);
+    assert_eq!(code(&output), 0, "no gate without the config");
+}
+
+#[test]
+fn a_config_fail_on_new_without_a_baseline_is_ignored() {
+    // The documented example sets fail_on_new; a run with no --baseline
+    // (a push build, the editor, a local scan) must not become a usage error.
+    let project = project();
+    write_project_config(
+        project.path(),
+        "version = 1\n[scan]\nfail_on_new = \"low\"\n",
+    );
+    let output = run(&["scan", &project.path().to_string_lossy(), "-q"]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let (_workspace, db, deps_project) = advisory_policy_fixture();
+    write_project_config(
+        deps_project.path(),
+        "version = 1\n[deps]\nfail_on_new = \"low\"\n",
+    );
+    let output = offline_deps(deps_project.path(), &db, &["-q"]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn config_settings_that_narrow_the_scan_are_announced_even_quietly() {
+    let project = project_with_vendored();
+    write_project_config(
+        project.path(),
+        "version = 1\n[scan]\nignore_dirs = [\"vendored\"]\nsecrets = false\nmax_file_size_kb = 64\n",
+    );
+    let output = run(&["scan", &project.path().to_string_lossy(), "-q"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "Settings from .oxaudit/config.toml: ignore_dirs vendored; secrets off; max_file_size_kb 64"
+        ),
+        "{stderr}"
+    );
+    // Nothing is announced without a config.
+    let plain = project_with_vendored();
+    let output = run(&["scan", &plain.path().to_string_lossy(), "-q"]);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Settings from"));
+}
+
+fn git_in(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "git {args:?}");
+}
+
+fn staged_repo() -> tempfile::TempDir {
+    let repo = tempfile::tempdir().unwrap();
+    git_in(repo.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        repo.path().join(".env"),
+        "AWS_ACCESS_KEY_ID=AKIAZ9X8W7U6T5S4R3Q2\n",
+    )
+    .unwrap();
+    git_in(repo.path(), &["add", ".env"]);
+    repo
+}
+
+#[test]
+fn a_config_that_loosens_the_hook_is_announced_even_quietly() {
+    let repo = staged_repo();
+    // fail_on_new does not apply to staged scans and is not announced.
+    write_project_config(
+        repo.path(),
+        "version = 1\n[scan]\nfail_on = \"none\"\nfail_on_new = \"medium\"\n",
+    );
+    // The installed hook runs exactly this.
+    let output = run(&[
+        "scan",
+        &repo.path().to_string_lossy(),
+        "--staged",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 0);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Settings from .oxaudit/config.toml: --fail-on none"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("fail-on-new"), "{stderr}");
+    // A config gate equal to the hook's own default is not news.
+    write_project_config(repo.path(), "version = 1\n[scan]\nfail_on = \"high\"\n");
+    let output = run(&[
+        "scan",
+        &repo.path().to_string_lossy(),
+        "--staged",
+        "--quiet",
+    ]);
+    assert_eq!(code(&output), 1);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Settings from"));
+}
+
+#[test]
+fn an_invalid_config_stops_a_staged_scan_before_it_writes_anything() {
+    let repo = staged_repo();
+    write_project_config(repo.path(), "version = 1\n[scan]\nfail_onn = \"high\"\n");
+    let report = repo.path().join("staged.json");
+    let output = run(&[
+        "scan",
+        &repo.path().to_string_lossy(),
+        "--staged",
+        "--quiet",
+        "--format",
+        "json",
+        "--output",
+        &report.to_string_lossy(),
+    ]);
+    assert_eq!(code(&output), 2);
+    assert!(
+        !report.exists(),
+        "no report is written when the config is invalid"
+    );
+}

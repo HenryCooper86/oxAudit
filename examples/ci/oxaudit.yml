@@ -105,7 +105,9 @@ jobs:
           cli="$GITHUB_WORKSPACE/tool/bin/oxaudit-cli"
           test -x "$cli"
           mkdir reports
-          args=(scan "$GITHUB_WORKSPACE/target" --db "$GITHUB_WORKSPACE/reports/runs.sqlite" --format json --output "$GITHUB_WORKSPACE/reports/source.json")
+          # --fail-on none: this job gates only on new findings (below), so a
+          # fail_on in the target's .oxaudit/config.toml must not change that.
+          args=(scan "$GITHUB_WORKSPACE/target" --db "$GITHUB_WORKSPACE/reports/runs.sqlite" --format json --output "$GITHUB_WORKSPACE/reports/source.json" --fail-on none)
           if [[ "$SCAN_EVENT" == pull_request ]]; then
             test -s baseline-input/baseline.json
             args+=(--baseline "$GITHUB_WORKSPACE/baseline-input/baseline.json" --fail-on-new high)

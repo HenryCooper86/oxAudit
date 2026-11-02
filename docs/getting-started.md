@@ -285,8 +285,9 @@ download against the pinned digest and runs `gh attestation verify` requiring
 the tagged release workflow's identity, the tag ref, and the pinned commit, so
 a binary built from any other workflow, tag or commit fails the job. The target
 checkout is data only: no npm install, build scripts, project commands,
-submodules, or PR-supplied binaries are run. Review changes to the workflow and
-`.oxaudit/policy.json` as changes to your security gate.
+submodules, or PR-supplied binaries are run. Review changes to the workflow,
+`.oxaudit/policy.json`, `.oxaudit/advisory-policy.json` and
+`.oxaudit/config.toml` as changes to your security gate.
 
 1. No repository secret is needed. The job's own `GITHUB_TOKEN` (read access)
    lets `gh` read the public attestation and the baseline artifacts. To move to
