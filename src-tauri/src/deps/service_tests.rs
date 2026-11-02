@@ -27,6 +27,7 @@ fn full_vulnerability() -> crate::models::Vulnerability {
         published: None,
         modified: None,
         lockfile: "package-lock.json".into(),
+        review: None,
     }
 }
 
@@ -596,6 +597,8 @@ async fn execute(
         events,
         cache_path: root,
         ignored_dirs: &[],
+        advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
     })
     .await
 }
@@ -1521,6 +1524,8 @@ async fn local_advisory_db_answers_offline_with_the_same_finding_shape() {
         events: &events(),
         cache_path: root,
         ignored_dirs: &[],
+        advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
     })
     .await
     .unwrap();
@@ -1558,6 +1563,8 @@ async fn local_advisory_db_requires_full_ecosystem_coverage() {
         events: &events(),
         cache_path: root,
         ignored_dirs: &[],
+        advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
     })
     .await
     .unwrap_err();
@@ -1596,6 +1603,8 @@ async fn local_advisory_db_surfaces_undetermined_notes() {
         events: &events(),
         cache_path: root,
         ignored_dirs: &[],
+        advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
     })
     .await
     .unwrap();
@@ -1604,4 +1613,166 @@ async fn local_advisory_db_surfaces_undetermined_notes() {
     assert_eq!(result.vulnerabilities.len(), 1);
     assert_eq!(result.summary.advisory_notes.len(), 1);
     assert!(result.summary.advisory_notes[0].contains("undetermined"));
+}
+
+/// An offline scan of `project()` answered by the local fixture database,
+/// which reports `GHSA-fixture` on `example@1.0.0`.
+async fn policy_scan(
+    root: &Path,
+    advisory_policy: AdvisoryPolicySource<'_>,
+    ignore_invalid_policy: bool,
+) -> Result<DependencyScanResult, String> {
+    let repo = FindingsRepository::open_in_memory().unwrap();
+    let db = advisory_db_with(vec![("GHSA-fixture".to_string(), "example".to_string())]);
+    let provider = provider();
+    scan(ScanRequest {
+        project_root: root,
+        root,
+        repository: &repo,
+        providers: &provider,
+        offline: true,
+        advisory_db: Some(&db),
+        cancel: &AtomicBool::new(false),
+        events: &events(),
+        cache_path: root,
+        ignored_dirs: &[],
+        advisory_policy,
+        ignore_invalid_policy,
+    })
+    .await
+}
+
+fn write_advisory_policy(path: &Path, body: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, body).unwrap();
+}
+
+const DISMISS_FIXTURE: &str = r#"{"version": 1, "entries": [
+    {"advisory": "ghsa-fixture", "package": "example", "ecosystem": "npm",
+     "state": "acceptedRisk", "reason": "Build tooling only"}]}"#;
+
+#[tokio::test]
+async fn project_advisory_policy_marks_matching_vulnerabilities_reviewed() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    write_advisory_policy(&root.join(".oxaudit/advisory-policy.json"), DISMISS_FIXTURE);
+
+    let result = policy_scan(root, AdvisoryPolicySource::Project, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.vulnerabilities.len(),
+        1,
+        "dismissed advisories are still reported"
+    );
+    let review = result.vulnerabilities[0].review.as_ref().expect("reviewed");
+    assert_eq!(
+        review.state,
+        crate::findings::domain::ReviewState::AcceptedRisk
+    );
+    assert_eq!(review.reason, "Build tooling only");
+    // A dismissal is a decision, not a coverage caveat: it shows on the
+    // advisory itself, and the notes stay about what the scan could not do.
+    assert!(
+        !result
+            .summary
+            .advisory_notes
+            .iter()
+            .any(|note| note.contains("dismissed")),
+        "{:?}",
+        result.summary.advisory_notes
+    );
+}
+
+#[tokio::test]
+async fn expired_advisory_policy_entries_are_noted_and_gate_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    write_advisory_policy(
+        &root.join(".oxaudit/advisory-policy.json"),
+        r#"{"version": 1, "entries": [{"advisory": "GHSA-fixture", "state": "acceptedRisk",
+            "reason": "Until the upgrade", "expiresAt": "2020-01-01T00:00:00Z"}]}"#,
+    );
+    let result = policy_scan(root, AdvisoryPolicySource::Project, false)
+        .await
+        .unwrap();
+    assert!(result.vulnerabilities[0].review.is_none());
+    assert!(result
+        .summary
+        .advisory_notes
+        .iter()
+        .any(|note| note.contains("matched but expired")));
+}
+
+#[tokio::test]
+async fn an_invalid_advisory_policy_fails_the_scan_unless_ignored() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    write_advisory_policy(
+        &root.join(".oxaudit/advisory-policy.json"),
+        r#"{"version": 2, "entries": []}"#,
+    );
+    let error = policy_scan(root, AdvisoryPolicySource::Project, false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("advisory-policy.json"), "{error}");
+    // Desktop and agent users cannot pass a flag: the remedy names the file.
+    assert!(error.contains("fix or remove it"), "{error}");
+
+    let result = policy_scan(root, AdvisoryPolicySource::Project, true)
+        .await
+        .unwrap();
+    assert!(result.vulnerabilities[0].review.is_none());
+    assert!(result
+        .summary
+        .advisory_notes
+        .iter()
+        .any(|note| note.contains("advisory-policy.json") && note.contains("ignored")));
+}
+
+#[tokio::test]
+async fn an_explicit_policy_file_replaces_the_project_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    project(root);
+    // The project file would fail the scan; the explicit one is used instead.
+    write_advisory_policy(&root.join(".oxaudit/advisory-policy.json"), "not json");
+    let elsewhere = tempfile::tempdir().unwrap();
+    let explicit = elsewhere.path().join("ci-policy.json");
+    write_advisory_policy(&explicit, DISMISS_FIXTURE);
+
+    let result = policy_scan(root, AdvisoryPolicySource::File(&explicit), false)
+        .await
+        .unwrap();
+    assert!(result.vulnerabilities[0].review.is_some());
+}
+
+#[test]
+fn stored_runs_without_reviews_still_load_and_serialize_unchanged() {
+    let vulnerability = full_vulnerability();
+    let json = serde_json::to_value(&vulnerability).unwrap();
+    assert!(
+        json.get("review").is_none(),
+        "no review key when undismissed"
+    );
+    let back: crate::models::Vulnerability = serde_json::from_value(json).unwrap();
+    assert!(back.review.is_none());
+}
+
+#[test]
+fn stale_reviews_are_cleared_before_the_current_policy_applies() {
+    // A vulnerability can arrive carrying a review (a stored receipt, a
+    // crafted database); only the policy in force now may dismiss it.
+    let mut vulnerabilities = vec![full_vulnerability()];
+    vulnerabilities[0].review = Some(crate::findings::advisory_policy::AdvisoryReview {
+        state: crate::findings::domain::ReviewState::AcceptedRisk,
+        reason: "stale".into(),
+        expires_at: None,
+    });
+    let counts = settle_advisory_reviews(&mut vulnerabilities, None, chrono::Utc::now());
+    assert_eq!(counts, (0, 0));
+    assert!(vulnerabilities[0].review.is_none());
 }

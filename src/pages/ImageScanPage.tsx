@@ -1,3 +1,4 @@
+import { PolicyDismissedBadge } from "../components/PolicyDismissedBadge";
 import { progressMessage } from "../features/runs/nativeProgress";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "../lib/events";
@@ -261,7 +262,8 @@ function ImageComponentRow({ component }: { component: BinaryComponent }) {
                         <li key={vulnerability.cveId} className="text-[12px] text-text-secondary">
                           <span className="font-semibold uppercase">{vulnerability.severity}</span>{" "}
                           {vulnerability.cveId} ({vulnerability.source}
-                          {vulnerability.fixedIn ? `, fixed in ${vulnerability.fixedIn}` : ""})
+                          {vulnerability.fixedIn ? `, fixed in ${vulnerability.fixedIn}` : ""}){" "}
+                          <PolicyDismissedBadge review={vulnerability.review} />
                         </li>
                       ))}
                     </ul>

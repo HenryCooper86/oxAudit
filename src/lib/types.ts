@@ -919,6 +919,15 @@ export interface Vulnerability {
   published: string | null;
   modified: string | null;
   lockfile: string;
+  /** Set when .oxaudit/advisory-policy.json (or --advisory-policy) dismisses it. */
+  review?: AdvisoryReview;
+}
+
+/** Why an advisory policy dismissed a dependency or image advisory. */
+export interface AdvisoryReview {
+  state: "falsePositive" | "acceptedRisk" | "suppressed";
+  reason: string;
+  expiresAt?: string | null;
 }
 
 export interface DepScanSummary {
@@ -1086,6 +1095,8 @@ export interface BinaryVulnerability {
   publicExploit: boolean;
   /** First version carrying the fix. grype reports this; cve-bin-tool does not. */
   fixedIn: string | null;
+  /** Set when an advisory policy (--advisory-policy) dismisses it. */
+  review?: AdvisoryReview;
 }
 
 export interface BinaryComponent {

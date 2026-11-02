@@ -1324,6 +1324,54 @@ Four properties this has, and why:
   silently un-suppress everything the team agreed to, and the run would not mean
   what it appears to mean. Pass `--ignore-invalid-policy` to scan anyway.
 
+### Dependency and image advisories
+
+Dependency and container-image advisories have no source fingerprint, so they
+are dismissed from their own committed file, `.oxaudit/advisory-policy.json`:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "advisory": "GHSA-29mw-wpgm-hmr9",
+      "package": "lodash",
+      "ecosystem": "npm",
+      "version": "4.17.20",
+      "state": "acceptedRisk",
+      "reason": "Build-time only; never shipped to users",
+      "expiresAt": "2027-01-31T00:00:00Z"
+    }
+  ]
+}
+```
+
+- **`advisory`** matches the advisory id or any of its aliases, ignoring case
+  — a GHSA entry covers its CVE and the other way round. For images it
+  matches the CVE id.
+- **`package`, `ecosystem` and `version`** are optional and narrow the entry;
+  each one given must match. `package` compares the way the registry does
+  (PEP 503 for PyPI, case-folded for npm); for images it is the component
+  name. Image components carry no ecosystem, so an entry with `ecosystem`
+  never matches an image.
+- **`state`** is `falsePositive`, `acceptedRisk` or `suppressed`; `reason` is
+  required; `expiresAt` works as above. The last matching unexpired entry
+  wins.
+- `oxaudit-cli deps` reads the file from the project root.
+  `--advisory-policy <FILE>` points `deps` at another file and gives `image`
+  one (an image has no project root, so it reads none by default). The
+  desktop app's dependency scans honour the project file too.
+- **Dismissed advisories are still reported** — marked in text output, with
+  `review` in JSON, as SARIF `suppressions`, and with a "Dismissed by policy"
+  badge in the app — but never count toward `--fail-on` or `--fail-on-new`.
+- **An invalid file stops the scan**, as `policy.json` does; pass
+  `--ignore-invalid-policy` to scan anyway, with a note saying it was ignored.
+
+It is a separate file rather than a new entry kind in `policy.json` because
+`policy.json`'s schema is closed: an older oxAudit refuses to run source
+scans when the file holds an entry kind it does not know, which would break a
+CLI version pinned in CI.
+
 ## Architecture
 
 ```

@@ -1,3 +1,4 @@
+import { PolicyDismissedBadge } from "../components/PolicyDismissedBadge";
 import { progressMessage } from "../features/runs/nativeProgress";
 import { listen } from "../lib/events";
 import { Ban, Binary, Play, RefreshCw } from "lucide-react";
@@ -700,6 +701,7 @@ function BinaryComponentEntry({ component }: { component: BinaryComponent }): JS
             <span className="font-mono text-[11px] text-text-secondary">
               {vulnerability.cveId}
             </span>
+            <PolicyDismissedBadge review={vulnerability.review} />
             {vulnerability.knownExploited && (
               <span
                 title={

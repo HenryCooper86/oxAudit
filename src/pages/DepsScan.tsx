@@ -1,3 +1,4 @@
+import { PolicyDismissedBadge } from "../components/PolicyDismissedBadge";
 import { phaseProgress } from "../features/runs/nativeProgress";
 import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
@@ -831,6 +832,7 @@ function VulnerabilityTable({
                   <span className="block truncate font-mono text-[14px] font-medium text-text-primary">{vulnerability.packageName}</span>
                   <span className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-text-muted">
                     {vulnerability.id}
+                    <PolicyDismissedBadge review={vulnerability.review} />
                     {vulnerability.knownExploited && (
                       <span
                         title={

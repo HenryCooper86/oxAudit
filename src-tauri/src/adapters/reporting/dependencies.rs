@@ -151,6 +151,21 @@ pub(super) fn sarif_results(data: &ReportData) -> Result<Vec<serde_json::Value>,
                     "evidenceKind": "advisoryMatch"
                 }
             }));
+            // An advisory dismissed by the advisory policy is still a
+            // result, marked suppressed the way reviewed source findings are.
+            if let Some(reason) = detail
+                .and_then(|v| v.get("review"))
+                .and_then(|review| review.get("reason"))
+                .and_then(|reason| reason.as_str())
+            {
+                if let Some(result) = results.last_mut() {
+                    result["suppressions"] = serde_json::json!([{
+                        "kind": "external",
+                        "status": "accepted",
+                        "justification": reason,
+                    }]);
+                }
+            }
         }
     }
     Ok(results)

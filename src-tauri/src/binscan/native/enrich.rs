@@ -193,6 +193,7 @@ pub fn parse_nvd(json: &Value) -> Vec<BinaryVulnerability> {
             ransomware: false,
             public_exploit: false,
             fixed_in: None,
+            review: None,
         });
     }
     out
@@ -258,6 +259,7 @@ pub fn from_osv(vulnerability: &crate::models::Vulnerability) -> BinaryVulnerabi
         ransomware: false,
         public_exploit: false,
         fixed_in: vulnerability.fixed_versions.first().cloned(),
+        review: None,
     }
 }
 
@@ -813,6 +815,7 @@ mod tests {
             published: None,
             modified: None,
             lockfile: String::new(),
+            review: None,
         }
     }
 
@@ -1009,6 +1012,7 @@ mod tests {
             ransomware: false,
             public_exploit: false,
             fixed_in: None,
+            review: None,
         }
     }
 

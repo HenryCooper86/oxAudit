@@ -242,6 +242,10 @@ pub struct Vulnerability {
     pub published: Option<String>,
     pub modified: Option<String>,
     pub lockfile: String,
+    /// Set when `.oxaudit/advisory-policy.json` (or `--advisory-policy`)
+    /// dismisses this advisory: still reported, never gating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::findings::advisory_policy::AdvisoryReview>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

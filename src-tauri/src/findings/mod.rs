@@ -1,3 +1,4 @@
+pub mod advisory_policy;
 pub mod coverage;
 pub mod domain;
 pub mod error;

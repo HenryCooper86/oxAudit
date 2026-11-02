@@ -9,6 +9,77 @@ pub struct ImageScanRequest {
     pub offline: bool,
     #[serde(default)]
     pub operation_id: Option<String>,
+    /// An advisory policy file to dismiss advisories by. Images have no
+    /// project root, so nothing is read unless a file is named.
+    #[serde(default)]
+    pub advisory_policy_path: Option<String>,
+    /// Report an invalid advisory policy as a note instead of failing.
+    #[serde(default)]
+    pub ignore_invalid_policy: bool,
+}
+
+/// Set the image vulnerabilities' reviews from the policy in force now, and
+/// only from it (any earlier review is cleared). Images carry no ecosystem
+/// per component, so entries match on the CVE id, the component name and
+/// its version. Returns how many were dismissed and how many matched only
+/// expired entries.
+pub(crate) fn apply_advisory_policy(
+    result: &mut crate::binscan::report::BinaryScanResult,
+    policy: Option<&crate::findings::advisory_policy::AdvisoryPolicy>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (usize, usize) {
+    use crate::findings::advisory_policy::{AdvisorySubject, Decision};
+    let (mut dismissed, mut expired) = (0, 0);
+    for component in &mut result.components {
+        for vulnerability in &mut component.vulnerabilities {
+            vulnerability.review = None;
+            let Some(policy) = policy else { continue };
+            let subject = AdvisorySubject {
+                ids: vec![vulnerability.cve_id.as_str()],
+                ecosystem: None,
+                package: &component.product,
+                version: &component.version,
+            };
+            match policy.decide(&subject, now) {
+                Decision::Dismissed(review) => {
+                    vulnerability.review = Some(review);
+                    dismissed += 1;
+                }
+                Decision::Expired => expired += 1,
+                Decision::None => {}
+            }
+        }
+    }
+    (dismissed, expired)
+}
+
+/// Load the policy an image scan names, before any work starts.
+fn image_advisory_policy(
+    request: &ImageScanRequest,
+) -> Result<
+    (
+        Option<crate::findings::advisory_policy::AdvisoryPolicy>,
+        Vec<String>,
+    ),
+    String,
+> {
+    use crate::findings::advisory_policy::{load_advisory_policy_file, AdvisoryPolicyStatus};
+    let Some(path) = &request.advisory_policy_path else {
+        return Ok((None, Vec::new()));
+    };
+    match load_advisory_policy_file(Path::new(path)) {
+        AdvisoryPolicyStatus::Loaded(policy) => Ok((Some(policy), Vec::new())),
+        AdvisoryPolicyStatus::Missing => Ok((None, Vec::new())),
+        AdvisoryPolicyStatus::Invalid(reason) if request.ignore_invalid_policy => Ok((
+            None,
+            vec![format!(
+                "invalid {path} was ignored ({reason}); no advisory is dismissed"
+            )],
+        )),
+        AdvisoryPolicyStatus::Invalid(reason) => Err(format!(
+            "invalid {path}: {reason}; fix or remove it (the CLI's --ignore-invalid-policy scans anyway)"
+        )),
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -119,6 +190,8 @@ pub(crate) async fn scan_image_workflow(
     request: ImageScanRequest,
 ) -> Result<ImageScanOutcome, String> {
     use oxaudit_domain::{Run, RunKind, RunState};
+    // Read before any pull or scan, so a broken policy fails first.
+    let (advisory_policy, policy_notes) = image_advisory_policy(&request)?;
     let adapter = crate::adapters::persistence::CanonicalSqliteRepository::new(repository);
     let run_events = crate::presentation::CanonicalRunEvents::new(events);
     let coordinator = oxaudit_application::RunCoordinator::new(&adapter, &run_events);
@@ -212,6 +285,10 @@ pub(crate) async fn scan_image_workflow(
             let cpe_askable = scanned.queries.iter().filter(|query| crate::binscan::native::enrich::cpe_match_string(&query.vendor, &query.product, &query.version).is_some()).count();
             if cpe_askable > 0 { notes.push(format!("{cpe_askable} CPE-keyed component(s) require online NVD evidence; offline absence does not establish a clean result.")); }
         }
+        notes.extend(policy_notes);
+        let (_, expired) = apply_advisory_policy(&mut result, advisory_policy.as_ref(), chrono::Utc::now());
+        let shown_as = request.advisory_policy_path.as_deref().unwrap_or_default();
+        notes.extend(crate::deps::service::advisory_policy_notes(shown_as, expired));
         attempt.result = result.clone();
         attempt.notes = notes.clone();
         if cancel.load(Ordering::SeqCst) { return Err("image scan cancelled".into()); }
@@ -334,6 +411,8 @@ mod tests {
                 target: target.to_string_lossy().into_owned(),
                 advisory_db_path: None,
                 offline: true,
+                advisory_policy_path: None,
+                ignore_invalid_policy: false,
                 operation_id: None,
             },
         )
@@ -410,6 +489,8 @@ mod tests {
                         .into_owned(),
                     advisory_db_path: None,
                     offline: true,
+                    advisory_policy_path: None,
+                    ignore_invalid_policy: false,
                     operation_id: None,
                 },
             )
@@ -463,6 +544,8 @@ mod tests {
                 target: target.to_string_lossy().into_owned(),
                 advisory_db_path: None,
                 offline: true,
+                advisory_policy_path: None,
+                ignore_invalid_policy: false,
                 operation_id: None
             }
         )
@@ -478,5 +561,79 @@ mod tests {
             .unwrap();
         assert_eq!(projection["state"], "failed");
         assert_eq!(projection["result"]["summary"]["components"], 1);
+    }
+}
+
+#[cfg(test)]
+mod advisory_policy_tests {
+    use crate::binscan::report::{
+        BinaryComponent, BinaryScanResult, BinaryScanSummary, BinaryVulnerability,
+    };
+    use crate::findings::advisory_policy::{load_advisory_policy_file, AdvisoryPolicyStatus};
+    use crate::findings::domain::ReviewState;
+
+    fn vulnerability(cve: &str) -> BinaryVulnerability {
+        BinaryVulnerability {
+            cve_id: cve.into(),
+            severity: "critical".into(),
+            score: Some(9.8),
+            cvss_version: None,
+            cvss_vector: None,
+            source: "OSV".into(),
+            remarks: None,
+            epss_probability: None,
+            epss_percentile: None,
+            known_exploited: false,
+            ransomware: false,
+            public_exploit: false,
+            fixed_in: None,
+            review: None,
+        }
+    }
+
+    fn component(product: &str, version: &str) -> BinaryComponent {
+        BinaryComponent {
+            vendor: String::new(),
+            product: product.into(),
+            version: version.into(),
+            paths: vec![format!("image.tar!/{product}")],
+            vulnerabilities: vec![vulnerability("CVE-2099-2222")],
+            detected_by: vec!["oxaudit".into()],
+        }
+    }
+
+    #[test]
+    fn image_advisory_policy_dismisses_by_cve_and_component() {
+        let mut result = BinaryScanResult {
+            target: "image.tar".into(),
+            components: vec![component("libc6", "2.36-9"), component("curl", "7.88.1")],
+            summary: BinaryScanSummary::default(),
+            database_last_updated: None,
+            duration_ms: 0,
+            scanners: Vec::new(),
+            semantic_analysis: None,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("policy.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 1, "entries": [{"advisory": "CVE-2099-2222", "package": "libc6",
+                "state": "acceptedRisk", "reason": "Not reachable in this image"}]}"#,
+        )
+        .unwrap();
+        let AdvisoryPolicyStatus::Loaded(policy) = load_advisory_policy_file(&path) else {
+            panic!("policy loads");
+        };
+        let counts = super::apply_advisory_policy(&mut result, Some(&policy), chrono::Utc::now());
+        assert_eq!(counts, (1, 0));
+        let review = result.components[0].vulnerabilities[0]
+            .review
+            .as_ref()
+            .expect("libc6 dismissed");
+        assert_eq!(review.state, ReviewState::AcceptedRisk);
+        assert!(
+            result.components[1].vulnerabilities[0].review.is_none(),
+            "curl untouched"
+        );
     }
 }

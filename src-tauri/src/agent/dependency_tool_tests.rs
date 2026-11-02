@@ -68,6 +68,8 @@ async fn scan(
         cancel: provider.cancel,
         events: &DependencyToolEvents,
         cache_path: root,
+        advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
     })
     .await
 }
@@ -209,6 +211,8 @@ async fn dependency_tool_preserves_authorized_and_ignored_subdirectory_scope() {
         cancel: &cancel,
         events: &DependencyToolEvents,
         cache_path: directory.path(),
+        advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
     })
     .await
     .unwrap();
@@ -226,6 +230,8 @@ async fn dependency_tool_preserves_authorized_and_ignored_subdirectory_scope() {
         cancel: &cancel,
         events: &DependencyToolEvents,
         cache_path: directory.path(),
+        advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
     })
     .await
     .unwrap_err();

@@ -571,6 +571,16 @@ struct DepsArgs {
     /// Directory name to ignore. Repeat for more.
     #[arg(long = "ignore-dir", value_name = "NAME")]
     ignore_dirs: Vec<String>,
+
+    /// Dismiss advisories by this policy file instead of the project's
+    /// `.oxaudit/advisory-policy.json`. Dismissed advisories are still
+    /// reported but never gate.
+    #[arg(long, value_name = "FILE")]
+    advisory_policy: Option<PathBuf>,
+
+    /// Run even when the advisory policy file is invalid.
+    #[arg(long)]
+    ignore_invalid_policy: bool,
 }
 
 #[derive(Args, Debug)]
@@ -606,6 +616,16 @@ struct ImageArgs {
     /// is the command you asked for; this flag governs advisory lookups.
     #[arg(long)]
     offline: bool,
+
+    /// Dismiss advisories by this policy file (same format as
+    /// `.oxaudit/advisory-policy.json`). Dismissed advisories are still
+    /// reported but never gate.
+    #[arg(long, value_name = "FILE")]
+    advisory_policy: Option<PathBuf>,
+
+    /// Run even when the advisory policy file is invalid.
+    #[arg(long)]
+    ignore_invalid_policy: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1783,6 +1803,11 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
             cancel: &cancel,
             events: &StderrEvents { quiet },
             cache_path,
+            advisory_policy: match &args.advisory_policy {
+                Some(path) => crate::deps::service::AdvisoryPolicySource::File(path),
+                None => crate::deps::service::AdvisoryPolicySource::Project,
+            },
+            ignore_invalid_policy: args.ignore_invalid_policy,
         },
     ))
     .map_err(failure)?;
@@ -1840,19 +1865,17 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
     };
     write_output(args.output.as_deref(), &rendered)?;
     let existing = gate(
-        result
-            .vulnerabilities
-            .iter()
-            .map(|v| severity_rank(v.severity.as_deref().unwrap_or(""))),
+        gating_ranks(result.vulnerabilities.iter()),
         args.fail_on,
         quiet,
     );
     let new = gate(
-        result
-            .vulnerabilities
-            .iter()
-            .filter(|v| previous.as_ref().is_some_and(|p| !p.contains(v)))
-            .map(|v| severity_rank(v.severity.as_deref().unwrap_or(""))),
+        gating_ranks(
+            result
+                .vulnerabilities
+                .iter()
+                .filter(|v| previous.as_ref().is_some_and(|p| !p.contains(v))),
+        ),
         args.fail_on_new,
         quiet,
     );
@@ -1893,6 +1916,11 @@ fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
             offline: args.offline,
+            advisory_policy_path: args
+                .advisory_policy
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            ignore_invalid_policy: args.ignore_invalid_policy,
             operation_id: None,
         },
     ))
@@ -1921,6 +1949,8 @@ fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
             .components
             .iter()
             .flat_map(|component| component.vulnerabilities.iter())
+            // A policy-dismissed advisory is reported but never gates.
+            .filter(|vulnerability| vulnerability.review.is_none())
             .map(|vulnerability| severity_rank(&vulnerability.severity)),
         args.fail_on,
         quiet,
@@ -1979,12 +2009,39 @@ fn render_image_text(
                 vulnerability.source,
                 vulnerability.fixed_in.as_deref().unwrap_or("—"),
             );
+            if let Some(review) = &vulnerability.review {
+                let _ = writeln!(out, "    {}", dismissed_line(review));
+            }
         }
+    }
+    let dismissed = result
+        .components
+        .iter()
+        .flat_map(|component| &component.vulnerabilities)
+        .filter(|vulnerability| vulnerability.review.is_some())
+        .count();
+    if dismissed > 0 {
+        let _ = writeln!(
+            out,
+            "\n{dismissed} dismissed by advisory policy (not gating)."
+        );
     }
     for note in notes {
         let _ = writeln!(out, "note: {note}");
     }
     out.into_bytes()
+}
+
+/// `dismissed (acceptedRisk): <reason>`, with the expiry when there is one.
+fn dismissed_line(review: &crate::findings::advisory_policy::AdvisoryReview) -> String {
+    let state = serde_json::to_value(review.state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    match &review.expires_at {
+        Some(expires) => format!("dismissed ({state}, until {expires}): {}", review.reason),
+        None => format!("dismissed ({state}): {}", review.reason),
+    }
 }
 
 fn format_vulnerability_counts(summary: &crate::binscan::report::BinaryScanSummary) -> String {
@@ -2504,6 +2561,17 @@ fn gates_the_build(finding: &crate::models::Finding) -> bool {
 }
 
 /// Decide the exit code from the severities reported and the requested gate.
+/// Severity ranks of the dependency advisories that can gate the build: an
+/// advisory dismissed by the advisory policy is reported but never gates.
+fn gating_ranks<'a, I>(vulnerabilities: I) -> impl Iterator<Item = u8> + 'a
+where
+    I: Iterator<Item = &'a crate::models::Vulnerability> + 'a,
+{
+    vulnerabilities
+        .filter(|vulnerability| vulnerability.review.is_none())
+        .map(|vulnerability| severity_rank(vulnerability.severity.as_deref().unwrap_or("")))
+}
+
 fn gate(severities: impl Iterator<Item = u8>, fail_on: FailOn, quiet: bool) -> i32 {
     let Some(threshold) = fail_on.threshold() else {
         return EXIT_OK;
@@ -2899,8 +2967,21 @@ fn render_deps_text(
                 format!("  [{}]", flags.join(", "))
             }
         );
+        if let Some(review) = &vulnerability.review {
+            let _ = writeln!(out, "         {}", dismissed_line(review));
+        }
     }
     let _ = writeln!(out, "\n{} vulnerability(ies).", vulnerabilities.len());
+    let dismissed = vulnerabilities
+        .iter()
+        .filter(|v| v.review.is_some())
+        .count();
+    if dismissed > 0 {
+        let _ = writeln!(
+            out,
+            "{dismissed} dismissed by advisory policy (not gating)."
+        );
+    }
     out.into_bytes()
 }
 
@@ -3112,6 +3193,64 @@ mod tests {
     }
 
     #[test]
+    fn deps_and_image_accept_advisory_policy_flags() {
+        let cli = Cli::try_parse_from([
+            "oxaudit-cli",
+            "deps",
+            ".",
+            "--advisory-policy",
+            "p.json",
+            "--ignore-invalid-policy",
+        ])
+        .expect("deps flags");
+        let Command::Deps(args) = cli.command else {
+            panic!("deps")
+        };
+        assert_eq!(args.advisory_policy.as_deref(), Some(Path::new("p.json")));
+        assert!(args.ignore_invalid_policy);
+        let cli = Cli::try_parse_from([
+            "oxaudit-cli",
+            "image",
+            "img.tar",
+            "--advisory-policy",
+            "p.json",
+            "--ignore-invalid-policy",
+        ])
+        .expect("image flags");
+        let Command::Image(args) = cli.command else {
+            panic!("image")
+        };
+        assert_eq!(args.advisory_policy.as_deref(), Some(Path::new("p.json")));
+        assert!(args.ignore_invalid_policy);
+    }
+
+    fn advisory(severity: &str, dismissed: bool) -> crate::models::Vulnerability {
+        let mut vulnerability: crate::models::Vulnerability = serde_json::from_value(serde_json::json!({
+            "id": "GHSA-x", "aliases": [], "summary": "", "details": "", "severity": severity,
+            "cvssScore": null, "ecosystem": "npm", "packageName": "p", "installedVersion": "1.0.0",
+            "fixedVersions": [], "affectedRange": null, "references": [], "published": null,
+            "modified": null, "lockfile": "package-lock.json"
+        }))
+        .expect("vulnerability");
+        if dismissed {
+            vulnerability.review = Some(crate::findings::advisory_policy::AdvisoryReview {
+                state: crate::findings::domain::ReviewState::AcceptedRisk,
+                reason: "fine".into(),
+                expires_at: None,
+            });
+        }
+        vulnerability
+    }
+
+    #[test]
+    fn dismissed_advisories_do_not_gate() {
+        let vulnerabilities = [advisory("critical", true), advisory("low", false)];
+        let ranks = || gating_ranks(vulnerabilities.iter());
+        assert_eq!(gate(ranks(), FailOn::High, true), EXIT_OK);
+        assert_eq!(gate(ranks(), FailOn::Low, true), EXIT_FINDINGS);
+    }
+
+    #[test]
     fn the_argument_parser_is_internally_consistent() {
         // Catches duplicate short flags, bad defaults, and malformed help long
         // before a user does.
@@ -3229,6 +3368,8 @@ mod tests {
             format: OutputFormat::Text,
             db: None,
             offline: false,
+            advisory_policy: None,
+            ignore_invalid_policy: false,
             baseline: None,
             fail_on_new: FailOn::None,
             output: None,
@@ -3273,6 +3414,8 @@ mod tests {
             format: OutputFormat::Text,
             db: None,
             offline: false,
+            advisory_policy: None,
+            ignore_invalid_policy: false,
             baseline: None,
             fail_on_new: FailOn::None,
             output: None,
@@ -3305,6 +3448,8 @@ mod tests {
             format: OutputFormat::Text,
             db: None,
             offline: false,
+            advisory_policy: None,
+            ignore_invalid_policy: false,
             baseline: None,
             fail_on_new: FailOn::None,
             output: None,
@@ -3334,6 +3479,8 @@ mod tests {
             format: OutputFormat::Text,
             db: None,
             offline: false,
+            advisory_policy: None,
+            ignore_invalid_policy: false,
             baseline: None,
             fail_on_new: FailOn::None,
             output: None,
@@ -3369,6 +3516,8 @@ mod tests {
             format: OutputFormat::Text,
             db: None,
             offline: false,
+            advisory_policy: None,
+            ignore_invalid_policy: false,
             baseline: None,
             fail_on_new: FailOn::None,
             output: None,

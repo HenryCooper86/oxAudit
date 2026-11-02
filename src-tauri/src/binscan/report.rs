@@ -46,6 +46,10 @@ pub struct BinaryVulnerability {
     /// First version carrying the fix, when the scanner reports one. grype
     /// supplies this; cve-bin-tool does not.
     pub fixed_in: Option<String>,
+    /// Set when an advisory policy (`--advisory-policy`) dismisses this CVE
+    /// for this component: still reported, never gating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::findings::advisory_policy::AdvisoryReview>,
 }
 
 /// A component cve-bin-tool detected inside the scanned binaries.
@@ -270,6 +274,7 @@ pub fn parse_json2(raw: &str, target: &str, duration_ms: u64) -> Result<BinarySc
                 ransomware: false,
                 public_exploit: false,
                 fixed_in: None,
+                review: None,
             });
         }
     }
@@ -646,6 +651,7 @@ mod tests {
                     ransomware: false,
                     public_exploit: false,
                     fixed_in: None,
+                    review: None,
                 })
                 .collect(),
         }

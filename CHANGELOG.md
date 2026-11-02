@@ -18,6 +18,15 @@ lists what each release ships.
 
 ### Added
 
+- A committed `.oxaudit/advisory-policy.json` dismisses dependency and
+  container-image advisories by advisory id or alias, optionally narrowed to
+  a package, ecosystem and installed version, with a required reason and an
+  optional expiry. Dismissed advisories are still reported — `review` in
+  JSON, SARIF `suppressions`, a marker in text output and a "Dismissed by
+  policy" badge in the app — but no longer count toward `deps`/`image`
+  `--fail-on` or `--fail-on-new`. `deps` reads the project's file;
+  `--advisory-policy <FILE>` names another for `deps` and one for `image`.
+  An invalid file stops the scan unless `--ignore-invalid-policy` is passed.
 - `--sarif-uri-prefix` on `scan`, `deps` and `export` prefixes SARIF result
   paths, so GitHub code scanning places alerts correctly when a subdirectory
   was scanned. Under GitHub Actions, `scan` and `deps` apply the scan root's

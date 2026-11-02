@@ -591,6 +591,7 @@ pub(crate) fn parse_vulns(
             published,
             modified,
             lockfile: String::new(),
+            review: None,
         });
     }
     out

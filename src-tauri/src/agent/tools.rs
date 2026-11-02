@@ -674,6 +674,8 @@ pub fn builtins() -> Vec<Tool> {
                     root: &root, ignored_dirs: &settings.ignored_dirs, offline: false,
                     advisory_db: None, repository: service.repository(), providers: &providers,
                     cancel: &cancellation, events: &work, cache_path: &cache_path,
+                    advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+                    ignore_invalid_policy: false,
                 }).await;
                 if let Ok(result) = &result { work.finish("completed", result.get("run_id").and_then(Value::as_str)); }
                 result

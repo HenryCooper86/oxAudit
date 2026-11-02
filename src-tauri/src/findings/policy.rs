@@ -143,7 +143,7 @@ enum IoStage {
 }
 
 #[derive(Debug)]
-struct InvalidPolicy;
+pub(crate) struct InvalidPolicy;
 
 static CREDENTIAL_ASSIGNMENT: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -179,6 +179,88 @@ pub(in crate::findings) fn with_policy_authority<T>(
 #[cfg(test)]
 pub(crate) fn test_policy_authority_is_available() -> bool {
     POLICY_UPDATE_LOCK.try_lock().is_ok()
+}
+
+/// Read another committed file from the project's `.oxaudit` directory with
+/// the same guarantees as `policy.json`: no symlinks at either level, a
+/// regular file only, and the size bounded before it is read. `Ok(None)`
+/// means the file (or the directory) does not exist.
+pub(crate) fn read_project_file(
+    project_root: &Path,
+    name: &str,
+    max: u64,
+) -> Result<Option<Vec<u8>>, String> {
+    let refused = |error: std::io::Error| format!(".oxaudit/{name} cannot be read safely: {error}");
+    #[cfg(unix)]
+    {
+        let (_, directory, _) = match unix_fs::open_project_policy_dir(project_root, false) {
+            Ok(handles) => handles,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(None),
+            Err(error) => return Err(refused(error)),
+        };
+        let mut file = match unix_fs::open_regular_at(&directory, name, true) {
+            Ok(file) => file,
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => return Ok(None),
+            Err(error) => return Err(refused(error)),
+        };
+        unix_fs::read_bounded(&mut file, max)
+            .map(Some)
+            .map_err(refused)
+    }
+    #[cfg(windows)]
+    {
+        let directory = project_root.join(".oxaudit");
+        if let Err(error) = windows_fs::open_directory(&directory) {
+            return if directory.exists() {
+                Err(refused(error))
+            } else {
+                Ok(None)
+            };
+        }
+        let mut file = match windows_fs::open_regular(&directory.join(name)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(refused(error)),
+        };
+        windows_fs::read_bounded(&mut file, max)
+            .map(Some)
+            .map_err(refused)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let path = project_root.join(".oxaudit").join(name);
+        read_regular_file(&path, max).map_err(refused)
+    }
+}
+
+/// Read a file named on the command line: a regular file (not a symlink),
+/// bounded in size. A missing file is an error — the user asked for it.
+pub(crate) fn read_regular_file(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    if metadata.len() > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("larger than {max} bytes"),
+        ));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(max + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("larger than {max} bytes"),
+        ));
+    }
+    Ok(bytes)
 }
 
 pub fn load_policy(project_root: impl AsRef<Path>) -> Result<LoadedPolicy, CommandError> {
@@ -638,7 +720,9 @@ fn parse_and_validate(bytes: &[u8], mode: ValidationMode<'_>) -> Result<PolicyFi
     Ok(policy)
 }
 
-fn parse_json_without_duplicates(bytes: &[u8]) -> Result<serde_json::Value, InvalidPolicy> {
+pub(crate) fn parse_json_without_duplicates(
+    bytes: &[u8],
+) -> Result<serde_json::Value, InvalidPolicy> {
     use serde::de::DeserializeSeed;
 
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
@@ -1105,7 +1189,7 @@ fn validate_expiry(value: Option<&str>, mode: ValidationMode<'_>) -> Result<(), 
     Ok(())
 }
 
-fn safe_required_text(value: &str) -> bool {
+pub(crate) fn safe_required_text(value: &str) -> bool {
     !value.trim().is_empty() && safe_optional_text(value)
 }
 

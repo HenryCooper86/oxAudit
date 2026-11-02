@@ -3323,3 +3323,282 @@ fn a_rhel_image_with_one_stream_downloaded_is_incomplete_coverage() {
         "{notes:?}"
     );
 }
+
+/// An advisory database holding the fixture advisory (`GHSA-e2e-fixture`,
+/// alias `CVE-2099-1234`, critical, on `example` below 2.0.0), and a project
+/// whose lockfile installs `example@1.0.0`.
+fn advisory_policy_fixture() -> (tempfile::TempDir, PathBuf, tempfile::TempDir) {
+    let server = DumpServer::start(fixture_dump_zip());
+    let workspace = tempfile::tempdir().expect("workspace");
+    let db = workspace.path().join("advisories.sqlite3");
+    let output = run(&[
+        "advisory-db",
+        "update",
+        "--db",
+        &db.to_string_lossy(),
+        "--source",
+        &server.base(),
+        "--ecosystem",
+        "npm",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let project = tempfile::tempdir().expect("project");
+    std::fs::write(
+        project.path().join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"node_modules/example":{"version":"1.0.0"}}}"#,
+    )
+    .expect("lockfile");
+    (workspace, db, project)
+}
+
+fn write_project_advisory_policy(project: &Path, body: &str) {
+    std::fs::create_dir_all(project.join(".oxaudit")).unwrap();
+    std::fs::write(project.join(".oxaudit/advisory-policy.json"), body).unwrap();
+}
+
+/// Dismisses the fixture advisory by its CVE alias.
+const ADVISORY_POLICY: &str = r#"{"version": 1, "entries": [
+    {"advisory": "CVE-2099-1234", "package": "example", "state": "acceptedRisk",
+     "reason": "Only used by the build"}]}"#;
+
+fn offline_deps(project: &Path, db: &Path, extra: &[&str]) -> Output {
+    let project = project.to_string_lossy();
+    let db = db.to_string_lossy();
+    let mut args = vec![
+        "deps",
+        project.as_ref(),
+        "--offline",
+        "--advisory-db",
+        db.as_ref(),
+    ];
+    args.extend_from_slice(extra);
+    run(&args)
+}
+
+#[test]
+fn a_committed_advisory_policy_stops_a_dependency_gating_the_build() {
+    let (_workspace, db, project) = advisory_policy_fixture();
+    let output = offline_deps(project.path(), &db, &["--fail-on", "low"]);
+    assert_eq!(code(&output), 1, "gates before the policy exists");
+
+    write_project_advisory_policy(project.path(), ADVISORY_POLICY);
+    let output = offline_deps(
+        project.path(),
+        &db,
+        &["--fail-on", "low", "--format", "json"],
+    );
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let vulnerability = &document["vulnerabilities"][0];
+    assert_eq!(vulnerability["id"], "GHSA-e2e-fixture", "still reported");
+    assert_eq!(vulnerability["review"]["state"], "acceptedRisk");
+    assert_eq!(vulnerability["review"]["reason"], "Only used by the build");
+
+    let output = offline_deps(project.path(), &db, &["--fail-on", "low"]);
+    assert_eq!(code(&output), 0);
+    let text = stdout(&output);
+    assert!(text.contains("dismissed by advisory policy"), "{text}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("dismissed"),
+        "a dismissal is not a warning: {stderr}"
+    );
+}
+
+#[test]
+fn dependency_sarif_carries_advisory_policy_suppressions() {
+    let (workspace, db, project) = advisory_policy_fixture();
+    write_project_advisory_policy(project.path(), ADVISORY_POLICY);
+    let runs = workspace.path().join("runs.sqlite3");
+    let output = offline_deps(
+        project.path(),
+        &db,
+        &[
+            "--db",
+            &runs.to_string_lossy(),
+            "--format",
+            "sarif",
+            "--sarif-uri-prefix",
+            "",
+        ],
+    );
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sarif: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let results = sarif["runs"][0]["results"].as_array().unwrap();
+    let result = results
+        .iter()
+        .find(|result| result["ruleId"] == "GHSA-e2e-fixture")
+        .expect("the advisory is a SARIF result");
+    assert_eq!(result["suppressions"][0]["kind"], "external");
+    assert_eq!(result["suppressions"][0]["status"], "accepted");
+    assert_eq!(
+        result["suppressions"][0]["justification"],
+        "Only used by the build"
+    );
+}
+
+#[test]
+fn an_invalid_advisory_policy_stops_the_dependency_scan() {
+    let (_workspace, db, project) = advisory_policy_fixture();
+    write_project_advisory_policy(project.path(), r#"{"version": 2, "entries": []}"#);
+    let output = offline_deps(project.path(), &db, &["--fail-on", "low"]);
+    assert_eq!(code(&output), 3);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("advisory-policy.json"), "{stderr}");
+    let output = offline_deps(
+        project.path(),
+        &db,
+        &["--fail-on", "low", "--ignore-invalid-policy"],
+    );
+    assert_eq!(
+        code(&output),
+        1,
+        "the advisory gates when the policy is ignored"
+    );
+}
+
+#[test]
+fn an_explicit_advisory_policy_flag_is_used_for_dependencies() {
+    let (workspace, db, project) = advisory_policy_fixture();
+    let policy = workspace.path().join("ci-advisory-policy.json");
+    std::fs::write(&policy, ADVISORY_POLICY).unwrap();
+    let output = offline_deps(
+        project.path(),
+        &db,
+        &[
+            "--fail-on",
+            "low",
+            "--advisory-policy",
+            &policy.to_string_lossy(),
+        ],
+    );
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn a_dismissed_new_advisory_does_not_gate_fail_on_new() {
+    let (workspace, db, project) = advisory_policy_fixture();
+    // A baseline from before the dependency existed.
+    let empty = empty_dependency_project();
+    let output = offline_deps(empty.path(), &db, &["--format", "json"]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let baseline = workspace.path().join("baseline.json");
+    std::fs::write(&baseline, &output.stdout).unwrap();
+    let new_only = [
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--fail-on-new",
+        "low",
+    ];
+
+    let output = offline_deps(project.path(), &db, &new_only);
+    assert_eq!(code(&output), 1, "a new advisory gates");
+    write_project_advisory_policy(project.path(), ADVISORY_POLICY);
+    let output = offline_deps(project.path(), &db, &new_only);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn an_image_advisory_policy_stops_the_image_gating() {
+    let server = DumpServer::start(debian_dump_zip());
+    let workspace = tempfile::tempdir().expect("workspace");
+    let db = workspace.path().join("advisories.sqlite3");
+    let output = run(&[
+        "advisory-db",
+        "update",
+        "--db",
+        &db.to_string_lossy(),
+        "--source",
+        &server.base(),
+        "--ecosystem",
+        "Debian:12",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let image = debian_image_tar(workspace.path());
+    let scan = |extra: &[&str]| {
+        let image = image.to_string_lossy();
+        let db = db.to_string_lossy();
+        let mut args = vec![
+            "image",
+            image.as_ref(),
+            "--advisory-db",
+            db.as_ref(),
+            "--offline",
+            "--fail-on",
+            "high",
+        ];
+        args.extend_from_slice(extra);
+        run(&args)
+    };
+    assert_eq!(code(&scan(&[])), 1, "the critical libc6 advisory gates");
+    let policy = workspace.path().join("image-policy.json");
+    std::fs::write(
+        &policy,
+        r#"{"version": 1, "entries": [{"advisory": "CVE-2099-2222", "package": "libc6",
+            "state": "falsePositive", "reason": "Patched in our base image build"}]}"#,
+    )
+    .unwrap();
+    let output = scan(&["--advisory-policy", &policy.to_string_lossy()]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = scan(&[
+        "--advisory-policy",
+        &policy.to_string_lossy(),
+        "--format",
+        "json",
+    ]);
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let libc6 = component(&document, "libc6");
+    assert_eq!(
+        libc6["vulnerabilities"][0]["review"]["state"],
+        "falsePositive"
+    );
+    // The dismissal is on the advisory, not a coverage note that would read
+    // as something to resolve.
+    let notes = document["notes"].as_array().unwrap();
+    assert!(
+        !notes
+            .iter()
+            .any(|note| note.as_str().is_some_and(|note| note.contains("dismissed"))),
+        "{notes:?}"
+    );
+}

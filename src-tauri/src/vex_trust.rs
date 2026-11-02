@@ -310,6 +310,7 @@ mod tests {
             published: None,
             modified: None,
             lockfile: String::new(),
+            review: None,
         }
     }
 

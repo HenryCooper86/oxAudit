@@ -134,6 +134,116 @@ pub struct ScanRequest<'a> {
     pub cancel: &'a AtomicBool,
     pub events: &'a dyn ScanEventSink,
     pub cache_path: &'a Path,
+    /// Which advisory policy dismisses advisories: the project's own
+    /// `.oxaudit/advisory-policy.json`, or a file named on the command line.
+    pub advisory_policy: AdvisoryPolicySource<'a>,
+    /// Report an invalid advisory policy as a note instead of failing.
+    pub ignore_invalid_policy: bool,
+}
+
+/// Where a dependency scan's advisory policy comes from.
+#[derive(Clone, Copy, Debug)]
+pub enum AdvisoryPolicySource<'a> {
+    Project,
+    File(&'a Path),
+}
+
+/// The advisory policy a scan applies, with the name its notes use.
+struct ScanPolicy {
+    policy: Option<crate::findings::advisory_policy::AdvisoryPolicy>,
+    shown_as: String,
+    notes: Vec<String>,
+}
+
+fn load_scan_policy(
+    source: AdvisoryPolicySource<'_>,
+    project_root: &Path,
+    ignore_invalid: bool,
+) -> Result<ScanPolicy, String> {
+    use crate::findings::advisory_policy::{self as advisory_policy, AdvisoryPolicyStatus};
+    let (status, shown_as) = match source {
+        AdvisoryPolicySource::Project => (
+            advisory_policy::load_project_advisory_policy(project_root),
+            advisory_policy::ADVISORY_POLICY_PATH.to_string(),
+        ),
+        AdvisoryPolicySource::File(path) => (
+            advisory_policy::load_advisory_policy_file(path),
+            path.display().to_string(),
+        ),
+    };
+    match status {
+        AdvisoryPolicyStatus::Missing => Ok(ScanPolicy {
+            policy: None,
+            shown_as,
+            notes: Vec::new(),
+        }),
+        AdvisoryPolicyStatus::Loaded(policy) => Ok(ScanPolicy {
+            policy: Some(policy),
+            shown_as,
+            notes: Vec::new(),
+        }),
+        AdvisoryPolicyStatus::Invalid(reason) if ignore_invalid => Ok(ScanPolicy {
+            policy: None,
+            notes: vec![format!(
+                "invalid {shown_as} was ignored ({reason}); no advisory is dismissed"
+            )],
+            shown_as,
+        }),
+        AdvisoryPolicyStatus::Invalid(reason) => Err(format!(
+            "invalid {shown_as}: {reason}; fix or remove it (the CLI's --ignore-invalid-policy scans anyway)"
+        )),
+    }
+}
+
+/// Set each vulnerability's review from the policy in force now, and only
+/// from it: any review a vulnerability arrived with (a stored receipt, a
+/// crafted database) is cleared first. Returns how many were dismissed and
+/// how many matched only expired entries.
+pub(crate) fn settle_advisory_reviews(
+    vulnerabilities: &mut [crate::models::Vulnerability],
+    policy: Option<&crate::findings::advisory_policy::AdvisoryPolicy>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (usize, usize) {
+    use crate::findings::advisory_policy::{AdvisorySubject, Decision};
+    let (mut dismissed, mut expired) = (0, 0);
+    for vulnerability in vulnerabilities.iter_mut() {
+        vulnerability.review = None;
+    }
+    let Some(policy) = policy else {
+        return (0, 0);
+    };
+    for vulnerability in vulnerabilities {
+        let mut ids = vec![vulnerability.id.as_str()];
+        ids.extend(vulnerability.aliases.iter().map(String::as_str));
+        let subject = AdvisorySubject {
+            ids,
+            ecosystem: Some(&vulnerability.ecosystem),
+            package: &vulnerability.package_name,
+            version: &vulnerability.installed_version,
+        };
+        match policy.decide(&subject, now) {
+            Decision::Dismissed(review) => {
+                vulnerability.review = Some(review);
+                dismissed += 1;
+            }
+            Decision::Expired => expired += 1,
+            Decision::None => {}
+        }
+    }
+    (dismissed, expired)
+}
+
+/// The notes a policy application leaves in the scan summary. Dismissals are
+/// not among them: they are decisions shown on each advisory, and notes are
+/// for what needs attention — here, entries that have lapsed.
+pub(crate) fn advisory_policy_notes(shown_as: &str, expired: usize) -> Vec<String> {
+    let mut notes = Vec::new();
+    if expired > 0 {
+        notes.push(format!(
+            "{expired} advisory finding(s) matched but expired in {shown_as}; they gate again"
+        ));
+    }
+    notes
 }
 
 fn epoch_millis() -> u64 {
@@ -325,6 +435,12 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
     if !canonical_root.starts_with(&canonical_project) {
         return Err("dependency scan path is outside the authorized project".into());
     }
+    // Read before any lookup, so a broken policy fails before network work.
+    let scan_policy = load_scan_policy(
+        request.advisory_policy,
+        &canonical_project,
+        request.ignore_invalid_policy,
+    )?;
     let canonical_repository =
         crate::adapters::persistence::CanonicalSqliteRepository::new(request.repository);
     let canonical_events = crate::presentation::CanonicalRunEvents::new(request.events);
@@ -693,6 +809,13 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             .transition(oxaudit_domain::RunState::Assessing, epoch_millis())
             .map_err(|error| error.to_string())?;
 
+        advisory_notes.extend(scan_policy.notes.iter().cloned());
+        let (_, expired) = settle_advisory_reviews(
+            &mut vulnerabilities,
+            scan_policy.policy.as_ref(),
+            chrono::Utc::now(),
+        );
+        advisory_notes.extend(advisory_policy_notes(&scan_policy.shown_as, expired));
         let result = DependencyScanResult {
         summary: crate::models::DepScanSummary {
             inventory_notes: inventory_notes.into_iter().collect(),

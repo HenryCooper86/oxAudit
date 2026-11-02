@@ -155,6 +155,8 @@ pub(crate) async fn scan_dependencies_engine(
         cancel: &cancel,
         events: &work,
         cache_path,
+        advisory_policy: crate::deps::service::AdvisoryPolicySource::Project,
+        ignore_invalid_policy: false,
     })
     .await;
     if let Ok(result) = &result {

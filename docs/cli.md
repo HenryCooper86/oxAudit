@@ -141,6 +141,8 @@ oxaudit-cli deps [OPTIONS] <PATH>
 | `--sarif-uri-prefix <PREFIX>` | scan root inside `GITHUB_WORKSPACE` under GitHub Actions, else none | Prefix SARIF result paths so code scanning resolves them from the repository root when `PATH` is a subdirectory. `""` turns it off. Every relative path is prefixed once; absolute URIs are left alone. Do not prefix the report again afterwards |
 | `--fail-on <SEVERITY>` | `none` | Exit 1 when a vulnerability at this severity or higher is reported |
 | `--ignore-dir <NAME>` | — | Directory name to ignore. Repeatable |
+| `--advisory-policy <FILE>` | `.oxaudit/advisory-policy.json` | Dismiss advisories by this policy file instead of the project's. Dismissed advisories are still reported but never gate; see [Suppressing a finding](../README.md#dependency-and-image-advisories) |
+| `--ignore-invalid-policy` | off | Run even when the advisory policy file is invalid |
 
 ## image
 
@@ -161,6 +163,8 @@ directly.
 | `--fail-on <SEVERITY>` | `none` | Exit 1 when a vulnerability at this severity or higher is reported |
 | `--advisory-db <FILE>` | — | Answer distribution-package advisories from this local advisory database, with no network |
 | `--offline` | off | Never contact advisory providers: advisories come only from `--advisory-db`. A registry reference still downloads the image; this flag governs advisory lookups |
+| `--advisory-policy <FILE>` | — | Dismiss advisories by this policy file (the `.oxaudit/advisory-policy.json` format). Entries match the CVE id and component name. Dismissed advisories are still reported but never gate |
+| `--ignore-invalid-policy` | off | Run even when the advisory policy file is invalid |
 
 ## export
 
