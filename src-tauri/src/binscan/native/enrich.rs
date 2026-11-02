@@ -268,6 +268,16 @@ pub fn from_osv(vulnerability: &crate::models::Vulnerability) -> BinaryVulnerabi
 /// lost — it simply cannot be enriched.
 pub fn queries_from(detections: &[Detection]) -> Vec<ComponentQuery> {
     let mut seen: HashMap<ComponentKey, ComponentQuery> = HashMap::new();
+    // The name OSV knows a package by: its source package where the
+    // distribution files advisories that way, its own name otherwise.
+    let osv_name = |detection: &Detection| match (&detection.source_package, &detection.ecosystem) {
+        (Some(source), Some(ecosystem))
+            if super::os_packages::files_advisories_under_source(ecosystem) =>
+        {
+            Some(source.clone())
+        }
+        _ => detection.package_name.clone(),
+    };
 
     for detection in detections {
         let Some(version) = detection.version.as_deref().filter(|v| !v.is_empty()) else {
@@ -284,7 +294,7 @@ pub fn queries_from(detections: &[Detection]) -> Vec<ComponentQuery> {
                 .clone()
                 .unwrap_or_else(|| version.to_string()),
             ecosystem: detection.ecosystem.clone(),
-            osv_name: detection.package_name.clone(),
+            osv_name: osv_name(detection),
         });
         // One file may be seen by both detectors. Keep whichever fact the other
         // lacks, so a component detected by note *and* signature can be asked
@@ -296,7 +306,7 @@ pub fn queries_from(detections: &[Detection]) -> Vec<ComponentQuery> {
             entry.ecosystem = detection.ecosystem.clone();
         }
         if entry.osv_name.is_none() {
-            entry.osv_name = detection.package_name.clone();
+            entry.osv_name = osv_name(detection);
         }
         if entry.raw_version == entry.version {
             // A packaged version is strictly more useful to OSV than an
@@ -314,26 +324,70 @@ pub fn queries_from(detections: &[Detection]) -> Vec<ComponentQuery> {
     queries
 }
 
-/// The OSV dependency for one query, when it names an ecosystem.
-fn osv_dependency_for(query: &ComponentQuery) -> Option<Dependency> {
-    Some(Dependency {
-        license: None,
-        occurrence: Default::default(),
-        ecosystem: query.ecosystem.clone()?,
-        // OSV's distribution ecosystems key on the distribution's own
-        // package name; the canonical product would match nothing.
-        name: query
-            .osv_name
-            .clone()
-            .unwrap_or_else(|| query.product.clone()),
-        version: query.raw_version.clone(),
-        lockfile: String::new(),
-    })
+/// The OSV dependencies for one query, when it names an ecosystem: one per
+/// ecosystem the identity spans (both RHEL content streams; one otherwise).
+fn osv_dependencies_for(query: &ComponentQuery) -> Vec<Dependency> {
+    let Some(ecosystem) = query.ecosystem.as_deref() else {
+        return Vec::new();
+    };
+    super::os_packages::osv_query_ecosystems(ecosystem)
+        .into_iter()
+        .map(|ecosystem| Dependency {
+            license: None,
+            occurrence: Default::default(),
+            ecosystem,
+            // OSV's distribution ecosystems key on the distribution's own
+            // package name; the canonical product would match nothing.
+            name: query
+                .osv_name
+                .clone()
+                .unwrap_or_else(|| query.product.clone()),
+            version: query.raw_version.clone(),
+            lockfile: String::new(),
+        })
+        .collect()
 }
 
 /// The OSV dependency list, for the components that can be asked that way.
 pub fn osv_dependencies(queries: &[ComponentQuery]) -> Vec<Dependency> {
-    queries.iter().filter_map(osv_dependency_for).collect()
+    queries.iter().flat_map(osv_dependencies_for).collect()
+}
+
+/// Add vulnerabilities to a component, once each: a RHEL package asked about
+/// in both content streams can hear about the same advisory twice.
+fn record(
+    found: &mut HashMap<ComponentKey, Vec<BinaryVulnerability>>,
+    key: &ComponentKey,
+    vulnerabilities: impl Iterator<Item = BinaryVulnerability>,
+) {
+    let entry = found.entry(key.clone()).or_default();
+    for vulnerability in vulnerabilities {
+        if !entry.contains(&vulnerability) {
+            entry.push(vulnerability);
+        }
+    }
+}
+
+/// One OSV lookup per distinct question, with every component that asked it.
+///
+/// Several binaries built from one source (`libssl3`, `libcrypto3` from
+/// `openssl`) ask OSV the same thing; the answer belongs to all of them.
+pub(crate) fn osv_lookups(queries: &[ComponentQuery]) -> Vec<(Dependency, Vec<ComponentKey>)> {
+    let mut lookups: Vec<(Dependency, Vec<ComponentKey>)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for query in queries {
+        for dependency in osv_dependencies_for(query) {
+            let key = crate::deps::osv::dependency_query_key(&dependency);
+            match index.get(&key) {
+                Some(&at) => lookups[at].1.push(query.key.clone()),
+                None => {
+                    index.insert(key, lookups.len());
+                    lookups.push((dependency, vec![query.key.clone()]));
+                }
+            }
+        }
+    }
+    lookups
 }
 
 /// Answer the OSV half of the queries from a local advisory database, with no
@@ -358,10 +412,11 @@ pub fn enrich_local(
     let mut covered: Vec<(&ComponentQuery, Dependency)> = Vec::new();
     let mut uncovered_names: Vec<String> = Vec::new();
     let mut uncovered_count = 0usize;
-    for query in queries.iter().filter(|query| query.ecosystem.is_some()) {
-        let Some(dependency) = osv_dependency_for(query) else {
-            continue;
-        };
+    for (query, dependency) in queries.iter().flat_map(|query| {
+        osv_dependencies_for(query)
+            .into_iter()
+            .map(move |d| (query, d))
+    }) {
         if available.iter().any(|scope| {
             crate::advisories::versioning::ecosystem_within(scope, &dependency.ecosystem)
         }) {
@@ -383,10 +438,7 @@ pub fn enrich_local(
                         .results
                         .get(&crate::deps::osv::dependency_query_key(dependency))
                     {
-                        found
-                            .entry(query.key.clone())
-                            .or_default()
-                            .extend(vulnerabilities.iter().map(from_osv));
+                        record(&mut found, &query.key, vulnerabilities.iter().map(from_osv));
                     }
                 }
                 notes.extend(outcome.notes.warnings());
@@ -500,25 +552,20 @@ pub async fn enrich(
     // "unknown" with no remediation — worse than useless, because a summary
     // reading "0 critical, 0 high" invites the reader to relax. OSV is fast and
     // is not rate-limited the way NVD is, so the extra requests are cheap.
-    let dependencies = osv_dependencies(queries);
-    if !dependencies.is_empty() {
-        for (index, (query, dependency)) in queries
-            .iter()
-            .filter(|q| q.ecosystem.is_some())
-            .zip(dependencies.iter())
-            .enumerate()
-        {
+    let lookups = osv_lookups(queries);
+    if !lookups.is_empty() {
+        for (index, (dependency, keys)) in lookups.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 notes.push(format!(
                     "cancelled after {index} of {} OSV lookups; results are partial",
-                    dependencies.len()
+                    lookups.len()
                 ));
                 break;
             }
             on_progress(format!(
                 "OSV {}/{}: {} {}",
                 index + 1,
-                dependencies.len(),
+                lookups.len(),
                 dependency.name,
                 dependency.version
             ));
@@ -528,10 +575,9 @@ pub async fn enrich(
                 .await
             {
                 Ok(vulnerabilities) if !vulnerabilities.is_empty() => {
-                    found
-                        .entry(query.key.clone())
-                        .or_default()
-                        .extend(vulnerabilities.iter().map(from_osv));
+                    for key in keys {
+                        record(&mut found, key, vulnerabilities.iter().map(from_osv));
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => notes.push(format!(
@@ -830,10 +876,44 @@ mod tests {
             raw_version: raw.map(str::to_string),
             ecosystem: ecosystem.map(str::to_string),
             package_name: ecosystem.map(|_| product.to_string()),
+            source_package: None,
             path: "/fw/lib/x.so".into(),
             source: super::super::scan::DetectionSource::Content,
             truncated: false,
         }
+    }
+
+    #[test]
+    fn binaries_from_one_source_share_one_lookup() {
+        // libssl3 and libcrypto3 both come from source `openssl`: OSV is asked
+        // once, and the answer belongs to both components.
+        let mut libssl = detection(
+            "",
+            "libssl3",
+            Some("3.1.4-r5"),
+            Some("3.1.4-r5"),
+            Some("Alpine:v3.19"),
+        );
+        libssl.package_name = Some("openssl".into());
+        let mut libcrypto = detection(
+            "",
+            "libcrypto3",
+            Some("3.1.4-r5"),
+            Some("3.1.4-r5"),
+            Some("Alpine:v3.19"),
+        );
+        libcrypto.package_name = Some("openssl".into());
+        let queries = queries_from(&[libssl, libcrypto]);
+        assert_eq!(queries.len(), 2, "two components");
+
+        let lookups = osv_lookups(&queries);
+        assert_eq!(lookups.len(), 1, "{lookups:?}");
+        let (dependency, keys) = &lookups[0];
+        assert_eq!(dependency.name, "openssl");
+        assert_eq!(dependency.version, "3.1.4-r5");
+        let mut products: Vec<&str> = keys.iter().map(|key| key.0.as_str()).collect();
+        products.sort();
+        assert_eq!(products, ["libcrypto3", "libssl3"]);
     }
 
     #[test]

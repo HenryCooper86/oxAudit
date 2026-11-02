@@ -33,5 +33,23 @@ mod tests {
             &ecosystem_of(b"ID=alpine\nVERSION_ID=3.20.3\n")
         )
         .is_some());
+        // Every ecosystem an RPM image is asked about, after RHEL's identity
+        // expands into its content streams.
+        for os_release in [
+            &b"ID=\"rhel\"\nVERSION_ID=\"9.4\"\n"[..],
+            b"ID=\"rocky\"\nVERSION_ID=\"9.4\"\n",
+            b"ID=\"almalinux\"\nVERSION_ID=\"9.4\"\n",
+            b"ID=\"opensuse-leap\"\nVERSION_ID=\"15.5\"\n",
+            b"ID=azurelinux\nVERSION_ID=\"3.0\"\n",
+            b"ID=\"openEuler\"\nVERSION=\"22.03 (LTS-SP4)\"\nVERSION_ID=\"22.03\"\n",
+        ] {
+            for ecosystem in osv_query_ecosystems(&ecosystem_of(os_release)) {
+                assert_eq!(
+                    crate::advisories::versioning::family_for("ECOSYSTEM", &ecosystem),
+                    Some(crate::advisories::versioning::VersionFamily::Rpm),
+                    "{ecosystem} must compare as rpm"
+                );
+            }
+        }
     }
 }

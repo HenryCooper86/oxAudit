@@ -62,8 +62,24 @@ coverage, never as a clean result.
 ## Image scans
 
 `oxaudit-cli image <saved-image.tar>` reads the image's own package
-databases (dpkg, apk) against its `os-release` and answers those packages
-from a local database with `--advisory-db` — a fully offline image scan.
+databases (dpkg, apk, rpm's SQLite and Berkeley DB files) against its
+`os-release` and answers those packages from a local database with
+`--advisory-db` — a fully offline image scan. Packages are asked about under
+the name each distribution files advisories by: the source package for
+Debian, Ubuntu, Alpine, Rocky Linux, openSUSE, Azure Linux and openEuler
+(`glibc`, not `libc6`), the binary package for Red Hat and AlmaLinux. A RHEL
+image is asked about everywhere its packages can be filed: the `baseos`,
+`appstream` and `crb` streams for RHEL 8 and 9, the `server` variant for
+RHEL 6 and 7, and the minor release (`Red Hat:enterprise_linux:10.0`) from
+RHEL 10. OSV publishes one dump per RPM distribution, not per release, so
+download the distribution by its bare name; it covers every release and
+stream:
+
+```bash
+oxaudit-cli advisory-db update --db ~/.oxaudit/advisories.sqlite3 \
+  --ecosystem 'Red Hat' --ecosystem 'Rocky Linux'
+```
+
 Ecosystems the database does not carry (a bare `Debian` from an ELF package
 note, an undownloaded release) are named in the run notes rather than
 silently answering nothing; CPE-keyed signature detections have no offline

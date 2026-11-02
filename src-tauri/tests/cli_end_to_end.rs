@@ -1812,7 +1812,7 @@ fn debian_image_tar(dir: &std::path::Path) -> std::path::PathBuf {
     );
     add(
         "var/lib/dpkg/status",
-        b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
+        b"Package: libc6\nSource: glibc\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
     );
     let path = dir.join("debian12.tar");
     std::fs::write(&path, builder.into_inner().expect("image tar")).expect("write image");
@@ -1827,7 +1827,8 @@ fn debian_dump_zip() -> Vec<u8> {
         "severity": [{ "type": "CVSS_V3",
             "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
         "affected": [{
-            "package": { "ecosystem": "Debian:12", "name": "libc6" },
+            // OSV files Debian advisories under the source package.
+            "package": { "ecosystem": "Debian:12", "name": "glibc" },
             "ranges": [{ "type": "ECOSYSTEM",
                 "events": [{"introduced": "0"}, {"fixed": "2.40.0-1"}] }]
         }]
@@ -2070,7 +2071,7 @@ fn registry_references_are_pulled_and_scanned_offline() {
         ),
         (
             "var/lib/dpkg/status",
-            b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
+            b"Package: libc6\nSource: glibc\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n",
         ),
     ]);
     // Layer 2: the app — a fat-JAR's library with embedded coordinates.
@@ -3141,4 +3142,184 @@ fn compliance_input_mistakes_are_usage_errors_that_save_nothing() {
     ]);
     let view: serde_json::Value = serde_json::from_slice(&view.stdout).unwrap();
     assert_eq!(view["reviews"], serde_json::json!([]));
+}
+
+/// An rpm SQLite database (WAL-flagged, as rpm writes it) holding these
+/// packages, as image bytes.
+fn rpmdb_sqlite(packages: &[oxaudit_parsers::rpm_header::RpmPackage]) -> Vec<u8> {
+    let connection = rusqlite::Connection::open_in_memory().expect("memory db");
+    connection
+        .execute_batch(
+            "CREATE TABLE Packages (hnum INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);",
+        )
+        .expect("schema");
+    for package in packages {
+        connection
+            .execute(
+                "INSERT INTO Packages (blob) VALUES (?1)",
+                [oxaudit_parsers::rpm_header::encode_header_blob(package)],
+            )
+            .expect("row");
+    }
+    let mut bytes = connection
+        .serialize(rusqlite::MAIN_DB)
+        .expect("serialize")
+        .to_vec();
+    bytes[18] = 2;
+    bytes[19] = 2;
+    bytes
+}
+
+fn openssl_libs_rpm() -> oxaudit_parsers::rpm_header::RpmPackage {
+    oxaudit_parsers::rpm_header::RpmPackage {
+        name: "openssl-libs".into(),
+        epoch: Some(1),
+        version: "3.0.1".into(),
+        release: "1.el9".into(),
+        arch: Some("x86_64".into()),
+        source_rpm: Some("openssl-3.0.1-1.el9.src.rpm".into()),
+    }
+}
+
+fn rpm_image_tar(dir: &Path, name: &str, os_release: &[u8]) -> PathBuf {
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut add = |path: &str, body: &[u8]| {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, body)
+            .expect("image member");
+    };
+    add("etc/os-release", os_release);
+    add(
+        "var/lib/rpm/rpmdb.sqlite",
+        &rpmdb_sqlite(&[openssl_libs_rpm()]),
+    );
+    let path = dir.join(name);
+    std::fs::write(&path, builder.into_inner().expect("image tar")).expect("write image");
+    path
+}
+
+fn rpm_dump_zip(ecosystem: &str, package: &str) -> Vec<u8> {
+    let advisory = serde_json::json!({
+        "id": "CVE-2099-3333",
+        "summary": "rpm image e2e fixture advisory",
+        "severity": [{ "type": "CVSS_V3",
+            "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+        "affected": [{
+            "package": { "ecosystem": ecosystem, "name": package },
+            "ranges": [{ "type": "ECOSYSTEM",
+                "events": [{"introduced": "0"}, {"fixed": "1:3.0.7-16.el9_2"}] }]
+        }]
+    })
+    .to_string();
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "CVE-2099-3333.json".to_string(),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("zip member");
+    std::io::Write::write_all(&mut writer, advisory.as_bytes()).expect("zip body");
+    writer.finish().expect("zip").into_inner()
+}
+
+fn offline_image_scan(
+    dump: Vec<u8>,
+    ecosystem: &str,
+    image: &dyn Fn(&Path) -> PathBuf,
+) -> serde_json::Value {
+    let server = DumpServer::start(dump);
+    let workspace = tempfile::tempdir().expect("workspace");
+    let db = workspace.path().join("advisories.sqlite3");
+    let output = run(&[
+        "advisory-db",
+        "update",
+        "--db",
+        &db.to_string_lossy(),
+        "--source",
+        &server.base(),
+        "--ecosystem",
+        ecosystem,
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let image = image(workspace.path());
+    let output = run(&[
+        "image",
+        &image.to_string_lossy(),
+        "--advisory-db",
+        &db.to_string_lossy(),
+        "--offline",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn component<'a>(document: &'a serde_json::Value, product: &str) -> &'a serde_json::Value {
+    document["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["product"] == product)
+        .unwrap_or_else(|| panic!("{product} component in {document}"))
+}
+
+#[test]
+fn image_scans_answer_rpm_packages_offline() {
+    // Rocky files advisories under the source RPM (`openssl`); the image
+    // installs the binary `openssl-libs` built from it.
+    let document = offline_image_scan(
+        rpm_dump_zip("Rocky Linux:9", "openssl"),
+        "Rocky Linux:9",
+        &|dir| {
+            rpm_image_tar(
+                dir,
+                "rocky9.tar",
+                b"NAME=\"Rocky Linux\"\nID=\"rocky\"\nVERSION_ID=\"9.4\"\n",
+            )
+        },
+    );
+    let openssl = component(&document, "openssl-libs");
+    let vulnerabilities = openssl["vulnerabilities"].as_array().unwrap();
+    assert_eq!(vulnerabilities.len(), 1, "{openssl}");
+    assert_eq!(vulnerabilities[0]["cveId"], "CVE-2099-3333");
+    assert_eq!(vulnerabilities[0]["fixedIn"], "1:3.0.7-16.el9_2");
+}
+
+#[test]
+fn a_rhel_image_with_one_stream_downloaded_is_incomplete_coverage() {
+    // Red Hat names binary RPMs and splits releases into streams; with only
+    // baseos downloaded the appstream half is named as uncovered, never
+    // silently treated as clean.
+    let document = offline_image_scan(
+        rpm_dump_zip("Red Hat:enterprise_linux:9::baseos", "openssl-libs"),
+        "Red Hat:enterprise_linux:9::baseos",
+        &|dir| rpm_image_tar(dir, "ubi9.tar", b"ID=\"rhel\"\nVERSION_ID=\"9.4\"\n"),
+    );
+    let openssl = component(&document, "openssl-libs");
+    assert_eq!(
+        openssl["vulnerabilities"].as_array().unwrap().len(),
+        1,
+        "{openssl}"
+    );
+    let notes = document["notes"].as_array().unwrap();
+    assert!(
+        notes.iter().any(|note| note
+            .as_str()
+            .is_some_and(|note| note.contains("Red Hat:enterprise_linux:9::appstream"))),
+        "{notes:?}"
+    );
 }

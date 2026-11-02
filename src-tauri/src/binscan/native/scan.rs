@@ -156,6 +156,10 @@ pub struct Detection {
     /// The distribution's own package name, when it differs from the canonical
     /// product. OSV is keyed on this; NVD is keyed on the canonical one.
     pub package_name: Option<String>,
+    /// The source package an OS package was built from (dpkg `Source:`, apk
+    /// origin, rpm `SOURCERPM`). Most distributions file advisories under it,
+    /// so it is what OSV is asked about when the distribution names sources.
+    pub source_package: Option<String>,
     pub path: String,
     pub source: DetectionSource,
     /// The file was larger than the read cap and only a prefix was examined.
@@ -449,6 +453,7 @@ fn scan_buffer_at_depth(
                 raw_version: (!raw.is_empty()).then_some(raw),
                 ecosystem: super::enrich::osv_ecosystem(&note.kind, &note.os),
                 package_name: Some(note.name),
+                source_package: None,
                 path: display.to_string(),
                 source: DetectionSource::PackageNote,
                 truncated,
@@ -466,6 +471,7 @@ fn scan_buffer_at_depth(
             version: hit.version,
             ecosystem: None,
             package_name: None,
+            source_package: None,
             path: display.to_string(),
             source: hit.evidence.into(),
             truncated,
@@ -574,6 +580,71 @@ fn scan_member(
         }
         return;
     }
+    if os_packages::is_rpmdb_wal_path(&member.path) {
+        if !member.bytes.is_empty() {
+            notes.push(format!(
+                "rpm database at {} has an uncheckpointed write-ahead log; the newest package changes may be missing",
+                member.path.trim_end_matches("-wal")
+            ));
+        }
+        return;
+    }
+    if os_packages::is_rpmdb_ndb_path(&member.path) {
+        notes.push(format!(
+            "rpm NDB database at {} is not read; its packages are not reported or matched",
+            member.path
+        ));
+        return;
+    }
+    let rpm_database = if os_packages::is_rpmdb_sqlite_path(&member.path) {
+        Some(super::rpmdb::read_sqlite(&member.bytes))
+    } else if os_packages::is_rpmdb_bdb_path(&member.path) {
+        Some(super::rpmdb::read_bdb(&member.bytes))
+    } else {
+        None
+    };
+    if let Some(read) = rpm_database {
+        match read {
+            Ok(database) => {
+                if database.unreadable > 0 {
+                    notes.push(format!(
+                        "rpm database at {}: {} package header(s) could not be decoded and are not reported",
+                        member.path, database.unreadable
+                    ));
+                }
+                if database.truncated {
+                    notes.push(format!(
+                        "package database {} is bounded at {} packages; later entries are not reported",
+                        member.path,
+                        os_packages::MAX_PACKAGES_PER_DATABASE
+                    ));
+                }
+                let ecosystem = distro
+                    .as_ref()
+                    .map(|identity| identity.osv_ecosystem.clone());
+                for package in database.packages {
+                    let evr = package.evr();
+                    detections.push(Detection {
+                        vendor: String::new(),
+                        source_package: package.source_name(),
+                        product: package.name.clone(),
+                        version: Some(evr.clone()),
+                        raw_version: Some(evr),
+                        ecosystem: ecosystem.clone(),
+                        package_name: Some(package.name),
+                        path: member.path.clone(),
+                        source: DetectionSource::OsPackageDatabase,
+                        truncated: false,
+                    });
+                }
+            }
+            Err(error) => notes.push(format!(
+                "rpm database at {} could not be read: {error}",
+                member.path
+            )),
+        }
+        return;
+    }
     let package_list = if os_packages::is_dpkg_status_path(&member.path) {
         Some(os_packages::parse_dpkg_status(&member.bytes))
     } else if os_packages::is_apk_installed_path(&member.path) {
@@ -592,14 +663,22 @@ fn scan_member(
         let ecosystem = distro
             .as_ref()
             .map(|identity| identity.osv_ecosystem.clone());
-        for (name, version) in packages {
+        for package in packages {
+            // OSV is asked about the source package at the source version —
+            // that is what Debian, Ubuntu and Alpine file advisories under —
+            // while the component keeps the installed binary's identity.
+            let query_version = package
+                .source_version
+                .clone()
+                .unwrap_or_else(|| package.version.clone());
             detections.push(Detection {
                 vendor: String::new(),
-                product: name.clone(),
-                version: Some(version.clone()),
-                raw_version: Some(version),
+                product: package.name.clone(),
+                version: Some(package.version),
+                raw_version: Some(query_version),
                 ecosystem: ecosystem.clone(),
-                package_name: Some(name),
+                package_name: Some(package.name),
+                source_package: package.source_name,
                 path: member.path.clone(),
                 source: DetectionSource::OsPackageDatabase,
                 truncated: false,
@@ -619,6 +698,7 @@ fn scan_member(
                 raw_version: Some(version),
                 ecosystem: None,
                 package_name: None,
+                source_package: None,
                 path: member.path.clone(),
                 source: DetectionSource::JarManifest,
                 truncated: false,
@@ -647,6 +727,7 @@ fn scan_member(
                 raw_version: Some(version),
                 ecosystem: Some("Maven".to_string()),
                 package_name: Some(coordinates),
+                source_package: None,
                 path: member.path.clone(),
                 source: DetectionSource::PomProperties,
                 truncated: false,
@@ -1719,6 +1800,7 @@ mod tests {
             raw_version: version.map(str::to_string),
             ecosystem: None,
             package_name: None,
+            source_package: None,
             path: path.to_string(),
             source,
             truncated: false,
@@ -2081,7 +2163,7 @@ mod tests {
             );
             add(
                 "var/lib/dpkg/status",
-                b"Package: libc6\nVersion: 2.36-9+deb12u3\nStatus: install ok installed\n\nPackage: leftbehind\nVersion: 1.0-1\nStatus: deinstall ok config-files\n",
+                b"Package: libc6\nSource: glibc (2.36-9+deb12u3)\nVersion: 2.36-9+deb12u3+b1\nStatus: install ok installed\n\nPackage: leftbehind\nVersion: 1.0-1\nStatus: deinstall ok config-files\n",
             );
             add("bin/busybox", b"\0\0BusyBox v1.38.0\0");
             builder.into_inner().expect("layer tar")
@@ -2115,9 +2197,12 @@ mod tests {
             .find(|q| q.product == "libc6")
             .expect("libc6 is askable");
         assert_eq!(query.ecosystem.as_deref(), Some("Debian:12"));
-        assert_eq!(query.osv_name.as_deref(), Some("libc6"));
-        // OSV's distribution ecosystems compare the packaged version.
+        // OSV files Debian advisories under the source package, at the source
+        // version: a binNMU's `+b1` is a rebuild, not a different release.
+        assert_eq!(query.osv_name.as_deref(), Some("glibc"));
         assert_eq!(query.raw_version, "2.36-9+deb12u3");
+        // The component keeps the installed binary's own name and version.
+        assert_eq!(query.version, "2.36-9+deb12u3+b1");
     }
 
     #[test]
@@ -2162,6 +2247,207 @@ mod tests {
             .expect("musl is askable");
         assert_eq!(musl.ecosystem.as_deref(), Some("Alpine:v3.20"));
         assert_eq!(musl.raw_version, "1.2.5-r0");
+    }
+
+    /// A saved image whose one layer holds these members.
+    fn rpm_image(dir: &std::path::Path, os_release: &[u8], members: &[(&str, Vec<u8>)]) {
+        let layer = {
+            let mut builder = tar::Builder::new(Vec::new());
+            let mut add = |path: &str, body: &[u8]| {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(body.len() as u64);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, path, body)
+                    .expect("layer member");
+            };
+            add("etc/os-release", os_release);
+            for (path, body) in members {
+                add(path, body);
+            }
+            builder.into_inner().expect("layer tar")
+        };
+        std::fs::write(dir.join("image.tar"), tar_with("layer.tar", &layer)).expect("write image");
+    }
+
+    fn openssl_rpmdb() -> Vec<u8> {
+        use super::super::rpmdb::tests::{package, rpmdb_sqlite};
+        use oxaudit_parsers::rpm_header::encode_header_blob;
+        rpmdb_sqlite(&[
+            encode_header_blob(&package(
+                "openssl-libs",
+                Some(1),
+                "3.0.1",
+                "1.el9",
+                "openssl-3.0.1-1.el9.src.rpm",
+            )),
+            encode_header_blob(&package(
+                "bash",
+                None,
+                "5.1.8",
+                "9.el9",
+                "bash-5.1.8-9.el9.src.rpm",
+            )),
+        ])
+    }
+
+    fn scan_dir(dir: &std::path::Path) -> NativeScan {
+        scan(dir, Arc::new(AtomicBool::new(false)), Arc::new(|_| {})).expect("scan")
+    }
+
+    #[test]
+    fn rocky_images_are_queried_by_source_rpm_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        rpm_image(
+            dir.path(),
+            b"NAME=\"Rocky Linux\"\nID=\"rocky\"\nVERSION_ID=\"9.4\"\n",
+            &[("usr/lib/sysimage/rpm/rpmdb.sqlite", openssl_rpmdb())],
+        );
+        let scanned = scan_dir(dir.path());
+        let query = scanned
+            .queries
+            .iter()
+            .find(|q| q.product == "openssl-libs")
+            .expect("openssl-libs is a component query");
+        assert_eq!(query.ecosystem.as_deref(), Some("Rocky Linux:9"));
+        assert_eq!(query.osv_name.as_deref(), Some("openssl"));
+        assert_eq!(query.raw_version, "1:3.0.1-1.el9");
+        assert!(scanned
+            .result
+            .components
+            .iter()
+            .any(|c| c.product == "bash"));
+    }
+
+    #[test]
+    fn rhel_images_query_both_streams_by_binary_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        rpm_image(
+            dir.path(),
+            b"ID=\"rhel\"\nVERSION_ID=\"9.4\"\n",
+            &[("var/lib/rpm/rpmdb.sqlite", openssl_rpmdb())],
+        );
+        let scanned = scan_dir(dir.path());
+        let lookups = super::super::enrich::osv_lookups(&scanned.queries);
+        let mut openssl: Vec<(&str, &str)> = lookups
+            .iter()
+            .filter(|(dependency, _)| dependency.name == "openssl-libs")
+            .map(|(dependency, _)| (dependency.ecosystem.as_str(), dependency.version.as_str()))
+            .collect();
+        openssl.sort();
+        assert_eq!(
+            openssl,
+            [
+                ("Red Hat:enterprise_linux:9::appstream", "1:3.0.1-1.el9"),
+                ("Red Hat:enterprise_linux:9::baseos", "1:3.0.1-1.el9"),
+                ("Red Hat:enterprise_linux:9::crb", "1:3.0.1-1.el9"),
+            ]
+        );
+    }
+
+    #[test]
+    fn rhel8_style_bdb_package_databases_are_read() {
+        use super::super::rpmdb::tests::package;
+        use oxaudit_parsers::rpm_header::encode_header_blob;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let packages =
+            oxaudit_parsers::bdb_hash::encode_for_tests(&[encode_header_blob(&package(
+                "openssl-libs",
+                Some(1),
+                "1.1.1k",
+                "7.el8_6",
+                "openssl-1.1.1k-7.el8_6.src.rpm",
+            ))]);
+        rpm_image(
+            dir.path(),
+            b"ID=\"rocky\"\nVERSION_ID=\"8.10\"\n",
+            &[("var/lib/rpm/Packages", packages)],
+        );
+        let scanned = scan_dir(dir.path());
+        let query = scanned
+            .queries
+            .iter()
+            .find(|q| q.product == "openssl-libs")
+            .expect("openssl-libs from the Berkeley DB database");
+        assert_eq!(query.ecosystem.as_deref(), Some("Rocky Linux:8"));
+        assert_eq!(query.osv_name.as_deref(), Some("openssl"));
+        assert_eq!(query.raw_version, "1:1.1.1k-7.el8_6");
+    }
+
+    #[test]
+    fn an_ndb_rpm_database_is_named_not_silently_skipped() {
+        // openSUSE Leap 15.3+ and SLE 15 SP3+ keep rpm's database in NDB,
+        // which is not read; the run must say so, not look clean.
+        let dir = tempfile::tempdir().expect("tempdir");
+        rpm_image(
+            dir.path(),
+            b"ID=\"opensuse-leap\"\nVERSION_ID=\"15.6\"\n",
+            &[("usr/lib/sysimage/rpm/Packages.db", vec![0u8; 512])],
+        );
+        let scanned = scan_dir(dir.path());
+        assert!(
+            scanned
+                .notes
+                .iter()
+                .any(|note| note.contains("Packages.db") && note.contains("not read")),
+            "{:?}",
+            scanned.notes
+        );
+    }
+
+    #[test]
+    fn an_uncheckpointed_wal_is_noted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        rpm_image(
+            dir.path(),
+            b"ID=\"rocky\"\nVERSION_ID=\"9.4\"\n",
+            &[
+                ("var/lib/rpm/rpmdb.sqlite", openssl_rpmdb()),
+                ("var/lib/rpm/rpmdb.sqlite-wal", vec![1u8; 64]),
+            ],
+        );
+        let scanned = scan_dir(dir.path());
+        assert!(
+            scanned
+                .notes
+                .iter()
+                .any(|note| note.contains("uncheckpointed write-ahead log")),
+            "{:?}",
+            scanned.notes
+        );
+        // An empty log is the normal checkpointed state and says nothing.
+        let quiet = tempfile::tempdir().expect("tempdir");
+        rpm_image(
+            quiet.path(),
+            b"ID=\"rocky\"\nVERSION_ID=\"9.4\"\n",
+            &[
+                ("var/lib/rpm/rpmdb.sqlite", openssl_rpmdb()),
+                ("var/lib/rpm/rpmdb.sqlite-wal", Vec::new()),
+            ],
+        );
+        assert!(!scan_dir(quiet.path())
+            .notes
+            .iter()
+            .any(|note| note.contains("write-ahead log")));
+    }
+
+    #[test]
+    fn an_unreadable_rpm_database_is_a_note() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        rpm_image(
+            dir.path(),
+            b"ID=\"rocky\"\nVERSION_ID=\"9.4\"\n",
+            &[("var/lib/rpm/rpmdb.sqlite", b"SQLite format 3\0not a database at all, just bytes padded out to a header length..........................................".to_vec())],
+        );
+        let scanned = scan_dir(dir.path());
+        assert!(
+            scanned
+                .notes
+                .iter()
+                .any(|note| note.contains("rpm database") && note.contains("could not be read")),
+            "{:?}",
+            scanned.notes
+        );
     }
 
     #[test]

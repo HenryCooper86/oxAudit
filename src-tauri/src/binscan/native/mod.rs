@@ -25,6 +25,7 @@ pub mod extract;
 pub mod filetype;
 pub mod os_packages;
 pub mod package_note;
+pub mod rpmdb;
 pub mod scan;
 pub mod signature;
 pub mod strings;

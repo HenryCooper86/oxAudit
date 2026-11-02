@@ -7,6 +7,7 @@
 //! without the GUI crate (see `src-tauri/fuzz`). The main crate re-exports
 //! each module at its original path.
 
+pub mod bdb_hash;
 pub mod go_inventory;
 pub mod lockfiles;
 pub mod models;
@@ -14,4 +15,5 @@ pub mod os_packages;
 pub mod package_note;
 pub mod relationships;
 pub mod report_import;
+pub mod rpm_header;
 pub mod rulepack_index;

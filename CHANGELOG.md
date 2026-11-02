@@ -33,9 +33,29 @@ lists what each release ships.
   can produce them.
 - `.pre-commit-hooks.yaml` defines an `oxaudit-secrets` hook for the
   pre-commit framework, running the installed `oxaudit-cli scan --staged`.
+- Image scans read rpm package databases — `rpmdb.sqlite` (RHEL 9 and 10,
+  Rocky and Alma 9, Fedora-era layouts under `/usr/lib/sysimage/rpm`) and the
+  older Berkeley DB `Packages` (RHEL 7 and 8, Rocky and Alma 8, Amazon Linux
+  2, openSUSE Leap up to 15.2) — in memory, and map RHEL, Rocky Linux,
+  AlmaLinux, openSUSE Leap, Azure Linux and openEuler `os-release` files to
+  their OSV ecosystems. RHEL packages are asked about wherever Red Hat files
+  them: the `baseos`, `appstream` and `crb` streams for RHEL 8 and 9, the
+  `server` variant for RHEL 6 and 7, and the minor release from RHEL 10. The
+  NDB database of newer SUSE releases is named in a note rather than read,
+  SUSE Linux Enterprise is not matched (OSV files it under product modules
+  the image does not name), and an uncheckpointed rpm write-ahead log is
+  noted. A crafted rpm database cannot stall the scan or exhaust memory: a
+  `Packages` view is refused, every row counts toward the package cap, and
+  SQLite runs under a step budget and value-size limit.
 
 ### Fixed
 
+- Debian, Ubuntu and Alpine image packages are now looked up by their source
+  package (dpkg `Source:`, apk origin), which is what OSV files those
+  distributions' advisories under. Packages whose binary name differs from
+  their source — `libc6` from `glibc`, `libssl3` and `libcrypto3` from
+  `openssl` — previously matched nothing and were reported clean. Binaries
+  built from one source share one OSV lookup.
 - The README, installation guide, server guide, CLI reference, release
   checklist and consumer CI example named v0.2.6 as the latest release after
   v0.2.7 was published, so copy-paste installs and the example CI gate

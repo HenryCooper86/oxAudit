@@ -336,3 +336,14 @@ lookups and *says so* when it caps, rather than returning a short list.
   makes extending this mechanical.
 - **No LICENCE file.** oxAudit has none, so it is all-rights-reserved by
   default and its relationship to GPL tooling is undefined.
+- **rpm databases not read.** The NDB `Packages.db` used by openSUSE Leap
+  15.3+ and SUSE Linux Enterprise 15 SP3+ (the scan names it in a note rather
+  than looking clean), and Azure Linux distroless images'
+  `/var/lib/rpmmanifest/container-manifest-2`. SUSE Linux Enterprise is not
+  matched even where its database is read: OSV files its advisories under
+  product modules (`SUSE:Linux Enterprise Module for Basesystem 15 SP5`) that
+  nothing in the image names. Fedora, Amazon Linux, Oracle Linux, CentOS and
+  Photon OS have no OSV distribution ecosystem.
+- **Layer whiteouts are not applied.** Every layer's package database is
+  read, so a package upgraded or removed in a later layer can still be
+  reported at its earlier version.
