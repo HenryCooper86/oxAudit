@@ -149,17 +149,6 @@ struct Location {
     path: Option<String>,
 }
 
-/// The upstream part of a distribution version — epoch and packaging
-/// revision removed — keeping a `~` pre-release, so `1.0~rc1` and `1.0` stay
-/// two components instead of merging into one.
-fn upstream_keeping_prerelease(raw: &str) -> String {
-    let without_epoch = raw.split_once(':').map(|(_, rest)| rest).unwrap_or(raw);
-    let cut = without_epoch
-        .find(['-', '+'])
-        .unwrap_or(without_epoch.len());
-    without_epoch[..cut].trim().to_string()
-}
-
 /// grype's own words for severity, onto oxAudit's scale.
 fn normalize_severity(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -192,7 +181,7 @@ pub fn parse_report(raw: &str, target: &str, duration_ms: u64) -> Result<BinaryS
         // distribution package types are reduced: a language package's
         // `-rc.1` is part of its version.
         let version = if matches!(entry.artifact.kind.as_str(), "deb" | "rpm" | "apk") {
-            upstream_keeping_prerelease(&entry.artifact.version)
+            oxaudit_parsers::package_note::upstream_version(&entry.artifact.version)
         } else {
             entry.artifact.version.clone()
         };

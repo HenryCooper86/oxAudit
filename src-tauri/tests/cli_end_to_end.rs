@@ -4108,6 +4108,44 @@ fn config_rule_pack_files_are_applied() {
 }
 
 #[test]
+fn a_subdirectory_scan_resolves_config_rule_packs_from_that_directory() {
+    // A subproject's config names packs relative to the subproject, and the
+    // scan finds them whatever the working directory is.
+    let repository = tempfile::tempdir().unwrap();
+    let project = repository.path().join("services/api");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(
+        project.join("src/marker.js"),
+        "function go() { e2eMarkerCall(payload); }\n",
+    )
+    .unwrap();
+    let packs = project.join("security");
+    std::fs::create_dir_all(&packs).unwrap();
+    rule_pack_fixture(&packs);
+    write_project_config(
+        &project,
+        "version = 1\n[scan]\nrule_pack_files = [\"security/pack.toml\"]\n",
+    );
+    let output = cli()
+        .current_dir(repository.path())
+        .args(["scan", "services/api", "--format", "json", "-q"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(document["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["ruleId"] == "rulepack.e2e/source.e2e-marker"));
+}
+
+#[test]
 fn the_config_notice_reaches_the_github_step_summary() {
     let project = project();
     write_project_config(

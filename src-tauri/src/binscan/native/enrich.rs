@@ -117,7 +117,8 @@ pub fn cpe_match_string(vendor: &str, product: &str, version: &str) -> Option<St
 
     let vendor = component(vendor)?;
     let product = component(product)?;
-    let version = component(version)?;
+    // NVD files a pre-release under the release it leads to (`253~rc1`).
+    let version = component(version.split('~').next().unwrap_or(version))?;
     Some(format!("cpe:2.3:a:{vendor}:{product}:{version}"))
 }
 
@@ -782,6 +783,11 @@ mod tests {
         // Measured: NVD does not treat `*` in the vendor position as a
         // wildcard, so there is no query to fall back to.
         assert_eq!(cpe_match_string("", "zstd", "1.5.7"), None);
+        // NVD knows the release a pre-release leads to, not Debian's `~`.
+        assert_eq!(
+            cpe_match_string("systemd_project", "systemd", "253~rc1").as_deref(),
+            Some("cpe:2.3:a:systemd_project:systemd:253")
+        );
         assert_eq!(
             cpe_match_string("openssl", "openssl", "3.0.2").as_deref(),
             Some("cpe:2.3:a:openssl:openssl:3.0.2")

@@ -34,13 +34,31 @@ pub(crate) fn apply_advisory_policy(
         for vulnerability in &mut component.vulnerabilities {
             vulnerability.review = None;
             let Some(policy) = policy else { continue };
-            let subject = AdvisorySubject {
+            let subject = |package| AdvisorySubject {
                 ids: vec![vulnerability.cve_id.as_str()],
                 ecosystem: None,
-                package: &component.product,
+                package,
                 version: &component.version,
             };
-            match policy.decide(&subject, now) {
+            // Go's standard library is `go-stdlib` in native results and
+            // `stdlib` in OSV and grype's; an entry under either name
+            // matches both. A dismissal under either wins over an expiry.
+            let names: &[&str] = match component.product.as_str() {
+                "go-stdlib" | "stdlib" => &["go-stdlib", "stdlib"],
+                product => &[product],
+            };
+            let mut decision = Decision::None;
+            for name in names {
+                match policy.decide(&subject(name), now) {
+                    dismissed @ Decision::Dismissed(_) => {
+                        decision = dismissed;
+                        break;
+                    }
+                    Decision::Expired => decision = Decision::Expired,
+                    Decision::None => {}
+                }
+            }
+            match decision {
                 Decision::Dismissed(review) => {
                     vulnerability.review = Some(review);
                     dismissed += 1;
@@ -635,5 +653,77 @@ mod advisory_policy_tests {
             result.components[1].vulnerabilities[0].review.is_none(),
             "curl untouched"
         );
+    }
+
+    #[test]
+    fn an_image_policy_entry_for_go_stdlib_matches_under_either_name() {
+        let directory = tempfile::tempdir().unwrap();
+        for package in ["stdlib", "go-stdlib"] {
+            let mut result = BinaryScanResult {
+                target: "image.tar".into(),
+                components: vec![component("go-stdlib", "1.22.4")],
+                summary: BinaryScanSummary::default(),
+                database_last_updated: None,
+                duration_ms: 0,
+                scanners: Vec::new(),
+                semantic_analysis: None,
+            };
+            let path = directory.path().join("policy.json");
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{"version": 1, "entries": [{{"advisory": "CVE-2099-2222", "package": "{package}",
+                    "state": "acceptedRisk", "reason": "No TLS server in this image"}}]}}"#
+                ),
+            )
+            .unwrap();
+            let AdvisoryPolicyStatus::Loaded(policy) = load_advisory_policy_file(&path) else {
+                panic!("policy loads");
+            };
+            let counts =
+                super::apply_advisory_policy(&mut result, Some(&policy), chrono::Utc::now());
+            assert_eq!(counts, (1, 0), "{package}");
+        }
+    }
+
+    fn go_stdlib_counts(product: &str, entries: &str) -> (usize, usize) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut result = BinaryScanResult {
+            target: "image.tar".into(),
+            components: vec![component(product, "1.22.4")],
+            summary: BinaryScanSummary::default(),
+            database_last_updated: None,
+            duration_ms: 0,
+            scanners: Vec::new(),
+            semantic_analysis: None,
+        };
+        let path = directory.path().join("policy.json");
+        std::fs::write(
+            &path,
+            format!(r#"{{"version": 1, "entries": [{entries}]}}"#),
+        )
+        .unwrap();
+        let AdvisoryPolicyStatus::Loaded(policy) = load_advisory_policy_file(&path) else {
+            panic!("policy loads");
+        };
+        super::apply_advisory_policy(&mut result, Some(&policy), chrono::Utc::now())
+    }
+
+    #[test]
+    fn an_expired_go_stdlib_entry_does_not_hide_an_active_stdlib_one() {
+        let expired = r#"{"advisory": "CVE-2099-2222", "package": "go-stdlib", "state": "acceptedRisk", "reason": "old", "expiresAt": "2020-01-01T00:00:00Z"}"#;
+        let active = r#"{"advisory": "CVE-2099-2222", "package": "stdlib", "state": "acceptedRisk", "reason": "new"}"#;
+        assert_eq!(
+            go_stdlib_counts("go-stdlib", &format!("{expired}, {active}")),
+            (1, 0)
+        );
+        // Only an expired entry: it is reported as expired.
+        assert_eq!(go_stdlib_counts("go-stdlib", expired), (0, 1));
+    }
+
+    #[test]
+    fn a_grype_stdlib_row_matches_a_go_stdlib_entry() {
+        let entry = r#"{"advisory": "CVE-2099-2222", "package": "go-stdlib", "state": "acceptedRisk", "reason": "x"}"#;
+        assert_eq!(go_stdlib_counts("stdlib", entry), (1, 0));
     }
 }

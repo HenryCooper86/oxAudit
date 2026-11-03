@@ -863,7 +863,7 @@ fn package_database_location(path: &str) -> Option<(&str, &str, &str, &'static s
     let (suffix, kind) = SUFFIXES.iter().find(|(suffix, _)| path.ends_with(suffix))?;
     let mut parts = path.splitn(3, '!');
     let image = parts.next()?;
-    let layer = parts.next()?.trim_start_matches('/');
+    let layer = parts.next()?;
     let inside = parts.next()?.trim_start_matches('/');
     let root = inside.strip_suffix(suffix)?;
     Some((image, layer, root, kind))
@@ -872,52 +872,119 @@ fn package_database_location(path: &str) -> Option<(&str, &str, &str, &'static s
 /// An image's merged filesystem holds only the topmost copy of a file, so a
 /// package database written again by a later layer replaces the earlier
 /// ones: an upgraded package must not also be reported at its old version.
-/// Detections whose layer has no known rank are left alone.
+/// `stacks` holds each image's layers, bottom first; a saved archive may
+/// hold several images sharing layers, so a lower copy is dropped only when
+/// every image using its layer rewrites that database above it. Detections
+/// in a layer no stack names are left alone.
 fn supersede_lower_layer_databases(
     detections: &mut Vec<Detection>,
-    rank: &dyn Fn(&str) -> Option<usize>,
+    stacks: &[Vec<String>],
     notes: &mut Vec<String>,
 ) {
     type Place = (String, String, &'static str);
-    let key = |detection: &Detection| -> Option<(Place, usize)> {
+    let key = |detection: &Detection| -> Option<(Place, String)> {
         if detection.source != DetectionSource::OsPackageDatabase {
             return None;
         }
         let (image, layer, root, kind) = package_database_location(&detection.path)?;
-        Some(((image.to_string(), root.to_string(), kind), rank(layer)?))
+        Some((
+            (image.to_string(), root.to_string(), kind),
+            layer_name(layer),
+        ))
     };
-    let mut topmost: HashMap<Place, usize> = HashMap::new();
-    for (place, layer_rank) in detections.iter().filter_map(key) {
-        let entry = topmost.entry(place).or_insert(layer_rank);
-        *entry = (*entry).max(layer_rank);
+    let stacks: Vec<Vec<String>> = stacks
+        .iter()
+        .map(|stack| stack.iter().map(|name| layer_name(name)).collect())
+        .collect();
+    let mut holders: HashMap<Place, std::collections::HashSet<String>> = HashMap::new();
+    for (place, layer) in detections.iter().filter_map(key) {
+        holders.entry(place).or_default().insert(layer);
     }
+    let replaced = |place: &Place, layer: &str| -> bool {
+        let Some(holding) = holders.get(place) else {
+            return false;
+        };
+        let mut using = stacks
+            .iter()
+            .filter_map(|stack| {
+                stack
+                    .iter()
+                    // A layer listed twice sits at its last place in the
+                    // merged view.
+                    .rposition(|name| name == layer)
+                    .map(|at| (stack, at))
+            })
+            .peekable();
+        using.peek().is_some()
+            && using.all(|(stack, at)| stack[at + 1..].iter().any(|name| holding.contains(name)))
+    };
     let before = detections.len();
     detections.retain(|detection| match key(detection) {
-        Some((place, layer_rank)) => topmost.get(&place) == Some(&layer_rank),
+        Some((place, layer)) => !replaced(&place, &layer),
         None => true,
     });
-    let superseded = before - detections.len();
-    if superseded > 0 {
-        notes.push(format!(
-            "{superseded} package(s) from lower image layers are superseded by a later layer's package database and are not reported"
-        ));
+    match before - detections.len() {
+        0 => {}
+        1 => notes.push(
+            "1 package entry from a lower layer's package database was replaced by a later layer's copy of that database"
+                .to_string(),
+        ),
+        replaced => notes.push(format!(
+            "{replaced} package entries from lower layers' package databases were replaced by a later layer's copy of that database"
+        )),
     }
 }
 
-/// The layer order a saved image (`docker save`) declares in its
-/// `manifest.json`: layer path → position, bottom first. `None` for anything
-/// that is not such an image.
-fn saved_image_layer_order(path: &Path) -> Option<HashMap<String, usize>> {
+/// A layer's name as extraction writes it into member paths: no leading `/`
+/// or `./`, and a compressed layer's suffix reduced (`layer.tar.gz` →
+/// `layer.tar`), so manifest and registry names match detection paths.
+fn layer_name(name: &str) -> String {
+    let name = name.trim_start_matches('/');
+    oxaudit_archive::extract::strip_archive_suffix(name.strip_prefix("./").unwrap_or(name))
+}
+
+/// Whether any detection is a package database inside an image layer, the
+/// only case layer order can change.
+fn has_layered_package_database(detections: &[Detection]) -> bool {
+    detections.iter().any(|detection| {
+        detection.source == DetectionSource::OsPackageDatabase
+            && package_database_location(&detection.path).is_some()
+    })
+}
+
+/// The layer stacks a saved image (`docker save`, plain or compressed)
+/// declares in its `manifest.json`: one per image, bottom first. `None` for
+/// anything that is not such an image, or when the scan is cancelled. A
+/// compressed save is decoded only up to the per-member cap the scan itself
+/// applies.
+fn saved_image_layer_order(path: &Path, cancel: &AtomicBool) -> Option<Vec<Vec<String>>> {
+    let file = std::fs::File::open(path).ok()?;
+    if let Some(decoded) = oxaudit_archive::extract::decompressing_reader(
+        file,
+        oxaudit_archive::DEFAULT_MAX_MEMBER_BYTES,
+    ) {
+        return manifest_layer_stacks(tar::Archive::new(decoded).entries().ok()?, cancel);
+    }
+    let file = std::fs::File::open(path).ok()?;
+    manifest_layer_stacks(tar::Archive::new(file).entries_with_seek().ok()?, cancel)
+}
+
+fn manifest_layer_stacks<R: std::io::Read>(
+    entries: tar::Entries<'_, R>,
+    cancel: &AtomicBool,
+) -> Option<Vec<Vec<String>>> {
     use std::io::Read as _;
     const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-    let file = std::fs::File::open(path).ok()?;
-    let mut archive = tar::Archive::new(file);
-    for entry in archive.entries_with_seek().ok()? {
+    for entry in entries {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         let mut entry = entry.ok()?;
-        let is_manifest = entry
-            .path()
-            .ok()
-            .is_some_and(|name| name.as_os_str() == "manifest.json");
+        // Raw header bytes: `tar -C dir .` writes `./manifest.json`.
+        let is_manifest = matches!(
+            entry.path_bytes().as_ref(),
+            b"manifest.json" | b"./manifest.json"
+        );
         if !is_manifest {
             continue;
         }
@@ -927,12 +994,19 @@ fn saved_image_layer_order(path: &Path) -> Option<HashMap<String, usize>> {
         let mut text = String::new();
         entry.read_to_string(&mut text).ok()?;
         let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
-        let layers = manifest.get(0)?.get("Layers")?.as_array()?;
         return Some(
-            layers
+            manifest
+                .as_array()?
                 .iter()
-                .enumerate()
-                .filter_map(|(index, layer)| Some((layer.as_str()?.to_string(), index)))
+                .filter_map(|image| {
+                    let layers = image.get("Layers")?.as_array()?;
+                    Some(
+                        layers
+                            .iter()
+                            .filter_map(|layer| Some(layer.as_str()?.to_string()))
+                            .collect(),
+                    )
+                })
                 .collect(),
         );
     }
@@ -1201,12 +1275,10 @@ pub fn scan(
                         Vec::new()
                     }
                 };
-                if let Some(order) = saved_image_layer_order(path) {
-                    supersede_lower_layer_databases(
-                        &mut detections,
-                        &|layer| order.get(layer).copied(),
-                        &mut file_notes,
-                    );
+                if has_layered_package_database(&detections) {
+                    if let Some(stacks) = saved_image_layer_order(path, &cancel) {
+                        supersede_lower_layer_databases(&mut detections, &stacks, &mut file_notes);
+                    }
                 }
                 finish_metadata(&mut detections, &distro, &mut file_notes);
                 if !file_notes.is_empty() {
@@ -1290,17 +1362,8 @@ pub fn scan_image_layers(
     }
 
     // Registry layers arrive in pull order, bottom first.
-    let order: HashMap<&str, usize> = layers
-        .iter()
-        .map(|layer| layer.name.as_str())
-        .enumerate()
-        .map(|(index, name)| (name, index))
-        .collect();
-    supersede_lower_layer_databases(
-        &mut detections,
-        &|layer| order.get(layer).copied(),
-        &mut notes,
-    );
+    let stack: Vec<String> = layers.iter().map(|layer| layer.name.clone()).collect();
+    supersede_lower_layer_databases(&mut detections, &[stack], &mut notes);
     finish_metadata(&mut detections, &distro, &mut notes);
     let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
@@ -1448,17 +1511,8 @@ pub fn scan_image_layer_files(
         return Err("scan cancelled".into());
     }
     // Registry layers arrive in pull order, bottom first.
-    let order: HashMap<&str, usize> = layers
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .enumerate()
-        .map(|(index, name)| (name, index))
-        .collect();
-    supersede_lower_layer_databases(
-        &mut detections,
-        &|layer| order.get(layer).copied(),
-        &mut notes,
-    );
+    let stack: Vec<String> = layers.iter().map(|(name, _)| name.clone()).collect();
+    supersede_lower_layer_databases(&mut detections, &[stack], &mut notes);
     finish_metadata(&mut detections, &distro, &mut notes);
     let queries = super::enrich::queries_from(&detections);
     let components = fold(detections);
@@ -2899,13 +2953,66 @@ mod tests {
         let scanned = scan_dir(dir.path());
         assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2"]);
         assert!(
-            scanned
-                .notes
-                .iter()
-                .any(|note| note.contains("superseded by a later layer")),
+            scanned.notes.iter().any(|note| note
+                == "1 package entry from a lower layer's package database was replaced by a later layer's copy of that database"),
             "{:?}",
             scanned.notes
         );
+    }
+
+    fn image_tar(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, body) in members {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, body.as_slice())
+                .expect("image member");
+        }
+        builder.into_inner().expect("image tar")
+    }
+
+    #[test]
+    fn a_gzipped_saved_image_is_layer_ordered_too() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let image = image_tar(&[
+            ("top/layer.tar", dpkg_layer("3.0.11-1~deb12u2")),
+            ("bottom/layer.tar", dpkg_layer("3.0.9-1")),
+            ("manifest.json", br#"[{"Config":"c.json","RepoTags":["x:1"],"Layers":["bottom/layer.tar","top/layer.tar"]}]"#.to_vec()),
+        ]);
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&image).unwrap();
+        std::fs::write(dir.path().join("image.tar.gz"), gz.finish().unwrap()).unwrap();
+        let scanned = scan_dir(dir.path());
+        assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2"]);
+    }
+
+    #[test]
+    fn a_shared_layer_is_kept_while_any_image_still_uses_its_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Image a rewrites the database; image b, sharing the base, does not.
+        let image = image_tar(&[
+            ("base/layer.tar", dpkg_layer("3.0.9-1")),
+            ("upa/layer.tar", dpkg_layer("3.0.11-1~deb12u2")),
+            ("upb/layer.tar", tar_with("app/readme.txt", b"hello")),
+            ("manifest.json", br#"[{"Config":"a.json","RepoTags":["a:1"],"Layers":["base/layer.tar","upa/layer.tar"]},{"Config":"b.json","RepoTags":["b:1"],"Layers":["base/layer.tar","upb/layer.tar"]}]"#.to_vec()),
+        ]);
+        std::fs::write(dir.path().join("two.tar"), image).unwrap();
+        let scanned = scan_dir(dir.path());
+        assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2", "3.0.9-1"]);
+
+        // When both images rewrite it, the shared base copy is replaced.
+        let image = image_tar(&[
+            ("base/layer.tar", dpkg_layer("3.0.9-1")),
+            ("upa/layer.tar", dpkg_layer("3.0.11-1~deb12u2")),
+            ("upb/layer.tar", dpkg_layer("3.0.11-1~deb12u2")),
+            ("manifest.json", br#"[{"Config":"a.json","RepoTags":["a:1"],"Layers":["base/layer.tar","upa/layer.tar"]},{"Config":"b.json","RepoTags":["b:1"],"Layers":["base/layer.tar","upb/layer.tar"]}]"#.to_vec()),
+        ]);
+        std::fs::write(dir.path().join("two.tar"), image).unwrap();
+        let scanned = scan_dir(dir.path());
+        assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2"]);
     }
 
     #[test]
@@ -2964,6 +3071,77 @@ mod tests {
             Arc::new(|_| {}),
         )
         .expect("scan");
+        assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2"]);
+    }
+
+    #[test]
+    fn compressed_registry_layers_supersede_in_pull_order() {
+        use std::io::Write as _;
+        let gzip = |bytes: Vec<u8>| {
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            gz.write_all(&bytes).unwrap();
+            gz.finish().unwrap()
+        };
+        let layers = vec![
+            super::super::super::registry::Layer {
+                name: "layer-0000.tar.gz".into(),
+                bytes: gzip(dpkg_layer("3.0.9-1")),
+            },
+            super::super::super::registry::Layer {
+                name: "layer-0001.tar.gz".into(),
+                bytes: gzip(dpkg_layer("3.0.11-1~deb12u2")),
+            },
+        ];
+        let scanned = scan_image_layers(
+            "registry.example/app:1",
+            &layers,
+            &Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        )
+        .expect("scan");
+        assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2"]);
+    }
+
+    #[test]
+    fn a_layer_listed_twice_counts_at_its_topmost_place() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The merged filesystem shows the last copy: base's database wins.
+        let image = image_tar(&[
+            ("base/layer.tar", dpkg_layer("3.0.9-1")),
+            ("mid/layer.tar", dpkg_layer("3.0.11-1~deb12u2")),
+            ("manifest.json", br#"[{"Config":"c.json","Layers":["base/layer.tar","mid/layer.tar","base/layer.tar"]}]"#.to_vec()),
+        ]);
+        std::fs::write(dir.path().join("repeat.tar"), image).unwrap();
+        let scanned = scan_dir(dir.path());
+        assert_eq!(libssl_versions(&scanned), ["3.0.9-1"]);
+    }
+
+    #[test]
+    fn a_dot_slash_manifest_is_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // `tar -C dir .` stores `./` names; the tar builder would drop the
+        // `./`, so the names are written into the headers directly.
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, body) in [
+            ("./top/layer.tar", dpkg_layer("3.0.11-1~deb12u2")),
+            ("./bottom/layer.tar", dpkg_layer("3.0.9-1")),
+            (
+                "./manifest.json",
+                br#"[{"Config":"c.json","Layers":["bottom/layer.tar","top/layer.tar"]}]"#.to_vec(),
+            ),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.as_gnu_mut().unwrap().name[..path.len()].copy_from_slice(path.as_bytes());
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            builder.append(&header, body.as_slice()).unwrap();
+        }
+        let image = builder.into_inner().unwrap();
+        assert!(image.windows(15).any(|w| w == b"./manifest.json"));
+        std::fs::write(dir.path().join("retarred.tar"), image).unwrap();
+        let scanned = scan_dir(dir.path());
         assert_eq!(libssl_versions(&scanned), ["3.0.11-1~deb12u2"]);
     }
 

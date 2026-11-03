@@ -463,27 +463,30 @@ fn standard_purl(purl: &str) -> String {
         .unwrap_or_else(|| purl.to_owned())
 }
 
-pub(super) fn sarif_artifact_uri(path: &str) -> String {
-    const PATH: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
-        .remove(b'/')
-        .remove(b'.')
-        .remove(b'-')
-        .remove(b'_')
-        .remove(b'~')
-        .remove(b':')
-        .remove(b'!')
-        .remove(b'$')
-        .remove(b'&')
-        .remove(b'\'')
-        .remove(b'(')
-        .remove(b')')
-        .remove(b'*')
-        .remove(b'+')
-        .remove(b',')
-        .remove(b';')
-        .remove(b'=')
-        .remove(b'@');
-    percent_encoding::utf8_percent_encode(path, PATH).to_string()
+/// What a SARIF artifact URI path encodes (RFC 3986): everything but
+/// unreserved characters, sub-delims, `:`, `@` and `/`.
+const SARIF_PATH_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'/')
+    .remove(b'.')
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b':')
+    .remove(b'!')
+    .remove(b'$')
+    .remove(b'&')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')')
+    .remove(b'*')
+    .remove(b'+')
+    .remove(b',')
+    .remove(b';')
+    .remove(b'=')
+    .remove(b'@');
+
+pub(crate) fn sarif_artifact_uri(path: &str) -> String {
+    percent_encoding::utf8_percent_encode(path, SARIF_PATH_SET).to_string()
 }
 
 fn cyclonedx_component(component: &Component) -> serde_json::Value {

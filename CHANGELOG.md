@@ -20,7 +20,8 @@ lists what each release ships.
 
 - Go standard-library and toolchain advisories. Compiled Go binaries (ELF,
   Mach-O, PE) in images and directories report the exact Go version they
-  were built with as OSV's `stdlib` package, plus every linked module, read
+  were built with as a `go-stdlib` component (OSV's `stdlib` package; an
+  image advisory-policy entry may use either name), plus every linked module, read
   from the binary's build information (pre-1.18 binaries are named in a
   note). A `go.mod` with a `toolchain` directive adds `stdlib` and
   `toolchain` at that version; the `go` line alone adds a note instead,
@@ -97,7 +98,11 @@ lists what each release ships.
   layer rewrites it at the same location (layer order from the registry pull
   or a saved image's `manifest.json`), so an upgraded package no longer also
   appears at its old version; a chroot or sysroot database elsewhere in a
-  layer never replaces the OS's own.
+  layer never replaces the OS's own. Compressed registry layers and
+  compressed saves (gzip, bzip2, xz, zstd) are ordered too, as are saves
+  re-tarred with `./` names; a layer listed twice counts at its topmost
+  place; and a layer shared by several images in one save keeps its database
+  while any of them still uses it.
 - Online image scans look up OSV with up to eight requests in flight,
   keeping results in order; images full of Go binaries finish in seconds.
 - OpenVEX and CycloneDX VEX exports carry advisory-policy dismissals: a false
@@ -111,6 +116,15 @@ lists what each release ships.
   nearest `Directory.*` file stops the search with a note.
 - Go: unframed module information is ignored like Go's own reader does, and
   the standard library is shown as `go-stdlib`.
+- A package-note pre-release (`1.0~rc1`) stays apart from `1.0` and merges
+  with grype's row, while repack and backport tags (`~dfsg`, `~22.04`) are
+  dropped as before and NVD is still asked about the release; a Go
+  build-info length whose tenth byte loses bits is rejected as Go rejects it;
+  the "Dismissed by policy" badge tells screen readers when the dismissal
+  expires; SARIF prefixes and result paths share one encoding, and the
+  automatic GitHub Actions prefix encodes a literal `%`; an image policy
+  entry for `stdlib` or `go-stdlib` matches either name, and an expired entry
+  under one name no longer hides an active one under the other.
 - `--advisory-policy` may name a symlinked file; policy and config read
   errors say what is wrong once ("is a directory, not a file"); an unreadable
   `.oxaudit` directory is a failure (exit 3) again; config TOML errors name
@@ -119,7 +133,8 @@ lists what each release ships.
 - SARIF URI prefixes are percent-encoded; grype keeps `1.0~rc1` apart from
   `1.0`; the pre-commit block goes after a hook's plain environment setup
   (`export`, assignments, `set`) and before any sourced file or command;
-  `core.hooksPath` is found in every git config scope and `include` file;
+  `core.hooksPath` is read as git itself resolves it, `git -c`/`GIT_CONFIG_*`
+  values and `include` files included, ignoring an inherited `GIT_DIR`;
   flow-style workflow steps (`- {run: …}`) are checked for script injection
   (a `run:` whose script holds a `{…}` literal is still a script);
   credential URLs are judged by their password, not a placeholder-looking

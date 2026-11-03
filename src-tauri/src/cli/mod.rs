@@ -2106,7 +2106,9 @@ fn run_export(args: &ExportArgs) -> CliResult {
     let service = FindingsService::new(open_repository(&args.db)?);
     let rendered = render_stored_run(&service, &args.run, args.format.into(), false)?;
     let rendered = match (&args.format, args.sarif_uri_prefix.as_deref()) {
-        (ExportFormat::Sarif, Some(prefix)) => prefix_sarif_uris(&rendered, prefix)?,
+        (ExportFormat::Sarif, Some(prefix)) => {
+            prefix_sarif_uris(&rendered, &sarif_prefix(Some(prefix), String::new))?
+        }
         _ => rendered,
     };
     write_output(args.output.as_deref(), &rendered)?;
@@ -2949,13 +2951,15 @@ fn emit_github_annotations(findings: &[crate::models::Finding], scan_root: &Path
     }
 }
 
-/// The prefix SARIF artifact URIs get: `--sarif-uri-prefix` when given (an
-/// empty value turns prefixing off), otherwise `automatic`, which callers
-/// derive from GITHUB_WORKSPACE under GitHub Actions.
+/// The URI-encoded prefix SARIF artifact URIs get: `--sarif-uri-prefix`
+/// when given (an empty value turns prefixing off; an `%XX` escape in it is
+/// kept), otherwise `automatic`, which callers derive from GITHUB_WORKSPACE
+/// under GitHub Actions — a filesystem path, so every character of it is
+/// encoded, `%` included.
 fn sarif_prefix(explicit: Option<&str>, automatic: impl FnOnce() -> String) -> String {
     match explicit {
-        Some(prefix) => prefix.to_string(),
-        None => automatic(),
+        Some(prefix) => percent_encode_path(prefix),
+        None => crate::adapters::reporting::sarif_artifact_uri(&automatic()),
     }
 }
 
@@ -2970,7 +2974,37 @@ fn automatic_sarif_prefix(root: &Path) -> String {
     }
 }
 
-/// Prefix every relative result location URI in a SARIF log.
+/// Percent-encode a relative path for a SARIF URI with the same set as the
+/// result URIs that follow it. An existing `%XX` escape is kept, so an
+/// already-encoded prefix is not encoded twice.
+fn percent_encode_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out = String::with_capacity(path.len());
+    let mut run_start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let escape = bytes[index] == b'%'
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit);
+        if escape {
+            out.push_str(&crate::adapters::reporting::sarif_artifact_uri(
+                &path[run_start..index],
+            ));
+            out.push_str(&path[index..index + 3]);
+            index += 3;
+            run_start = index;
+        } else {
+            index += 1;
+        }
+    }
+    out.push_str(&crate::adapters::reporting::sarif_artifact_uri(
+        &path[run_start..],
+    ));
+    out
+}
+
+/// Prefix every relative result location URI in a SARIF log with an
+/// already URI-encoded prefix (see `sarif_prefix`).
 ///
 /// oxAudit writes paths relative to the scan root; code scanning resolves
 /// them against the repository root, so a scan of a subdirectory needs the
@@ -2979,38 +3013,12 @@ fn automatic_sarif_prefix(root: &Path) -> String {
 /// starts with the prefix's name (`mysite/settings.py` inside a scan of
 /// `mysite/`), so apply it once per report. An empty prefix returns the
 /// input unchanged.
-/// Percent-encode a relative path for a SARIF URI (RFC 3986): `/` and the
-/// characters a path segment allows stay, everything else — spaces, `#`,
-/// `?`, non-ASCII — is encoded. An existing `%XX` escape is kept, so an
-/// already-encoded prefix is not encoded twice.
-fn percent_encode_path(path: &str) -> String {
-    let bytes = path.as_bytes();
-    let mut out = String::with_capacity(path.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        let escaped = byte == b'%'
-            && bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
-            && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit);
-        let allowed =
-            byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/".contains(&byte) || escaped;
-        if allowed {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-        index += 1;
-    }
-    out
-}
-
 fn prefix_sarif_uris(sarif: &[u8], prefix: &str) -> Result<Vec<u8>, CliError> {
     if prefix.is_empty() {
         return Ok(sarif.to_vec());
     }
-    let prefix = percent_encode_path(prefix);
     let prefix = if prefix.ends_with('/') {
-        prefix
+        prefix.to_string()
     } else {
         format!("{prefix}/")
     };
@@ -4012,15 +4020,32 @@ mod tests {
     }
 
     #[test]
+    fn sarif_prefixes_and_result_uris_encode_alike() {
+        // The prefix and the path after it are one URI: every character but
+        // `%` (kept when it starts an escape) is encoded the same way.
+        for byte in (0x20u8..0x7f).filter(|byte| *byte != b'%') {
+            let text = (byte as char).to_string();
+            assert_eq!(
+                percent_encode_path(&text),
+                crate::adapters::reporting::sarif_artifact_uri(&text),
+                "{text:?}"
+            );
+        }
+        assert_eq!(percent_encode_path("caf\u{e9}"), "caf%C3%A9");
+    }
+
+    #[test]
     fn sarif_prefixes_are_percent_encoded_once() {
         let sarif = sarif_with_uris(&["src/app.py"]);
-        let prefixed = prefix_sarif_uris(&sarif, "my dir/#1/caf\u{e9}%").unwrap();
+        let prefix = sarif_prefix(Some("my dir/#1/caf\u{e9}%"), String::new);
+        let prefixed = prefix_sarif_uris(&sarif, &prefix).unwrap();
         assert_eq!(
             sarif_uris(&prefixed)[0],
             "my%20dir/%231/caf%C3%A9%25/src/app.py"
         );
         // An already-encoded prefix is not encoded again.
-        let again = prefix_sarif_uris(&sarif, "my%20dir").unwrap();
+        let again =
+            prefix_sarif_uris(&sarif, &sarif_prefix(Some("my%20dir"), String::new)).unwrap();
         assert_eq!(sarif_uris(&again)[0], "my%20dir/src/app.py");
     }
 
@@ -4050,6 +4075,17 @@ mod tests {
             ]
         );
         assert_eq!(prefix_sarif_uris(&sarif, "").unwrap(), sarif);
+    }
+
+    #[test]
+    fn only_an_explicit_sarif_prefix_keeps_its_escapes() {
+        // GITHUB_WORKSPACE gives a filesystem path, never an encoded one: a
+        // directory literally named `a%41` must not decode as `aA`.
+        assert_eq!(sarif_prefix(None, || "a%41 b/".into()), "a%2541%20b/");
+        assert_eq!(
+            sarif_prefix(Some("a%41 b/"), || unreachable!()),
+            "a%41%20b/"
+        );
     }
 
     #[test]

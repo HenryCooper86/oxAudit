@@ -337,7 +337,8 @@ one is scanned on text alone.
 The hook runs `scan --staged --quiet` and stops the commit with that
 command's exit code.
 
-When `core.hooksPath` is set (in the repository or globally; hook managers
+When `core.hooksPath` is set (in the repository, globally, system-wide or
+through `git -c`/`GIT_CONFIG_*`; hook managers
 such as husky set it), git never runs `.git/hooks/pre-commit`, so `hook
 install` refuses and says what to add to the configured directory's
 `pre-commit` hook instead. A `core.hooksPath` that names `.git/hooks` itself

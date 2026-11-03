@@ -354,9 +354,12 @@ lookups and *says so* when it caps, rather than returning a short list.
   do not trip `--fail-on`, like other unrated distribution records. Module
   advisories that come from GitHub's database do carry one.
 - **Layer whiteouts are applied to package databases only by replacement.**
-  When a later layer rewrites a package database (dpkg, apk or rpm), only the
-  topmost copy counts, so an upgraded package is reported once at its new
-  version; layer order comes from the registry pull or a saved image's
-  `manifest.json`. A database deleted outright by a whiteout marker in a
+  When a later layer rewrites a package database (dpkg, apk or rpm) at the
+  same location, only the topmost copy counts, so an upgraded package is
+  reported once at its new version; a chroot's database elsewhere in a layer
+  never replaces the OS's. Layer order comes from the registry pull or a
+  saved image's `manifest.json` (plain or compressed); when a save holds several
+  images sharing a layer, that layer's copy is dropped only if every image
+  using it rewrites the database above it. A database deleted outright by a whiteout marker in a
   later layer is still read, and OCI layout directories (whose blobs are
   scanned separately) are not ordered.

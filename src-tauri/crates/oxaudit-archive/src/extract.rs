@@ -1443,10 +1443,39 @@ fn member_path(raw: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
+/// A reader that decompresses a gzip, bzip2, xz or zstd stream (told apart
+/// by its magic bytes) and yields at most `max` bytes of output. `None` when
+/// the stream is not compressed in one of those ways.
+pub fn decompressing_reader<'a, R: Read + 'a>(
+    mut reader: R,
+    max: u64,
+) -> Option<Box<dyn Read + 'a>> {
+    let mut prefix = [0u8; 8];
+    let mut filled = 0;
+    while filled < prefix.len() {
+        match reader.read(&mut prefix[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+    let input = std::io::Cursor::new(prefix[..filled].to_vec()).chain(reader);
+    let decoded: Box<dyn Read + 'a> = match archive_kind(&prefix[..filled])? {
+        ArchiveKind::Gzip => Box::new(flate2::read::GzDecoder::new(input)),
+        ArchiveKind::Bzip2 => Box::new(bzip2::read::BzDecoder::new(input)),
+        ArchiveKind::Xz => Box::new(liblzma::read::XzDecoder::new(input)),
+        ArchiveKind::Zstd => Box::new(zstd::stream::read::Decoder::new(input).ok()?),
+        _ => return None,
+    };
+    Some(Box::new(decoded.take(max)))
+}
+
 /// `rootfs.tar.gz` → `rootfs.tar`; `payload.xz` → `payload`. The name is
 /// display-only — it exists so a decompressed single file has a sensible
-/// virtual path rather than its compressed one.
-fn strip_archive_suffix(name: &str) -> String {
+/// virtual path rather than its compressed one; layer order matches
+/// registry layer names to extracted paths through it.
+pub fn strip_archive_suffix(name: &str) -> String {
     for pair in [
         (".tar.gz", ".tar"),
         (".tgz", ".tar"),
@@ -1470,6 +1499,33 @@ fn strip_archive_suffix(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compressed_streams_are_decoded_up_to_a_cap() {
+        use std::io::Write as _;
+        let plain: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&plain).unwrap();
+        let mut xz = liblzma::write::XzEncoder::new(Vec::new(), 1);
+        xz.write_all(&plain).unwrap();
+        let mut bz = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
+        bz.write_all(&plain).unwrap();
+        for compressed in [
+            gz.finish().unwrap(),
+            xz.finish().unwrap(),
+            bz.finish().unwrap(),
+            zstd::encode_all(plain.as_slice(), 1).unwrap(),
+        ] {
+            let mut out = Vec::new();
+            decompressing_reader(compressed.as_slice(), 1000)
+                .expect("compressed")
+                .read_to_end(&mut out)
+                .unwrap();
+            assert_eq!(out, plain[..1000]);
+        }
+        assert!(decompressing_reader(plain.as_slice(), 1000).is_none());
+        assert_eq!(strip_archive_suffix("layer-0001.tar.gz"), "layer-0001.tar");
+    }
 
     #[test]
     fn streamed_compressed_layer_paths_match_the_collecting_api() {

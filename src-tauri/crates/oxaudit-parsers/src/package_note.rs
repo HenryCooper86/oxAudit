@@ -49,9 +49,26 @@ pub struct PackageNote {
 pub fn upstream_version(raw: &str) -> String {
     let without_epoch = raw.split_once(':').map(|(_, rest)| rest).unwrap_or(raw);
     let cut = without_epoch
-        .find(['-', '+', '~'])
+        .find(['-', '+'])
         .unwrap_or(without_epoch.len());
-    without_epoch[..cut].trim().to_string()
+    let upstream = without_epoch[..cut].trim();
+    // `~` sorts before the release. A pre-release after it (`1.0~rc1`) is
+    // part of the upstream number and stays, so it never merges with `1.0`;
+    // a repack or backport tag (`~dfsg`, `~ds1`, `~22.04`, `~bpo12`) is
+    // packaging and goes.
+    match upstream.split_once('~') {
+        Some((release, tag)) if !is_prerelease_tag(tag) => release.to_string(),
+        _ => upstream.to_string(),
+    }
+}
+
+fn is_prerelease_tag(tag: &str) -> bool {
+    let tag = tag.to_ascii_lowercase();
+    ["rc", "alpha", "beta", "pre", "dev"].iter().any(|word| {
+        tag.strip_prefix(word).is_some_and(|rest| {
+            rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_digit() || c == '.')
+        })
+    })
 }
 
 struct Reader<'a> {
@@ -319,6 +336,19 @@ mod tests {
         assert_eq!(upstream_version("3.5.6-1~deb13u2"), "3.5.6");
         assert_eq!(upstream_version("2.44-3"), "2.44");
         assert_eq!(upstream_version("1:11.8.6-0+deb13u1"), "11.8.6");
+        // A `~` pre-release is part of the upstream version: `1.0~rc1` sorts
+        // before `1.0` and must not merge with it.
+        assert_eq!(upstream_version("1.0~rc1-1"), "1.0~rc1");
+        assert_eq!(upstream_version("253~rc2-1.fc38"), "253~rc2");
+        assert_eq!(upstream_version("2.0~beta2"), "2.0~beta2");
+        assert_eq!(upstream_version("4.0~alpha.1-1"), "4.0~alpha.1");
+        // Repack and backport tags after `~` are packaging, not upstream:
+        // they would stop the component merging with what binaries print.
+        assert_eq!(upstream_version("1.2.3~dfsg-1"), "1.2.3");
+        assert_eq!(upstream_version("2.4.48~ds1-1"), "2.4.48");
+        assert_eq!(upstream_version("1.2~22.04.1"), "1.2");
+        assert_eq!(upstream_version("5.1~bpo12+1"), "5.1");
+        assert_eq!(upstream_version("3.0~precise1"), "3.0");
     }
 
     #[test]

@@ -32,6 +32,17 @@ describe("PolicyDismissedBadge accessibility", () => {
   test("exposes the reason to assistive technology", () => {
     render(<PolicyDismissedBadge review={{ state: "acceptedRisk", reason: "Build tooling only" }} />);
     const badge = screen.getByLabelText("Dismissed by policy: Accepted risk, Build tooling only");
-    expect(badge.textContent).toContain("Build tooling only");
+    expect(badge.textContent).toBe("Dismissed by policy");
+  });
+
+  test("tells assistive technology when the dismissal expires", () => {
+    render(
+      <PolicyDismissedBadge
+        review={{ state: "acceptedRisk", reason: "Build tooling only", expiresAt: "2027-01-31T00:00:00Z" }}
+      />,
+    );
+    expect(
+      screen.getByLabelText("Dismissed by policy: Accepted risk until 2027-01-31T00:00:00Z, Build tooling only"),
+    ).toBeTruthy();
   });
 });

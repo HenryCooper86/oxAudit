@@ -538,7 +538,7 @@ pub(super) fn run_hook(command: &HookCommand) -> CliResult {
     })?;
     match command {
         HookCommand::Install => {
-            let hooks_path = configured_hooks_path(&root, global_hooks_path);
+            let hooks_path = configured_hooks_path(&root, || user_hooks_path(&root));
             let path = install_hook_with(&root, hooks_path.as_deref())?;
             println!("Installed `{HOOK_COMMAND}` in {}", path.display());
         }
@@ -550,7 +550,7 @@ pub(super) fn run_hook(command: &HookCommand) -> CliResult {
             }
         }
         HookCommand::Status => {
-            let hooks_path = configured_hooks_path(&root, global_hooks_path);
+            let hooks_path = configured_hooks_path(&root, || user_hooks_path(&root));
             println!("{}", describe_hook_status(&root, hooks_path.as_deref())?);
         }
     }
@@ -602,10 +602,12 @@ fn managed_block_span(content: &str) -> Option<(usize, usize)> {
 /// When it is set, git runs hooks from that directory and never from
 /// `.git/hooks`, so a block installed there would never run. Hook managers
 /// such as husky set it.
-fn configured_hooks_path(root: &Path, global: impl FnOnce() -> Option<String>) -> Option<String> {
-    // Every scope git reads, nearest first: worktree, local, the user's
-    // global config (injected, so tests do not depend on the machine), then
-    // system — each with `include` files followed.
+fn configured_hooks_path(root: &Path, user: impl FnOnce() -> Option<String>) -> Option<String> {
+    // Git's own answer with the user's environment first (injected, so tests
+    // do not depend on the machine): it ranks `git -c`/GIT_CONFIG_* values
+    // above local, worktree, global and system config. When that lookup
+    // cannot answer, the repository's own scopes, read with hardened git.
+    // Each follows `include` files.
     let scope = |flag: &str| {
         git_output(
             root,
@@ -616,10 +618,9 @@ fn configured_hooks_path(root: &Path, global: impl FnOnce() -> Option<String>) -
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
     };
-    scope("--worktree")
+    user()
+        .or_else(|| scope("--worktree"))
         .or_else(|| scope("--local"))
-        .or_else(global)
-        .or_else(|| scope("--system"))
         .filter(|hooks_path| !names_standard_hooks_dir(root, hooks_path))
 }
 
@@ -646,18 +647,24 @@ fn names_standard_hooks_dir(root: &Path, hooks_path: &str) -> bool {
     }
 }
 
-/// The user's global `core.hooksPath`. Read-only `git config` query with the
-/// user's own environment, since the hardened git command deliberately hides
-/// global configuration.
-fn global_hooks_path() -> Option<String> {
+/// The `core.hooksPath` git itself would use in this repository with the
+/// user's own environment — `git -c`/GIT_CONFIG_* values, then worktree,
+/// local, global and system config. A read-only `git config` query, since
+/// the hardened git command deliberately hides the user's environment. An
+/// inherited GIT_DIR or GIT_WORK_TREE (set when run from inside a hook) is
+/// dropped so the query reads this repository, not that one.
+fn user_hooks_path(root: &Path) -> Option<String> {
+    user_hooks_path_with(root, &[])
+}
+
+fn user_hooks_path_with(root: &Path, envs: &[(&str, &str)]) -> Option<String> {
     let output = std::process::Command::new("git")
-        .args([
-            "config",
-            "--global",
-            "--includes",
-            "--get",
-            "core.hooksPath",
-        ])
+        .args(["config", "--includes", "--get", "core.hooksPath"])
+        .current_dir(root)
+        .envs(envs.iter().copied())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -1179,16 +1186,82 @@ mod tests {
     }
 
     #[test]
-    fn a_global_hooks_path_is_honoured_when_no_local_one_is_set() {
+    fn a_hooks_path_from_the_environment_is_honoured() {
+        // `git -c` and GIT_CONFIG_COUNT pass config through the environment,
+        // which outranks the user's own files.
         let root = repository();
         assert_eq!(
-            configured_hooks_path(root.path(), || Some("~/.githooks".into())).as_deref(),
-            Some("~/.githooks")
+            user_hooks_path_with(
+                root.path(),
+                &[
+                    ("GIT_CONFIG_COUNT", "1"),
+                    ("GIT_CONFIG_KEY_0", "core.hooksPath"),
+                    ("GIT_CONFIG_VALUE_0", ".env-hooks"),
+                ],
+            )
+            .as_deref(),
+            Some(".env-hooks")
         );
+    }
+
+    /// An empty file standing in for the developer's own global config, so
+    /// tests that expect no `core.hooksPath` beyond the repository's do not
+    /// see the machine's (system config is switched off alongside it).
+    fn empty_global_config(root: &Path) -> String {
+        let path = root.join("empty.gitconfig");
+        std::fs::write(&path, "").unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn git_s_own_answer_wins_and_repository_scopes_are_the_fallback() {
+        let root = repository();
         crate::git_context::tests::git(root.path(), &["config", "core.hooksPath", ".husky"]);
+        // `git -c`/GIT_CONFIG_* outranks local config, as git ranks it.
+        let env = [
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "core.hooksPath"),
+            ("GIT_CONFIG_VALUE_0", ".env-hooks"),
+        ];
         assert_eq!(
-            configured_hooks_path(root.path(), || Some("~/.githooks".into())).as_deref(),
+            configured_hooks_path(root.path(), || user_hooks_path_with(root.path(), &env))
+                .as_deref(),
+            Some(".env-hooks")
+        );
+        // With the user's environment saying nothing extra, local config.
+        let global = empty_global_config(root.path());
+        assert_eq!(
+            user_hooks_path_with(
+                root.path(),
+                &[("GIT_CONFIG_GLOBAL", &global), ("GIT_CONFIG_NOSYSTEM", "1")]
+            )
+            .as_deref(),
             Some(".husky")
+        );
+        // When the user lookup cannot answer, the repository's own scopes.
+        assert_eq!(
+            configured_hooks_path(root.path(), || None).as_deref(),
+            Some(".husky")
+        );
+    }
+
+    #[test]
+    fn an_inherited_git_dir_does_not_redirect_the_lookup() {
+        // Run from inside another repository's hook, GIT_DIR names that one.
+        let root = repository();
+        let other = repository();
+        crate::git_context::tests::git(other.path(), &["config", "core.hooksPath", ".other"]);
+        let git_dir = other.path().join(".git");
+        assert_eq!(
+            user_hooks_path_with(
+                root.path(),
+                &[
+                    ("GIT_CONFIG_GLOBAL", &empty_global_config(root.path())),
+                    ("GIT_CONFIG_NOSYSTEM", "1"),
+                    ("GIT_DIR", git_dir.to_str().unwrap()),
+                ],
+            ),
+            None
         );
     }
 

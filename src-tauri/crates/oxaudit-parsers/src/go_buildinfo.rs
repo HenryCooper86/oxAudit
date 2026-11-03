@@ -123,18 +123,17 @@ pub fn read(bytes: &[u8]) -> Result<Option<GoBuildInfo>, &'static str> {
 
 /// One varint-length-prefixed string at `*at`, advancing past it.
 fn inline_string<'a>(bytes: &'a [u8], at: &mut usize) -> Result<&'a [u8], &'static str> {
-    // Accumulate in u64 with checked shifts, so a long varint cannot
-    // overflow on any target width.
+    // Accumulate in u64, as Go's `binary.Uvarint` does: at most ten bytes,
+    // the tenth no larger than 1, so no bit is ever shifted out.
     let mut length: u64 = 0;
     let mut shift = 0u32;
     loop {
         let byte = *bytes.get(*at).ok_or("Go build info is truncated")?;
         *at += 1;
-        let part = u64::from(byte & 0x7f)
-            .checked_shl(shift)
-            .filter(|_| shift < 64)
-            .ok_or("Go build info length does not terminate")?;
-        length |= part;
+        if shift == 63 && byte > 1 {
+            return Err("Go build info length does not terminate");
+        }
+        length |= u64::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
             break;
         }
@@ -324,6 +323,22 @@ pub(crate) mod tests {
         long.extend_from_slice(&[0xff; 9]);
         long.push(0x01);
         assert_eq!(read(&long), Ok(None));
+    }
+
+    #[test]
+    fn a_tenth_varint_byte_above_one_overflows() {
+        // Ten bytes carry 64 bits only when the last is 0 or 1, as Go's
+        // `binary.Uvarint` reads them; anything larger loses bits.
+        let mut bytes = vec![0x80; 9];
+        bytes.push(0x02);
+        bytes.extend_from_slice(b"rest");
+        assert!(inline_string(&bytes, &mut 0).is_err());
+        let mut one = vec![0x80; 9];
+        one.push(0x01);
+        assert_eq!(
+            inline_string(&one, &mut 0),
+            Err("Go build info string is larger than the cap")
+        );
     }
 
     #[test]
