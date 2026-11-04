@@ -119,6 +119,17 @@ test("one failed project history retains healthy projects and saved dependency e
     completedDependencies: { id: "deps" },
   });
 });
+
+test("last completed dependency evidence follows completion order even when starts are inverted", async () => {
+  vi.spyOn(api, "listSourceProjects").mockResolvedValue([]);
+  vi.spyOn(api, "listCanonicalRuns").mockResolvedValue([
+    { ...canonical("slow", "dependencies", "/project", "completed", 100), updatedAtMs: 400 },
+    { ...canonical("fast", "dependencies", "/project", "completed", 200), updatedAtMs: 300 },
+  ]);
+  const [home] = await loadProjectHome();
+  expect(home.dependencies?.id).toBe("fast");
+  expect(home.completedDependencies?.id).toBe("slow");
+});
 function mockCheck() {
   vi.spyOn(api, "inspectSourceProject").mockResolvedValue(context);
   vi.spyOn(api, "setActiveProject").mockResolvedValue();

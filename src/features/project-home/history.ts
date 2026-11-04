@@ -1,5 +1,6 @@
 import { api } from "../../lib/api";
 import { errorMessage } from "../../lib/commandError";
+import { latestCompletedRun } from "../../lib/durableRuns";
 import type {
   CanonicalRun,
   RecentProject,
@@ -92,7 +93,13 @@ export async function loadProjectHome(): Promise<HomeProject[]> {
       homes.set(project.path, project);
     }
     project.dependencies ??= run;
-    if (run.state === "completed") project.completedDependencies ??= run;
+    if (run.state === "completed") {
+      project.completedDependencies = latestCompletedRun(
+        [run, ...(project.completedDependencies ? [project.completedDependencies] : [])],
+        "dependencies",
+        project.path,
+      );
+    }
     project.updatedAt = Math.max(project.updatedAt, run.createdAtMs);
   }
   return [...homes.values()].sort((a, b) => b.updatedAt - a.updatedAt);

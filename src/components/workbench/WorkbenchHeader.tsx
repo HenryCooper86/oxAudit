@@ -1,4 +1,4 @@
-import { Menu, Monitor, Moon, Sun } from "lucide-react";
+import { Menu, Monitor, Moon, Search, Sun } from "lucide-react";
 import { useCallback, type JSX } from "react";
 import { savePersistedThemePreference } from "../../lib/settingsRequests";
 import { useAppStore } from "../../lib/stores";
@@ -54,8 +54,10 @@ function ThemeToggle(): JSX.Element | null {
 
 export function WorkbenchHeader({
   onOpenNavigation,
+  onOpenCommands,
 }: {
   onOpenNavigation: () => void;
+  onOpenCommands: () => void;
 }): JSX.Element {
   const page = useAppStore((state) => state.page);
   const meta = PAGE_META[page];
@@ -89,6 +91,13 @@ export function WorkbenchHeader({
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-1">
+        <button type="button" aria-label="Search tools and projects" aria-haspopup="dialog"
+          aria-keyshortcuts="Meta+K Control+K" title="Search tools and projects (⌘/Ctrl+K)" onClick={onOpenCommands}
+          className="flex h-8 items-center gap-2 rounded-sm border border-border px-2 text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary">
+          <Search size={15} aria-hidden="true" />
+          <span className="max-[600px]:sr-only">Search</span>
+          <kbd aria-hidden="true" className="text-[10px] text-text-muted max-[700px]:hidden">⌘/Ctrl K</kbd>
+        </button>
         <ThemeToggle />
       </div>
     </header>

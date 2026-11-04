@@ -30,6 +30,19 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  test("opening moves focus before an animation frame so immediate Escape closes the palette", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    const user = userEvent.setup(), onClose = vi.fn();
+    const view = (open: boolean) => <><button>Open search</button><CommandPalette open={open} onClose={onClose} /></>;
+    const { rerender } = render(view(false));
+    await user.click(screen.getByRole("button", { name: "Open search" }));
+    rerender(view(true));
+    expect(screen.getByRole("textbox", { name: "Search commands" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   test("contains Tab in both directions and closes from its close button", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();

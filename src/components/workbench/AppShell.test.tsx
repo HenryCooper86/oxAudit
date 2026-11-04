@@ -13,7 +13,7 @@ beforeEach(() => {
 
 test("keyboard users can bypass navigation and continue into the current workspace", async () => {
   const user = userEvent.setup();
-  render(<AppShell><button>Workspace action</button></AppShell>);
+  render(<AppShell onOpenCommands={vi.fn()}><button>Workspace action</button></AppShell>);
   await user.tab();
   expect(screen.getByRole("link", { name: "Skip to workspace" })).toHaveFocus();
   await user.keyboard("{Enter}");
@@ -24,7 +24,7 @@ test("keyboard users can bypass navigation and continue into the current workspa
 
 test("Escape closes navigation and returns focus to its opener", async () => {
   const user = userEvent.setup();
-  render(<AppShell><button>Workspace action</button></AppShell>);
+  render(<AppShell onOpenCommands={vi.fn()}><button>Workspace action</button></AppShell>);
   const opener = screen.getByRole("button", { name: "Open navigation" });
   await user.click(opener);
   await waitFor(() => expect(screen.getAllByRole("button", { name: "Close navigation" })[1]).toHaveFocus());
@@ -39,7 +39,7 @@ test("blocked browser storage leaves navigation usable for the current session",
     throw new DOMException("Storage blocked", "SecurityError");
   });
   const user = userEvent.setup();
-  render(<AppShell><button>Workspace action</button></AppShell>);
+  render(<AppShell onOpenCommands={vi.fn()}><button>Workspace action</button></AppShell>);
 
   await user.click(screen.getByRole("button", { name: "Collapse navigation" }));
   expect(screen.getByRole("button", { name: "Expand navigation" })).toHaveAttribute("aria-expanded", "false");

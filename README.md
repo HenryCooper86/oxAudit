@@ -92,7 +92,10 @@ open Settings and save usable scan settings before retrying.
 
 Home distinguishes the latest attempt from the last completed results. Source
 open/critical/high counts and new findings come from durable source history;
-dependency counts remain unknown on home until you open the saved results.
+the selected project's dependency total, critical/high counts, and advisory
+coverage come from its last completed saved dependency run. Unavailable counts
+remain unknown and can be retried from Home; an older run with unknown coverage
+does not become a complete check because it has zero observed findings.
 Failed, cancelled, unsaved, or incomplete work is labelled explicitly. No
 supported lockfiles means **not applicable**, and zero findings is not a claim
 that a project is safe. Refresh projects to reload history after external work.
@@ -263,11 +266,16 @@ with a reason, an expiry, and a pull request.
 - **AI Assistant** — chat with code/context attachment
 - **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key, allowed fetch hosts, diagnostics
 
-Press <kbd>⌘K</kbd> (<kbd>Ctrl</kbd>+<kbd>K</kbd> on Windows and Linux) to reach any
+Choose **Search** in the header, or press <kbd>⌘K</kbd>
+(<kbd>Ctrl</kbd>+<kbd>K</kbd> on Windows and Linux), to reach any
 screen — or any project you have scanned before — from the keyboard. Type what
 you know it as: `sarif`, `lockfile`, `precision`, `epss`, or a client directory
 name. Each project shows what is still open beside it, so switching between a
 dozen codebases does not mean opening a file dialog.
+
+Source run history starts with a compact list that retains the selected entry
+when it is in the loaded history. **Show all runs** expands the list; **Show
+fewer runs** returns to the compact view without changing the selected evidence.
 
 In a findings list, <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>x</kbd> selects, and
 <kbd>shift</kbd> extends a selection — then review the whole selection at once

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { ServerTokenGate } from "./components/ServerTokenGate";
 import { onUnauthorized, serverMode, serverToken } from "./lib/transport";
 import { Toasts } from "./components/Toasts";
@@ -174,20 +174,24 @@ export default function App() {
     };
   }, [serverAuthRequired, setSettings, setAiReadiness, setSettingsLoadError]);
 
+  const openCommands = useCallback(() => {
+    if (document.querySelector('[aria-modal="true"]')) return;
+    setPaletteOpen(true);
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       // Cmd on macOS, Ctrl elsewhere — matching the platform rather than
       // picking one and making half the users learn the other.
       if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey)) {
-        // Let the current dialog keep its focus trap and isolation lifecycle.
-        if (!paletteOpen && document.querySelector('[aria-modal="true"]')) return;
         event.preventDefault();
-        setPaletteOpen((open) => !open);
+        if (paletteOpen) setPaletteOpen(false);
+        else openCommands();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [paletteOpen]);
+  }, [openCommands, paletteOpen]);
 
   if (serverAuthRequired) {
     // Nothing behind the gate can load without API access anyway.
@@ -195,7 +199,7 @@ export default function App() {
   }
 
   return (
-    <AppShell>
+    <AppShell onOpenCommands={openCommands}>
       <PageErrorBoundary
         resetKey={page}
         onReturnHome={() => setPage("dashboard")}

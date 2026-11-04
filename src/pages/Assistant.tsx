@@ -239,6 +239,11 @@ export function AssistantPage() {
     setContextProjectPath(null);
     setContextAttaching(false);
     requestAnimationFrame(() => {
+      // A later user action or another dialog owns focus now. Do not let this
+      // deferred return move it back into the previous workspace.
+      const focused = document.activeElement;
+      if (document.querySelector('[aria-modal="true"]') ||
+        (focused && focused !== document.body && focused !== document.documentElement)) return;
       if (returnFocus?.isConnected) returnFocus.focus();
       else assistantFallbackRef.current?.focus();
     });

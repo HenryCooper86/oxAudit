@@ -128,16 +128,28 @@ test("command search does not open over the Assistant context dialog's actual fo
   const user = userEvent.setup();
   render(<App />);
   await screen.findByText("Yes, the answer depends on the driver.");
+  const search = screen.getByRole("button", { name: "Search tools and projects" });
   await user.click(screen.getByRole("button", { name: "Context" }));
   const context = screen.getByRole("dialog", { name: "Review context before attaching" });
   await waitFor(() => expect(within(context).getByRole("button", { name: "Close" })).toHaveFocus());
   await user.keyboard("{Meta>}k{/Meta}");
   expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Search tools and projects" })).not.toBeInTheDocument();
+  expect(search.closest("header")?.inert).toBe(true);
+  expect(context).toContainElement(document.activeElement as HTMLElement);
   await user.tab();
   expect(context).toContainElement(document.activeElement as HTMLElement);
   await user.keyboard("{Escape}");
-  await user.keyboard("{Meta>}k{/Meta}");
+  await user.click(search);
   expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  expect(search).toHaveFocus();
+  await user.keyboard("{Meta>}k{/Meta}");
+  expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+  await user.type(screen.getByRole("textbox", { name: "Search commands" }), "export");
+  await user.keyboard("{Enter}");
+  expect(useAppStore.getState().page).toBe("export-center");
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
 });
 
 function sidebar() {
@@ -728,6 +740,22 @@ describe("attaching context", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(sessionAppend).not.toHaveBeenCalled();
     await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  test("delayed context focus restoration does not steal focus from the user's next action", async () => {
+    const user = userEvent.setup();
+    render(<><button>Another action</button><AssistantPage /></>);
+    await screen.findByText("Yes, the answer depends on the driver.");
+    await user.click(screen.getByRole("button", { name: "Context" }));
+    const dialog = screen.getByRole("dialog", { name: "Review context before attaching" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Close" })).toHaveFocus());
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => { frames.push(callback); return frames.length; });
+    await user.keyboard("{Escape}");
+    const nextAction = screen.getByRole("button", { name: "Another action" });
+    await user.click(nextAction);
+    act(() => { for (const frame of frames) frame(performance.now()); });
+    expect(nextAction).toHaveFocus();
   });
 
   test("a failed attach keeps the dialog open and reports why", async () => {

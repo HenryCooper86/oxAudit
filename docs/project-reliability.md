@@ -37,6 +37,14 @@ projects or starting a scan retires pending loads; history rows are disabled
 while a source scan is active. A late review write cannot replace the displayed
 project's findings, and its controls become usable again when the write settles.
 
+Home loads the selected project's saved dependency summary separately from
+project history, using bounded metadata and severity-count queries. Failed or
+missing summary reads stay unknown and offer **Retry dependency summary** without
+blocking project checks. Counts and coverage describe the last completed run;
+the newest attempt can still be failed, cancelled or incomplete. Home and
+dependency results use the same completed-run ordering, including overlapping
+scans that finish in a different order than they started.
+
 Dependency cancellation is a neutral outcome, not a failed check, and does not
 discard previous saved evidence. A project without a saved dependency check is
 labelled separately from an unselected project. Failed saved-result reads offer

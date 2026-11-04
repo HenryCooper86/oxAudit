@@ -1,5 +1,5 @@
 import { Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   NAVIGATION_COMMANDS,
@@ -58,8 +58,6 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   useEffect(() => {
     if (!open) return;
-    setQuery("");
-    setSelected(0);
     // Loaded on open rather than held in the store: the counts go stale the
     // moment a scan finishes, and a switcher showing yesterday's numbers is
     // worse than one that pauses for a moment.
@@ -72,7 +70,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         setProjects([]);
       }
     })();
+  }, [open]);
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    setQuery("");
+    setSelected(0);
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // Isolate siblings along the path out of the workspace, as onboarding does.
     // Keep prior values so closing this overlay never enables an already inert region.
@@ -88,9 +91,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       }
       branch = parent;
     }
-    const frame = requestAnimationFrame(() => inputRef.current?.focus());
+    // The palette is already visible after this commit; keyboard input must
+    // belong to it immediately, even when the next animation frame is delayed.
+    inputRef.current?.focus();
     return () => {
-      cancelAnimationFrame(frame);
       for (const { element, inert, ariaHidden } of outside) {
         element.inert = inert;
         if (ariaHidden === null) element.removeAttribute("aria-hidden");

@@ -8,6 +8,7 @@ import { fmtDateTime } from "../../lib/format";
 import { useAppStore } from "../../lib/stores";
 import type { ProjectContext, DependencyScanResult } from "../../lib/types";
 import { loadProjectHome, type HomeProject } from "./history";
+import { DependencyHomeSummary } from "./DependencyHomeSummary";
 import {
   cancelActiveScan,
   startProjectCheck,
@@ -183,10 +184,7 @@ export function ProjectHome() {
                       )
                     : "never completed"}
                 </p>
-                <p>
-                  Dependency findings: unknown — open saved results for counts
-                  and coverage.
-                </p>
+                <DependencyHomeSummary run={current?.completedDependencies ?? null} revision={revision} refreshing={loading} />
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">

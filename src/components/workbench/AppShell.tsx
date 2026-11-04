@@ -10,7 +10,7 @@ import { Sidebar } from "../Sidebar";
 import { StatusBar } from "./StatusBar";
 import { WorkbenchHeader } from "./WorkbenchHeader";
 
-export function AppShell({ children }: { children: React.ReactNode }): JSX.Element {
+export function AppShell({ children, onOpenCommands }: { children: React.ReactNode; onOpenCommands(): void }): JSX.Element {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const page = useAppStore((state) => state.page);
   const mainRef = useRef<HTMLElement>(null);
@@ -112,7 +112,7 @@ export function AppShell({ children }: { children: React.ReactNode }): JSX.Eleme
         inert={navigationOpen}
         className="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[52px_minmax(0,1fr)_28px] overflow-hidden"
       >
-        <WorkbenchHeader onOpenNavigation={() => setNavigationOpen(true)} />
+        <WorkbenchHeader onOpenNavigation={() => setNavigationOpen(true)} onOpenCommands={onOpenCommands} />
         <main ref={mainRef} id="main-content" tabIndex={-1} className="relative min-h-0 min-w-0 overflow-y-auto overscroll-y-contain">
           {children}
         </main>
