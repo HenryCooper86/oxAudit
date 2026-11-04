@@ -58,6 +58,26 @@ test("home exposes loading, durable empty state and retryable load failures", as
     expect(screen.queryByText(/database locked/)).not.toBeInTheDocument(),
   );
 });
+
+test("a project history failure leaves healthy rows usable and clears after refresh", async () => {
+  vi.mocked(api.listSourceProjects).mockResolvedValue([
+    { projectId: "healthy", canonicalPath: "/healthy", displayName: "Healthy", lastOpenedAt: "2026-11-04", lastCompletedAt: null, lastCompletedRunId: null, openFindings: 0, critical: 0, high: 0 },
+    { projectId: "blocked", canonicalPath: "/blocked", displayName: "Blocked", lastOpenedAt: "2026-11-04", lastCompletedAt: null, lastCompletedRunId: null, openFindings: 0, critical: 0, high: 0 },
+  ]);
+  vi.mocked(api.listSourceRuns).mockImplementation(async id => {
+    if (id === "blocked") throw new Error("History temporarily locked");
+    return [];
+  });
+  render(<Dashboard />);
+  expect(await screen.findByText(/Source history unavailable: History temporarily locked/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /Healthy/ }));
+  expect(await screen.findByRole("button", { name: "Check project" })).toBeEnabled();
+  expect(useAppStore.getState().selectedProject).toBe("/healthy");
+  vi.mocked(api.listSourceRuns).mockResolvedValue([]);
+  fireEvent.click(screen.getByRole("button", { name: "Refresh projects" }));
+  await waitFor(() => expect(screen.queryByText(/History temporarily locked/)).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: /Blocked/ })).toBeEnabled();
+});
 test("restored selection is inspected without scanning and resume hands off canonical target", async () => {
   useAppStore.setState({ selectedProject: "/alias" });
   vi.mocked(api.inspectSourceProject).mockResolvedValue(context("/canonical"));

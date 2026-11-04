@@ -179,13 +179,15 @@ export default function App() {
       // Cmd on macOS, Ctrl elsewhere — matching the platform rather than
       // picking one and making half the users learn the other.
       if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey)) {
+        // Let the current dialog keep its focus trap and isolation lifecycle.
+        if (!paletteOpen && document.querySelector('[aria-modal="true"]')) return;
         event.preventDefault();
         setPaletteOpen((open) => !open);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [paletteOpen]);
 
   if (serverAuthRequired) {
     // Nothing behind the gate can load without API access anyway.

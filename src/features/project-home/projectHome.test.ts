@@ -99,6 +99,26 @@ test("durable home maps source IDs through projects and keeps latest failed depe
   expect(src.newFindings).toBe(2);
   expect(src.dependencies).toBeNull();
 });
+
+test("one failed project history retains healthy projects and saved dependency evidence", async () => {
+  vi.spyOn(api, "listSourceProjects").mockResolvedValue([
+    recent, { ...recent, projectId: "unavailable", canonicalPath: "/unavailable", displayName: "Unavailable" },
+  ]);
+  vi.spyOn(api, "listSourceRuns").mockImplementation(async id => {
+    if (id === "unavailable") throw { code: "persistenceUnavailable", message: "Database locked", detail: null, retryable: true };
+    return [{ runId: "s", projectId: "p", status: "completed", startedAt: "2026-09-06", completedAt: "2026-09-06",
+      totalFindings: 3, newFindings: 2, resolvedFindings: 0, severityCounts: { critical: 0, high: 3, medium: 0, low: 0, info: 0 } }];
+  });
+  vi.spyOn(api, "listCanonicalRuns").mockResolvedValue([
+    canonical("deps", "dependencies", "/unavailable", "completed", 20),
+  ]);
+  const homes = await loadProjectHome();
+  expect(homes.find(project => project.path === "/real/project")).toMatchObject({ newFindings: 2, sourceState: "completed" });
+  expect(homes.find(project => project.path === "/unavailable")).toMatchObject({
+    sourceState: "history unavailable", historyError: "Database locked", newFindings: null,
+    completedDependencies: { id: "deps" },
+  });
+});
 function mockCheck() {
   vi.spyOn(api, "inspectSourceProject").mockResolvedValue(context);
   vi.spyOn(api, "setActiveProject").mockResolvedValue();

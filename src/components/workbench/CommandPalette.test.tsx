@@ -30,6 +30,48 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  test("contains Tab in both directions and closes from its close button", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const { rerender } = render(<><button>Background action</button><CommandPalette open onClose={onClose} /></>);
+    const input = screen.getByRole("textbox", { name: "Search commands" });
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Close command palette" })).toHaveFocus();
+    await user.tab();
+    expect(input).toHaveFocus();
+    await user.tab();
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledOnce();
+    rerender(<><button>Background action</button><CommandPalette open={false} onClose={onClose} /></>);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  test("isolates the background and restores its prior state and invoking focus", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const view = (open: boolean) => <div><section aria-label="Workspace"><button>Open palette</button></section><CommandPalette open={open} onClose={onClose} /></div>;
+    const { rerender } = render(view(false));
+    const trigger = screen.getByRole("button", { name: "Open palette" });
+    const workspace = screen.getByRole("region", { name: "Workspace" });
+    await user.click(trigger);
+    rerender(view(true));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Search commands" })).toHaveFocus());
+    expect(workspace.inert).toBe(true);
+    expect(workspace).toHaveAttribute("aria-hidden", "true");
+    rerender(view(false));
+    expect(workspace.inert).not.toBe(true);
+    expect(workspace).not.toHaveAttribute("aria-hidden");
+    expect(trigger).toHaveFocus();
+
+    workspace.inert = true;
+    workspace.setAttribute("aria-hidden", "true");
+    rerender(view(true));
+    rerender(view(false));
+    expect(workspace.inert).toBe(true);
+    expect(workspace).toHaveAttribute("aria-hidden", "true");
+  });
+
   test("opens focused on the input so typing goes straight to the filter", async () => {
     setup();
     await waitFor(() =>

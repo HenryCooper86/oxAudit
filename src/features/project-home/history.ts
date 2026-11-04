@@ -1,4 +1,5 @@
 import { api } from "../../lib/api";
+import { errorMessage } from "../../lib/commandError";
 import type {
   CanonicalRun,
   RecentProject,
@@ -26,6 +27,7 @@ export interface HomeProject {
   source: RecentProject | null;
   latestSource: ScanRunSummary | null;
   sourceState: string | null;
+  historyError?: string;
   newFindings: number | null;
   dependencies: CanonicalRun | null;
   completedDependencies: CanonicalRun | null;
@@ -36,13 +38,14 @@ export async function loadProjectHome(): Promise<HomeProject[]> {
     api.listSourceProjects(50),
     api.listCanonicalRuns(undefined, 200),
   ]);
-  const sourceRuns = await Promise.all(
+  const sourceRuns = await Promise.allSettled(
     projects.map((project) => api.listSourceRuns(project.projectId, 50)),
   );
   const canonicalById = new Map(canonical.map((run) => [run.id, run]));
   const homes = new Map<string, HomeProject>();
   projects.forEach((project, index) => {
-    const runs = [...sourceRuns[index]].sort(
+    const result = sourceRuns[index];
+    const runs = [...(result.status === "fulfilled" ? result.value : [])].sort(
       (a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt),
     );
     const completed = runs.find(
@@ -54,7 +57,8 @@ export async function loadProjectHome(): Promise<HomeProject[]> {
       name: project.displayName,
       source: project,
       latestSource: latest,
-      sourceState: latest
+      historyError: result.status === "rejected" ? errorMessage(result.reason, "Source history could not be loaded.") : undefined,
+      sourceState: result.status === "rejected" ? "history unavailable" : latest
         ? (canonicalById.get(latest.runId)?.state ?? latest.status)
         : null,
       newFindings: completed?.newFindings ?? null,

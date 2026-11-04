@@ -140,6 +140,7 @@ export function ProjectHome() {
             <div className="grid gap-3 sm:grid-cols-2 text-[13px]">
               <div>
                 <p>Source: {current?.sourceState ?? "not checked"}</p>
+                {current?.historyError && <p className="text-error">Source history unavailable: {current.historyError}. Refresh projects to retry.</p>}
                 {current?.source?.lastCompletedRunId ? (
                   <>
                     <p>
@@ -339,6 +340,7 @@ export function ProjectHome() {
               Source {project.sourceState ?? "not checked"} · Dependencies{" "}
               {project.dependencies?.state ?? "not checked"}
             </span>
+            {project.historyError && <span className="block text-[12px] text-error">Source history unavailable: {project.historyError}. Refresh projects to retry.</span>}
           </button>
         ))}
       </div>

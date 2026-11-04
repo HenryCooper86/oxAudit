@@ -1,14 +1,17 @@
 import { ShieldCheck, X } from "lucide-react";
-import { useMemo, useState, type FormEvent, type JSX } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type FormEvent, type JSX, type SetStateAction } from "react";
 import { Button, Input, Select, Textarea } from "../../components/ui";
 import { Field } from "../../components/workbench/Field";
 import type { CommandError, Finding, Gate, ReviewRequest, ReviewState } from "../../lib/types";
+import { revealWorkspaceDetail } from "../../lib/workspaceScroll";
+import { hasUnsavedReviewDraft, resolveSessionReviewDraft, reviewDraftKey, useReviewDraftStore } from "./reviewDrafts";
 import {
   ALL_GATES,
   buildReviewRequest,
   createReviewDraft,
   updateGate,
   validateReviewDraft,
+  type ReviewDraft,
 } from "./reviewModel";
 
 const STATE_LABELS: Array<{ value: ReviewState; label: string }> = [
@@ -51,17 +54,24 @@ export function FindingReviewForm(props: {
   onCancel(): void;
 }): JSX.Element {
   const { projectId, finding, saving, error, onSubmit, onCancel } = props;
-  const [draft, setDraft] = useState(() => createReviewDraft(finding));
-  // A different finding, or a new saved review of it, starts a fresh draft.
-  // Reset while rendering (not in an effect) so the form never validates or
-  // shows the previous finding's draft; a refetched copy of the same finding
-  // and review keeps the reviewer's edits.
-  const draftSource = `${finding.fingerprint}\u0000${finding.review?.id ?? ""}`;
-  const [draftSourceSeen, setDraftSourceSeen] = useState(draftSource);
-  if (draftSourceSeen !== draftSource) {
-    setDraftSourceSeen(draftSource);
-    setDraft(createReviewDraft(finding));
-  }
+  const key = reviewDraftKey(projectId, finding);
+  const entry = useReviewDraftStore((state) => state.drafts[key]);
+  const baseline = useMemo(() => createReviewDraft(finding), [finding]);
+  const currentEntry = useMemo(() => resolveSessionReviewDraft(entry, finding), [entry, finding]);
+  const draft = currentEntry?.draft ?? baseline;
+  const hasDraft = hasUnsavedReviewDraft(currentEntry, finding);
+  const setDraft = (update: SetStateAction<ReviewDraft>) => {
+    useReviewDraftStore.getState().put(key, finding, typeof update === "function" ? update(draft) : update);
+  };
+  useEffect(() => {
+    if (entry && entry !== currentEntry) useReviewDraftStore.getState().reconcile(key, entry, currentEntry);
+  }, [currentEntry, entry, key]);
+  const formRef = useRef<HTMLFormElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => {
+    headingRef.current?.focus({ preventScroll: true });
+    revealWorkspaceDetail(formRef.current);
+  }, []);
   const validation = useMemo(() => validateReviewDraft(finding, draft), [draft, finding]);
   const isGateReview =
     finding.category === "vulnerability" &&
@@ -71,22 +81,25 @@ export function FindingReviewForm(props: {
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!validation.valid || saving) return;
-    void onSubmit(buildReviewRequest(projectId, finding, draft));
+    const request = buildReviewRequest(projectId, finding, draft);
+    useReviewDraftStore.getState().submit(key, finding, request, draft);
+    void onSubmit(request);
   };
 
   return (
-    <form onSubmit={submit} className="border-t border-border bg-surface-primary p-4 sm:p-5" aria-label="Review finding">
+    <form ref={formRef} onSubmit={submit} className="border-t border-border bg-surface-primary p-4 sm:p-5" aria-label="Review finding">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
             <ShieldCheck size={15} aria-hidden="true" className="text-accent" />
-            <h3 className="text-[13px] font-semibold text-text-primary">Review decision</h3>
+            <h3 ref={headingRef} tabIndex={-1} className="text-[13px] font-semibold text-text-primary">Review decision</h3>
           </div>
           <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
             Record a durable, evidence-backed decision. AI suggestions never submit this form.
           </p>
+          {hasDraft && <p className="mt-1 text-[11px] text-warning">Draft kept for this session until saved or discarded.</p>}
         </div>
-        <Button type="button" onClick={onCancel} variant="icon" size="sm" aria-label="Close review form">
+        <Button type="button" onClick={onCancel} disabled={saving} variant="icon" size="sm" aria-label="Close review form">
           <X size={14} aria-hidden="true" />
         </Button>
       </div>
@@ -228,6 +241,10 @@ export function FindingReviewForm(props: {
       )}
 
       <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+        {hasDraft && <Button type="button" variant="outline" size="md" disabled={saving} onClick={() => {
+          useReviewDraftStore.getState().discard(key);
+          onCancel();
+        }}>Discard draft</Button>}
         <Button type="button" onClick={onCancel} variant="outline" size="md" disabled={saving}>Cancel</Button>
         <Button type="submit" variant="primary" size="md" disabled={saving || !validation.valid || finding.diffStatus === "resolved"}>
           {saving ? "Saving…" : "Save review"}

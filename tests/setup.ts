@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
+import { useReviewDraftStore } from "../src/features/source-scan/reviewDrafts";
 
 /**
  * Component tests run in jsdom, which is not a browser and not Tauri.
@@ -12,6 +13,7 @@ import { afterEach, vi } from "vitest";
 
 afterEach(() => {
   cleanup();
+  useReviewDraftStore.setState({ drafts: {} });
 });
 
 // jsdom implements neither, and the workbench shell uses both for the

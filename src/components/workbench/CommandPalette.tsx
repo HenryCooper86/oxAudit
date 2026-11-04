@@ -1,4 +1,4 @@
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -36,6 +36,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const [projects, setProjects] = useState<PaletteCommand[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const commands = useMemo<PaletteCommand[]>(
     () => [...projects, ...NAVIGATION_COMMANDS],
@@ -73,9 +74,28 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     })();
 
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // Isolate siblings along the path out of the workspace, as onboarding does.
+    // Keep prior values so closing this overlay never enables an already inert region.
+    const outside: Array<{ element: HTMLElement; inert: boolean; ariaHidden: string | null }> = [];
+    let branch: HTMLElement | null = rootRef.current;
+    while (branch?.parentElement && branch !== document.body) {
+      const parent = branch.parentElement;
+      for (const element of Array.from(parent.children)) {
+        if (element === branch || !(element instanceof HTMLElement)) continue;
+        outside.push({ element, inert: element.inert, ariaHidden: element.getAttribute("aria-hidden") });
+        element.inert = true;
+        element.setAttribute("aria-hidden", "true");
+      }
+      branch = parent;
+    }
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
     return () => {
       cancelAnimationFrame(frame);
+      for (const { element, inert, ariaHidden } of outside) {
+        element.inert = inert;
+        if (ariaHidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", ariaHidden);
+      }
       // Return focus where it was, so dismissing the palette leaves the
       // keyboard exactly where it started.
       if (previous?.isConnected) previous.focus();
@@ -105,11 +125,6 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-      return;
-    }
     if (event.key === "ArrowDown" || (event.key === "n" && event.ctrlKey)) {
       event.preventDefault();
       setSelected((current) => moveSelection(current, 1, ordered.length));
@@ -131,8 +146,28 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   return (
     // The backdrop is a pointer-only dismiss target; Escape is the keyboard path.
     <div
+      ref={rootRef}
       role="presentation"
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-6 pt-[12vh]"
+      onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          } else if (event.key === "Tab") {
+            const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not([disabled]), input:not([disabled]), [tabindex="0"]',
+            )).filter((element) => element.getClientRects().length > 0);
+            const first = controls[0], last = controls[controls.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first?.focus();
+            }
+          }
+        }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -157,6 +192,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             aria-activedescendant={ordered[selected] ? `command-${ordered[selected].id}` : undefined}
             className="w-full bg-transparent py-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted"
           />
+          <button type="button" aria-label="Close command palette" onClick={onClose}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-text-muted hover:bg-surface-hover hover:text-text-primary">
+            <X size={15} aria-hidden="true" />
+          </button>
         </div>
 
         <div

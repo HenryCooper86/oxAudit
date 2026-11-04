@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 
@@ -197,6 +197,22 @@ describe("FindingReviewForm", () => {
     // looks like the review never happened.
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByText(/expiry in the future/i)).toBeInTheDocument();
+  });
+
+  test("attaches expiry and deciding-gate errors to their controls and clears corrected expiry", async () => {
+    const { user } = setup();
+    await user.selectOptions(screen.getByLabelText("Decision"), "acceptedRisk");
+    const expiry = screen.getByLabelText("Optional expiry");
+    fireEvent.change(expiry, { target: { value: "2020-01-01T09:00" } });
+    expect(expiry).toHaveAttribute("aria-invalid", "true");
+    expect(expiry).toHaveAccessibleDescription(/Choose a valid expiry in the future/);
+    fireEvent.change(expiry, { target: { value: "" } });
+    expect(expiry).not.toHaveAttribute("aria-invalid", "true");
+    expect(expiry).toHaveAccessibleDescription("Expired decisions return to the active queue.");
+    await user.selectOptions(screen.getByLabelText("Decision"), "falsePositive");
+    const gate = screen.getByLabelText("Deciding gate");
+    expect(gate).toHaveAttribute("aria-invalid", "true");
+    expect(gate).toHaveAccessibleDescription(/single gate that eliminates/);
   });
 
   test("asks the falsification questions before accepting a vulnerability verdict", async () => {

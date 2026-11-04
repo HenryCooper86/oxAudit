@@ -116,6 +116,30 @@ function composer() {
   return screen.getByRole("textbox", { name: "Message the AI Assistant" });
 }
 
+test("command search does not open over the Assistant context dialog's actual focus trap", async () => {
+  const { default: App } = await import("../App");
+  const { projectSettings } = await import("../../tests/fixtures/projectHome");
+  const { READINESS_WIZARD_STORAGE_KEY } = await import("../lib/readinessWizard");
+  localStorage.setItem(READINESS_WIZARD_STORAGE_KEY, "true");
+  useAppStore.setState({ activeProject: null, selectedProject: null });
+  vi.spyOn(api, "loadSettings").mockResolvedValue(projectSettings);
+  vi.spyOn(api, "scanWorkStatus").mockResolvedValue({ active: null, recent: [] });
+  vi.spyOn(api, "listSourceProjects").mockResolvedValue([]);
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByText("Yes, the answer depends on the driver.");
+  await user.click(screen.getByRole("button", { name: "Context" }));
+  const context = screen.getByRole("dialog", { name: "Review context before attaching" });
+  await waitFor(() => expect(within(context).getByRole("button", { name: "Close" })).toHaveFocus());
+  await user.keyboard("{Meta>}k{/Meta}");
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+  await user.tab();
+  expect(context).toContainElement(document.activeElement as HTMLElement);
+  await user.keyboard("{Escape}");
+  await user.keyboard("{Meta>}k{/Meta}");
+  expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+});
+
 function sidebar() {
   return screen.getByRole("complementary", { name: "Chat sessions" });
 }

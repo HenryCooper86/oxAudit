@@ -1,8 +1,9 @@
 import { remediationFor } from "../features/source-scan/remediation";
 import { Bot, Clipboard, ExternalLink, History, RotateCcw, ShieldCheck } from "lucide-react";
-import { useLayoutEffect, useState, type JSX } from "react";
+import { useLayoutEffect, useRef, useState, type JSX } from "react";
 import { diffLabel, reviewLabel, scopeLabel } from "../features/source-scan/FindingList";
 import { FindingReviewForm } from "../features/source-scan/FindingReviewForm";
+import { hasUnsavedReviewDraft, reviewDraftKey, useReviewDraftStore } from "../features/source-scan/reviewDrafts";
 import { fmtDateTime } from "../lib/format";
 import { useAppStore } from "../lib/stores";
 import { serverMode } from "../lib/transport";
@@ -39,6 +40,14 @@ export function FindingDetail({
   const activeProject = useAppStore((state) => state.activeProject);
   const openAssistant = useAppStore((state) => state.openAssistant);
   const [reviewing, setReviewing] = useState(false);
+  const reviewButtonRef = useRef<HTMLButtonElement>(null);
+  const draftKey = reviewDraftKey(projectId, finding);
+  const draft = useReviewDraftStore((state) => state.drafts[draftKey]);
+  const hasDraft = hasUnsavedReviewDraft(draft, finding);
+  const closeReview = () => {
+    setReviewing(false);
+    reviewButtonRef.current?.focus();
+  };
   const secret = finding.category === "secret";
   const remediation = remediationFor(finding.ruleId, finding.category);
   const safeMatch = secret && !finding.matchText.includes("[REDACTED]")
@@ -46,7 +55,7 @@ export function FindingDetail({
     : finding.matchText;
 
   // Reset before the new finding becomes interactive, not after an editor opens.
-  useLayoutEffect(() => setReviewing(false), [finding.fingerprint, finding.review?.id]);
+  useLayoutEffect(() => setReviewing(false), [projectId, finding.fingerprintVersion, finding.fingerprint, finding.review?.id]);
 
   const discussFinding = () => {
     const content = [
@@ -116,7 +125,8 @@ export function FindingDetail({
             <p className="mt-1 text-[11px] text-text-muted">Recorded byte column. Editor navigation converts the current saved line; edits since scanning may move the finding.</p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <Button type="button" onClick={() => setReviewing(true)} variant="accent" size="md" disabled={finding.diffStatus === "resolved"}>
+            {hasDraft && <span className="text-[11px] text-warning">Unsaved review draft</span>}
+            <Button ref={reviewButtonRef} type="button" onClick={() => setReviewing(true)} variant="accent" size="md" disabled={finding.diffStatus === "resolved"}>
               <ShieldCheck size={13} aria-hidden="true" />
               {finding.diffStatus === "resolved" ? "Resolved projection" : "Review finding"}
             </Button>
@@ -273,7 +283,7 @@ export function FindingDetail({
           saving={savingReview}
           error={reviewError}
           onSubmit={onSaveReview}
-          onCancel={() => setReviewing(false)}
+          onCancel={closeReview}
         />
       )}
     </article>
