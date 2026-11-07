@@ -258,7 +258,7 @@ fn validate_snapshot_hash(
 ) -> Result<(), String> {
     use sha2::Digest;
     let bytes = serde_json::to_vec(&snapshot.payload).map_err(|e| e.to_string())?;
-    if format!("{:x}", sha2::Sha256::digest(bytes)) != snapshot.content_sha256 {
+    if hex::encode(sha2::Sha256::digest(bytes)) != snapshot.content_sha256 {
         return Err("cached OSV receipt integrity check failed".into());
     }
     Ok(())
@@ -645,7 +645,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             let payload_bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
             let content_sha256 = {
                 use sha2::Digest;
-                format!("{:x}", sha2::Sha256::digest(&payload_bytes))
+                hex::encode(sha2::Sha256::digest(&payload_bytes))
             };
             let fetched_at = advisory_fetched_at_ms.unwrap_or_else(epoch_millis);
             let snapshot_id = format!("provider_{}", uuid::Uuid::new_v4());
@@ -680,7 +680,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             let payload_bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
             let content_sha256 = {
                 use sha2::Digest;
-                format!("{:x}", sha2::Sha256::digest(&payload_bytes))
+                hex::encode(sha2::Sha256::digest(&payload_bytes))
             };
             let snapshot_id = format!("provider_{}", uuid::Uuid::new_v4());
             request.repository

@@ -50,9 +50,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -102,9 +102,9 @@ jobs:
             platform: linux-x86_64
             tauri_args: ""
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -237,7 +237,7 @@ jobs:
           fi
           cat "SHA256SUMS-${{ matrix.platform }}.txt"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oxaudit-${{ matrix.platform }}
           path: staging/*
@@ -268,9 +268,9 @@ jobs:
           - os: windows-2025
             platform: windows-x86_64
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -403,7 +403,7 @@ jobs:
           fi
           cat "SHA256SUMS-${{ matrix.platform }}.txt"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oxaudit-${{ matrix.platform }}
           path: staging/*
@@ -432,7 +432,7 @@ jobs:
           - os: ubuntu-24.04-arm
             platform: linux-aarch64
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -485,7 +485,7 @@ jobs:
           esac
           cat "SHA256SUMS-${{ matrix.platform }}.txt"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oxaudit-cli-${{ matrix.platform }}
           path: staging/*
@@ -516,7 +516,7 @@ jobs:
           - os: ubuntu-24.04-arm
             goarch: arm64
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Log in to the container registry
         run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -553,7 +553,7 @@ jobs:
             "${IMAGE}:${GITHUB_REF_NAME}-${{ matrix.goarch }}" | sha256sum | cut -d' ' -f1)"
           echo "${DIGEST}" | tee /tmp/digest.txt
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: container-digest-linux-${{ matrix.goarch }}
           path: /tmp/digest.txt
@@ -571,7 +571,7 @@ jobs:
       # Keyless cosign signing via Sigstore OIDC.
       id-token: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: container-digest-*
           path: digests
@@ -599,12 +599,12 @@ jobs:
           INDEX="sha256:$(docker buildx imagetools inspect --raw "${IMAGE}:${GITHUB_REF_NAME}" | sha256sum | cut -d' ' -f1)"
           echo "${IMAGE}@${INDEX}" | tee oxaudit-container.txt
 
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Sign the image index keylessly
         run: cosign sign --yes "$(cat oxaudit-container.txt)"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: container-reference
           path: oxaudit-container.txt
@@ -619,9 +619,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -634,7 +634,7 @@ jobs:
 
       - name: Generate the Rust SBOM
         run: |
-          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          cargo install cargo-cyclonedx --version 0.5.10 --locked
           cargo cyclonedx --manifest-path src-tauri/Cargo.toml --format json --all-features
           # cargo-cyclonedx emits one SBOM per workspace package. Select the
           # application explicitly; a recursive first match can pick a helper.
@@ -655,7 +655,7 @@ jobs:
             --output-format JSON --output-file oxaudit-npm.cdx.json --omit dev
           test -s oxaudit-npm.cdx.json
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oxaudit-sbom
           path: |
@@ -679,7 +679,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
 
@@ -706,14 +706,14 @@ jobs:
       # custody exists to manage or lose. The signatures let anyone verify
       # the CLI binaries and the checksum list independently of GitHub,
       # complementing the SLSA attestations above.
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         if: ${{ !inputs.dry_run }}
 
       # Keyless signing (Sigstore OIDC via this workflow run): no key
       # custody exists to manage or lose. The signatures let anyone verify
       # the CLI binaries and the checksum list independently of GitHub,
       # complementing the SLSA attestations above.
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Publish a draft release
         env:

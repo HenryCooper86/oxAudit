@@ -2238,8 +2238,7 @@ impl FindingsRepository {
         // not miscounted as a new or resolved finding.
         let mut observations = BTreeMap::<String, Vec<(ObservationIdentity, String)>>::new();
         if !relevant_run_ids.is_empty() {
-            let placeholders = std::iter::repeat("?")
-                .take(relevant_run_ids.len())
+            let placeholders = std::iter::repeat_n("?", relevant_run_ids.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!(
@@ -3101,7 +3100,7 @@ fn latest_observation_from_connection(
             .as_deref()
             .ok_or_else(CommandError::persistence_unavailable)
             .and_then(parse_utc_timestamp)?;
-        let replace = newest.as_ref().map_or(true, |(newest_at, newest_run)| {
+        let replace = newest.as_ref().is_none_or(|(newest_at, newest_run)| {
             completed_at > *newest_at || (completed_at == *newest_at && run_id > *newest_run)
         });
         if replace {
@@ -3194,7 +3193,7 @@ fn latest_project_observations_from_connection(
                 .ok_or_else(CommandError::persistence_unavailable)
                 .and_then(parse_utc_timestamp)?;
             let identity = (fingerprint_version, fingerprint.clone());
-            let replace = winners.get(&identity).map_or(true, |current| {
+            let replace = winners.get(&identity).is_none_or(|current| {
                 completed_at > current.completed_at
                     || (completed_at == current.completed_at && run_id > current.run_id)
             });
@@ -3778,7 +3777,7 @@ fn select_active_review(history: &[ReviewRecord], now: DateTime<Utc>) -> Option<
         })
         .find(|review| {
             review.state != ReviewState::Candidate
-                && review.expires_at.as_deref().map_or(true, |expires_at| {
+                && review.expires_at.as_deref().is_none_or(|expires_at| {
                     DateTime::parse_from_rfc3339(expires_at)
                         .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
                 })
@@ -3796,7 +3795,7 @@ fn select_active_local_review(
             review.origin == ReviewOrigin::Local
                 && review.superseded_at.is_none()
                 && review.state != ReviewState::Candidate
-                && review.expires_at.as_deref().map_or(true, |expires_at| {
+                && review.expires_at.as_deref().is_none_or(|expires_at| {
                     DateTime::parse_from_rfc3339(expires_at)
                         .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
                 })

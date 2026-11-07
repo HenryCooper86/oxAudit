@@ -184,7 +184,7 @@ fn missing_policy_has_an_explicit_missing_status() {
 fn valid_policy_hashes_the_exact_authoritative_bytes_and_is_stable_on_reload() {
     let root = tempfile::tempdir().unwrap();
     write_policy(root.path(), VALID_POLICY.as_bytes());
-    let expected = format!("{:x}", Sha256::digest(VALID_POLICY.as_bytes()));
+    let expected = hex::encode(Sha256::digest(VALID_POLICY.as_bytes()));
 
     let first = load_policy(root.path()).unwrap();
     let second = load_policy(root.path()).unwrap();
@@ -1034,7 +1034,7 @@ fn update_is_allowlisted_and_never_serializes_finding_canaries() {
     }
     assert!(serialized.ends_with('\n'));
     assert!(serialized.contains("\n  \"entries\": ["));
-    let expected_hash = format!("{:x}", Sha256::digest(&bytes));
+    let expected_hash = hex::encode(Sha256::digest(&bytes));
     assert_eq!(review.policy_hash.as_deref(), Some(expected_hash.as_str()));
     assert_eq!(
         status_hash(&load_policy(root.path()).unwrap()),
@@ -1333,7 +1333,7 @@ fn policy_read_stays_on_the_open_inode_when_the_name_is_swapped() {
     let held_path = root.path().join(".oxaudit/original-policy");
     let outside = root.path().join("outside-policy");
     fs::write(&outside, br#"{"version":999,"secret":"outside"}"#).unwrap();
-    let expected_hash = format!("{:x}", Sha256::digest(VALID_POLICY.as_bytes()));
+    let expected_hash = hex::encode(Sha256::digest(VALID_POLICY.as_bytes()));
 
     let loaded = load_policy_with_test_hook(root.path(), |stage| {
         if stage == IoStage::AfterPolicyOpen {

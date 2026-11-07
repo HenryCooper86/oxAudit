@@ -85,7 +85,7 @@ pub struct FeedUpdateReport {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
-    format!("{:x}", sha2::Sha256::digest(bytes))
+    hex::encode(sha2::Sha256::digest(bytes))
 }
 
 /// Materialize a pack zip into a private directory: `pack.toml` plus its

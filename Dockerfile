@@ -30,7 +30,7 @@ COPY public ./public
 # fixtures from tests/, which is deliberately outside this build context.
 # The production type-check excludes tests; CI's npm run check still covers
 # them on the full checkout.
-RUN npx tsc -p tsconfig.build.json && npx vite build
+RUN node node_modules/typescript-7/bin/tsc -p tsconfig.build.json && npx vite build
 
 # --- build -------------------------------------------------------------
 #

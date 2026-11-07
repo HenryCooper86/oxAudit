@@ -374,7 +374,7 @@ pub(crate) fn write_compliance_report_with_warnings(
         assessment_id: request.assessment_id,
         format: request.format,
         output_path: destination.to_string_lossy().into_owned(),
-        content_sha256: format!("{:x}", Sha256::digest(&generated.bytes)),
+        content_sha256: hex::encode(Sha256::digest(&generated.bytes)),
         created_at_ms: now_ms(),
         metadata: request.metadata,
     };
@@ -706,7 +706,7 @@ fn hash_file(root: &Path, path: &Path) -> Result<String, std::io::Error> {
             "evidence file changed while it was being hashed",
         ));
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[cfg(unix)]

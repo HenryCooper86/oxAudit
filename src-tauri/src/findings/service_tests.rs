@@ -3062,11 +3062,13 @@ async fn paged_source_reads_keep_metadata_separate_and_reconcile_live_policy_rev
     let invalid = service
         .load_run_page(&saved.run_id, &Default::default())
         .unwrap();
-    assert!(invalid.page.items.iter().all(|finding| finding
-        .review
-        .as_ref()
-        .map_or(true, |review| review.origin
-            != crate::findings::domain::ReviewOrigin::ProjectPolicy)));
+    assert!(invalid
+        .page
+        .items
+        .iter()
+        .all(|finding| finding.review.as_ref().is_none_or(
+            |review| review.origin != crate::findings::domain::ReviewOrigin::ProjectPolicy
+        )));
     let required = crate::findings::domain::SourceFindingsQuery {
         require_valid_policy: true,
         ..Default::default()

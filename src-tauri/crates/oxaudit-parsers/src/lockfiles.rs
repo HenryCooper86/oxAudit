@@ -496,7 +496,7 @@ pub fn extend_dependencies_bounded(
     if aggregate
         .len()
         .checked_add(incoming.len())
-        .map_or(true, |total| total > max_dependencies)
+        .is_none_or(|total| total > max_dependencies)
     {
         return Err(format!(
             "{RESOURCE_LIMIT_PREFIX} dependency scan exceeds {max_dependencies} packages; scan a \
@@ -912,7 +912,6 @@ fn parse_yaml_lockfile<T: serde::de::DeserializeOwned>(
         strict_booleans: true,
         ignore_binary_tag_for_string: true,
         merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
-        emit_comments: false,
         with_snippet: false,
         budget: serde_saphyr::budget! {
             max_depth: 64,
@@ -991,7 +990,7 @@ fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     if root
         .packages
         .as_ref()
-        .map_or(true, |packages| packages.is_empty())
+        .is_none_or(|packages| packages.is_empty())
     {
         if let Some(importers) = root
             .importers

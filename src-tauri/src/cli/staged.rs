@@ -168,7 +168,7 @@ pub(super) fn run_staged(args: &ScanArgs, quiet: bool) -> CliResult {
         let byte_count = text.len() as u64;
         if total_bytes
             .checked_add(byte_count)
-            .map_or(true, |bytes| bytes > MAX_TOTAL_BYTES)
+            .is_none_or(|bytes| bytes > MAX_TOTAL_BYTES)
         {
             truncated_note.get_or_insert_with(|| "total scanned-bytes budget reached".to_owned());
             break;
@@ -468,7 +468,7 @@ fn spawn_batch_reader(
                 // stays aligned on the next header.
                 if size
                     .checked_add(1)
-                    .map_or(true, |size| !drain(&mut stdout, size))
+                    .is_none_or(|size| !drain(&mut stdout, size))
                 {
                     let _ = sender.send(Err("Incomplete Git index object body".into()));
                     break;

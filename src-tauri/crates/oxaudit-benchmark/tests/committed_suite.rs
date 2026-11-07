@@ -20,7 +20,7 @@ fn committed_ground_truth_is_valid_and_content_addressed() {
     for target in &suite.targets {
         let bytes = fs::read(root.join(&target.input_path)).unwrap();
         assert_eq!(
-            format!("{:x}", Sha256::digest(bytes)),
+            hex::encode(Sha256::digest(bytes)),
             target.input_sha256,
             "fixture {} changed without a suite version/hash update",
             target.id
@@ -31,7 +31,7 @@ fn committed_ground_truth_is_valid_and_content_addressed() {
         corpus_digest.update(b"\n");
     }
     assert_eq!(
-        format!("{:x}", corpus_digest.finalize()),
+        hex::encode(corpus_digest.finalize()),
         suite.provenance.content_sha256,
         "suite provenance must address the ordered target identities"
     );

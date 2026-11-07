@@ -159,7 +159,7 @@ pub(crate) mod tests {
     /// its database in WAL mode, which marks bytes 18 and 19 of the file
     /// header; the fixture does the same so reading has to cope with it.
     pub(crate) fn rpmdb_sqlite(blobs: &[Vec<u8>]) -> Vec<u8> {
-        let connection = rusqlite::Connection::open_in_memory().expect("memory db");
+        let mut connection = rusqlite::Connection::open_in_memory().expect("memory db");
         connection
             .execute_batch("CREATE TABLE Packages (hnum INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);")
             .expect("schema");
@@ -234,7 +234,7 @@ pub(crate) mod tests {
     #[test]
     fn a_packages_view_is_refused_rather_than_run() {
         // A crafted database can make `Packages` an endless recursive view.
-        let connection = rusqlite::Connection::open_in_memory().expect("memory db");
+        let mut connection = rusqlite::Connection::open_in_memory().expect("memory db");
         connection
             .execute_batch(
                 "CREATE VIEW Packages AS WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT x AS blob FROM c;",
@@ -270,7 +270,7 @@ pub(crate) mod tests {
             "a half-truncated database is an error"
         );
         // A real SQLite file without rpm's table.
-        let other = rusqlite::Connection::open_in_memory().expect("memory db");
+        let mut other = rusqlite::Connection::open_in_memory().expect("memory db");
         other.execute_batch("CREATE TABLE t (x);").expect("schema");
         let other = other
             .serialize(rusqlite::MAIN_DB)

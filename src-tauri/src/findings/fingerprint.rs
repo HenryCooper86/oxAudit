@@ -40,7 +40,7 @@ pub fn fingerprint_base(finding: &Finding) -> String {
         hasher.update((field.len() as u64).to_be_bytes());
         hasher.update(field.as_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 pub fn assign_fingerprints(findings: &mut [Finding]) {

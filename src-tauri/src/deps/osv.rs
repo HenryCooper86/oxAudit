@@ -100,7 +100,7 @@ fn decode_advisory_page(response: &Value) -> Result<AdvisoryPage<'_>, String> {
         if vuln
             .get("id")
             .and_then(Value::as_str)
-            .map_or(true, |id| id.trim().is_empty())
+            .is_none_or(|id| id.trim().is_empty())
         {
             return Err(
                 "OSV advisory requires a nonempty string id; advisory coverage is incomplete"

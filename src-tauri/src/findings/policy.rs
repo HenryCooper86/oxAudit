@@ -1641,7 +1641,7 @@ fn valid_fingerprint(value: &str) -> bool {
         && digest
             .chars()
             .all(|character| character.is_ascii_hexdigit())
-        && occurrence.map_or(true, |occurrence| {
+        && occurrence.is_none_or(|occurrence| {
             !occurrence.is_empty()
                 && occurrence
                     .chars()
@@ -1818,7 +1818,7 @@ fn derived_review_id(
         digest.update((field.len() as u64).to_be_bytes());
         digest.update(field.as_bytes());
     }
-    format!("project-policy:{:x}", digest.finalize())
+    format!("project-policy:{}", hex::encode(digest.finalize()))
 }
 
 #[cfg(unix)]
@@ -3146,7 +3146,7 @@ fn invalid_loaded_policy() -> LoadedPolicy {
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn timestamp(now: &DateTime<Utc>) -> String {

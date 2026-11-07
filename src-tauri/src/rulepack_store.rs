@@ -121,7 +121,7 @@ impl RulePackStore {
         // stored; the same proof runs again on every scan that loads it.
         CompiledRulePack::compile(pack.clone()).map_err(|error| error.to_string())?;
         let metadata = &pack.pack;
-        let toml_sha256 = format!("{:x}", Sha256::digest(toml_text.as_bytes()));
+        let toml_sha256 = hex::encode(Sha256::digest(toml_text.as_bytes()));
         let engines = pack
             .rules
             .iter()
@@ -367,8 +367,7 @@ impl RulePackStore {
         if ids.is_empty() {
             return ResolvedPacks::default();
         }
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!("SELECT id, toml FROM rule_packs WHERE id IN ({placeholders})");
@@ -467,7 +466,7 @@ mod tests {
     }
 
     fn hash_of(content: &str) -> String {
-        format!("{:x}", Sha256::digest(content.as_bytes()))
+        hex::encode(Sha256::digest(content.as_bytes()))
     }
 
     #[test]

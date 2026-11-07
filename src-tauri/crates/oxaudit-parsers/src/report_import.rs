@@ -94,7 +94,7 @@ pub fn inspect(bytes: &[u8]) -> Result<ImportAnalysis, String> {
     }
     let value: Value = serde_json::from_slice(bytes)
         .map_err(|error| format!("the selected report is not valid bounded JSON: {error}"))?;
-    let content_sha256 = format!("{:x}", Sha256::digest(bytes));
+    let content_sha256 = hex::encode(Sha256::digest(bytes));
     if value.get("bomFormat").and_then(Value::as_str) == Some("CycloneDX") {
         return inspect_cyclonedx(&value, content_sha256);
     }
@@ -691,10 +691,7 @@ fn bounded_text(value: &str, max_bytes: usize) -> Option<String> {
 }
 
 fn mapped_record_id(content_sha256: &str, coordinate: &str) -> String {
-    format!(
-        "external_claim_{:x}",
-        Sha256::digest(format!("{content_sha256}\0{coordinate}").as_bytes())
-    )
+    format!("external_claim_{}", hex::encode(Sha256::digest(format!("{content_sha256}\0{coordinate}").as_bytes())))
 }
 
 #[derive(Clone, Copy)]

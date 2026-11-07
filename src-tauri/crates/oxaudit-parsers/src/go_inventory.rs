@@ -13,7 +13,7 @@ fn version(value: &str) -> bool {
         return false;
     }
     let without_build = value.split('+').next().unwrap();
-    without_build.split_once('-').map_or(true, |(_, pre)| {
+    without_build.split_once('-').is_none_or(|(_, pre)| {
         pre.split('.').all(|part| {
             !part.is_empty()
                 && !(part.len() > 1

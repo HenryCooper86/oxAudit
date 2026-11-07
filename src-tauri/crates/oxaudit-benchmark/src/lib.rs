@@ -520,11 +520,13 @@ mod tests {
                     .expected
                     .iter()
                     .flat_map(|expected| {
-                        std::iter::repeat(ActualObservation {
-                            identity: expected.identity.clone(),
-                            evidence_kind: expected.evidence_kind.clone(),
-                        })
-                        .take(expected.count as usize)
+                        std::iter::repeat_n(
+                            ActualObservation {
+                                identity: expected.identity.clone(),
+                                evidence_kind: expected.evidence_kind.clone(),
+                            },
+                            expected.count as usize,
+                        )
                     })
                     .collect(),
                 runtime_ms: 5,

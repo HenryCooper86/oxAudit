@@ -209,7 +209,7 @@ pub(crate) async fn refresh_data_source_inner(
     );
     let content_sha256 = {
         use sha2::Digest;
-        format!("{:x}", sha2::Sha256::digest(&bytes))
+        hex::encode(sha2::Sha256::digest(&bytes))
     };
     let fetched_at_ms = epoch_millis();
     let snapshot_id = format!("provider_{}", uuid::Uuid::new_v4());
@@ -243,14 +243,12 @@ pub(crate) async fn refresh_data_source_inner(
 pub fn rule_library_status() -> Result<Vec<RuleLibraryPackStatus>, String> {
     use sha2::Digest;
 
-    let source_snapshot_sha256 = format!(
-        "{:x}",
-        sha2::Sha256::digest(include_bytes!("../scanners/patterns.rs"))
-    );
-    let secret_snapshot_sha256 = format!(
-        "{:x}",
-        sha2::Sha256::digest(include_bytes!("../scanners/secrets.rs"))
-    );
+    let source_snapshot_sha256 = hex::encode(sha2::Sha256::digest(include_bytes!(
+        "../scanners/patterns.rs"
+    )));
+    let secret_snapshot_sha256 = hex::encode(sha2::Sha256::digest(include_bytes!(
+        "../scanners/secrets.rs"
+    )));
     let signature = crate::binscan::native::signature::signature_provenance_status()?;
     let verified: std::collections::BTreeSet<_> =
         signature.verified_products.iter().cloned().collect();

@@ -342,7 +342,7 @@ fn scan_history_secrets_bounded(
         let byte_count = text.len() as u64;
         if total_bytes
             .checked_add(byte_count)
-            .map_or(true, |bytes| bytes > MAX_TOTAL_BYTES)
+            .is_none_or(|bytes| bytes > MAX_TOTAL_BYTES)
         {
             truncated_note.get_or_insert_with(|| "total scanned-bytes budget reached".to_owned());
             break;
@@ -364,7 +364,7 @@ fn scan_history_secrets_bounded(
                     oid: blob.oid,
                     path: blob.path,
                     size_bytes: byte_count,
-                    content_sha256: format!("{:x}", sha2::Sha256::digest(text.as_bytes())),
+                    content_sha256: hex::encode(sha2::Sha256::digest(text.as_bytes())),
                 });
                 findings.append(&mut found);
                 raw_secrets.append(&mut raw);
@@ -558,7 +558,7 @@ fn spawn_batch_reader(
                 // stays aligned on the next header.
                 if size
                     .checked_add(1)
-                    .map_or(true, |size| !drain(&mut stdout, size))
+                    .is_none_or(|size| !drain(&mut stdout, size))
                 {
                     let _ = sender.send(Err("Incomplete Git history object body".into()));
                     break;

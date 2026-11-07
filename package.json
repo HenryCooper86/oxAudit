@@ -7,11 +7,11 @@
   "scripts": {
     "brand:generate": "tsx tools/generate-brand-assets.ts",
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node node_modules/typescript-7/bin/tsc && vite build",
     "test": "tsx --test tests/*.test.ts && vitest run",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check": "tsc --noEmit",
+    "check": "node node_modules/typescript-7/bin/tsc --noEmit",
     "test:unit": "tsx --test tests/*.test.ts",
     "test:components": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -27,41 +27,50 @@
     "test:ci-shell": "tsx --test tests/ci/*.test.ts"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2",
-    "@tauri-apps/plugin-opener": "^2",
-    "lucide-react": "^0.469.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-opener": "^2.7.2",
+    "lucide-react": "^1.70.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
-    "zustand": "^5.0.2"
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
-    "@playwright/test": "1.64.1",
-    "@tailwindcss/vite": "^4.0.0",
-    "@tauri-apps/cli": "^2",
+    "@playwright/test": "1.65.0",
+    "@tailwindcss/vite": "^4.3.5",
+    "@tauri-apps/cli": "^2.12.4",
     "@testing-library/jest-dom": "^7.0.1",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.6",
-    "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
-    "@vitest/coverage-v8": "^4.1.12",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "@vitest/coverage-v8": "^5.1.0",
     "eslint": "^9.39.5",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "globals": "^17.13.0",
-    "jsdom": "^30.0.1",
-    "tailwindcss": "^4.0.0",
-    "tsx": "^4.23.12",
-    "typescript": "~5.8.3",
-    "typescript-eslint": "^8.71.2",
-    "vite": "^7.3.7",
-    "vitest": "^4.1.12"
+    "globals": "^17.14.0",
+    "jsdom": "^31.0.0",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0",
+    "typescript-7": "npm:typescript@~7.0.2"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
     "fsevents@2.3.3": true
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.5"
+    }
+  },
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   }
 }

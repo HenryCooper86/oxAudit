@@ -8,7 +8,7 @@ oxAudit: a local-first security scanner (source vulnerabilities, secrets, depend
 
 ## Toolchain
 
-- Node 22 (`.nvmrc`), `npm ci`. Rust is pinned to 1.97.1 via `rust-toolchain.toml` (clippy + rustfmt); `rust-version` 1.77 in manifests is only the MSRV floor.
+- Node 22.22.2 or newer supported by `package.json` (`.nvmrc` stays on Node 22), `npm ci`. Rust is pinned to 1.97.1 via `rust-toolchain.toml` (clippy + rustfmt); manifests declare dependency-imposed Rust floors of 1.89 or 1.90. Verification uses the pinned toolchain.
 - Linux needs the Tauri/WebKitGTK dev packages (see `.github/workflows/ci.yml`, `docs/getting-started.md`).
 - The Cargo workspace lives in `src-tauri/`, not the repo root, so always pass `--manifest-path src-tauri/Cargo.toml`.
 
@@ -16,7 +16,7 @@ oxAudit: a local-first security scanner (source vulnerabilities, secrets, depend
 
 Frontend (run from repo root):
 - `npm run dev` (vite only) / `npm run tauri dev` (full desktop app)
-- `npm run build` (`tsc && vite build`); `npm run check` (`tsc --noEmit`); `npm run lint` (eslint)
+- `npm run build` (native TypeScript 7 and Vite); `npm run check` (native TypeScript 7 without emit); `npm run lint` (eslint)
 - `npm test` runs both suites below. Two separate runners:
   - `npm run test:unit`: `tsx --test tests/*.test.ts` (node:test, pure modules, no DOM)
   - `npm run test:components`: `vitest run` (jsdom; only `src/**/*.test.ts(x)`, colocated with sources)

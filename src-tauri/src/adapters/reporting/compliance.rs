@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use printpdf::{
-    Color, FontId, Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfSaveOptions, Point, Pt, Rgb,
-    TextItem,
+    Color, FontId, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage, PdfSaveOptions, Point,
+    Pt, Rgb, TextItem,
 };
 
 use crate::compliance::{ComplianceReportFormat, ComplianceReportMetadata, ComplianceReview};
@@ -534,9 +534,9 @@ fn text_op(
         Op::SetTextCursor {
             pos: Point::new(Mm(x), Mm(y)),
         },
-        Op::SetFontSize {
+        Op::SetFont {
             size: Pt(size),
-            font: font.clone(),
+            font: PdfFontHandle::External(font.clone()),
         },
         Op::SetFillColor {
             col: Color::Rgb(Rgb {
@@ -546,9 +546,8 @@ fn text_op(
                 icc_profile: None,
             }),
         },
-        Op::WriteText {
+        Op::ShowText {
             items: vec![TextItem::Text(text.to_owned())],
-            font: font.clone(),
         },
         Op::EndTextSection,
     ]);
@@ -578,20 +577,12 @@ fn pdf_character_width(font: &ParsedFont, character: char, size: f32) -> Result<
             character as u32
         ));
     }
-    // Read hmtx advances, including blank glyphs. printpdf's outline-based
-    // get_horizontal_advance returns zero for spaces and underestimates lines.
-    let last_metric = font
-        .hhea_table
-        .as_ref()
-        .and_then(|table| table.num_h_metrics.checked_sub(1))
-        .ok_or_else(|| "PDF font has no horizontal metrics".to_string())?;
-    let offset = usize::from(glyph.unwrap().min(last_metric)) * 4;
-    let metric = font
-        .hmtx_data
-        .get(offset..offset + 2)
+    // The font parser exposes hmtx advances, including blank glyphs, so spaces
+    // contribute their full width to the page margins.
+    let advance = font
+        .get_glyph_width(glyph.unwrap())
         .ok_or_else(|| "PDF font has invalid horizontal metrics".to_string())?;
-    let advance = u16::from_be_bytes([metric[0], metric[1]]);
-    Ok(advance as f32 / font.font_metrics.units_per_em as f32 * size)
+    Ok(advance as f32 / font.units_per_em as f32 * size)
 }
 
 fn pdf_text_width(font: &ParsedFont, text: &str, size: f32) -> Result<f32, String> {

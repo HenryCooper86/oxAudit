@@ -257,7 +257,7 @@ pub struct ImageLayerFiles {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
-    format!("{:x}", sha2::Sha256::digest(bytes))
+    hex::encode(sha2::Sha256::digest(bytes))
 }
 
 /// Verify downloaded bytes against a `sha256:…` digest.
@@ -718,7 +718,7 @@ async fn fetch_image_files_bounded<F: FnMut(String)>(
         }
         file.flush()
             .map_err(|error| format!("cannot flush layer {index}: {error}"))?;
-        let actual_digest = format!("sha256:{:x}", hasher.finalize());
+        let actual_digest = format!("sha256:{}", hex::encode(hasher.finalize()));
         if !digest.eq_ignore_ascii_case(&actual_digest) {
             return Err(format!("layer {index}: blob digest mismatch: manifest says {digest}, registry served {actual_digest}"));
         }

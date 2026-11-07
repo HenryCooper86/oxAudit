@@ -576,7 +576,7 @@ fn validate_signature_provenance(
                 .into(),
         );
     }
-    let actual_hash = format!("{:x}", Sha256::digest(signatures_toml.as_bytes()));
+    let actual_hash = hex::encode(Sha256::digest(signatures_toml.as_bytes()));
     if actual_hash != pack.signatures_sha256.to_ascii_lowercase() {
         return Err("signature data changed without a provenance hash update".into());
     }

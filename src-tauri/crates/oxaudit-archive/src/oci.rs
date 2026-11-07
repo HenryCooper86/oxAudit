@@ -268,7 +268,7 @@ fn verify_blob(path: &Path, digest: &str) -> Result<(), String> {
         }
         hasher.update(&buffer[..read]);
     }
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = hex::encode(hasher.finalize());
     if actual != expected {
         return Err(format!(
             "content hashes to {actual}, not the {expected} it is named for"
@@ -282,7 +282,7 @@ mod tests {
     use super::*;
 
     fn sha256_hex(bytes: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(bytes))
+        hex::encode(Sha256::digest(bytes))
     }
 
     /// A minimal but real layout: one manifest, two tar layers, every digest

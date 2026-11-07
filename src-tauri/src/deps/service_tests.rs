@@ -1054,10 +1054,7 @@ fn save_receipt(
     let hash = if corrupt == Some("hash") {
         "wrong".into()
     } else {
-        format!(
-            "{:x}",
-            sha2::Sha256::digest(serde_json::to_vec(&payload).unwrap())
-        )
+        hex::encode(sha2::Sha256::digest(serde_json::to_vec(&payload).unwrap()))
     };
     repository
         .provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {

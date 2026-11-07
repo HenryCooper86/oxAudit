@@ -157,12 +157,13 @@ see [Container](headless-server.md#container) in the server guide.
 
 ## Build prerequisites
 
-Use **Node 22.22.2** (Node 22 at least 22.12 for the installed Vite 7 toolchain),
-npm, Git, and rustup. `rust-toolchain.toml` pins **Rust 1.97.1**, clippy and
-rustfmt. Running `rustup show active-toolchain` inside this checkout installs that
-pin. Cargo's manifest MSRV field is not a claim that the entire current locked
-dependency tree builds with Rust 1.77. The local pilot was exercised with Node
-22.22.2/npm 12.0.1; CI uses Node 22.
+Use **Node 22.22.2**, npm, Git, and rustup. The supported Node ranges are
+recorded in `package.json`; the updated test tooling requires at least
+22.22.2 on Node 22. `rust-toolchain.toml` pins **Rust 1.97.1**, clippy and
+rustfmt. Running `rustup show active-toolchain` inside this checkout installs
+that pin. Cargo manifests declare dependency-imposed compiler floors of
+1.89 or 1.90; builds and tests are verified on the pinned 1.97.1 toolchain.
+The local pilot uses Node 22.22.2/npm 12.0.1; CI uses Node 22.
 
 Install the native prerequisites even for the CLI: it currently links the shared
 Tauri library. The CI matrix is Ubuntu 24.04, macOS 15 and Windows Server 2025;

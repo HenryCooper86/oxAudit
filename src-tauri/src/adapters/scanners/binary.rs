@@ -20,8 +20,10 @@ pub fn binary_graph(run_id: &RunId, result: &BinaryScanResult) -> Result<super::
     {
         let normalized = path.replace('\\', "/");
         let id = ArtifactId::parse(format!(
-            "artifact_{:x}",
-            Sha256::digest(format!("{}\0{}", run_id, normalized).as_bytes())
+            "artifact_{}",
+            hex::encode(Sha256::digest(
+                format!("{}\0{}", run_id, normalized).as_bytes()
+            ))
         ))
         .map_err(|error| error.to_string())?;
         artifacts.entry(normalized.clone()).or_insert(Artifact {
@@ -40,8 +42,10 @@ pub fn binary_graph(run_id: &RunId, result: &BinaryScanResult) -> Result<super::
     if artifacts.is_empty() {
         let normalized = result.target.replace('\\', "/");
         let id = ArtifactId::parse(format!(
-            "artifact_{:x}",
-            Sha256::digest(format!("{}\0{}", run_id, normalized).as_bytes())
+            "artifact_{}",
+            hex::encode(Sha256::digest(
+                format!("{}\0{}", run_id, normalized).as_bytes()
+            ))
         ))
         .map_err(|error| error.to_string())?;
         artifacts.insert(
@@ -70,14 +74,14 @@ pub fn binary_graph(run_id: &RunId, result: &BinaryScanResult) -> Result<super::
     let mut observations = Vec::new();
     for component in &result.components {
         let component_id = ComponentId::parse(format!(
-            "component_{:x}",
-            Sha256::digest(
+            "component_{}",
+            hex::encode(Sha256::digest(
                 format!(
                     "{}\0{}\0{}\0{}",
                     run_id, component.vendor, component.product, component.version
                 )
                 .as_bytes()
-            )
+            ))
         ))
         .map_err(|error| error.to_string())?;
         let artifact = component
@@ -210,10 +214,9 @@ pub fn binary_graph(run_id: &RunId, result: &BinaryScanResult) -> Result<super::
                         evidence: Evidence::ToolReceipt(ToolReceiptEvidence {
                             engine_id: component.detected_by.join("+"),
                             engine_version: env!("CARGO_PKG_VERSION").into(),
-                            invocation_sha256: format!(
-                                "{:x}",
-                                Sha256::digest(format!("{}\0{}", run_id, result.target).as_bytes())
-                            ),
+                            invocation_sha256: hex::encode(Sha256::digest(
+                                format!("{}\0{}", run_id, result.target).as_bytes(),
+                            )),
                             bounded_metadata: vec![("target".into(), result.target.clone())],
                         }),
                     },
@@ -229,8 +232,8 @@ pub fn binary_provider_snapshot_id(
     source: &str,
 ) -> Result<ProviderSnapshotId, String> {
     ProviderSnapshotId::parse(format!(
-        "provider_{:x}",
-        Sha256::digest(format!("{}\0{}", run_id, source).as_bytes())
+        "provider_{}",
+        hex::encode(Sha256::digest(format!("{}\0{}", run_id, source).as_bytes()))
     ))
     .map_err(|error| error.to_string())
 }

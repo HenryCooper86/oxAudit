@@ -322,7 +322,7 @@ pub(crate) fn ensure_run_finding_budget(
 ) -> Result<(), FindingLimitError> {
     if current
         .checked_add(incoming)
-        .map_or(true, |total| total > limit)
+        .is_none_or(|total| total > limit)
     {
         Err(FindingLimitError::PerRun { limit })
     } else {

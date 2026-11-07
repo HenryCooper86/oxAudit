@@ -237,8 +237,8 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    use hmac::Mac;
-    let mut mac = <hmac::Hmac<sha2::Sha256> as Mac>::new_from_slice(key)
+    use hmac::{KeyInit, Mac};
+    let mut mac = <hmac::Hmac<sha2::Sha256> as KeyInit>::new_from_slice(key)
         .expect("HMAC accepts any key length");
     mac.update(data);
     mac.finalize().into_bytes().to_vec()

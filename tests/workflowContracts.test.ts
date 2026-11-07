@@ -24,7 +24,7 @@ test("the JavaScript dependency audit is an executable CI contract", () => {
 test("release SBOM generators use exact versions", () => {
   assert.match(
     releaseWorkflow,
-    /cargo install cargo-cyclonedx --version 0\.5\.9 --locked/,
+    /cargo install cargo-cyclonedx --version 0\.5\.10 --locked/,
   );
   assert.match(releaseWorkflow, /@cyclonedx\/cyclonedx-npm@6\.0\.1/);
   assert.doesNotMatch(releaseWorkflow, /cyclonedx-npm@latest/);

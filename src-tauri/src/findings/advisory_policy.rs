@@ -254,7 +254,7 @@ impl Entry {
         }
         self.version
             .as_deref()
-            .map_or(true, |version| version == subject.version)
+            .is_none_or(|version| version == subject.version)
     }
 }
 

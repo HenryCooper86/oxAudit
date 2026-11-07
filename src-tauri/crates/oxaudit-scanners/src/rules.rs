@@ -135,7 +135,7 @@ impl RulePack {
 
         let canonical = toml::to_string(&CanonicalRules { rule: rules })
             .map_err(|error| RulePackError::Parse(error.to_string()))?;
-        Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
+        Ok(hex::encode(Sha256::digest(canonical.as_bytes())))
     }
 
     pub fn validate(&self) -> Result<(), RulePackError> {
@@ -229,7 +229,7 @@ impl RulePack {
                     fixture_id: fixture.id.clone(),
                     path: fixture.path.clone(),
                 })?;
-            let actual = format!("{:x}", Sha256::digest(&bytes));
+            let actual = hex::encode(Sha256::digest(&bytes));
             if actual != fixture.sha256.to_ascii_lowercase() {
                 return Err(RulePackError::FixtureHashMismatch {
                     fixture_id: fixture.id.clone(),
@@ -471,6 +471,16 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn rule_pack_hash_preserves_the_pre_upgrade_canonical_encoding() {
+        // Captured from the released TOML 0.8 / SHA-256 0.10 implementation.
+        // Installed rule packs carry this digest across dependency updates.
+        assert_eq!(
+            RulePack::computed_content_sha256(&[rule()]).unwrap(),
+            "f9181d07e1cba893ae3415e111a8b73a04f4955db0b89bf87a2a0badfc448bae"
+        );
     }
 
     #[test]

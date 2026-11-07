@@ -460,7 +460,7 @@ pub(crate) async fn scan_binaries_engine(
         let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
         let content_sha256 = {
             use sha2::Digest;
-            format!("{:x}", sha2::Sha256::digest(bytes))
+            hex::encode(sha2::Sha256::digest(bytes))
         };
         service
             .repository()

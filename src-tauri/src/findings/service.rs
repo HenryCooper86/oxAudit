@@ -821,7 +821,7 @@ impl FindingsService {
                     )
                 }));
                 let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                if done % 25 == 0 || done == total {
+                if done.is_multiple_of(25) || done == total {
                     let _ = events.emit(
                         "scan://progress",
                         serde_json::json!({"total": total, "done": done, "phase": "scanning"}),
@@ -1824,7 +1824,7 @@ fn strip_project_policy_reviews(findings: &mut [Finding], now: DateTime<Utc>) {
                 review.origin == ReviewOrigin::Local
                     && review.superseded_at.is_none()
                     && review.state != super::domain::ReviewState::Candidate
-                    && review.expires_at.as_deref().map_or(true, |expires_at| {
+                    && review.expires_at.as_deref().is_none_or(|expires_at| {
                         DateTime::parse_from_rfc3339(expires_at)
                             .is_ok_and(|expires_at| expires_at.with_timezone(&Utc) > now)
                     })

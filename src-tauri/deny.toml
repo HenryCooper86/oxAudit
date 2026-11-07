@@ -116,6 +116,13 @@ confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
 [[licenses.exceptions]]
+# bzip2 0.6 uses a Rust translation under the original permissive bzip2
+# license (source notices, attribution and origin requirements; no copyleft).
+# Keep this review scoped to the implementation that introduces the license.
+name = "libbz2-rs-sys"
+allow = ["bzip2-1.0.6"]
+
+[[licenses.exceptions]]
 # Ring vendors BoringSSL-derived code under a combination that scores below the
 # confidence threshold when detected from the file alone.
 name = "ring"

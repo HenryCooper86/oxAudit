@@ -15,8 +15,10 @@ pub fn source_artifact(run_id: &RunId, file: &SourceFile) -> Result<Artifact, St
         .to_string_lossy()
         .replace('\\', "/");
     let identity = format!(
-        "artifact_{:x}",
-        Sha256::digest(format!("{}\0{}", run_id, relative).as_bytes())
+        "artifact_{}",
+        hex::encode(Sha256::digest(
+            format!("{}\0{}", run_id, relative).as_bytes()
+        ))
     );
     let size_bytes = file
         .canonical_path
@@ -52,15 +54,12 @@ pub fn source_observation(
         start_column: u32::try_from(finding.column).ok(),
         end_line: u32::try_from(finding.line).ok(),
         end_column: None,
-        context_sha256: Some(format!("{:x}", Sha256::digest(finding.context.as_bytes()))),
+        context_sha256: Some(hex::encode(Sha256::digest(finding.context.as_bytes()))),
     };
     let (kind, evidence) = if finding.category == "secret" {
-        let correlation = format!(
-            "{:x}",
-            Sha256::digest(
-                format!("{}\0{}\0{}", run_id, finding.fingerprint, finding.id).as_bytes()
-            )
-        );
+        let correlation = hex::encode(Sha256::digest(
+            format!("{}\0{}\0{}", run_id, finding.fingerprint, finding.id).as_bytes(),
+        ));
         let redacted = RedactedValue::secret("credential material", correlation)
             .map_err(|error| error.to_string())?;
         (

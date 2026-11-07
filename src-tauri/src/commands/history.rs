@@ -172,7 +172,7 @@ pub(crate) async fn scan_history_workflow(
         use sha2::Digest;
         for blob in &outcome.blobs {
             let artifact = oxaudit_domain::Artifact {
-                id: oxaudit_domain::ArtifactId::parse(format!("artifact_{:x}", sha2::Sha256::digest(format!("{identity}\0{}", blob.oid)))).map_err(|error| error.to_string())?,
+                id: oxaudit_domain::ArtifactId::parse(format!("artifact_{}", hex::encode(sha2::Sha256::digest(format!("{identity}\0{}", blob.oid))))).map_err(|error| error.to_string())?,
                 kind: oxaudit_domain::ArtifactKind::SourceFile,
                 location: oxaudit_domain::ArtifactLocation { normalized_path: format!("git:{}!{}", blob.oid, blob.path), canonical_path: None, parent_id: None },
                 size_bytes: blob.size_bytes, media_type: Some("text/plain".into()), content_sha256: Some(blob.content_sha256.clone()),

@@ -195,10 +195,10 @@ fn hash_stream(
             .read(&mut buffer[..wanted])
             .map_err(|error| error.to_string())?;
         if count == 0 {
-            return Ok((bytes, format!("{:x}", hasher.finalize()), true));
+            return Ok((bytes, hex::encode(hasher.finalize()), true));
         }
         if remaining == 0 {
-            return Ok((bytes, format!("{:x}", hasher.finalize()), false));
+            return Ok((bytes, hex::encode(hasher.finalize()), false));
         }
         hasher.update(&buffer[..count]);
         bytes = bytes
@@ -353,7 +353,7 @@ fn descriptor_document(
             .ok_or("identity byte allowance exhausted")?;
         verify_descriptor(
             &mut record,
-            &format!("{:x}", Sha256::digest(&bytes)),
+            &hex::encode(Sha256::digest(&bytes)),
             bytes.len() as u64,
             stable,
         );
@@ -426,7 +426,7 @@ fn inspect_oci(
         budget = budget
             .checked_sub(bytes.len() as u64)
             .ok_or("identity byte allowance exhausted")?;
-        oci.index_sha256 = Some(format!("{:x}", Sha256::digest(&bytes)));
+        oci.index_sha256 = Some(hex::encode(Sha256::digest(&bytes)));
         if !stable {
             complete = false;
             evidence
@@ -547,7 +547,7 @@ mod tests {
 
     fn digest(bytes: &[u8]) -> String {
         use sha2::Digest;
-        format!("{:x}", sha2::Sha256::digest(bytes))
+        hex::encode(sha2::Sha256::digest(bytes))
     }
 
     fn layout() -> tempfile::TempDir {

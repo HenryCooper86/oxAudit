@@ -76,7 +76,8 @@ pub(super) fn validate(value: &Value, format: ReportFormat) -> Result<(), String
     if let Some(error) = validator.iter_errors(value).next() {
         return Err(format!(
             "Generated {format:?} report failed schema validation at {} (constraint {})",
-            error.instance_path, error.schema_path
+            error.instance_path(),
+            error.schema_path()
         ));
     }
     Ok(())

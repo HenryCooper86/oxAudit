@@ -150,8 +150,8 @@ pub(crate) fn persist_external_claims(
     run.engine_ids
         .push(format!("oxaudit.external-import.{}", analysis.format));
     let artifact_id = oxaudit_domain::ArtifactId::parse(format!(
-        "artifact_{:x}",
-        sha2::Sha256::digest(
+        "artifact_{}",
+        hex::encode(sha2::Sha256::digest(
             format!(
                 "{}\0{}\0{}\0external-claims",
                 run.id,
@@ -159,7 +159,7 @@ pub(crate) fn persist_external_claims(
                 analysis.content_sha256
             )
             .as_bytes()
-        )
+        ))
     ))
     .map_err(|error| error.to_string())?;
     let artifact = oxaudit_domain::Artifact {
@@ -274,8 +274,8 @@ pub(crate) fn import_inventory_report_inner(
     run.engine_ids
         .push(format!("oxaudit.import.{}", analysis.format));
     let artifact_id = oxaudit_domain::ArtifactId::parse(format!(
-        "artifact_{:x}",
-        sha2::Sha256::digest(
+        "artifact_{}",
+        hex::encode(sha2::Sha256::digest(
             format!(
                 "{}\0{}\0{}",
                 run.id,
@@ -283,7 +283,7 @@ pub(crate) fn import_inventory_report_inner(
                 analysis.content_sha256
             )
             .as_bytes()
-        )
+        ))
     ))
     .map_err(|error| error.to_string())?;
     let artifact = oxaudit_domain::Artifact {
@@ -310,10 +310,10 @@ pub(crate) fn import_inventory_report_inner(
         .enumerate()
         .map(|(index, imported)| {
             oxaudit_domain::ComponentId::parse(format!(
-                "component_{:x}",
-                sha2::Sha256::digest(
+                "component_{}",
+                hex::encode(sha2::Sha256::digest(
                     format!("{}\0{}\0{}", run.id, index, imported.conflict_key()).as_bytes()
-                )
+                ))
             ))
             .map_err(|error| error.to_string())
         })
@@ -747,7 +747,7 @@ pub(crate) fn verify_finding_inner(
             id: verifier_id.into(),
             version: "1".into(),
         },
-        input_snapshot_sha256: format!("{:x}", sha2::Sha256::digest(snapshot)),
+        input_snapshot_sha256: hex::encode(sha2::Sha256::digest(snapshot)),
         result,
         evidence_delta: Vec::new(),
         limitations: if limitation.trim().is_empty() {

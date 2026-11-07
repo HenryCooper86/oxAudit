@@ -8,6 +8,10 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
+  // Preserve Vite 7's browser floor when Vite 8 advances its default baseline.
+  build: {
+    target: ["chrome107", "edge107", "firefox104", "safari16"],
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

@@ -1986,7 +1986,7 @@ mod tests {
                 .expect("layer member");
             builder.finish().expect("layer done");
         }
-        let sha = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let sha = |bytes: &[u8]| hex::encode(Sha256::digest(bytes));
         let layer_digest = sha(&tar_bytes);
         std::fs::write(
             root.join(format!("blobs/sha256/{layer_digest}")),
@@ -2243,7 +2243,7 @@ mod tests {
             0xcafe1a7e,
             br#"{"type":"deb","os":"Debian","name":"containerd","version":"1.7.3-1","architecture":"amd64"}"#,
         );
-        while binary.len() % 16 != 0 {
+        while !binary.len().is_multiple_of(16) {
             binary.push(0);
         }
         // The blob builder carries its own 16-byte prefix; keep alignment.

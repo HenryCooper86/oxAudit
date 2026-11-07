@@ -174,7 +174,7 @@ impl Git {
         Ok(GitSnapshot {
             branch,
             head,
-            index_digest: format!("{:x}", Sha256::digest(index)),
+            index_digest: hex::encode(Sha256::digest(index)),
         })
     }
 }
@@ -334,12 +334,12 @@ fn raw_entry_with_open(
         let mut digest = sha1::Sha1::new();
         digest.update(header.as_bytes());
         digest.update(&bytes);
-        format!("{:x}", digest.finalize())
+        hex::encode(digest.finalize())
     } else {
         let mut digest = Sha256::new();
         digest.update(header.as_bytes());
         digest.update(&bytes);
-        format!("{:x}", digest.finalize())
+        hex::encode(digest.finalize())
     };
     #[cfg(unix)]
     let executable = {

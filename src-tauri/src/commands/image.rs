@@ -327,7 +327,7 @@ pub(crate) async fn scan_image_workflow(
         let snapshot_id = oxaudit_domain::ProviderSnapshotId::new();
         repository.provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {
             id: snapshot_id.to_string(), provider_id: "oxaudit.image.evidence".into(),
-            fetched_at_ms: epoch_millis(), content_sha256: format!("{:x}", sha2::Sha256::digest(bytes)), payload: provider_payload,
+            fetched_at_ms: epoch_millis(), content_sha256: hex::encode(sha2::Sha256::digest(bytes)), payload: provider_payload,
         }).map_err(|error| error.to_string())?;
         managed.as_mut().expect("image run exists").record_provider_snapshot(snapshot_id).map_err(|error| error.to_string())?;
         managed.as_mut().expect("image run exists").transition(RunState::Assessing, epoch_millis()).map_err(|error| error.to_string())?;
@@ -455,10 +455,7 @@ mod tests {
         use sha2::Digest;
         assert_eq!(
             projection["localEvidence"]["file"]["sha256"],
-            format!(
-                "{:x}",
-                sha2::Sha256::digest(b"\0BusyBox v1.36.1 (fixture)\0")
-            )
+            hex::encode(sha2::Sha256::digest(b"\0BusyBox v1.36.1 (fixture)\0"))
         );
         assert_eq!(projection["localEvidence"]["complete"], true);
         let (artifacts, components, observations) =

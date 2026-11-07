@@ -602,7 +602,7 @@ impl FindingsRepository {
                 let state: String = row.get(2).map_err(persistence_error)?;
                 let expiry: Option<String> = row.get(3).map_err(persistence_error)?;
                 let origin: String = row.get(4).map_err(persistence_error)?;
-                let valid_expiry = expiry.as_deref().map_or(true, |expiry| {
+                let valid_expiry = expiry.as_deref().is_none_or(|expiry| {
                     DateTime::parse_from_rfc3339(expiry)
                         .is_ok_and(|expiry| expiry.with_timezone(&Utc) > now)
                 });
@@ -833,9 +833,10 @@ impl FindingsRepository {
                 observation.fingerprint_version,
                 observation.fingerprint.clone(),
             );
-            if winners.get(&key).map_or(true, |old| {
-                completed > old.0 || (completed == old.0 && run_id > old.1)
-            }) {
+            if winners
+                .get(&key)
+                .is_none_or(|old| completed > old.0 || (completed == old.0 && run_id > old.1))
+            {
                 winners.insert(key, (completed, run_id, observation));
             }
         }

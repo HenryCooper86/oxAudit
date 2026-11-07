@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -22,6 +22,12 @@ describe("AskUserModal", () => {
   });
 
   afterEach(() => {
+    if (vi.isFakeTimers()) {
+      // Unmount and flush jsdom's deferred focus restoration before replacing
+      // its clock; otherwise jsdom 31 keeps a rendering timer that never runs.
+      cleanup();
+      vi.runOnlyPendingTimers();
+    }
     vi.useRealTimers();
   });
 

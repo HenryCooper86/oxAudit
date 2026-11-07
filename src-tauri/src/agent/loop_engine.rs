@@ -263,7 +263,7 @@ you did not obtain from a tool. Prefer run_scan / search_cve over guessing. Repl
             // queue is empty, so this cannot drop a steer that raced the
             // decision: if one is pending we keep the run alive and let the
             // model respond to it instead of ending the turn here.
-            let finished = steer.as_ref().map_or(true, |queue| queue.close_if_empty());
+            let finished = steer.as_ref().is_none_or(|queue| queue.close_if_empty());
             if finished {
                 return Ok((outcome.content, final_usage));
             }

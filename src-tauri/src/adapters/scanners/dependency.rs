@@ -218,8 +218,10 @@ pub fn dependency_graph(
 pub fn lockfile_artifact(run_id: &RunId, path: &std::path::Path) -> Result<Artifact, String> {
     let normalized = normalize_path(&path.to_string_lossy());
     let identity = format!(
-        "artifact_{:x}",
-        Sha256::digest(format!("{}\0{}", run_id, normalized).as_bytes())
+        "artifact_{}",
+        hex::encode(Sha256::digest(
+            format!("{}\0{}", run_id, normalized).as_bytes()
+        ))
     );
     Ok(Artifact {
         id: ArtifactId::parse(identity).map_err(|error| error.to_string())?,
@@ -256,8 +258,8 @@ fn component_id(
         ));
     }
     ComponentId::parse(format!(
-        "component_{:x}",
-        Sha256::digest(identity.as_bytes())
+        "component_{}",
+        hex::encode(Sha256::digest(identity.as_bytes()))
     ))
     .map_err(|error| error.to_string())
 }

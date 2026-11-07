@@ -1083,7 +1083,7 @@ fn seed_dependency_receipt(database: &Path) {
                 "provider_fixture",
                 "osv-query",
                 1000,
-                format!("{:x}", Sha256::digest(&bytes)),
+                hex::encode(Sha256::digest(&bytes)),
                 String::from_utf8(bytes).unwrap()
             ],
         )
@@ -1407,7 +1407,7 @@ fn rule_pack_fixture(directory: &std::path::Path) -> std::path::PathBuf {
     };
     let hash_of = |content: &str| {
         use sha2::Digest;
-        format!("{:x}", sha2::Sha256::digest(content.as_bytes()))
+        hex::encode(sha2::Sha256::digest(content.as_bytes()))
     };
     let provenance = |hash: &str| oxaudit_domain::Provenance {
         authors: vec!["e2e fixture".into()],
@@ -2042,7 +2042,7 @@ impl FakeRegistry {
 // keeping clones alive for every branch requires them outside the closure.
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
-    format!("{:x}", sha2::Sha256::digest(bytes))
+    hex::encode(sha2::Sha256::digest(bytes))
 }
 
 fn gzip_layer(members: &[(&str, &[u8])]) -> Vec<u8> {
@@ -2207,7 +2207,7 @@ fn rule_packs_install_from_a_feed_and_apply_by_selection() {
     let pack_zip = writer.finish().expect("pack zip").into_inner();
     let pack_sha = {
         use sha2::Digest;
-        format!("{:x}", sha2::Sha256::digest(&pack_zip))
+        hex::encode(sha2::Sha256::digest(&pack_zip))
     };
     let index = serde_json::json!({
         "schemaVersion": 1,
@@ -2821,7 +2821,7 @@ fn compliance_reports_every_format_with_the_claim_boundary_and_a_receipt() {
         assert_eq!(receipt["outputPath"], path.to_string_lossy().as_ref());
         assert_eq!(
             receipt["contentSha256"],
-            format!("{:x}", sha2::Sha256::digest(&bytes)),
+            hex::encode(sha2::Sha256::digest(&bytes)),
             "{format}: the receipt must hash exactly what was written"
         );
         assert_eq!(receipt["metadata"]["classification"], "Confidential");
@@ -3147,7 +3147,7 @@ fn compliance_input_mistakes_are_usage_errors_that_save_nothing() {
 /// An rpm SQLite database (WAL-flagged, as rpm writes it) holding these
 /// packages, as image bytes.
 fn rpmdb_sqlite(packages: &[oxaudit_parsers::rpm_header::RpmPackage]) -> Vec<u8> {
-    let connection = rusqlite::Connection::open_in_memory().expect("memory db");
+    let mut connection = rusqlite::Connection::open_in_memory().expect("memory db");
     connection
         .execute_batch(
             "CREATE TABLE Packages (hnum INTEGER PRIMARY KEY AUTOINCREMENT, blob BLOB NOT NULL);",

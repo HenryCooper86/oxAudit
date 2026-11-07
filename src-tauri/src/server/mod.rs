@@ -788,7 +788,7 @@ mod tests {
         let fixture = |id: &str| FixtureExpectation {
             id: id.into(),
             path: format!("{id}.txt"),
-            sha256: format!("{:x}", Sha256::digest(id.as_bytes())),
+            sha256: hex::encode(Sha256::digest(id.as_bytes())),
             expected_values: Vec::new(),
         };
         let rules = vec![RuleDefinition {
