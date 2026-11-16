@@ -143,6 +143,9 @@ lists what each release ships.
 - `scan --db` keeps the fetched KEV catalog as `kev-catalog.json` beside the
   database for one hour, so repeat scans skip the download. A scan without
   `--db` still leaves nothing behind.
+- Git history scans read blobs in batches and scan each batch on every core.
+  Blobs are still accounted for in the order git delivers them, so the byte,
+  finding and time budgets stop a run at the same blob as before.
 - A source scan stores its file inventory in one database transaction rather
   than one commit per file, and resolves each walked path once per walk
   instead of twice.

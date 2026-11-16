@@ -30,6 +30,7 @@
 //! over a cleared environment: no hooks, no network, no filters, no index
 //! writes.
 
+use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
@@ -59,6 +60,57 @@ const MAX_FINDINGS: usize = 10_000;
 const TIMEOUT: Duration = Duration::from_secs(120);
 
 const UNAVAILABLE: &str = "Git history unavailable: not a git repository, unsupported git version, or enumeration failed. Working-tree scans remain available.";
+
+/// Most blobs scanned together, and the content they may hold between them.
+/// With the reader's queue this bounds what is in memory at once.
+const BATCH_BLOBS: usize = 64;
+const BATCH_BYTES: usize = 16 * 1024 * 1024;
+/// Blobs the reader may queue ahead of the scanner.
+const READ_AHEAD_BLOBS: usize = 32;
+
+/// What scanning one message from the reader produced.
+enum ScannedBlob {
+    /// Not a blob, or not text.
+    Skipped,
+    /// The reader failed; the run fails when this is reached.
+    Failed(String),
+    Text {
+        oid: String,
+        path: String,
+        byte_count: u64,
+        content_sha256: String,
+        /// `None` when the blob produced more findings than the allowance.
+        result: Option<(Vec<Finding>, Vec<crate::secrets_validation::RawSecret>)>,
+    },
+}
+
+fn scan_blob(
+    message: Result<Option<HistoryBlob>, String>,
+    allowance: usize,
+    collect_raw_secrets: bool,
+) -> ScannedBlob {
+    let blob = match message {
+        Ok(Some(blob)) => blob,
+        Ok(None) => return ScannedBlob::Skipped,
+        Err(error) => return ScannedBlob::Failed(error),
+    };
+    let Ok(text) = String::from_utf8(blob.bytes) else {
+        return ScannedBlob::Skipped;
+    };
+    use sha2::Digest;
+    ScannedBlob::Text {
+        byte_count: text.len() as u64,
+        content_sha256: hex::encode(sha2::Sha256::digest(text.as_bytes())),
+        result: crate::scanners::scan_text_for_secrets_with_raw(
+            &text,
+            &blob.path,
+            allowance,
+            collect_raw_secrets,
+        ),
+        oid: blob.oid,
+        path: blob.path,
+    }
+}
 
 /// One blob's content read from `cat-file --batch`, with the repository path
 /// git associated with the object.
@@ -301,7 +353,11 @@ fn scan_history_secrets_bounded(
     let mut blobs = Vec::new();
     let mut finding_blob_ids = BTreeMap::new();
 
-    loop {
+    // Blobs arrive in order from `cat-file`. They are taken a batch at a
+    // time, scanned on every core, and then accounted for one by one in
+    // arrival order, so every budget stops the run at the same blob it would
+    // stop at scanning them singly.
+    'batches: loop {
         if cancel.load(Ordering::SeqCst) {
             cancelled = true;
             truncated_note = Some("history scan cancelled".into());
@@ -310,21 +366,13 @@ fn scan_history_secrets_bounded(
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .unwrap_or(Duration::ZERO);
-        let blob = match batch
-            .receiver
-            .as_ref()
-            .expect("history receiver exists")
-            .recv_timeout(
-                remaining
-                    .min(Duration::from_millis(25))
-                    .max(Duration::from_millis(1)),
-            ) {
-            Ok(Ok(Some(blob))) => blob,
-            Ok(Ok(None)) => {
-                blobs_skipped += 1;
-                continue;
-            }
-            Ok(Err(error)) => return Err(error),
+        let receiver = batch.receiver.as_ref().expect("history receiver exists");
+        let first = match receiver.recv_timeout(
+            remaining
+                .min(Duration::from_millis(25))
+                .max(Duration::from_millis(1)),
+        ) {
+            Ok(message) => message,
             Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => continue,
             Err(RecvTimeoutError::Timeout) => {
                 truncated_note.get_or_insert_with(|| "time budget reached".to_owned());
@@ -332,58 +380,89 @@ fn scan_history_secrets_bounded(
             }
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        let text = match String::from_utf8(blob.bytes) {
-            Ok(text) => text,
-            Err(_) => {
-                blobs_skipped += 1;
-                continue;
-            }
-        };
-        let byte_count = text.len() as u64;
-        if total_bytes
-            .checked_add(byte_count)
-            .is_none_or(|bytes| bytes > MAX_TOTAL_BYTES)
-        {
-            truncated_note.get_or_insert_with(|| "total scanned-bytes budget reached".to_owned());
-            break;
-        }
-        total_bytes += byte_count;
-        match crate::scanners::scan_text_for_secrets_with_raw(
-            &text,
-            &blob.path,
-            MAX_FINDINGS.saturating_sub(findings.len()),
-            collect_raw_secrets,
-        ) {
-            Some((mut found, mut raw)) => {
-                blobs_scanned += 1;
-                for finding in &found {
-                    finding_blob_ids.insert(finding.id.clone(), blob.oid.clone());
-                }
-                use sha2::Digest;
-                blobs.push(HistoryBlobEvidence {
-                    oid: blob.oid,
-                    path: blob.path,
-                    size_bytes: byte_count,
-                    content_sha256: hex::encode(sha2::Sha256::digest(text.as_bytes())),
-                });
-                findings.append(&mut found);
-                raw_secrets.append(&mut raw);
-                if findings.len() >= MAX_FINDINGS {
-                    truncated_note
-                        .get_or_insert_with(|| format!("finding budget of {MAX_FINDINGS} reached"));
-                    break;
-                }
-            }
-            // A single blob overflowing the per-content limit is the same
-            // condition a working-tree scan reports as a per-file limit error;
-            // counting it as skipped keeps the run honest without discarding
-            // every other blob's findings.
-            None => {
-                blobs_skipped += 1;
-                truncated_note.get_or_insert_with(|| {
-                    "history finding allowance exceeded; earlier evidence retained".into()
-                });
+        // Whatever else is already waiting joins the batch, up to its bounds.
+        let mut pending = vec![first];
+        let mut pending_bytes = 0usize;
+        while pending.len() < BATCH_BLOBS && pending_bytes < BATCH_BYTES {
+            // A read error ends the batch: nothing after it is wanted.
+            if matches!(pending.last(), Some(Err(_))) {
                 break;
+            }
+            match receiver.try_recv() {
+                Ok(message) => {
+                    if let Ok(Some(blob)) = &message {
+                        pending_bytes += blob.bytes.len();
+                    }
+                    pending.push(message);
+                }
+                Err(_) => break,
+            }
+        }
+        // The finding allowance at the start of the batch is at least what
+        // each blob would be given singly; the exact allowance is applied
+        // when the blob is accounted for below.
+        let allowance = MAX_FINDINGS.saturating_sub(findings.len());
+        let scanned: Vec<ScannedBlob> = pending
+            .into_par_iter()
+            .map(|message| scan_blob(message, allowance, collect_raw_secrets))
+            .collect();
+        for blob in scanned {
+            let (oid, path, byte_count, content_sha256, result) = match blob {
+                ScannedBlob::Skipped => {
+                    blobs_skipped += 1;
+                    continue;
+                }
+                ScannedBlob::Failed(error) => return Err(error),
+                ScannedBlob::Text {
+                    oid,
+                    path,
+                    byte_count,
+                    content_sha256,
+                    result,
+                } => (oid, path, byte_count, content_sha256, result),
+            };
+            if total_bytes
+                .checked_add(byte_count)
+                .is_none_or(|bytes| bytes > MAX_TOTAL_BYTES)
+            {
+                truncated_note
+                    .get_or_insert_with(|| "total scanned-bytes budget reached".to_owned());
+                break 'batches;
+            }
+            total_bytes += byte_count;
+            let remaining = MAX_FINDINGS.saturating_sub(findings.len());
+            match result.filter(|(found, _)| found.len() <= remaining) {
+                Some((mut found, mut raw)) => {
+                    blobs_scanned += 1;
+                    for finding in &found {
+                        finding_blob_ids.insert(finding.id.clone(), oid.clone());
+                    }
+                    blobs.push(HistoryBlobEvidence {
+                        oid,
+                        path,
+                        size_bytes: byte_count,
+                        content_sha256,
+                    });
+                    findings.append(&mut found);
+                    raw_secrets.append(&mut raw);
+                    if findings.len() >= MAX_FINDINGS {
+                        truncated_note.get_or_insert_with(|| {
+                            format!("finding budget of {MAX_FINDINGS} reached")
+                        });
+                        break 'batches;
+                    }
+                }
+                // A single blob overflowing the per-content limit is the same
+                // condition a working-tree scan reports as a per-file limit error;
+                // counting it as skipped keeps the run honest without discarding
+                // every other blob's findings.
+                None => {
+                    blobs_skipped += 1;
+                    truncated_note.get_or_insert_with(|| {
+                        "history finding allowance exceeded; earlier evidence retained".into()
+                    });
+                    break 'batches;
+                }
             }
         }
     }
@@ -524,7 +603,8 @@ fn spawn_batch_reader(
     });
     let paths: HashMap<String, String> = by_oid.clone();
     // At most two queued 1 MiB blobs plus the reader/consumer's current blob.
-    let (sender, receiver) = mpsc::sync_channel::<Result<Option<HistoryBlob>, String>>(2);
+    let (sender, receiver) =
+        mpsc::sync_channel::<Result<Option<HistoryBlob>, String>>(READ_AHEAD_BLOBS);
     let reader = std::thread::spawn(move || {
         let mut stdout = BufReader::new(stdout);
         loop {
@@ -697,7 +777,9 @@ mod tests {
             root.path(),
             &["config", "user.email", "history-test@example.invalid"],
         );
-        for i in 0..8 {
+        // More blobs than the reader may queue ahead, so an unconsumed
+        // reader has to block rather than drain the repository.
+        for i in 0..READ_AHEAD_BLOBS + 8 {
             fs::write(
                 root.path().join(format!("blob-{i}.txt")),
                 format!("{i}\n{}", "inert fixture text\n".repeat(16000)),
