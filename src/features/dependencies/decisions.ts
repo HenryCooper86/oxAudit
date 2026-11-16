@@ -1023,7 +1023,9 @@ function classifyChange(installed: string, candidate: string): string {
 const safeName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 function directCommand(group: UpgradeGroup): string | null {
   const v=group.advisories[0];
-  if (!group.candidate || !group.paths.length || !v.lockfile.endsWith('/package-lock.json')) return null;
+  // Relationship chains exist for non-npm lockfiles too; only an npm package
+  // in an npm lockfile may produce an npm command.
+  if (v.ecosystem !== 'npm' || !group.candidate || !group.paths.length || !v.lockfile.endsWith('/package-lock.json')) return null;
   if (group.advisories.some(a=>a.occurrence?.localWorkspace || a.occurrence?.status!=='available' || a.occurrence.warnings.length>0)) return null;
   const first=group.paths[0].chain[0];
   if (!first || !safeName.test(first.name) || first.name!==v.packageName) return null;
@@ -1064,7 +1066,11 @@ export function upgradeGroups(vulnerabilities: Vulnerability[]): UpgradeGroup[] 
     const origin=group.paths[0];
     group.checklist=[
       `Review ${v.packageName}@${v.installedVersion} in ${v.lockfile} (${v.occurrence?.installPath ?? 'installation path unknown'}).`,
-      origin ? `Review manifest ${origin.workspace || 'root'} and update entry point ${origin.entryPoint}${group.paths.some(p=>p.chain.length>1)?'; select a parent release that updates the affected transitive package':''}.` : 'Establish the dependency chain and direct manifest entry point; relationship evidence is unknown.',
+      origin ? (v.ecosystem === 'npm'
+        ? `Review manifest ${origin.workspace || 'root'} and update entry point ${origin.entryPoint}`
+        // Non-npm workspaces name a member, importer or target, not an npm directory.
+        : `Review the ${v.ecosystem} project ${origin.workspace || 'root'} declared in ${v.lockfile} and update direct dependency ${origin.entryPoint}`
+      ) + `${group.paths.some(p=>p.chain.length>1)?'; select a parent release that updates the affected transitive package':''}.` : 'Establish the dependency chain and direct manifest entry point; relationship evidence is unknown.',
       group.candidate ? `Advisory candidate ${group.candidate} clears the supplied supported ranges; verify release availability and project compatibility.` : 'Manual decision: no supplied candidate is proven to clear all advisory ranges. Review each advisory fix.',
       `Related advisories: ${[...new Set(group.advisories.map(a=>a.id))].join(', ')}.`,
       'Review manifest and lockfile changes, run project checks, then Recheck dependencies in oxAudit.'

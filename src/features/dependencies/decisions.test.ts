@@ -237,6 +237,19 @@ describe('ecosystem-wide upgrade candidates',()=>{
     expect(group.command).toBeNull();
     expect(group.checklist).toContain('Advisory candidate 1.0.1');
   });
+  it('never turns relationship paths on a non-npm ecosystem into an npm command or npm guidance',()=>{
+    for (const [ecosystem, lockfile] of [['crates.io','/repo/Cargo.lock'],['PyPI','/repo/uv.lock'],['RubyGems','/repo/Gemfile.lock'],['NuGet','/repo/packages.lock.json'],['crates.io','/repo/package-lock.json']]) {
+      const v=ecosystemVuln(ecosystem,[{introduced:'0'},{fixed:'1.0.1'}],{lockfile,occurrence:{installPath:null,status:'available',paths:[path('member')],warnings:[]}});
+      const group=upgradeGroups([v])[0];
+      expect(group.candidate).toBe('1.0.1');
+      expect(group.command).toBeNull();
+      expect(group.checklist).not.toMatch(/npm/i);
+      expect(group.checklist).toContain(`Review the ${ecosystem} project member`);
+      const transitive=upgradeGroups([{...v,occurrence:{installPath:null,status:'available',paths:[path('member',true)],warnings:[]}}])[0];
+      expect(transitive.command).toBeNull();
+      expect(transitive.checklist).toContain('select a parent release');
+    }
+  });
   it('offers Maven and RubyGems candidates via their own comparators',()=>{
     expect(upgradeGroups([ecosystemVuln('Maven',[{introduced:'0'},{fixed:'1.0.1'}])])[0].candidate).toBe('1.0.1');
     expect(upgradeGroups([ecosystemVuln('RubyGems',[{introduced:'0'},{fixed:'1.0.1'}])])[0].candidate).toBe('1.0.1');

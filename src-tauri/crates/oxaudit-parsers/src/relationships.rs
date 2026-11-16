@@ -3,13 +3,13 @@ use crate::models::{Dependency, DependencyOccurrence, DependencyPath, Dependency
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAX_VISITS: usize = 20_000;
-const MAX_DEPTH: usize = 64;
-const MAX_PATHS: usize = 32;
-const MAX_WARNINGS: usize = 8;
-const MAX_PATH_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_VISITS: usize = 20_000;
+pub(crate) const MAX_DEPTH: usize = 64;
+pub(crate) const MAX_PATHS: usize = 32;
+pub(crate) const MAX_WARNINGS: usize = 8;
+pub(crate) const MAX_PATH_BYTES: usize = 4 * 1024 * 1024;
 
-fn warning(warnings: &mut BTreeSet<String>, message: String) {
+pub(crate) fn warning(warnings: &mut BTreeSet<String>, message: String) {
     if warnings.len() < MAX_WARNINGS {
         warnings.insert(message.chars().take(240).collect());
     }

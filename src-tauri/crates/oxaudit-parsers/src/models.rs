@@ -38,7 +38,10 @@ impl Default for DependencyOccurrence {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencyPath {
-    /// Empty string identifies the root manifest; other values are relative directories.
+    /// Empty string identifies the root manifest; other values are relative
+    /// directories for npm and pnpm importers. Other ecosystems name the
+    /// declaring project instead: a Cargo or uv member crate/package, a NuGet
+    /// target framework (`net8.0`, or `net8.0/Project` for a project reference).
     pub workspace: String,
     pub entry_point: String,
     pub chain: Vec<DependencyStep>,

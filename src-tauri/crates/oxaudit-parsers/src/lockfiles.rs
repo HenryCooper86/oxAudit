@@ -7,7 +7,7 @@ use crate::models::Dependency;
 pub const MAX_LOCKFILE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_LOCKFILES: usize = 256;
 pub const MAX_DEPENDENCIES: usize = 100_000;
-const RESOURCE_LIMIT_PREFIX: &str = "resource limit:";
+pub(crate) const RESOURCE_LIMIT_PREFIX: &str = "resource limit:";
 
 pub fn is_resource_limit_error(error: &str) -> bool {
     error.starts_with(RESOURCE_LIMIT_PREFIX)
@@ -399,7 +399,9 @@ fn parse_lockfile_text_with(
         return Ok(LockfileInventory::default());
     }
     if name == "Gemfile.lock" || name == "gems.locked" {
-        return parse_gemfile_lock(content, &lockfile).map(complete);
+        let mut inventory = complete(parse_gemfile_lock(content, &lockfile)?);
+        attach_relationships(name, content, &mut inventory.dependencies);
+        return Ok(inventory);
     }
     let mut notes = Vec::new();
     let packages = match name {
@@ -442,7 +444,66 @@ fn parse_lockfile_text_with(
         _ => return Err("unsupported lockfile".into()),
     };
 
-    Ok(inventory_from(packages, notes, &ecosystem, &lockfile))
+    let mut inventory = inventory_from(packages, notes, &ecosystem, &lockfile);
+    attach_relationships(name, content, &mut inventory.dependencies);
+    Ok(inventory)
+}
+
+/// Whether an occurrence warning is about the inventory itself (a
+/// non-registry source, a Ruby platform variant) rather than about
+/// relationship evidence. Scans surface inventory warnings as notes;
+/// relationship warnings stay on the occurrence, where the dependency-path
+/// view shows them.
+pub fn is_inventory_warning(warning: &str) -> bool {
+    warning.contains("Registry advisory lookup is skipped")
+        || warning.starts_with("Ruby platform variant:")
+}
+
+/// Add relationship evidence for formats whose lockfile records both the
+/// edges and the project's direct declarations. The dependency set and its
+/// order are never changed; only `status`, `paths` and `warnings` move.
+/// Formats without that evidence stay `unavailable`.
+fn attach_relationships(name: &str, content: &str, dependencies: &mut [Dependency]) {
+    use crate::graph_paths::{build, compute, merge};
+    let Some(built) = build(name, content) else {
+        return;
+    };
+    let graph = match built {
+        Ok(graph) => graph,
+        Err(error) => {
+            // The inventory parsed, so keep it and say why relationships are unknown.
+            let message: String = format!("Relationship evidence unavailable: {error}")
+                .chars()
+                .take(240)
+                .collect();
+            for dependency in dependencies {
+                dependency.occurrence.warnings.push(message.clone());
+            }
+            return;
+        }
+    };
+    let mut by_coordinate: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (index, node) in graph.nodes.iter().enumerate() {
+        by_coordinate
+            .entry((node.name.clone(), node.version.clone()))
+            .or_default()
+            .push(index);
+    }
+    let sources: Vec<Option<String>> = graph.nodes.iter().map(|n| n.source.clone()).collect();
+    let evidence = compute(graph);
+    for dependency in dependencies {
+        let key = (dependency.name.clone(), dependency.version.clone());
+        let Some(nodes) = by_coordinate.get(&key) else {
+            dependency.occurrence.warnings.push(
+                "Relationship evidence unavailable: this package has no entry in the lockfile's dependency graph".into(),
+            );
+            continue;
+        };
+        let merged = merge(nodes.iter().map(|&i| (&sources[i], &evidence[i])).collect());
+        dependency.occurrence.status = merged.status.into();
+        dependency.occurrence.paths = merged.paths;
+        dependency.occurrence.warnings.extend(merged.warnings);
+    }
 }
 
 /// Turn parsed packages into inventory dependencies: non-registry sources
@@ -862,7 +923,7 @@ fn positive_pnpm_lockfile_version(value: &serde_json::Value) -> bool {
 
 /// Explicit non-registry resolution specifiers. `git@` covers scp-style git
 /// URLs, `github:`/`gitlab:`/`bitbucket:` the npm shorthand host forms.
-fn nonregistry_protocol(text: &str) -> bool {
+pub(crate) fn nonregistry_protocol(text: &str) -> bool {
     [
         "link:",
         "file:",
@@ -902,7 +963,7 @@ struct PipfileLockfile {
     develop: Option<YamlPackages>,
 }
 
-fn parse_yaml_lockfile<T: serde::de::DeserializeOwned>(
+pub(crate) fn parse_yaml_lockfile<T: serde::de::DeserializeOwned>(
     content: &str,
     name: &str,
 ) -> Result<T, String> {
@@ -945,6 +1006,30 @@ fn parse_yaml_lockfile<T: serde::de::DeserializeOwned>(
             format!("invalid {name}: {error}")
         }
     })
+}
+
+/// Split a pnpm package key (`/name/1.0.0`, `name@1.0.0(peer@2)`,
+/// `@scope/name@1.0.0_peer@2`) into name and version. Peer contexts are
+/// install identities, not advisory versions.
+pub(crate) fn pnpm_coordinate(key: &str) -> Option<(&str, &str)> {
+    // v5 uses /name/version; v6+ uses name@version.
+    let coordinate = key.trim_start_matches('/').split('(').next().unwrap_or("");
+    let name_start = if coordinate.starts_with('@') {
+        coordinate
+            .find('/')
+            .map(|slash| slash + 1)
+            .unwrap_or(coordinate.len())
+    } else {
+        0
+    };
+    let separator = coordinate[name_start..]
+        .find(['@', '/'])
+        .map(|offset| name_start + offset)?;
+    let name = &coordinate[..separator];
+    // The `_` peer suffix is an install identity, not part of the version;
+    // split it before inspecting the version itself.
+    let version = coordinate[separator + 1..].split('_').next().unwrap_or("");
+    (!name.is_empty() && !version.is_empty()).then_some((name, version))
 }
 
 fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
@@ -1090,34 +1175,11 @@ fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     if let Some(packages) = root.packages {
         for k in packages.keys() {
-            // v5 uses /name/version; v6+ uses name@version. Peer
-            // contexts are install identities, not advisory versions.
-            let coordinate = k.trim_start_matches('/').split('(').next().unwrap_or("");
-            let name_start = if coordinate.starts_with('@') {
-                coordinate
-                    .find('/')
-                    .map(|slash| slash + 1)
-                    .unwrap_or(coordinate.len())
-            } else {
-                0
-            };
-            let Some(separator) = coordinate[name_start..]
-                .find(['@', '/'])
-                .map(|offset| name_start + offset)
-            else {
+            let Some((name, version)) = pnpm_coordinate(k) else {
                 return Err(format!(
                     "invalid pnpm-lock.yaml: unreadable package coordinate {k:?}"
                 ));
             };
-            let name = &coordinate[..separator];
-            // The `_` peer suffix is an install identity, not part of the
-            // version; split it before inspecting the version itself.
-            let version = coordinate[separator + 1..].split('_').next().unwrap_or("");
-            if name.is_empty() || version.is_empty() {
-                return Err(format!(
-                    "invalid pnpm-lock.yaml: unreadable package coordinate {k:?}"
-                ));
-            }
             // Git, link, and tarball resolutions keep their URL or path in
             // the coordinate; the same skip as bun.lock's: local and remote
             // sources have no registry version to query, and reporting the

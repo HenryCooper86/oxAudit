@@ -10,6 +10,7 @@
 pub mod bdb_hash;
 pub mod go_buildinfo;
 pub mod go_inventory;
+pub(crate) mod graph_paths;
 pub mod lockfiles;
 pub mod models;
 pub mod msbuild;

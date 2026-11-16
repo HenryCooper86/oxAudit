@@ -539,7 +539,13 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
                             .source
                             .as_deref()
                             .is_some_and(|source| source != "registry");
-                        if dep.ecosystem == "RubyGems" || non_registry {
+                        // npm notes predate relationship evidence on other
+                        // formats and keep every warning; elsewhere only
+                        // inventory warnings are notes, so a cycle in a
+                        // Cargo or Bundler graph does not flood them.
+                        let noted = dep.ecosystem == "npm"
+                            || crate::deps::lockfiles::is_inventory_warning(warning);
+                        if (dep.ecosystem == "RubyGems" || non_registry) && noted {
                             inventory_notes.insert(format!("{}: {warning}", lf.display()));
                         }
                     }
