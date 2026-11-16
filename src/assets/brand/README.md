@@ -1,8 +1,8 @@
 # oxAudit brand assets
 
-The mark is a magnifier whose lens holds an x — the o and x of oxAudit, and the act of auditing closely.
-The horns recall code delimiters; the quiet, symmetrical silhouette suits a
-local engineering audit workbench and remains recognizable at small sizes.
+The mark is a scan frame: four corner brackets around a target, crossed by a
+scan beam that lands on a finding. It is drawn in the same gold line language
+as the oxfuzz mark and remains recognizable at small sizes.
 
 `src/components/brand/geometry.ts` is the shared source for the React mark and
 all six standalone SVGs. Regenerate them with `npm run brand:generate`.

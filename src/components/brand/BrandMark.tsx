@@ -1,7 +1,7 @@
 import type { JSX, SVGProps } from "react";
 import { BRAND_PATHS } from "./geometry";
 
-/** A magnifier whose lens holds an x — the o and x of oxAudit — in the current theme color. */
+/** A scan frame: four corner brackets, a beam and the finding it lands on, in the current theme color. */
 export function BrandMark({ className, ...props }: SVGProps<SVGSVGElement>): JSX.Element {
   return (
     <svg viewBox="0 0 512 512" aria-hidden="true" focusable="false" className={className} {...props}>

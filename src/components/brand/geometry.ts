@@ -7,28 +7,35 @@ export interface BrandLayer {
 }
 
 /**
- * The mark: a magnifier whose lens holds an x. The lens is the O of oxAudit
- * and the act of auditing; the x is the x of the name. Every shape is a
- * closed filled path (the lens is an annulus with counter-wound inner
- * circle), so one fill per layer renders identically in React, rsvg, and
- * the native icon rasterizers.
+ * The mark: a scan frame. Four corner brackets frame the thing under audit,
+ * a beam crosses it, and the dot is what the scan found. Every shape is a
+ * closed filled path, so one fill per layer renders identically in React,
+ * rsvg, and the native icon rasterizers.
  */
 export const BRAND_PATHS: readonly BrandLayer[] = [
   {
-    layer: "lens",
-    d: "M 232 226 m -146 0 a 146 146 0 1 0 292 0 a 146 146 0 1 0 -292 0 Z M 232 226 m -90 0 a 90 90 0 1 1 180 0 a 90 90 0 1 1 -180 0 Z",
+    layer: "frame-top-left",
+    d: "M 118 193 L 118 130 A 12 12 0 0 1 130 118 L 193 118 A 12 12 0 0 1 193 142 L 142 142 L 142 193 A 12 12 0 0 1 118 193 Z",
   },
   {
-    layer: "handle",
-    d: "M 297.49 332.51 L 381.49 416.51 A 29 29 0 0 0 422.51 375.49 L 338.51 291.49 A 29 29 0 0 0 297.49 332.51 Z",
+    layer: "frame-top-right",
+    d: "M 394 193 L 394 130 A 12 12 0 0 0 382 118 L 319 118 A 12 12 0 0 0 319 142 L 370 142 L 370 193 A 12 12 0 0 0 394 193 Z",
   },
   {
-    layer: "cross-first",
-    d: "M 172.56 193.44 L 264.56 285.44 A 19 19 0 0 0 291.44 258.56 L 199.44 166.56 A 19 19 0 0 0 172.56 193.44 Z",
+    layer: "frame-bottom-right",
+    d: "M 394 319 L 394 382 A 12 12 0 0 1 382 394 L 319 394 A 12 12 0 0 1 319 370 L 370 370 L 370 319 A 12 12 0 0 1 394 319 Z",
   },
   {
-    layer: "cross-second",
-    d: "M 264.56 166.56 L 172.56 258.56 A 19 19 0 0 0 199.44 285.44 L 291.44 193.44 A 19 19 0 0 0 264.56 166.56 Z",
+    layer: "frame-bottom-left",
+    d: "M 118 319 L 118 382 A 12 12 0 0 0 130 394 L 193 394 A 12 12 0 0 0 193 370 L 142 370 L 142 319 A 12 12 0 0 0 118 319 Z",
+  },
+  {
+    layer: "beam",
+    d: "M 95 244 L 417 244 A 12 12 0 0 1 417 268 L 95 268 A 12 12 0 0 1 95 244 Z",
+  },
+  {
+    layer: "target",
+    d: "M 256 256 m -43 0 a 43 43 0 1 0 86 0 a 43 43 0 1 0 -86 0 Z",
   },
 ] as const;
 
