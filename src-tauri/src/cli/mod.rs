@@ -464,6 +464,12 @@ struct ScanArgs {
     #[arg(long)]
     db: Option<PathBuf>,
 
+    /// Keep the CISA KEV catalog in this directory for an hour, so repeat
+    /// scans skip the download. Created owner-only if missing. Defaults to
+    /// the directory holding --db; without either, nothing is kept.
+    #[arg(long, value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
+
     /// Skip secret detection.
     #[arg(long)]
     no_secrets: bool,
@@ -1456,7 +1462,10 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     let mut cve = crate::cve::CveState::new(http);
     // With --db there is private storage to keep the KEV catalog in between
     // runs. Without it the scan leaves nothing behind, catalog included.
-    if let Some(directory) = args
+    if let Some(directory) = &args.cache_dir {
+        prepare_cache_dir(directory)?;
+        cve = cve.with_kev_cache(directory);
+    } else if let Some(directory) = args
         .db
         .as_deref()
         .and_then(Path::parent)
@@ -2662,6 +2671,34 @@ fn run_benchmark(args: &BenchmarkArgs, quiet: bool) -> CliResult {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// Make sure `--cache-dir` is a directory this user owns the contents of:
+/// create it owner-only when missing, and refuse a path that is not a
+/// directory. An existing directory is used as it is.
+fn prepare_cache_dir(directory: &Path) -> Result<(), CliError> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(usage(format!(
+            "--cache-dir {} is not a directory",
+            directory.display()
+        ))),
+        Err(_) => {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(directory).map_err(|error| {
+                usage(format!(
+                    "cannot create --cache-dir {}: {error}",
+                    directory.display()
+                ))
+            })
+        }
+    }
+}
 
 fn open_repository(path: &Path) -> Result<FindingsRepository, CliError> {
     // The repository creates missing parents with owner-only permissions. A

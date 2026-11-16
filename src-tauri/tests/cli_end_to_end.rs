@@ -4380,3 +4380,38 @@ fn ci_formats_render_source_findings_and_are_refused_where_they_do_not_apply() {
         assert!(stdout(&output).is_empty(), "{arguments:?}");
     }
 }
+
+#[test]
+fn cache_dir_is_created_private_and_a_non_directory_is_refused() {
+    let project = project();
+    let path = project.path().to_str().unwrap();
+    let store = tempfile::tempdir().expect("store");
+    let cache = store.path().join("nested/cache");
+    let output = run(&[
+        "scan",
+        path,
+        "--quiet",
+        "--cache-dir",
+        cache.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&output), 0);
+    assert!(cache.is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&cache).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the cache directory is owner-only");
+    }
+
+    let file = store.path().join("not-a-directory");
+    std::fs::write(&file, "x").unwrap();
+    let output = run(&[
+        "scan",
+        path,
+        "--quiet",
+        "--cache-dir",
+        file.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&output), 2);
+    assert!(stdout(&output).is_empty());
+}

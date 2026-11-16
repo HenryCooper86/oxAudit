@@ -150,6 +150,7 @@ repository and defaults to the current directory.
 | `--baseline <FILE>` | — | A previous `--format json` report; findings present in it are pre-existing, the rest are new |
 | `--fail-on-new <SEVERITY>` | `none` | Exit 1 only for findings this change introduced, at this severity or higher. Requires `--baseline` |
 | `--db <DB>` | in memory | Keep the run in this database so the desktop app can open it. The CISA KEV catalog, when a scan fetches it, is kept beside the database as `kev-catalog.json` for an hour. Without `--db` the scan leaves nothing behind |
+| `--cache-dir <DIR>` | the directory holding `--db`, else none | Keep the CISA KEV catalog here as `kev-catalog.json` for an hour, so repeat scans skip the download. Created owner-only if missing. Only that public catalog is stored, never anything about the scanned project |
 | `--no-secrets` | off | Skip secret detection |
 | `--no-patterns` | off | Skip dangerous-pattern detection |
 | `--include-git` | off | Scan inside `.git` as well |

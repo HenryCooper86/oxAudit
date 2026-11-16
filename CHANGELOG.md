@@ -141,8 +141,10 @@ lists what each release ships.
   matched, starting at the first finding that carries a CWE, instead of after
   matching ends. The catalog is still requested only when a finding needs it.
 - `scan --db` keeps the fetched KEV catalog as `kev-catalog.json` beside the
-  database for one hour, so repeat scans skip the download. A scan without
-  `--db` still leaves nothing behind.
+  database for one hour, so repeat scans skip the download. `scan --cache-dir
+  DIR` keeps it in a directory of your choosing instead, for scans without a
+  database (an editor, a pre-commit hook). Without either flag a scan still
+  leaves nothing behind.
 - Git history scans read blobs in batches and scan each batch on every core.
   Blobs are still accounted for in the order git delivers them, so the byte,
   finding and time budgets stop a run at the same blob as before.
