@@ -36,6 +36,12 @@ impl RunRepository for CanonicalSqliteRepository<'_> {
             .map_err(|error| error.to_string())
     }
 
+    fn append_artifacts(&self, run_id: &RunId, artifacts: &[Artifact]) -> Result<(), String> {
+        self.repository
+            .canonical_append_artifacts(run_id, artifacts)
+            .map_err(|error| error.to_string())
+    }
+
     fn append_components(&self, run_id: &RunId, components: &[Component]) -> Result<(), String> {
         self.repository
             .canonical_append_components(run_id, components)

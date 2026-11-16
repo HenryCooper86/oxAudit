@@ -149,7 +149,7 @@ repository and defaults to the current directory.
 | `--fail-on <SEVERITY>` | `none` (`high` with `--staged`) | Exit 1 when a finding at this severity or higher is reported |
 | `--baseline <FILE>` | — | A previous `--format json` report; findings present in it are pre-existing, the rest are new |
 | `--fail-on-new <SEVERITY>` | `none` | Exit 1 only for findings this change introduced, at this severity or higher. Requires `--baseline` |
-| `--db <DB>` | in memory | Keep the run in this database so the desktop app can open it. Without it the scan leaves nothing behind |
+| `--db <DB>` | in memory | Keep the run in this database so the desktop app can open it. The CISA KEV catalog, when a scan fetches it, is kept beside the database as `kev-catalog.json` for an hour. Without `--db` the scan leaves nothing behind |
 | `--no-secrets` | off | Skip secret detection |
 | `--no-patterns` | off | Skip dangerous-pattern detection |
 | `--include-git` | off | Scan inside `.git` as well |

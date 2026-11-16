@@ -35,7 +35,17 @@ pub struct CveState {
     /// an empty catalog: "could not check" must not read as "nothing exploited".
     kev_failure: Mutex<Option<(Instant, String)>>,
     kev_url: String,
+    /// Where a fetched catalog is kept between processes, when the caller
+    /// has a private directory for it. `None` keeps the catalog in memory
+    /// only, so a run without storage leaves nothing behind.
+    kev_cache: Option<std::path::PathBuf>,
 }
+
+/// File name of the on-disk KEV catalog inside a cache directory.
+const KEV_CACHE_FILE: &str = "kev-catalog.json";
+/// The published catalog is a little over a megabyte; refuse anything that
+/// could not be one.
+const MAX_KEV_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 
 impl CveState {
     pub fn new(http: reqwest::Client) -> Self {
@@ -47,6 +57,44 @@ impl CveState {
             kev: Mutex::new(None),
             kev_failure: Mutex::new(None),
             kev_url: crate::exploit::KEV_URL.to_string(),
+            kev_cache: None,
+        }
+    }
+
+    /// Keep the fetched KEV catalog in `directory` for [`KEV_TTL`], so a
+    /// later process (the next CLI run against the same database) does not
+    /// download it again. The directory is the caller's private storage.
+    pub fn with_kev_cache(mut self, directory: &std::path::Path) -> Self {
+        self.kev_cache = Some(directory.join(KEV_CACHE_FILE));
+        self
+    }
+
+    /// The catalog from the on-disk cache, when one is configured, fresh and
+    /// parses. Anything else is a miss: the catalog is fetched as usual.
+    fn cached_kev(&self) -> Option<crate::exploit::KevSet> {
+        let path = self.kev_cache.as_deref()?;
+        let metadata = std::fs::symlink_metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() > MAX_KEV_CACHE_BYTES {
+            return None;
+        }
+        // A modification time in the future is not "fresh".
+        let age = metadata.modified().ok()?.elapsed().ok()?;
+        if age >= KEV_TTL {
+            return None;
+        }
+        let body = std::fs::read_to_string(path).ok()?;
+        crate::exploit::KevSet::parse(&body).ok()
+    }
+
+    /// Store a fetched catalog for later processes. Best-effort: a cache
+    /// that cannot be written costs a download next time, nothing else.
+    fn store_kev(&self, body: &str) {
+        let Some(path) = self.kev_cache.as_deref() else {
+            return;
+        };
+        let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        if std::fs::write(&temporary, body).is_ok() && std::fs::rename(&temporary, path).is_err() {
+            let _ = std::fs::remove_file(&temporary);
         }
     }
 
@@ -67,6 +115,10 @@ impl CveState {
             if failed.elapsed() < KEV_FAILURE_RETRY {
                 return Err(reason.clone());
             }
+        }
+        if let Some(set) = self.cached_kev() {
+            *self.kev.lock().unwrap() = Some((Instant::now(), set.clone()));
+            return Ok(set);
         }
         match self.fetch_kev().await {
             Ok(set) => {
@@ -95,8 +147,11 @@ impl CveState {
             .text()
             .await
             .map_err(|e| format!("CISA KEV catalog could not be read: {e}"))?;
-        crate::exploit::KevSet::parse(&body)
-            .map_err(|e| format!("CISA KEV catalog could not be parsed: {e}"))
+        let set = crate::exploit::KevSet::parse(&body)
+            .map_err(|e| format!("CISA KEV catalog could not be parsed: {e}"))?;
+        // Only a catalog that parsed is worth keeping.
+        self.store_kev(&body);
+        Ok(set)
     }
 
     /// EPSS score and percentile for one CVE. `Ok(None)` means FIRST answered
@@ -743,5 +798,56 @@ mod tests {
         // Served from the cache now; the server has no more responses.
         let cached = state.kev_set().await.expect("cached");
         assert_eq!(cached.signal("CVE-2021-44228"), (true, true));
+    }
+    #[tokio::test]
+    async fn a_disk_cache_spares_the_next_process_the_download_until_it_ages_out() {
+        let directory = tempfile::tempdir().unwrap();
+        let (url, server) = serve(vec![("200 OK", KEV_BODY), ("200 OK", KEV_BODY)]).await;
+        let state = |url: &str| {
+            CveState {
+                kev_url: url.to_string(),
+                ..CveState::new(offline_http())
+            }
+            .with_kev_cache(directory.path())
+        };
+        let first = state(&url).kev_set().await.expect("fetched");
+        assert!(first.cwe_exploited_count("CWE-917") > 0);
+        let cache = directory.path().join(KEV_CACHE_FILE);
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), KEV_BODY);
+
+        // A new process reads the file; an unreachable URL proves no request.
+        let offline = state("http://127.0.0.1:1/kev");
+        let cached = offline.kev_set().await.expect("served from disk");
+        assert!(cached.cwe_exploited_count("CWE-917") > 0);
+
+        // A corrupt cache is a miss, not an empty catalog.
+        std::fs::write(&cache, "<html>").unwrap();
+        assert!(state("http://127.0.0.1:1/kev").kev_set().await.is_err());
+
+        // An aged cache is refreshed from the network and rewritten.
+        std::fs::write(&cache, KEV_BODY).unwrap();
+        let old = std::time::SystemTime::now() - KEV_TTL - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&cache)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(state("http://127.0.0.1:1/kev").kev_set().await.is_err());
+        state(&url).kev_set().await.expect("refetched");
+        server.await.unwrap();
+        assert!(std::fs::metadata(&cache).unwrap().modified().unwrap() > old);
+    }
+
+    #[tokio::test]
+    async fn without_a_cache_directory_nothing_is_written() {
+        let (url, server) = serve(vec![("200 OK", KEV_BODY)]).await;
+        let state = CveState {
+            kev_url: url,
+            ..CveState::new(offline_http())
+        };
+        state.kev_set().await.expect("fetched");
+        server.await.unwrap();
+        assert!(state.kev_cache.is_none());
     }
 }

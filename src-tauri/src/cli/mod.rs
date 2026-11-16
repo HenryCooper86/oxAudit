@@ -1453,7 +1453,17 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     }
 
     let http = build_http_client()?;
-    let cve = crate::cve::CveState::new(http);
+    let mut cve = crate::cve::CveState::new(http);
+    // With --db there is private storage to keep the KEV catalog in between
+    // runs. Without it the scan leaves nothing behind, catalog included.
+    if let Some(directory) = args
+        .db
+        .as_deref()
+        .and_then(Path::parent)
+        .filter(|directory| !directory.as_os_str().is_empty())
+    {
+        cve = cve.with_kev_cache(directory);
+    }
     let cancel = AtomicBool::new(false);
     let events = StderrEvents { quiet };
 

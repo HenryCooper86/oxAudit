@@ -49,6 +49,13 @@ pub trait RunRepository: Send + Sync {
     fn create_run(&self, run: &Run) -> Result<(), String>;
     fn save_run(&self, run: &Run) -> Result<(), String>;
     fn append_artifact(&self, run_id: &RunId, artifact: &Artifact) -> Result<(), String>;
+    /// Append many artifacts. A repository that can commit them together
+    /// overrides this; the default appends one at a time.
+    fn append_artifacts(&self, run_id: &RunId, artifacts: &[Artifact]) -> Result<(), String> {
+        artifacts
+            .iter()
+            .try_for_each(|artifact| self.append_artifact(run_id, artifact))
+    }
     fn append_components(&self, run_id: &RunId, components: &[Component]) -> Result<(), String>;
     fn append_observations(
         &self,

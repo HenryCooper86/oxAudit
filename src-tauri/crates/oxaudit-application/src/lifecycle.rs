@@ -91,6 +91,21 @@ impl<'a> ManagedRun<'a> {
         Ok(())
     }
 
+    /// Append a discovered inventory in one repository call, then announce
+    /// each artifact. A source scan discovers thousands of files at once;
+    /// one commit for all of them is far cheaper than one each.
+    pub fn append_artifacts(&mut self, artifacts: &[Artifact]) -> Result<(), ApplicationError> {
+        persist(self.persistence_attempts, || {
+            self.repository.append_artifacts(&self.run.id, artifacts)
+        })?;
+        for artifact in artifacts {
+            self.publish(RunEvent::ArtifactDiscovered {
+                artifact_id: artifact.id.clone(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn append_observations(
         &mut self,
         observations: Vec<ObservationRecord>,

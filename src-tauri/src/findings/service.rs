@@ -737,17 +737,21 @@ impl FindingsService {
                 .run()
                 .id
                 .clone();
-            let mut canonical_artifacts = BTreeMap::new();
-            for file in &collection.files {
-                let artifact = source_artifact(&canonical_run_id, file)
-                    .map_err(|_| CommandError::scan_failed())?;
-                managed_run
-                    .as_mut()
-                    .expect("managed run exists until terminal handling")
-                    .append_artifact(&artifact)
-                    .map_err(|_| CommandError::persistence_unavailable())?;
-                canonical_artifacts.insert(artifact.location.normalized_path.clone(), artifact);
-            }
+            let artifacts = collection
+                .files
+                .iter()
+                .map(|file| source_artifact(&canonical_run_id, file))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CommandError::scan_failed())?;
+            managed_run
+                .as_mut()
+                .expect("managed run exists until terminal handling")
+                .append_artifacts(&artifacts)
+                .map_err(|_| CommandError::persistence_unavailable())?;
+            let canonical_artifacts: BTreeMap<_, _> = artifacts
+                .into_iter()
+                .map(|artifact| (artifact.location.normalized_path.clone(), artifact))
+                .collect();
             managed_run
                 .as_mut()
                 .expect("managed run exists until terminal handling")
@@ -794,6 +798,43 @@ impl FindingsService {
             let aggregate = std::sync::Mutex::new((Vec::new(), Vec::new(), None));
             let panicked_files = std::sync::Mutex::new(Vec::<String>::new());
             let stopped = AtomicBool::new(false);
+            // The exploitation signal needs the KEV catalog only when a
+            // finding carries a CWE, and that fetch is a network round trip.
+            // Start it as soon as the first such finding appears, beside the
+            // remaining file work, instead of after all of it. `kev_set`
+            // caches its answer, success or failure, so the enrichment step
+            // below reads the same result without asking again.
+            let cwe_seen = AtomicBool::new(false);
+            let matching_done = AtomicBool::new(false);
+            // Blocking on the runtime from another thread needs a runtime
+            // with its own worker threads to drive the request.
+            let prewarm = tokio::runtime::Handle::try_current().ok().filter(|handle| {
+                handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+            });
+            std::thread::scope(|scope| {
+            if let Some(handle) = &prewarm {
+                let (cwe_seen, matching_done) = (&cwe_seen, &matching_done);
+                scope.spawn(move || {
+                    let pause = std::time::Duration::from_millis(5);
+                    while !cwe_seen.load(Ordering::Relaxed) {
+                        if matching_done.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        std::thread::sleep(pause);
+                    }
+                    handle.block_on(async {
+                        tokio::select! {
+                            _ = cve.kev_set() => {}
+                            // A cancelled scan must not wait on the network.
+                            _ = async {
+                                while !cancel.load(Ordering::Relaxed) {
+                                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                                }
+                            } => {}
+                        }
+                    });
+                });
+            }
             collection.files.par_iter().for_each(|file| {
                 if stopped.load(Ordering::Relaxed) {
                     return;
@@ -860,8 +901,13 @@ impl FindingsService {
                     stopped.store(true, Ordering::Relaxed);
                     return;
                 }
+                if outcome.findings.iter().any(|finding| finding.cwe.is_some()) {
+                    cwe_seen.store(true, Ordering::Relaxed);
+                }
                 aggregate.1.push((relative, outcome.covered_families));
                 aggregate.0.extend(outcome.findings);
+            });
+            matching_done.store(true, Ordering::Relaxed);
             });
             if cancel.load(Ordering::Relaxed) {
                 return Err(CommandError::scan_cancelled());

@@ -376,30 +376,50 @@ impl FindingsRepository {
         run_id: &oxaudit_domain::RunId,
         artifact: &oxaudit_domain::Artifact,
     ) -> Result<(), CommandError> {
-        let payload = to_json(artifact)?;
-        let connection = self.connection.lock().map_err(persistence_error)?;
-        let existing = connection
-            .query_row(
-                "SELECT run_id, payload_json FROM canonical_artifacts WHERE id = ?1",
-                [artifact.id.as_str()],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-            .map_err(persistence_error)?;
-        if let Some((stored_run_id, stored_payload)) = existing {
-            return if stored_run_id == run_id.as_str() && stored_payload == payload {
-                Ok(())
-            } else {
-                Err(CommandError::persistence_unavailable())
-            };
+        self.canonical_append_artifacts(run_id, std::slice::from_ref(artifact))
+    }
+
+    /// Append artifacts in one transaction: all of them are stored or none
+    /// is. An artifact already stored for this run with the same content is
+    /// accepted; the same id with other content or another run is refused.
+    pub(crate) fn canonical_append_artifacts(
+        &self,
+        run_id: &oxaudit_domain::RunId,
+        artifacts: &[oxaudit_domain::Artifact],
+    ) -> Result<(), CommandError> {
+        let mut connection = self.connection.lock().map_err(persistence_error)?;
+        let transaction = connection.transaction().map_err(persistence_error)?;
+        {
+            let mut select = transaction
+                .prepare_cached(
+                    "SELECT run_id, payload_json FROM canonical_artifacts WHERE id = ?1",
+                )
+                .map_err(persistence_error)?;
+            let mut insert = transaction
+                .prepare_cached(
+                    "INSERT INTO canonical_artifacts(id, run_id, payload_json) VALUES (?1, ?2, ?3)",
+                )
+                .map_err(persistence_error)?;
+            for artifact in artifacts {
+                let payload = to_json(artifact)?;
+                let existing = select
+                    .query_row([artifact.id.as_str()], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .optional()
+                    .map_err(persistence_error)?;
+                if let Some((stored_run_id, stored_payload)) = existing {
+                    if stored_run_id != run_id.as_str() || stored_payload != payload {
+                        return Err(CommandError::persistence_unavailable());
+                    }
+                    continue;
+                }
+                insert
+                    .execute(params![artifact.id.as_str(), run_id.as_str(), payload])
+                    .map_err(persistence_error)?;
+            }
         }
-        connection
-            .execute(
-                "INSERT INTO canonical_artifacts(id, run_id, payload_json) VALUES (?1, ?2, ?3)",
-                params![artifact.id.as_str(), run_id.as_str(), payload],
-            )
-            .map_err(persistence_error)?;
-        Ok(())
+        transaction.commit().map_err(persistence_error)
     }
 
     pub(crate) fn canonical_append_observations(

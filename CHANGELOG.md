@@ -129,6 +129,24 @@ lists what each release ships.
   `Packages` view is refused, every row counts toward the package cap, and
   SQLite runs under a step budget and value-size limit.
 
+
+### Performance
+
+- Dependency scans no longer resolve the real path of every file while looking
+  for lockfiles. Only directories, links and files whose name makes them a
+  lockfile candidate are resolved; containment and `.git` exclusion are
+  unchanged. Discovery in a tree with large build output is several times
+  faster.
+- Source scans fetch the CISA KEV catalog while files are still being
+  matched, starting at the first finding that carries a CWE, instead of after
+  matching ends. The catalog is still requested only when a finding needs it.
+- `scan --db` keeps the fetched KEV catalog as `kev-catalog.json` beside the
+  database for one hour, so repeat scans skip the download. A scan without
+  `--db` still leaves nothing behind.
+- A source scan stores its file inventory in one database transaction rather
+  than one commit per file, and resolves each walked path once per walk
+  instead of twice.
+
 ### Fixed
 
 - Image scans report only the topmost copy of a package database when a later

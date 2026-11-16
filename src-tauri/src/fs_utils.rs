@@ -243,6 +243,37 @@ pub fn collect_source_files(root: &Path, options: CollectFilesOptions<'_>) -> So
         .unwrap_or_else(|_| SourceFileCollection::empty())
 }
 
+/// Canonical paths a walk's entry filter already resolved, keyed by the
+/// lexical path, so the loop consuming that walk does not resolve each file
+/// a second time. Only non-directory entries are kept, and each is taken
+/// when read, so the map holds at most the entries the walker has buffered.
+#[derive(Clone, Default)]
+struct ResolvedEntries(
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>>,
+);
+
+impl ResolvedEntries {
+    fn remember(&self, entry: &ignore::DirEntry, canonical: PathBuf) {
+        if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+            return;
+        }
+        if let Ok(mut resolved) = self.0.lock() {
+            resolved.insert(entry.path().to_path_buf(), canonical);
+        }
+    }
+
+    /// The filter's answer for `path`, or a fresh resolution when the filter
+    /// did not see it (the walk root is never passed to the filter).
+    fn resolve(&self, path: &Path) -> Option<PathBuf> {
+        let remembered = self
+            .0
+            .lock()
+            .ok()
+            .and_then(|mut resolved| resolved.remove(path));
+        remembered.or_else(|| path.canonicalize().ok())
+    }
+}
+
 /// Collect source files while enforcing a hard inventory budget and optional
 /// cancellation signal. Any interruption discards the partial inventory.
 pub fn collect_source_files_bounded(
@@ -272,6 +303,12 @@ pub fn collect_source_files_bounded(
     let filter_canonical_collection_root = canonical_collection_root.clone();
     let filter_ignored = ignored.clone();
     let include_git = options.include_git;
+    // Each walk resolves an entry once: the filter's answer is handed to the
+    // loop below instead of resolving the same path again a moment later.
+    // The two walks never share answers, so the second still re-resolves
+    // every path and catches one whose target changed in between.
+    let policy_resolved = ResolvedEntries::default();
+    let filter_resolved = policy_resolved.clone();
     let mut policy_builder = WalkBuilder::new(&project_root);
     policy_builder
         .hidden(false)
@@ -294,14 +331,18 @@ pub fn collect_source_files_bounded(
             let Ok(canonical_path) = entry.path().canonicalize() else {
                 return false;
             };
-            source_entry_allowed(
+            let allowed = source_entry_allowed(
                 lexical_path,
                 &canonical_path,
                 &filter_project_root,
                 canonical_path.is_dir(),
                 include_git,
                 &filter_ignored,
-            )
+            );
+            if allowed {
+                filter_resolved.remember(entry, canonical_path);
+            }
+            allowed
         });
 
     let mut allowed_files = BTreeSet::new();
@@ -316,7 +357,7 @@ pub fn collect_source_files_bounded(
         {
             continue;
         }
-        let Ok(canonical_path) = entry.path().canonicalize() else {
+        let Some(canonical_path) = policy_resolved.resolve(entry.path()) else {
             continue;
         };
         if canonical_path.starts_with(&project_root) && !allowed_files.contains(&canonical_path) {
@@ -347,6 +388,8 @@ pub fn collect_source_files_bounded(
     let filter_collection_root = lexical_collection_root.clone();
     let filter_ignored = ignored.clone();
     let include_git = options.include_git;
+    let selection_resolved = ResolvedEntries::default();
+    let filter_resolved = selection_resolved.clone();
     let mut selection_builder = WalkBuilder::new(&project_root);
     selection_builder
         .hidden(false)
@@ -366,14 +409,18 @@ pub fn collect_source_files_bounded(
             let Ok(canonical_path) = lexical_path.canonicalize() else {
                 return false;
             };
-            source_entry_allowed(
+            let allowed = source_entry_allowed(
                 lexical_path,
                 &canonical_path,
                 &filter_project_root,
                 canonical_path.is_dir(),
                 include_git,
                 &filter_ignored,
-            )
+            );
+            if allowed {
+                filter_resolved.remember(entry, canonical_path);
+            }
+            allowed
         });
 
     let mut files = BTreeMap::new();
@@ -385,7 +432,7 @@ pub fn collect_source_files_bounded(
         }
         match entry {
             Ok(entry) => {
-                let Ok(canonical_path) = entry.path().canonicalize() else {
+                let Some(canonical_path) = selection_resolved.resolve(entry.path()) else {
                     continue;
                 };
                 if !canonical_path.is_file() {
@@ -580,6 +627,15 @@ fn scoped_path_uses_symlink(project_root: &Path, root: &Path) -> bool {
     false
 }
 
+/// Whether a file's name makes it something dependency discovery collects.
+fn is_lockfile_candidate(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_lockfile_name)
+        || crate::deps::lockfiles::is_requirements_file(path)
+        || crate::deps::lockfiles::is_msbuild_project(path)
+}
+
 fn has_git_component(path: &Path) -> bool {
     path.components()
         .any(|component| component.as_os_str() == ".git")
@@ -633,6 +689,15 @@ pub fn discover_lockfiles_bounded(
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e| {
+            // A regular file that cannot be a lockfile is never collected,
+            // and resolving it answers nothing: it sits in a directory this
+            // filter already resolved and placed inside the project, and it
+            // is not a link. Resolving every such file is most of the cost
+            // of discovery in a large tree, so only directories, links and
+            // lockfile candidates are resolved.
+            if e.file_type().is_file() && !is_lockfile_candidate(e.path()) {
+                return !has_git_component(e.path());
+            }
             let canonical_path = match e.path().canonicalize() {
                 Ok(canonical_path) => canonical_path,
                 // Symlinks are never followed or collected, so a dangling
@@ -685,10 +750,7 @@ pub fn discover_lockfiles_bounded(
         };
         if entry.file_type().is_file() {
             if let Some(name) = entry.file_name().to_str() {
-                if is_lockfile_name(name)
-                    || crate::deps::lockfiles::is_requirements_file(entry.path())
-                    || crate::deps::lockfiles::is_msbuild_project(entry.path())
-                {
+                if is_lockfile_candidate(entry.path()) {
                     let canonical_path = entry.path().canonicalize().map_err(|error| {
                         CollectionError::LockfileDiscoveryIncomplete {
                             path: entry.path().to_path_buf(),
