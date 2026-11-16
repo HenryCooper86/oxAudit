@@ -1,0 +1,44 @@
+// oxAudit in a Jenkins declarative pipeline. Copy the stage into your
+// Jenkinsfile, and examples/ci/install-oxaudit.sh into ci/install-oxaudit.sh.
+//
+// Findings show as test results through the JUnit plugin: a finding at or
+// above the gate is a failed test, everything else is a skipped one. The
+// stage fails on a `deny` violation of .oxaudit/component-policy.json or on
+// source findings at or above --fail-on; reports are archived either way.
+pipeline {
+  agent any
+  environment {
+    // Pin both together. See install-oxaudit.sh for where the digest comes from.
+    OXAUDIT_VERSION = 'REPLACE_WITH_RELEASE_TAG'
+    OXAUDIT_SHA256  = 'REPLACE_WITH_ASSET_SHA256'
+  }
+  stages {
+    stage('oxAudit') {
+      steps {
+        sh 'sh ci/install-oxaudit.sh'
+        sh '''
+          set -u
+          mkdir -p oxaudit-reports
+          status=0
+          .oxaudit-tool/oxaudit-cli scan . --fail-on high \
+            --format junit -o oxaudit-reports/source-junit.xml || status=$?
+          .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db \
+            --format junit -o oxaudit-reports/sca-junit.xml \
+            --notices oxaudit-reports/THIRD-PARTY-NOTICES.md || status=$?
+          .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db --offline --report-only \
+            --format json -o oxaudit-reports/sca.json || status=$?
+          .oxaudit-tool/oxaudit-cli deps . --db oxaudit-reports/db/findings.db --offline \
+            --format cyclonedx -o oxaudit-reports/sbom.cdx.json || status=$?
+          exit $status
+        '''
+      }
+      post {
+        always {
+          junit testResults: 'oxaudit-reports/*-junit.xml', allowEmptyResults: false
+          archiveArtifacts artifacts: 'oxaudit-reports/*.json, oxaudit-reports/*.xml, oxaudit-reports/*.md',
+                           allowEmptyArchive: true
+        }
+      }
+    }
+  }
+}

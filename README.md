@@ -207,8 +207,9 @@ with a reason, an expiry, and a pull request.
 - **Every finding says how far it was verified** — `syntax` when a parser
   confirmed the match sits in code rather than a comment, `text` when no grammar
   was available.
-- **Scanning is local.** oxAudit contacts NVD, OSV, CISA KEV, FIRST EPSS, and
-  Exploit-DB only for the network-backed features you invoke, plus whatever AI
+- **Scanning is local.** oxAudit contacts NVD, OSV, CISA KEV, FIRST EPSS,
+  Exploit-DB, package registries (for declared licenses), and deps.dev (for
+  release facts, `sca` only) only for the network-backed features you invoke, plus whatever AI
   endpoint you configure. There is no telemetry to opt out of.
 - **Findings are ranked by exploitability-in-context.** CISA KEV says a CVE was
   exploited in the wild, EPSS predicts it, a public Exploit-DB entry proves
@@ -244,6 +245,8 @@ with a reason, an expiry, and a pull request.
 | **Editor integration** | A VS Code extension ([`editors/vscode/`](editors/vscode)) scans the open workspace with the same CLI and reports findings as native diagnostics, with severity mapping and a status-bar scan control |
 | **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
 | **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, shipped in the release's container image, pinned by digest ([server guide](docs/headless-server.md#container), [ADR 0004](docs/architecture/adr/0004-headless-server.md)) |
+| **Composition policy** | `oxaudit-cli sca` judges a dependency scan against a committed `.oxaudit/component-policy.json`: license rules by SPDX id or risk category (with `OR`/`AND`/`WITH` handled, and unresolved text reported as unknown rather than assumed permissive), release-health rules (deprecated, too old, too many major versions behind, package gone stale), advisory severity rules, and named component approvals and rejections with reasons and expiry. A `deny` fails the build; a waived violation stays in the report. `--notices` writes an attribution inventory. `oxaudit-cli portfolio` compares stored runs across projects and answers where a package is used. Engineering triage from declared metadata, not legal advice ([guide](docs/composition-analysis.md)) |
+| **CI systems** | JUnit XML for Jenkins, Azure Pipelines, Bitbucket and CircleCI; GitLab Code Quality and Dependency Scanning reports; Azure Pipelines issue commands; templates for each in [`examples/ci/`](examples/ci/README.md) that install a digest-pinned CLI |
 | **Inventory monitoring** | `oxaudit-cli monitor` re-matches stored dependency inventories against a refreshed advisory database and reports advisories the stored runs did not report — the overnight "which of my projects does this new CVE affect" loop as one cron line, with `--update` scoped to the ecosystems actually used, `--fail-on` gating, and an optional Slack-compatible webhook digest; stored runs are never modified |
 
 ## Screens
@@ -498,8 +501,14 @@ retain runtime/dev/optional/peer types when supplied. A versionless named worksp
 is inventory metadata only when its local link target and root workspace declaration
 agree; it is not queried as an unknown registry version. Invalid or escaping links
 fail inventory coverage. Missing declaration targets, cycles and truncated traversal
-remain explicit relationship unknowns. npm v1 and other supported inventory formats
-retain lockfile locations with relationship evidence unavailable.
+remain explicit relationship unknowns. `Cargo.lock`, `pnpm-lock.yaml`, `uv.lock`,
+`Gemfile.lock`/`gems.locked` and NuGet `packages.lock.json` carry the same evidence,
+built from the edges and direct declarations the lockfile itself records, under the
+same bounds. npm v1 and the remaining inventory formats retain lockfile locations
+with relationship evidence unavailable: their lockfiles do not record which packages
+the project declares directly, and no sibling manifest is read to guess
+([the full table](docs/composition-analysis.md#direct-and-transitive-components)).
+Copyable upgrade commands remain npm-only.
 
 Relationship traversal is bounded to 20,000 visits/edges, depth 64, 32 chains per
 occurrence and 4 MiB of chain evidence per lockfile. Workspace matching supports
@@ -566,8 +575,10 @@ verifies it against the release's `SHA256SUMS.txt`, and runs
     args: --fail-on high --format sarif -o oxaudit.sarif
 ```
 
-`target` is a path for `oxaudit-cli scan` only — the action runs no
-dependency, image or registry scan. `args` are extra `scan` flags, split on
+`command` selects what runs: `scan` (the default), `deps`, `sca` or `image`;
+`target` is what that command scans. The copy of the action at the v0.2.7 tag
+runs `scan` only, and `sca` needs a CLI release newer than v0.2.7. `args` are
+extra flags for the chosen command, split on
 whitespace with no shell evaluation, so quotes, globs and `$()` stay literal.
 `repo` (default `HenryCooper86/oxAudit`) names the repository hosting the
 releases. Pin the action to a full commit you have reviewed, not a branch:
@@ -589,6 +600,15 @@ whenever `GITHUB_ACTIONS` is set — the [composite action](action/action.yml)
 needs no extra inputs — and annotation paths are rewritten relative to the
 repository root, so scanning a subdirectory still lands annotations on the right
 files.
+
+### In GitLab CI, Jenkins, Azure Pipelines, Bitbucket and CircleCI
+
+[`examples/ci/`](examples/ci/README.md) has a template for each. They install a
+digest-pinned CLI, scan source, run `sca` once against the component policy, and
+publish the result in the form each system renders: GitLab's Code Quality and
+Dependency Scanning reports, or JUnit XML everywhere else (`--format junit`,
+`gitlab-code-quality`, `gitlab-dependency-scanning`). Under Azure Pipelines `scan`
+also emits `##vso[task.logissue]` lines, so findings link to their files.
 
 ### In the editor
 
@@ -1427,6 +1447,7 @@ src-tauri/            Rust backend (Tauri v2)
     oxaudit-scanners/     bounded declarative rules and optional object analysis
     oxaudit-benchmark/    resumable ground-truth contracts and metrics
     oxaudit-compliance/   declarative readiness profiles and evidence evaluation
+    oxaudit-sca/          license classification, component policy, composition report, portfolio
     oxaudit-parsers/      fuzzed lockfile, report-import, ELF note and package-database parsers
   src/adapters/       SQLite, scanner mapping, providers and standards reporting
   src/presentation/   canonical Tauri event projection

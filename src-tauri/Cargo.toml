@@ -8,6 +8,7 @@ members = [
   "crates/oxaudit-scanners",
   "crates/oxaudit-archive",
   "crates/oxaudit-parsers",
+  "crates/oxaudit-sca",
 ]
 resolver = "2"
 
@@ -107,6 +108,7 @@ oxaudit-compliance = { path = "crates/oxaudit-compliance" }
 oxaudit-scanners = { path = "crates/oxaudit-scanners" }
 oxaudit-archive = { path = "crates/oxaudit-archive" }
 oxaudit-parsers = { path = "crates/oxaudit-parsers" }
+oxaudit-sca = { path = "crates/oxaudit-sca" }
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-opener = "2.7.2"
 tauri-plugin-dialog = "2.8.4"

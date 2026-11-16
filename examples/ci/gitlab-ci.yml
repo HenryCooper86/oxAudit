@@ -1,0 +1,54 @@
+# oxAudit in GitLab CI. Copy the job into .gitlab-ci.yml, and
+# examples/ci/install-oxaudit.sh into ci/install-oxaudit.sh.
+#
+# Results appear three ways:
+#   - Code Quality widget on the merge request (every GitLab tier);
+#   - Dependency Scanning report in the security widgets (Ultimate);
+#   - JUnit test report on the pipeline's Tests tab.
+#
+# The job fails on a `deny` violation of .oxaudit/component-policy.json, or
+# on source findings at or above --fail-on. Reports are uploaded either way.
+
+oxaudit:
+  stage: test
+  image: debian:12-slim
+  variables:
+    # Pin both together. See install-oxaudit.sh for where the digest comes from.
+    OXAUDIT_VERSION: "REPLACE_WITH_RELEASE_TAG"
+    OXAUDIT_SHA256: "REPLACE_WITH_ASSET_SHA256"
+    GIT_DEPTH: "1"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl
+    - sh ci/install-oxaudit.sh
+  script:
+    - mkdir -p oxaudit-reports
+    # Run every step, remember the worst exit code, fail at the end: a failed
+    # gate must not hide the other reports.
+    - status=0
+    - .oxaudit-tool/oxaudit-cli scan . --fail-on high
+        --format gitlab-code-quality -o oxaudit-reports/source-quality.json || status=$?
+    - .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db
+        --format gitlab-code-quality -o oxaudit-reports/sca-quality.json
+        --notices oxaudit-reports/THIRD-PARTY-NOTICES.md || status=$?
+    # The same stored run, re-rendered offline: no second advisory lookup.
+    - .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db --offline --report-only
+        --format gitlab-dependency-scanning -o oxaudit-reports/gl-dependency-scanning-report.json || status=$?
+    - .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db --offline --report-only
+        --format junit -o oxaudit-reports/sca-junit.xml || status=$?
+    - .oxaudit-tool/oxaudit-cli deps . --db oxaudit-reports/db/findings.db --offline
+        --format cyclonedx -o oxaudit-reports/sbom.cdx.json || status=$?
+    - exit $status
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - oxaudit-reports/*.json
+      - oxaudit-reports/*.xml
+      - oxaudit-reports/*.md
+    reports:
+      codequality:
+        - oxaudit-reports/source-quality.json
+        - oxaudit-reports/sca-quality.json
+      dependency_scanning: oxaudit-reports/gl-dependency-scanning-report.json
+      junit: oxaudit-reports/sca-junit.xml
+      cyclonedx: oxaudit-reports/sbom.cdx.json

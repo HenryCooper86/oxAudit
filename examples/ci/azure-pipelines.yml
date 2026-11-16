@@ -1,0 +1,62 @@
+# oxAudit in Azure Pipelines. Copy the job into azure-pipelines.yml, and
+# examples/ci/install-oxaudit.sh into ci/install-oxaudit.sh.
+#
+# Source findings appear as pipeline issues linked to their file (oxaudit-cli
+# emits ##vso[task.logissue] itself under Azure Pipelines), policy violations
+# and advisories as test results, and SARIF as a build artifact named
+# CodeAnalysisLogs, which the SARIF SAST Scans Tab extension reads.
+trigger:
+  branches:
+    include: [main]
+pr:
+  branches:
+    include: [main]
+
+variables:
+  # Pin both together. See install-oxaudit.sh for where the digest comes from.
+  OXAUDIT_VERSION: REPLACE_WITH_RELEASE_TAG
+  OXAUDIT_SHA256: REPLACE_WITH_ASSET_SHA256
+
+jobs:
+  - job: oxaudit
+    displayName: oxAudit
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        fetchDepth: 1
+        persistCredentials: false
+
+      - script: sh ci/install-oxaudit.sh
+        displayName: Install the pinned oxaudit-cli
+
+      - script: |
+          set -u
+          mkdir -p "$(Build.ArtifactStagingDirectory)/oxaudit" oxaudit-db
+          out="$(Build.ArtifactStagingDirectory)/oxaudit"
+          status=0
+          .oxaudit-tool/oxaudit-cli scan . --fail-on high --db oxaudit-db/findings.db \
+            --format sarif -o "$out/source.sarif" || status=$?
+          .oxaudit-tool/oxaudit-cli sca . --db oxaudit-db/findings.db \
+            --format junit -o "$out/sca-junit.xml" \
+            --notices "$out/THIRD-PARTY-NOTICES.md" || status=$?
+          .oxaudit-tool/oxaudit-cli sca . --db oxaudit-db/findings.db --offline --report-only \
+            --format json -o "$out/sca.json" || status=$?
+          .oxaudit-tool/oxaudit-cli deps . --db oxaudit-db/findings.db --offline \
+            --format cyclonedx -o "$out/sbom.cdx.json" || status=$?
+          exit $status
+        displayName: Scan source and third-party components
+
+      - task: PublishTestResults@2
+        condition: always()
+        displayName: Publish policy and advisory results
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: '$(Build.ArtifactStagingDirectory)/oxaudit/*-junit.xml'
+          testRunTitle: oxAudit
+          failTaskOnFailedTests: false
+
+      - publish: $(Build.ArtifactStagingDirectory)/oxaudit
+        condition: always()
+        artifact: CodeAnalysisLogs
+        displayName: Publish reports

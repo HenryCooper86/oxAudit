@@ -4004,6 +4004,7 @@ dependencies = [
  "oxaudit-compliance",
  "oxaudit-domain",
  "oxaudit-parsers",
+ "oxaudit-sca",
  "oxaudit-scanners",
  "percent-encoding",
  "printpdf",
@@ -4127,6 +4128,15 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
+name = "oxaudit-sca"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

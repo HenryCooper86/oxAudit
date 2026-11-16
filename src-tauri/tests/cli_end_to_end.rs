@@ -4199,3 +4199,184 @@ fn an_unreadable_oxaudit_directory_is_a_failure_not_a_usage_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("at most"), "{stderr}");
 }
+
+// ------------------------------------------------- composition analysis
+
+/// A Cargo project whose one third-party crate comes from git, so nothing
+/// here needs a registry or an advisory provider.
+fn cargo_project(policy: Option<&str>) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("temporary project");
+    let root = directory.path();
+    std::fs::write(
+        root.join("Cargo.lock"),
+        "version = 3\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"helper\"]\n\n\
+         [[package]]\nname = \"helper\"\nversion = \"1.0.0\"\n\
+         source = \"git+https://example.com/helper#0123456789abcdef\"\n",
+    )
+    .expect("lockfile");
+    if let Some(policy) = policy {
+        std::fs::create_dir(root.join(".oxaudit")).expect(".oxaudit");
+        std::fs::write(root.join(".oxaudit/component-policy.json"), policy).expect("policy");
+    }
+    directory
+}
+
+const DENY_UNKNOWN: &str = r#"{"version": 1, "licenses": {"unknown": "deny"}}"#;
+
+#[test]
+fn sca_reports_without_a_policy_and_fails_on_a_denied_component_with_one() {
+    let unjudged = cargo_project(None);
+    let path = unjudged.path().to_str().unwrap();
+    let output = run(&["sca", path, "--offline", "--quiet"]);
+    assert_eq!(code(&output), 0, "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("Policy: none"),
+        "{}",
+        stdout(&output)
+    );
+
+    let judged = cargo_project(Some(DENY_UNKNOWN));
+    let path = judged.path().to_str().unwrap();
+    let output = run(&["sca", path, "--offline", "--quiet", "--format", "json"]);
+    assert_eq!(code(&output), 1);
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("json report");
+    assert_eq!(report["kind"], "sca");
+    // The project's own crate is not a third-party component.
+    assert_eq!(report["summary"]["components"], 1);
+    assert_eq!(report["components"][0]["name"], "helper");
+    assert_eq!(report["components"][0]["direct"], true);
+    assert_eq!(report["components"][0]["registry"], false);
+    assert_eq!(report["violations"][0]["rule"], "licenses.unknown");
+    assert_eq!(report["summary"]["releases"]["status"], "notCollected");
+
+    let output = run(&["sca", path, "--offline", "--quiet", "--report-only"]);
+    assert_eq!(code(&output), 0, "--report-only never fails on policy");
+    assert!(
+        stdout(&output).contains("DENY   license"),
+        "{}",
+        stdout(&output)
+    );
+
+    let output = run(&["sca", path, "--offline", "--quiet", "--format", "junit"]);
+    assert_eq!(code(&output), 1);
+    assert!(
+        stdout(&output).contains("failures=\"1\""),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn an_invalid_component_policy_is_a_usage_error_before_any_scan() {
+    let project = cargo_project(Some(r#"{"version": 1, "licenses": {"deny": ["GPL-9"]}}"#));
+    let path = project.path().to_str().unwrap();
+    let output = run(&["sca", path, "--offline"]);
+    assert_eq!(code(&output), 2);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid .oxaudit/component-policy.json"),
+        "{stderr}"
+    );
+    assert!(stdout(&output).is_empty());
+
+    let output = run(&[
+        "sca",
+        path,
+        "--offline",
+        "--quiet",
+        "--ignore-invalid-policy",
+    ]);
+    assert_eq!(code(&output), 0);
+    assert!(
+        stdout(&output).contains("was ignored"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn the_portfolio_reads_stored_runs_and_can_gate_on_them() {
+    let project = cargo_project(Some(DENY_UNKNOWN));
+    let path = project.path().to_str().unwrap();
+    let store = tempfile::tempdir().expect("store");
+    let db = store.path().join("db/findings.db");
+    let db = db.to_str().unwrap();
+    assert_eq!(
+        code(&run(&["sca", path, "--offline", "--quiet", "--db", db])),
+        1
+    );
+
+    let output = run(&["portfolio", "summary", "--db", db, "--json"]);
+    assert_eq!(code(&output), 0);
+    let summary: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("json");
+    assert_eq!(
+        summary["totals"]["failing_projects"],
+        serde_json::Value::Null
+    );
+    assert_eq!(summary["totals"]["failingProjects"], 1);
+    assert_eq!(summary["projects"][0]["status"], "fail");
+    assert_eq!(
+        code(&run(&[
+            "portfolio",
+            "summary",
+            "--db",
+            db,
+            "--fail-on-deny"
+        ])),
+        1
+    );
+
+    let output = run(&["portfolio", "where-used", "--db", db, "helper"]);
+    assert!(
+        stdout(&output).contains("crates.io helper 1.0.0  direct"),
+        "{}",
+        stdout(&output)
+    );
+    let output = run(&["portfolio", "where-used", "--db", db, "absent"]);
+    assert!(stdout(&output).contains("is not in the latest stored inventory"));
+}
+
+#[test]
+fn ci_formats_render_source_findings_and_are_refused_where_they_do_not_apply() {
+    let project = project();
+    let path = project.path().to_str().unwrap();
+    let output = run(&[
+        "scan",
+        path,
+        "--quiet",
+        "--format",
+        "junit",
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(code(&output), 1);
+    let report = stdout(&output);
+    assert!(report.starts_with("<?xml"), "{report}");
+    assert!(report.contains("<failure message="), "{report}");
+
+    // Without a gate, every finding is reported and none is a failure.
+    let output = run(&["scan", path, "--quiet", "--format", "junit"]);
+    assert_eq!(code(&output), 0);
+    assert!(stdout(&output).contains("failures=\"0\""));
+
+    let output = run(&["scan", path, "--quiet", "--format", "gitlab-code-quality"]);
+    let entries: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("json");
+    let first = &entries.as_array().expect("an array of issues")[0];
+    assert!(first["fingerprint"]
+        .as_str()
+        .is_some_and(|value| value.len() == 64));
+    assert!(first["location"]["path"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("src/")));
+
+    for arguments in [
+        vec!["scan", path, "--format", "gitlab-dependency-scanning"],
+        vec!["image", path, "--format", "junit"],
+        vec!["history", path, "--format", "gitlab-code-quality"],
+        vec!["scan", path, "--staged", "--format", "junit"],
+    ] {
+        let output = run(&arguments);
+        assert_eq!(code(&output), 2, "{arguments:?}");
+        assert!(stdout(&output).is_empty(), "{arguments:?}");
+    }
+}

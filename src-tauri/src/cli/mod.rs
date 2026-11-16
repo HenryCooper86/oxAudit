@@ -21,9 +21,11 @@
 //! until someone deliberately asks it to gate one.
 
 pub mod baseline;
+mod ci;
 mod compliance;
 mod dependency_baseline;
 mod project_config;
+mod sca;
 mod staged;
 
 use std::io::Write;
@@ -128,6 +130,17 @@ enum Command {
     Compliance {
         #[command(subcommand)]
         command: compliance::ComplianceCommand,
+    },
+    /// Software composition analysis: run a dependency scan, classify every
+    /// component's license, collect release facts, and judge the result
+    /// against the project's component policy
+    /// (`.oxaudit/component-policy.json`). Exits 1 on a `deny` violation.
+    Sca(sca::ScaArgs),
+    /// Compare stored dependency runs across projects: policy state per
+    /// project, shared components, and where a component is used.
+    Portfolio {
+        #[command(subcommand)]
+        command: sca::PortfolioCommand,
     },
 }
 
@@ -721,14 +734,47 @@ enum OutputFormat {
     /// Jira import CSV (`Summary,Issue Type,Description,Priority,Labels`),
     /// one row per finding.
     JiraCsv,
+    /// JUnit XML, one test case per finding; a finding at or above the gate
+    /// is a failure. For `scan` and `deps`.
+    Junit,
+    /// GitLab Code Quality report. For `scan` and `deps`.
+    GitlabCodeQuality,
+    /// GitLab Dependency Scanning report. For `deps`.
+    GitlabDependencyScanning,
 }
 
 impl OutputFormat {
     /// Formats that come from the stored canonical run rather than the
     /// in-memory finding list.
+    /// The CI report formats, which render from the in-memory result like
+    /// text and JSON do.
+    fn is_ci_report(self) -> bool {
+        matches!(
+            self,
+            Self::Junit | Self::GitlabCodeQuality | Self::GitlabDependencyScanning
+        )
+    }
+
+    /// Refuse a CI report format on a command that does not produce it.
+    fn refuse_ci_report(self, command: &str) -> Result<(), CliError> {
+        if self.is_ci_report() {
+            return Err(usage(format!(
+                "{command} does not produce --format {}; see `oxaudit-cli {command} --help`",
+                self.to_possible_value()
+                    .map(|value| value.get_name().to_string())
+                    .unwrap_or_default()
+            )));
+        }
+        Ok(())
+    }
+
     fn as_report_format(self) -> Option<ReportFormat> {
         match self {
-            Self::Text | Self::Json => None,
+            Self::Text
+            | Self::Json
+            | Self::Junit
+            | Self::GitlabCodeQuality
+            | Self::GitlabDependencyScanning => None,
             Self::Sarif => Some(ReportFormat::Sarif),
             Self::OxauditJson => Some(ReportFormat::OxAuditJson),
             Self::Cyclonedx => Some(ReportFormat::CycloneDx),
@@ -883,6 +929,8 @@ pub fn run() -> i32 {
         Command::ExternalBenchmark(args) => run_external_benchmark(args),
         Command::Monitor(args) => run_monitor(args, cli.quiet),
         Command::Compliance { command } => compliance::run_compliance(command, cli.quiet),
+        Command::Sca(args) => sca::run_sca(args, cli.quiet),
+        Command::Portfolio { command } => sca::run_portfolio(command),
     };
 
     match result {
@@ -1347,6 +1395,11 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     if !path.is_dir() {
         return Err(usage(format!("{} is not a directory", path.display())));
     }
+    if args.format == OutputFormat::GitlabDependencyScanning {
+        return Err(usage(
+            "scan reports source findings; --format gitlab-dependency-scanning belongs to `deps`",
+        ));
+    }
     let config = load_config(path, args.no_config)?;
     let merged = merge_scan(
         args,
@@ -1486,6 +1539,24 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
             "findings": detail.findings,
         }))
         .map_err(|error| failure(error.to_string()))?,
+        OutputFormat::Junit => {
+            let threshold = fail_on.threshold();
+            ci::junit(
+                "oxaudit scan",
+                &ci::source_cases(&detail.findings, &ci::workspace_prefix(path), |finding| {
+                    gates_the_build(finding)
+                        && threshold.is_some_and(|rank| severity_rank(&finding.severity) >= rank)
+                }),
+            )
+        }
+        OutputFormat::GitlabCodeQuality => serde_json::to_vec_pretty(&ci::code_quality_source(
+            &detail.findings,
+            &ci::workspace_prefix(path),
+        ))
+        .map_err(|error| failure(error.to_string()))?,
+        OutputFormat::GitlabDependencyScanning => {
+            unreachable!("refused before the scan started")
+        }
         other => {
             let format = other
                 .as_report_format()
@@ -1508,6 +1579,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
     // stderr and the job summary is appended to its file only under Actions,
     // so local runs and piped stdout are untouched.
     emit_github_annotations(&detail.findings, path);
+    ci::emit_azure_issues(&detail.findings, path);
     let mut step_summary = render_summary_markdown(summary, &detail.findings);
     if let Some(notice) = config_notice(&merged.from_config) {
         step_summary.push_str(&format!("\n{notice}\n"));
@@ -1564,6 +1636,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
 // ------------------------------------------------------------------ history
 
 fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
+    args.format.refuse_ci_report("history")?;
     if !args.path.is_dir() {
         return Err(usage(format!("{} is not a directory", args.path.display())));
     }
@@ -1805,58 +1878,47 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
         .map(dependency_baseline::load)
         .transpose()
         .map_err(usage)?;
-    let root = args
-        .path
-        .canonicalize()
-        .map_err(|error| usage(error.to_string()))?;
-    let repository = match &args.db {
-        Some(path) => open_repository(path)?,
-        None => FindingsRepository::open_in_memory().map_err(|error| failure(error.to_string()))?,
-    };
-    let service = FindingsService::new(repository);
-    let http = build_http_client()?;
-    let osv = crate::deps::osv::OsvClient::new(http.clone());
-    let providers = crate::deps::service::NetworkProviders {
-        osv: &osv,
-        http: &http,
-    };
-    // Ephemeral invocations also leave no enrichment cache in the project.
-    let temporary_cache = tempfile::tempdir().map_err(|error| failure(error.to_string()))?;
-    let cache_path = args
-        .db
-        .as_ref()
-        .and_then(|db| db.parent())
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(temporary_cache.path());
-    let cancel = AtomicBool::new(false);
-    let advisory_db = match &args.advisory_db {
-        Some(path) => Some(
-            crate::advisories::store::AdvisoryDb::open(path)
-                .map_err(|error| failure(format!("cannot open {}: {error}", path.display())))?,
-        ),
-        None => None,
-    };
-    let result = block_on(crate::deps::service::scan(
-        crate::deps::service::ScanRequest {
-            project_root: &root,
-            root: &root,
-            ignored_dirs: &ignore_dirs,
+    let DepsScan {
+        service,
+        result,
+        root,
+        ..
+    } = execute_deps_scan(
+        &DepsScanRequest {
+            path: &args.path,
+            db: args.db.as_deref(),
+            advisory_db: args.advisory_db.as_deref(),
             offline: args.offline,
-            advisory_db: advisory_db.as_ref(),
-            repository: service.repository(),
-            providers: &providers,
-            cancel: &cancel,
-            events: &StderrEvents { quiet },
-            cache_path,
-            advisory_policy: match &args.advisory_policy {
-                Some(path) => crate::deps::service::AdvisoryPolicySource::File(path),
-                None => crate::deps::service::AdvisoryPolicySource::Project,
-            },
+            ignore_dirs: &ignore_dirs,
+            advisory_policy: args.advisory_policy.as_deref(),
             ignore_invalid_policy: args.ignore_invalid_policy,
         },
-    ))
-    .map_err(failure)?;
+        quiet,
+    )?;
     let rendered = match args.format {
+        OutputFormat::Junit => {
+            let (threshold, new_threshold) = (fail_on.threshold(), fail_on_new.threshold());
+            ci::junit(
+                "oxaudit deps",
+                &ci::advisory_cases(&result, &ci::workspace_prefix(&root), |vulnerability| {
+                    let rank = severity_rank(vulnerability.severity.as_deref().unwrap_or(""));
+                    vulnerability.review.is_none()
+                        && (threshold.is_some_and(|level| rank >= level)
+                            || (new_threshold.is_some_and(|level| rank >= level)
+                                && previous
+                                    .as_ref()
+                                    .is_some_and(|p| !p.contains(vulnerability))))
+                }),
+            )
+        }
+        OutputFormat::GitlabCodeQuality => serde_json::to_vec_pretty(&Value::Array(
+            ci::code_quality_advisories(&result, &ci::workspace_prefix(&root)),
+        ))
+        .map_err(|error| failure(error.to_string()))?,
+        OutputFormat::GitlabDependencyScanning => serde_json::to_vec_pretty(
+            &ci::gitlab_dependency_scanning(&result, &ci::workspace_prefix(&root), epoch_millis()),
+        )
+        .map_err(|error| failure(error.to_string()))?,
         OutputFormat::Json => serde_json::to_vec_pretty(&dependency_baseline::report(&result))
             .map_err(|error| failure(error.to_string()))?,
         OutputFormat::Text => {
@@ -1923,10 +1985,98 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
     Ok(if existing == EXIT_OK { new } else { existing })
 }
 
+/// What `deps` and `sca` ask of the shared dependency scan.
+struct DepsScanRequest<'a> {
+    path: &'a Path,
+    db: Option<&'a Path>,
+    advisory_db: Option<&'a Path>,
+    offline: bool,
+    ignore_dirs: &'a [String],
+    advisory_policy: Option<&'a Path>,
+    ignore_invalid_policy: bool,
+}
+
+/// A completed dependency scan, with the storage it was written to.
+struct DepsScan {
+    service: FindingsService,
+    result: crate::models::DependencyScanResult,
+    root: PathBuf,
+    http: reqwest::Client,
+}
+
+/// Run the dependency scan `deps` and `sca` share: the same service call
+/// the desktop makes, against `--db` or an in-memory database.
+fn execute_deps_scan(request: &DepsScanRequest<'_>, quiet: bool) -> Result<DepsScan, CliError> {
+    let root = request
+        .path
+        .canonicalize()
+        .map_err(|error| usage(error.to_string()))?;
+    let repository = match request.db {
+        Some(path) => open_repository(path)?,
+        None => FindingsRepository::open_in_memory().map_err(|error| failure(error.to_string()))?,
+    };
+    let service = FindingsService::new(repository);
+    let http = build_http_client()?;
+    let osv = crate::deps::osv::OsvClient::new(http.clone());
+    let providers = crate::deps::service::NetworkProviders {
+        osv: &osv,
+        http: &http,
+    };
+    // Ephemeral invocations also leave no enrichment cache in the project.
+    let temporary_cache = tempfile::tempdir().map_err(|error| failure(error.to_string()))?;
+    let cache_path = request
+        .db
+        .and_then(|db| db.parent())
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(temporary_cache.path());
+    let cancel = AtomicBool::new(false);
+    let advisory_db = match request.advisory_db {
+        Some(path) => Some(
+            crate::advisories::store::AdvisoryDb::open(path)
+                .map_err(|error| failure(format!("cannot open {}: {error}", path.display())))?,
+        ),
+        None => None,
+    };
+    let result = block_on(crate::deps::service::scan(
+        crate::deps::service::ScanRequest {
+            project_root: &root,
+            root: &root,
+            ignored_dirs: request.ignore_dirs,
+            offline: request.offline,
+            advisory_db: advisory_db.as_ref(),
+            repository: service.repository(),
+            providers: &providers,
+            cancel: &cancel,
+            events: &StderrEvents { quiet },
+            cache_path,
+            advisory_policy: match request.advisory_policy {
+                Some(path) => crate::deps::service::AdvisoryPolicySource::File(path),
+                None => crate::deps::service::AdvisoryPolicySource::Project,
+            },
+            ignore_invalid_policy: request.ignore_invalid_policy,
+        },
+    ))
+    .map_err(failure)?;
+    Ok(DepsScan {
+        service,
+        result,
+        root,
+        http,
+    })
+}
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 // ------------------------------------------------------------------- image
 
 fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
     use std::sync::Arc;
+    args.format.refuse_ci_report("image")?;
     let repository = match &args.db {
         Some(path) => open_repository(path)?,
         None => FindingsRepository::open_in_memory().map_err(|error| failure(error.to_string()))?,

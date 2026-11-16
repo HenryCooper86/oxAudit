@@ -18,6 +18,43 @@ lists what each release ships.
 
 ### Added
 
+- Software composition analysis. `oxaudit-cli sca <PATH>` runs the dependency
+  scan and judges its components against a committed
+  `.oxaudit/component-policy.json`: license rules by SPDX id or risk category,
+  release-health rules (deprecated, age, major versions behind, stale package),
+  advisory severity rules, and named component approvals and rejections with
+  reasons and expiry. A `deny` violation exits 1; `--report-only` lists without
+  failing. Declared licenses are parsed as SPDX expressions (`OR` is the
+  licensee's choice, `AND` binds to both, a recognised linking exception
+  relaxes strong copyleft); text that cannot be resolved is `unknown`, never
+  assumed permissive. Without a policy file the report classifies and judges
+  nothing, and says so. `--notices FILE` writes an attribution inventory
+  grouped by declared license. See
+  [Software composition analysis](docs/composition-analysis.md).
+- Release facts for `sca`, from the deps.dev package index: publication dates,
+  the default release, and deprecation, for npm, PyPI, Maven, crates.io, Go,
+  NuGet and RubyGems, up to 500 packages per run. Only package names are sent.
+  `--no-release-facts` skips the lookup, `--release-index` names a mirror, and
+  with `--db` the answer is stored as a hash-checked receipt that `--offline`
+  and the portfolio reuse. A rule fires only on a stated fact.
+- `oxaudit-cli portfolio` (`summary`, `components`, `where-used`, `history`)
+  compares the latest stored dependency run of every project in a database:
+  policy state per project, shared packages and their pinned versions, and
+  which projects use a named package. Stored runs are not modified.
+- Dependency chains for `Cargo.lock`, `pnpm-lock.yaml`, `uv.lock`,
+  `Gemfile.lock`/`gems.locked` and NuGet `packages.lock.json`, from the edges
+  and direct declarations each lockfile records, under the npm traversal
+  bounds. Lockfiles that do not record direct declarations stay "relationship
+  evidence unavailable". Copyable upgrade commands remain npm-only.
+- CI report formats: `--format junit` and `--format gitlab-code-quality` on
+  `scan`, `deps` and `sca`, and `--format gitlab-dependency-scanning` on `deps`
+  and `sca`. Under Azure Pipelines `scan` emits `##vso[task.logissue]` lines.
+- CI templates for GitLab CI, Jenkins, Azure Pipelines, Bitbucket Pipelines
+  and CircleCI in [`examples/ci/`](examples/ci/README.md), with an install
+  script that refuses a CLI asset whose SHA-256 does not match the pin.
+- The GitHub composite action takes `command` (`scan`, `deps`, `sca` or
+  `image`); it previously ran `scan` only.
+
 - Go standard-library and toolchain advisories. Compiled Go binaries (ELF,
   Mach-O, PE) in images and directories report the exact Go version they
   were built with as a `go-stdlib` component (OSV's `stdlib` package; an

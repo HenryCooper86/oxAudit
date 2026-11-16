@@ -40,6 +40,7 @@ Ports-and-adapters (ADR `docs/architecture/adr/0001-gui-first-ports-and-adapters
 - `src-tauri/crates/oxaudit-domain`: pure canonical records, identities, invariants (run, artifact, component, observation, evidence, finding, review, verification graph). All scan families produce this same graph.
 - `oxaudit-application`: use cases, ports, stage manifests (reject dropped/invented/duplicate candidates), event sequencing.
 - `oxaudit-scanners`, `oxaudit-parsers`, `oxaudit-archive`, `oxaudit-compliance`, `oxaudit-benchmark`: deterministic native detectors/rule compilation, tree-sitter grammars, archive handling, compliance mapping, quality benchmarks.
+- `oxaudit-sca`: pure composition-analysis rules (license classification, `.oxaudit/component-policy.json` evaluation, the SCA report, portfolio aggregation). The host's `src/sca/` reads the policy, collects release facts and rebuilds reports from stored runs; `docs/composition-analysis.md` is the user guide.
 - `src-tauri/src` (the `oxaudit` host crate, lib name `oxaudit_lib`): adapters for SQLite (`findings/`, `history.rs`), HTTP advisories, filesystem, git (`git_context*.rs`), OS credentials, optional external tools (cve-bin-tool/Grype, labelled external evidence), and Tauri `commands/`. Binaries: `main.rs` (desktop), `bin/oxaudit-cli.rs` (logic in `cli/`), `bin/oxaudit-server.rs`.
 - Cargo features: `grammars-all` (default; per-language `grammar-*`), `server`. Dropping a grammar makes analysis report Unknown rather than suppress, so recall is preserved.
 

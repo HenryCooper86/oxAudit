@@ -27,6 +27,7 @@ pub mod quality;
 pub mod reachability;
 mod rulepack_feed;
 mod rulepack_store;
+mod sca;
 mod scan_work;
 mod schedule_store;
 mod secrets_validation;

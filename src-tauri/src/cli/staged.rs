@@ -58,7 +58,7 @@ const UNAVAILABLE: &str = "Git index unavailable: enumeration or blob read faile
 pub(super) fn run_staged(args: &ScanArgs, quiet: bool) -> CliResult {
     // The standards formats render from the stored canonical run graph, and
     // staged mode stores nothing — refuse up front instead of scanning first.
-    if args.format.as_report_format().is_some() {
+    if args.format.as_report_format().is_some() || args.format.is_ci_report() {
         return Err(usage(
             "--staged scans the git index in memory; standards formats need a stored run — use --format text or json",
         ));

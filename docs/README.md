@@ -15,6 +15,9 @@ How to install, run and rely on oxAudit today.
   from the container image or a source build.
 - [The local advisory database](advisory-database.md): offline dependency
   matching, coverage and comparison rules.
+- [Software composition analysis](composition-analysis.md): license
+  classification, the component policy, release health, the portfolio view,
+  and the [CI templates](../examples/ci/README.md).
 - [Scan reliability and recovery](project-reliability.md): scan ownership,
   saved evidence and recovery.
 - [Compliance readiness and professional reporting](compliance-and-reporting.md).

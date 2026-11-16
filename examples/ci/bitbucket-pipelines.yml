@@ -1,0 +1,37 @@
+# oxAudit in Bitbucket Pipelines. Copy the step into bitbucket-pipelines.yml,
+# and examples/ci/install-oxaudit.sh into ci/install-oxaudit.sh. Set
+# OXAUDIT_VERSION and OXAUDIT_SHA256 as repository variables (see
+# install-oxaudit.sh for where the digest comes from).
+#
+# Bitbucket picks up JUnit files under any test-results/ directory, so
+# findings show on the pipeline's Tests tab. The step fails on a `deny`
+# violation of .oxaudit/component-policy.json or on source findings at or
+# above --fail-on.
+image: debian:12-slim
+
+definitions:
+  steps:
+    - step: &oxaudit
+        name: oxAudit
+        script:
+          - apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl
+          - sh ci/install-oxaudit.sh
+          - mkdir -p test-results oxaudit-reports
+          - status=0
+          - .oxaudit-tool/oxaudit-cli scan . --fail-on high --format junit -o test-results/oxaudit-source.xml || status=$?
+          - .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db --format junit -o test-results/oxaudit-sca.xml --notices oxaudit-reports/THIRD-PARTY-NOTICES.md || status=$?
+          - .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db --offline --report-only --format json -o oxaudit-reports/sca.json || status=$?
+          - .oxaudit-tool/oxaudit-cli deps . --db oxaudit-reports/db/findings.db --offline --format cyclonedx -o oxaudit-reports/sbom.cdx.json || status=$?
+          - exit $status
+        artifacts:
+          - oxaudit-reports/*.json
+          - oxaudit-reports/*.md
+          - test-results/*.xml
+
+pipelines:
+  pull-requests:
+    '**':
+      - step: *oxaudit
+  branches:
+    main:
+      - step: *oxaudit

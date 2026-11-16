@@ -1,0 +1,45 @@
+# oxAudit in CircleCI. Copy the job into .circleci/config.yml, and
+# examples/ci/install-oxaudit.sh into ci/install-oxaudit.sh. Set
+# OXAUDIT_VERSION and OXAUDIT_SHA256 in the project's environment variables
+# or a context (see install-oxaudit.sh for where the digest comes from).
+#
+# Findings show on the job's Tests tab through store_test_results. The job
+# fails on a `deny` violation of .oxaudit/component-policy.json or on source
+# findings at or above --fail-on; reports are stored either way.
+version: 2.1
+
+jobs:
+  oxaudit:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - run:
+          name: Install the pinned oxaudit-cli
+          command: sh ci/install-oxaudit.sh
+      - run:
+          name: Scan source and third-party components
+          command: |
+            set -u
+            mkdir -p test-results/oxaudit oxaudit-reports
+            status=0
+            .oxaudit-tool/oxaudit-cli scan . --fail-on high \
+              --format junit -o test-results/oxaudit/source.xml || status=$?
+            .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db \
+              --format junit -o test-results/oxaudit/sca.xml \
+              --notices oxaudit-reports/THIRD-PARTY-NOTICES.md || status=$?
+            .oxaudit-tool/oxaudit-cli sca . --db oxaudit-reports/db/findings.db --offline --report-only \
+              --format json -o oxaudit-reports/sca.json || status=$?
+            .oxaudit-tool/oxaudit-cli deps . --db oxaudit-reports/db/findings.db --offline \
+              --format cyclonedx -o oxaudit-reports/sbom.cdx.json || status=$?
+            exit $status
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: oxaudit-reports
+          destination: oxaudit
+
+workflows:
+  security:
+    jobs:
+      - oxaudit

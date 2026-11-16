@@ -40,6 +40,16 @@ stderr; report output on stdout is unaffected. `-h`/`--help` and
 | `cyclonedx-vex` | CycloneDX VEX assertions |
 | `github-issues-csv` | GitHub Issues import CSV (`title,description,labels`), one row per finding; completed runs only |
 | `jira-csv` | Jira import CSV (`Summary,Issue Type,Description,Priority,Labels`), one row per finding; completed runs only |
+| `junit` | JUnit XML, one test case per finding. A finding at or above the gate is a failure; one reported without failing is skipped, with the reason. `scan` and `deps` only |
+| `gitlab-code-quality` | GitLab Code Quality report. `scan` and `deps` only |
+| `gitlab-dependency-scanning` | GitLab Dependency Scanning report (schema 15). `deps` only |
+
+The three CI formats render from the scan's own result and need no `--db`.
+Their paths are relative to the CI checkout when `GITHUB_WORKSPACE`,
+`CI_PROJECT_DIR`, `BUILD_SOURCESDIRECTORY`, `BITBUCKET_CLONE_DIR` or
+`WORKSPACE` names a directory containing the scan root. A command that does
+not produce a format refuses it with exit 2. [`sca`](#sca) has its own
+format list.
 
 **Severities** (`--fail-on`, `--fail-on-new`): `none`, `info`, `low`,
 `medium`, `high`, `critical`. `none` never fails on findings and is the
@@ -118,6 +128,8 @@ fail_on_new = "high"
 | [`external-benchmark`](#external-benchmark) | Score against the OWASP Benchmark |
 | [`monitor`](#monitor) | Re-match stored dependency inventories against a local advisory database and report the delta |
 | [`compliance`](#compliance) | Assess project evidence against built-in readiness profiles, record reviewer decisions and compile PDF, HTML, Markdown, CSV or JSON reports |
+| [`sca`](#sca) | Run a dependency scan and judge its components against the project's component policy: licenses, release health, advisories, named approvals |
+| [`portfolio`](#portfolio) | Compare stored dependency runs across projects: policy state, shared components, where a component is used |
 
 ## scan
 
@@ -197,6 +209,66 @@ oxaudit-cli deps [OPTIONS] <PATH>
 | `--advisory-policy <FILE>` | `.oxaudit/advisory-policy.json` | Dismiss advisories by this policy file instead of the project's. Dismissed advisories are still reported but never gate; see [Suppressing a finding](../README.md#dependency-and-image-advisories) |
 | `--ignore-invalid-policy` | off | Run even when the advisory policy file is invalid |
 | `--no-config` | off | Ignore the scan root's [project config](#project-config) |
+
+## sca
+
+```text
+oxaudit-cli sca [OPTIONS] <PATH>
+```
+
+`PATH` is the directory to search for lockfiles. `sca` runs the same
+dependency scan as `deps`, then classifies every component's license,
+collects release facts and judges the result against
+`.oxaudit/component-policy.json`. The policy format, the license categories
+and the stated limits are in
+[Software composition analysis](composition-analysis.md). `sca` reads
+`[deps]` from the [project config](#project-config).
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--db <DB>` | in memory | Persist the dependency run, its advisory receipt and the release facts. [`portfolio`](#portfolio) reads it; SBOM and VEX exports of the run come from [`export`](#export) |
+| `--policy <FILE>` | `.oxaudit/component-policy.json` | Judge against this component policy instead of the project's. A named file that is missing is an error |
+| `--report-only` | off | List violations without failing on them. `--fail-on` still applies |
+| `--no-release-facts` | off | Do not ask the package index for release facts. Operational rules are then not evaluated, and the report says so |
+| `--release-index <URL>` | `https://api.deps.dev` | Package index to ask for release facts (a mirror) |
+| `--notices <FILE>` | — | Also write a Markdown notices file listing every registry component by declared license |
+| `--format <FORMAT>` | `text` | `text`, `json`, `junit`, `gitlab-code-quality` or `gitlab-dependency-scanning` |
+| `-o`, `--output <FILE>` | stdout | Write the report here |
+| `--fail-on <SEVERITY>` | `none` | Exit 1 when an open advisory at this severity or higher is reported, as in `deps` |
+| `--advisory-db <FILE>` | — | Answer advisories from this local advisory database instead of the OSV API |
+| `--offline` | off | Never contact providers: advisories come from a receipt in `--db` or from `--advisory-db`, release facts from the newest stored receipt covering the inventory |
+| `--ignore-dir <NAME>` | — | Directory name to ignore. Repeatable |
+| `--advisory-policy <FILE>` | `.oxaudit/advisory-policy.json` | Dismiss advisories by this policy file instead of the project's |
+| `--ignore-invalid-policy` | off | Run even when the advisory policy or the component policy is invalid; an invalid policy is not applied |
+| `--no-config` | off | Ignore the scan root's [project config](#project-config) |
+
+Exit 1 means a `deny` violation nobody waived, or an advisory at or above
+`--fail-on`. An invalid component policy exits 2 before any lookup. Under
+GitHub Actions `sca` appends a summary to the job summary.
+
+## portfolio
+
+Rebuilds the composition report of the latest completed dependency run of
+each scanned directory in a database, so projects can be compared. Stored
+runs are never modified. See
+[Software composition analysis](composition-analysis.md#portfolio) for what
+the portfolio does and does not cover.
+
+| Subcommand | Usage | Meaning |
+| --- | --- | --- |
+| `summary` | `portfolio summary --db <DB> [--fail-on-deny]` | One row per project, failing projects first. `--fail-on-deny` exits 1 when any project has a `deny` violation |
+| `components` | `portfolio components --db <DB> [--limit <N>]` | Every package across the projects, most widely used first, with the versions each project pins. `--limit` (default 50) bounds the table, never the JSON |
+| `where-used` | `portfolio where-used --db <DB> [--ecosystem <NAME>] [--version <VERSION>] <NAME>` | Which projects use a package, at which version, and whether directly |
+| `history` | `portfolio history --db <DB> --target <DIR>` | One project's stored runs, newest first, judged by the policy in force now. Reads the newest 100 dependency runs in the database |
+
+Every subcommand also takes:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--db <DB>` | required | Findings database holding the stored dependency runs |
+| `--policy <FILE>` | each project's own | Judge every project against this one component policy. Without it, each project's committed policy is read from its directory when that exists on this machine |
+| `--json` | off | Emit JSON instead of a table |
+| `-o`, `--output <FILE>` | stdout | Write the report here |
 
 ## image
 
