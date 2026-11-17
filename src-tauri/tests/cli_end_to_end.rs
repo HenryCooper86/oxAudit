@@ -4415,3 +4415,38 @@ fn cache_dir_is_created_private_and_a_non_directory_is_refused() {
     assert_eq!(code(&output), 2);
     assert!(stdout(&output).is_empty());
 }
+
+#[test]
+fn a_subdirectory_scan_under_github_actions_writes_valid_prefixed_sarif() {
+    // Under Actions the CLI prefixes SARIF paths with the scan root's place
+    // in the checkout. The prefixed report is re-validated before it is
+    // written, so a prefixing fault fails the scan itself.
+    let project = project();
+    let workspace = project.path();
+    let output = cli()
+        .args(["scan", "src", "--format", "sarif", "--quiet"])
+        .current_dir(workspace)
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_WORKSPACE", workspace)
+        .env_remove("GITHUB_STEP_SUMMARY")
+        .output()
+        .expect("the CLI runs");
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sarif: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("sarif");
+    let results = sarif["runs"][0]["results"].as_array().expect("results");
+    assert!(!results.is_empty());
+    for result in results {
+        let uri = result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            .as_str()
+            .expect("a location");
+        assert!(uri.starts_with("src/"), "{uri}");
+        assert!(result
+            .get("relatedLocations")
+            .is_none_or(|value| value.is_array()));
+    }
+}

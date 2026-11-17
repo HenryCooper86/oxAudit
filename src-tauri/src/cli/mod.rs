@@ -3238,7 +3238,10 @@ fn prefix_sarif_uris(sarif: &[u8], prefix: &str) -> Result<Vec<u8>, CliError> {
     for run in log["runs"].as_array_mut().into_iter().flatten() {
         for result in run["results"].as_array_mut().into_iter().flatten() {
             for key in ["locations", "relatedLocations"] {
-                for location in result[key].as_array_mut().into_iter().flatten() {
+                // `get_mut`, not indexing: indexing a result that has no
+                // such key would insert it as null, which the schema refuses.
+                let locations = result.get_mut(key).and_then(|value| value.as_array_mut());
+                for location in locations.into_iter().flatten() {
                     rewrite(location);
                 }
             }
@@ -4272,6 +4275,37 @@ mod tests {
             ]
         );
         assert_eq!(prefix_sarif_uris(&sarif, "").unwrap(), sarif);
+    }
+
+    #[test]
+    fn prefixing_adds_no_keys_to_a_result_that_lacks_them() {
+        // Most results have no related locations. Prefixing must leave such
+        // a result's keys alone: an inserted `"relatedLocations": null`
+        // fails the SARIF schema, and with it every prefixed scan.
+        let sarif = serde_json::to_vec(&serde_json::json!({
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {"driver": {"name": "oxAudit", "rules": []}},
+                "results": [
+                    {"message": {"text": "with a location"}, "locations": [{
+                        "physicalLocation": {"artifactLocation": {"uri": "src/app.js"}}
+                    }]},
+                    {"message": {"text": "with neither"}}
+                ]
+            }]
+        }))
+        .unwrap();
+        let prefixed: Value =
+            serde_json::from_slice(&prefix_sarif_uris(&sarif, "services/api").unwrap()).unwrap();
+        let results = prefixed["runs"][0]["results"].as_array().unwrap();
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "services/api/src/app.js"
+        );
+        assert!(results[0].get("relatedLocations").is_none());
+        assert!(results[1].get("locations").is_none());
+        assert!(results[1].get("relatedLocations").is_none());
     }
 
     #[test]
