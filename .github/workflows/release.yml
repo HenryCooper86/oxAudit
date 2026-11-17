@@ -678,6 +678,13 @@ jobs:
       # Needed to mint the build-provenance attestation.
       id-token: write
       attestations: write
+    env:
+      # A release needs no configured secret: checksums, build-provenance
+      # attestations and keyless Sigstore signatures all come from this
+      # run's own identity. minisign is an additional signature, made only
+      # when the repository holds the key; a step cannot read `secrets` in
+      # its `if`, so the answer is carried here.
+      MINISIGN_CONFIGURED: ${{ secrets.MINISIGN_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -707,13 +714,6 @@ jobs:
       # the CLI binaries and the checksum list independently of GitHub,
       # complementing the SLSA attestations above.
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-        if: ${{ !inputs.dry_run }}
-
-      # Keyless signing (Sigstore OIDC via this workflow run): no key
-      # custody exists to manage or lose. The signatures let anyone verify
-      # the CLI binaries and the checksum list independently of GitHub,
-      # complementing the SLSA attestations above.
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Publish a draft release
         env:
@@ -730,14 +730,16 @@ jobs:
           gh attestation verify <file> --repo OWNER/REPO
           ```
 
-          The CLI binaries and `SHA256SUMS.txt` are signed twice: keyless
-          (Sigstore — `cosign verify-blob --bundle <file>.bundle <file>`)
-          and with minisign against the public key committed at
-          `minisign.pub`:
+          The CLI binaries and `SHA256SUMS.txt` are also signed keylessly
+          with Sigstore, by this release's own workflow run:
 
           ```bash
-          minisign -Vm oxaudit-cli-linux-x86_64 -P "$(curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/minisign.pub | tail -1)"
+          cosign verify-blob --bundle <file>.bundle <file> \
+            --certificate-identity-regexp "^https://github.com/OWNER/REPO/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
           ```
+
+          MINISIGN_SECTION
 
           Desktop bundles are not part of this release: macOS notarization
           and Windows Authenticode credentials do not exist yet, and
@@ -781,7 +783,27 @@ jobs:
               cosign verify ${image_ref} --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer https://token.actions.githubusercontent.com
           CONTAINER
           fi
-          sed -i "s|OWNER/REPO|${GITHUB_REPOSITORY}|" notes.md
+          # State exactly which signatures this release carries. A release
+          # made without the minisign key says so, so a missing .minisig is
+          # not mistaken for a stripped one.
+          if [ "$MINISIGN_CONFIGURED" = "true" ]; then
+            cat > minisign.md <<'MINISIGN'
+          They are signed with minisign as well, against the public key
+          committed at `minisign.pub`, which verifies fully offline:
+
+          ```bash
+          minisign -Vm oxaudit-cli-linux-x86_64 -P "$(curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/minisign.pub | tail -1)"
+          ```
+          MINISIGN
+          else
+            cat > minisign.md <<'MINISIGN'
+          This release carries no minisign signatures: it was built without
+          the project's minisign key, so there are no `.minisig` files.
+          Verify with the checksums, attestations and Sigstore bundles above.
+          MINISIGN
+          fi
+          sed -i -e '/^MINISIGN_SECTION$/{r minisign.md' -e 'd}' notes.md
+          sed -i "s|OWNER/REPO|${GITHUB_REPOSITORY}|g" notes.md
           # Draft, so a human checks the artifact list and native desktop-signing
           # posture before anyone can download the release.
           gh release create "${GITHUB_REF_NAME}" \
@@ -810,7 +832,12 @@ jobs:
       # (minisign.pub) and works fully offline. The private key never
       # leaves GitHub Secrets; it is unencrypted so CI can sign
       # non-interactively — its confidentiality is the secret store's.
+      #
+      # Skipped when the key is not configured. The release is then
+      # verifiable by checksum, attestation and Sigstore, and its notes say
+      # that it has no minisign signatures.
       - name: Sign the CLI binaries and checksums with minisign
+        if: env.MINISIGN_CONFIGURED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}

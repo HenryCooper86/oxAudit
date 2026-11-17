@@ -165,6 +165,14 @@ lists what each release ships.
   than one commit per file, and resolves each walked path once per walk
   instead of twice.
 
+### Changed
+
+- A release no longer needs any configured secret. Checksums, build-provenance
+  attestations and keyless Sigstore signatures come from the release run's own
+  identity. minisign signatures are added only when the repository holds the
+  project's key; a release built without it has no `.minisig` files and its
+  notes say so, and the installer and guides lead with the attestation check.
+
 ### Fixed
 
 - Image scans report only the topmost copy of a package database when a later

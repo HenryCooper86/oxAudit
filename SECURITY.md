@@ -120,21 +120,26 @@ The measures below are enforced in CI, not aspirational:
 Tag-triggered macOS desktop bundles fail closed unless Developer ID signing and
 notarization inputs are complete; Windows desktop bundles fail closed unless the
 Authenticode certificate and password are present. Linux bundles and standalone
-CLI files do not claim native platform signatures, but every release's
-`SHA256SUMS.txt` and each `oxaudit-cli-*` binary additionally carry two
-independent signature schemes from the release workflow: keyless Sigstore
-signatures — verifiable by anyone with `cosign verify-blob --bundle
-<file>.bundle <file>` — and detached minisign signatures verifiable fully
-offline against the public key committed at [`minisign.pub`](minisign.pub):
+CLI files do not claim native platform signatures. A release needs no
+configured secret to be verifiable: SLSA build-provenance attestations cover
+every artifact, and `SHA256SUMS.txt` and each `oxaudit-cli-*` binary carry
+keyless Sigstore signatures made by the release workflow run itself,
+verifiable by anyone with `cosign verify-blob --bundle <file>.bundle <file>`.
+There is no key to hold or lose for either.
+
+When the repository holds the project's minisign key, the same files also
+carry detached minisign signatures, verifiable fully offline against the
+public key committed at [`minisign.pub`](minisign.pub):
 
 ```bash
 minisign -Vm <artifact> -P "$(tail -1 minisign.pub)"
 ```
 
-SLSA build-provenance attestations cover every artifact. The minisign private
-key is unencrypted so CI can sign non-interactively; its confidentiality is
-the repository secret store's, and the keypair should be rotated if that
-store is ever compromised. Manual dry runs may be unsigned
+A release built without that key has no `.minisig` files, and its release
+notes say so; a missing signature there is not a stripped one. The minisign
+private key is unencrypted so CI can sign non-interactively; its
+confidentiality is the repository secret store's, and the keypair should be
+rotated if that store is ever compromised. Manual dry runs may be unsigned
 and can never reach the publishing job.
 
 The headless server (`oxaudit-server`, [ADR 0004](docs/architecture/adr/0004-headless-server.md))

@@ -43,6 +43,31 @@ test("tag bundles run the fail-closed signing preflight", () => {
   assert.doesNotMatch(releaseWorkflow, /Producing an UNSIGNED/);
 });
 
+test("a release needs no configured secret, and minisign signs only when its key exists", () => {
+  // Provenance and keyless Sigstore signatures come from the run's own
+  // identity, so their steps carry no condition.
+  assert.match(releaseWorkflow, /- uses: actions\/attest-build-provenance@[0-9a-f]{40}[^\n]*\n\s+with:/);
+  assert.match(
+    releaseWorkflow,
+    /- name: Sign the CLI binaries and checksums keylessly\n\s+env:/,
+  );
+  // minisign depends on a stored key: skipped, not failed, without it.
+  assert.match(
+    releaseWorkflow,
+    /MINISIGN_CONFIGURED: \$\{\{ secrets\.MINISIGN_PRIVATE_KEY != '' \}\}/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /- name: Sign the CLI binaries and checksums with minisign\n\s+if: env\.MINISIGN_CONFIGURED == 'true'/,
+  );
+  // The key reaches exactly one step.
+  assert.equal(releaseWorkflow.match(/secrets\.MINISIGN_PRIVATE_KEY \}\}/g)?.length, 1);
+  // The notes say which case a release is, so a missing .minisig is not
+  // mistaken for a removed one.
+  assert.match(releaseWorkflow, /This release carries no minisign signatures/);
+  assert.match(releaseWorkflow, /They are signed with minisign as well/);
+});
+
 test("CI-installed Rust security tools use exact versions", () => {
   assert.match(securityWorkflow, /cargo install cargo-deny --version 0\.20\.2 --locked/);
   assert.match(securityWorkflow, /cargo install cargo-fuzz --version 0\.13\.2 --locked/);

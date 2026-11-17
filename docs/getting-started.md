@@ -58,9 +58,12 @@ those are GitHub-generated, not uploaded assets, and are not covered by
 - **Integrity.** `sha256sum -c SHA256SUMS.txt` (or `shasum -a 256 -c`)
   detects corrupted or substituted downloads. A checksum list downloaded
   from the same release does **not** by itself prove publisher identity.
-- **Publisher identity, offline key.** The four CLI binaries and
-  `SHA256SUMS.txt` carry minisign signatures verifiable against the public
-  key committed at [`minisign.pub`](../minisign.pub):
+- **Publisher identity, offline key.** A release built while the repository
+  holds the project's minisign key carries minisign signatures for the four
+  CLI binaries and `SHA256SUMS.txt`, verifiable against the public key
+  committed at [`minisign.pub`](../minisign.pub). The release notes state
+  whether a release has them; one without `.minisig` files is verified with
+  the Sigstore and attestation checks below instead.
 
   ```bash
   minisign -Vm oxaudit-cli-linux-x86_64 -P "$(curl -fsSL https://raw.githubusercontent.com/HenryCooper86/oxAudit/main/minisign.pub | tail -1)"
@@ -281,7 +284,7 @@ complete dependency audit. Every action is pinned to a full commit, and the
 tool is the published v0.2.7 `oxaudit-cli-linux-x86_64` release binary, not a
 build: the workflow pins its release tag, the tag's commit
 (`063b07e220b65310d84d317e15ee4ad2021709dc`) and the binary's SHA-256 from that
-release's minisign-signed `SHA256SUMS.txt`. Before anything runs, it checks the
+release's `SHA256SUMS.txt`. Before anything runs, it checks the
 download against the pinned digest and runs `gh attestation verify` requiring
 the tagged release workflow's identity, the tag ref, and the pinned commit, so
 a binary built from any other workflow, tag or commit fails the job. The target
@@ -295,7 +298,7 @@ submodules, or PR-supplied binaries are run. Review changes to the workflow,
    a later release, change `OXAUDIT_TOOL_VERSION`, `OXAUDIT_TOOL_COMMIT`
    (`git rev-list -n1 <tag>` in a clone of oxAudit) and `OXAUDIT_TOOL_SHA256`
    (the `oxaudit-cli-linux-x86_64` line of that release's `SHA256SUMS.txt`,
-   after checking its minisign signature as shown above) together.
+   after checking its signature as shown above) together.
 2. Merge the workflow to main and let a **push** run finish successfully. It
    publishes a baseline artifact named for that exact main commit, with tool
    commit, target commit, workflow run ID, and completed canonical source run ID.
