@@ -30,8 +30,8 @@ This matrix is the single authoritative inventory; the
 keeping copies. It was checked against the GitHub release API on
 **2026-11-17** against published v0.3.3 (16 uploaded assets). v0.3.1 is the
 oldest release available: the repository was re-created on 2026-11-07 without
-the earlier releases, and the tags of earlier versions were removed on
-2026-11-17. Release asset
+the earlier releases, and the tags and container images of earlier versions
+were removed on 2026-11-17. Release asset
 names other than the Linux desktop packages carry no version, so the same
 names apply to later releases; `<version>` below is the release number
 without the leading `v` (for example `0.3.3`).

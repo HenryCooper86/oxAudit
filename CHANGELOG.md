@@ -6,7 +6,8 @@ Notable changes to oxAudit, newest first. The format follows
 
 Published releases are v0.3.1, v0.3.2 and v0.3.3. Versions before 0.3.1 were
 released from an earlier copy of this repository. It was re-created on
-2026-11-07 without those releases, and their tags were removed on 2026-11-17;
+2026-11-07 without those releases, and their tags and container images were
+removed on 2026-11-17;
 their entries below remain as history. Of those, 0.1.0, 0.2.0, 0.2.1, 0.2.6
 and 0.2.7 were published, 0.2.2 existed only as a draft, the 0.2.3 and 0.2.5
 release workflows were cancelled, and 0.2.4 was prepared but never tagged.

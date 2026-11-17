@@ -30,6 +30,12 @@ release states; their exercised evidence is kept below.
   request; none had a release in this repository. The remaining tags are
   `v0.3.1`, `v0.3.2` and `v0.3.3`. Commands in the dated evidence below that
   name the deleted tags no longer resolve.
+- The 27 container image versions published before v0.3.3 (the v0.2.0,
+  v0.2.1, v0.2.2, v0.2.6 and v0.2.7 indexes, their per-architecture images
+  and signatures) were deleted from the registry on 2026-11-17 at the owner's
+  request. The five versions that make up v0.3.3 remain, and its image still
+  pulled by digest afterwards. Image digests in the dated evidence below no
+  longer resolve.
 - The repository holds no Actions secrets or variables, so no minisign key
   and no native signing credentials.
 - Pushes do not start workflows, and the events API shows no push events;
