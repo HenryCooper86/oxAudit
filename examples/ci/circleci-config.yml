@@ -11,7 +11,9 @@ version: 2.1
 jobs:
   oxaudit:
     docker:
-      - image: cimg/base:current
+      # The published Linux CLI needs glibc 2.39 or newer, so an image based
+      # on Ubuntu 24.04. It does not start on Ubuntu 22.04.
+      - image: cimg/base:current-24.04
     steps:
       - checkout
       - run:

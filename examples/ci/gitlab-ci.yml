@@ -11,11 +11,14 @@
 
 oxaudit:
   stage: test
-  image: debian:12-slim
+  # The published Linux CLI needs glibc 2.39 or newer (Ubuntu 24.04,
+  # Debian 13, Fedora 40). It does not start on Debian 12 or Ubuntu 22.04.
+  image: ubuntu:24.04
   variables:
-    # Pin both together. See install-oxaudit.sh for where the digest comes from.
-    OXAUDIT_VERSION: "REPLACE_WITH_RELEASE_TAG"
-    OXAUDIT_SHA256: "REPLACE_WITH_ASSET_SHA256"
+    # Pin both together. The digest is oxaudit-cli-linux-x86_64 from that
+    # release's SHA256SUMS.txt; use another asset's line on another architecture.
+    OXAUDIT_VERSION: "v0.3.1"
+    OXAUDIT_SHA256: "7ee0e7a31fad9acd6e2771585c65be7b38980f550badad1a3824a28f7d4278fc"
     GIT_DEPTH: "1"
   before_script:
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl

@@ -14,8 +14,8 @@ pr:
 
 variables:
   # Pin both together. See install-oxaudit.sh for where the digest comes from.
-  OXAUDIT_VERSION: REPLACE_WITH_RELEASE_TAG
-  OXAUDIT_SHA256: REPLACE_WITH_ASSET_SHA256
+  OXAUDIT_VERSION: v0.3.1
+  OXAUDIT_SHA256: 7ee0e7a31fad9acd6e2771585c65be7b38980f550badad1a3824a28f7d4278fc
 
 jobs:
   - job: oxaudit

@@ -25,15 +25,16 @@ address in a browser and paste the token at the gate.
 
 ### Container
 
-Each published release since v0.2.0 comes with a multi-architecture image
-(linux/amd64, linux/arm64) carrying both `oxaudit-cli` and `oxaudit-server`
-with the built GUI. The release asset `oxaudit-container.txt` holds its reference pinned by
-digest; for [v0.2.7](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.7)
-that is
+A release can come with a multi-architecture image (linux/amd64,
+linux/arm64) carrying both `oxaudit-cli` and `oxaudit-server` with the built
+GUI; its release asset `oxaudit-container.txt` then holds the reference pinned
+by digest. v0.3.1 has no image: the registry refused the push when the release
+was built, so run its server from a source build. The most recent image is
+v0.2.7's:
 `ghcr.io/henrycooper86/oxaudit@sha256:c078067e3dcfc2055c3475462d7d80d10bd50874a2429741bf02b9c1e99e518c`.
 Use the digest, not a tag, and verify the image's signature as shown in the
 [installation guide](getting-started.md#what-verification-proves). An
-anonymous lookup of that digest on 2026-11-02 resolved its linux/amd64 and
+anonymous lookup of that digest on 2026-11-17 resolved its linux/amd64 and
 linux/arm64 manifests; running the v0.2.7 image has not been recorded yet
 (v0.2.6's image was pulled and run on 2026-10-29).
 

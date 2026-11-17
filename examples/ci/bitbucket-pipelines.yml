@@ -7,7 +7,9 @@
 # findings show on the pipeline's Tests tab. The step fails on a `deny`
 # violation of .oxaudit/component-policy.json or on source findings at or
 # above --fail-on.
-image: debian:12-slim
+# The published Linux CLI needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13,
+# Fedora 40). It does not start on Debian 12 or Ubuntu 22.04.
+image: ubuntu:24.04
 
 definitions:
   steps:

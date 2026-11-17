@@ -1,9 +1,9 @@
 #!/bin/sh
 # Download a pinned oxaudit-cli release and verify it before first use.
 #
-#   OXAUDIT_VERSION  release tag, for example v0.3.0. The `sca` and
+#   OXAUDIT_VERSION  release tag, for example v0.3.1. The `sca` and
 #                    `portfolio` commands and the junit / gitlab-* formats
-#                    need a release newer than v0.2.7.
+#                    need v0.3.1 or later.
 #   OXAUDIT_SHA256   the SHA-256 of the asset for this runner, copied from
 #                    that release's SHA256SUMS.txt. Pinning the digest in
 #                    your pipeline means a replaced asset fails the job.

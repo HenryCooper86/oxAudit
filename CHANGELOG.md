@@ -5,9 +5,11 @@ Notable changes to oxAudit, newest first. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Not every tag became a GitHub release. Published releases are v0.1.0,
-v0.2.0, v0.2.1, v0.2.6 and v0.2.7. The v0.2.2 release exists only as an unpublished
+v0.2.0, v0.2.1, v0.2.6, v0.2.7 and v0.3.1. The v0.2.2 release exists only as an unpublished
 draft, the v0.2.3 and v0.2.5 release workflows were cancelled before
-publication, and 0.2.4 was prepared but never tagged. A user moving between
+publication, 0.2.4 was prepared but never tagged, and the v0.3.0 release
+workflow failed before publication. The repository was re-created on
+2026-11-07, and releases before v0.3.1 are no longer downloadable from it. A user moving between
 published releases receives every intermediate entry below. The
 [release checklist](docs/release-checklist.md) records the verified
 publication state, and the

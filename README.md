@@ -23,7 +23,7 @@ and a finding on a workstation are the same finding.
 Two real paths, and they are different builds:
 
 - **Published release.** The [latest release](https://github.com/HenryCooper86/oxAudit/releases/latest)
-  — [v0.2.7](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.2.7)
+  — [v0.3.1](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.1)
   (2026-10-29) at the time of writing — ships prebuilt `oxaudit-cli`
   binaries for Linux x86_64 and aarch64, macOS (one universal x86_64 + arm64
   binary), and Windows x86_64, unsigned Linux x86_64 desktop packages, and a
@@ -555,7 +555,7 @@ Parser and range semantics follow the [npm lockfile documentation](https://githu
 ### In GitHub Actions
 
 For a complete pull-request gate, use the [complete consumer workflow](examples/ci/oxaudit.yml).
-It installs the published v0.2.7 Linux CLI, checks it against a pinned SHA-256
+It installs the published v0.3.1 Linux CLI, checks it against a pinned SHA-256
 and its build-provenance attestation, and needs no repository secret. The
 [installation guide](docs/getting-started.md#complete-consumer-ci-example) explains
 the tool pin, fork pull requests, main baseline authority, canonical single-run
@@ -570,20 +570,19 @@ verifies it against the release's `SHA256SUMS.txt`, and runs
 - uses: actions/checkout@<full-commit-sha>
 - uses: HenryCooper86/oxAudit/action@<full-commit-sha>   # a reviewed oxAudit commit
   with:
-    version: v0.2.7          # release tag of the CLI; default `latest`
+    version: v0.3.1          # release tag of the CLI; default `latest`
     target: .                # source path to scan; default `.`
     args: --fail-on high --format sarif -o oxaudit.sarif
 ```
 
 `command` selects what runs: `scan` (the default), `deps`, `sca` or `image`;
-`target` is what that command scans. The copy of the action at the v0.2.7 tag
-runs `scan` only, and `sca` needs a CLI release newer than v0.2.7. `args` are
+`target` is what that command scans. `sca` needs CLI v0.3.1 or later. `args` are
 extra flags for the chosen command, split on
 whitespace with no shell evaluation, so quotes, globs and `$()` stay literal.
 `repo` (default `HenryCooper86/oxAudit`) names the repository hosting the
 releases. Pin the action to a full commit you have reviewed, not a branch:
-the v0.2.7 tag's commit (`063b07e`) is the first release that includes this
-input handling and the Linux ARM64 mapping; copies at v0.2.6 and earlier
+the v0.3.1 tag's commit (`8c53da8`) is the first release whose copy takes
+`command`; the copy at v0.2.7 runs `scan` only, and copies at v0.2.6 and earlier
 substitute `target` and `args` into their shell script, so do not pin those.
 Setting the repository variable `OXAUDIT_CODE_SCANNING=true` additionally
 uploads the SARIF to code

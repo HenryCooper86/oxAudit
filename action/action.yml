@@ -17,7 +17,7 @@ inputs:
       (lockfiles against OSV), `sca` (dependency scan judged against
       `.oxaudit/component-policy.json`: licenses, release health, advisories) or `image`
       (container image, archive or binary tree). `deps`, `sca` and `image` contact their
-      advisory providers unless `args` says otherwise. `sca` needs a CLI release newer than v0.2.7.
+      advisory providers unless `args` says otherwise. `sca` needs CLI v0.3.1 or later.
     required: false
     default: scan
   target:
