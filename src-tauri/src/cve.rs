@@ -69,6 +69,13 @@ impl CveState {
         self
     }
 
+    /// Point the KEV fetch at a test server.
+    #[cfg(test)]
+    pub(crate) fn with_kev_url(mut self, url: String) -> Self {
+        self.kev_url = url;
+        self
+    }
+
     /// The catalog from the on-disk cache, when one is configured, fresh and
     /// parses. Anything else is a miss: the catalog is fetched as usual.
     fn cached_kev(&self) -> Option<crate::exploit::KevSet> {

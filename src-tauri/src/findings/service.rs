@@ -811,7 +811,7 @@ impl FindingsService {
             let prewarm = tokio::runtime::Handle::try_current().ok().filter(|handle| {
                 handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
             });
-            std::thread::scope(|scope| {
+            let run_matching = || std::thread::scope(|scope| {
             if let Some(handle) = &prewarm {
                 let (cwe_seen, matching_done) = (&cwe_seen, &matching_done);
                 scope.spawn(move || {
@@ -909,6 +909,19 @@ impl FindingsService {
             });
             matching_done.store(true, Ordering::Relaxed);
             });
+            // Matching blocks this thread until every file is done. On a
+            // runtime worker that would also stop the runtime noticing
+            // network and timer events whenever this worker was the one
+            // watching for them: the catalog request above would never
+            // complete, and the scan would wait on it forever. Telling the
+            // runtime the thread is about to block hands that duty to
+            // another worker, which also keeps progress events flowing to
+            // clients during a scan.
+            if prewarm.is_some() {
+                tokio::task::block_in_place(run_matching);
+            } else {
+                run_matching();
+            }
             if cancel.load(Ordering::Relaxed) {
                 return Err(CommandError::scan_cancelled());
             }

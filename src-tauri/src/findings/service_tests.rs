@@ -3081,3 +3081,85 @@ async fn paged_source_reads_keep_metadata_separate_and_reconcile_live_policy_rev
         crate::findings::error::ErrorCode::PolicyInvalid
     );
 }
+
+/// A scan on a runtime worker must not wait forever on its own catalog
+/// request. Matching blocks the worker; if that worker was the one watching
+/// for network events, nothing else notices the response unless the worker
+/// hands that duty over first. One worker thread makes the hazard certain,
+/// and a server answers after a delay so the request is still in flight
+/// while matching holds the thread.
+#[test]
+fn a_scan_on_a_single_runtime_worker_completes_its_catalog_request() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/kev", listener.local_addr().unwrap());
+    let served = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 2048];
+        let _ = stream.read(&mut request);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let body = r#"{"vulnerabilities":[{"cveID":"CVE-2021-0001","knownRansomwareCampaignUse":"Unknown","cwes":["CWE-95"]}]}"#;
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    });
+    let directory = tempfile::tempdir().unwrap();
+    for index in 0..40 {
+        std::fs::write(
+            directory.path().join(format!("handler-{index}.js")),
+            "export function run(userInput) {\n  return eval(userInput);\n}\n",
+        )
+        .unwrap();
+    }
+    let path = directory.path().to_string_lossy().into_owned();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // Spawned, so the scan runs on the worker as a server request does.
+    runtime.spawn(async move {
+        let service = FindingsService::new(
+            crate::findings::repository::FindingsRepository::open_in_memory().unwrap(),
+        );
+        let cve =
+            CveState::new(reqwest::Client::builder().no_proxy().build().unwrap()).with_kev_url(url);
+        let result = service
+            .scan(
+                ScanOptions {
+                    path,
+                    scan_secrets: false,
+                    ..ScanOptions::default()
+                },
+                &cve,
+                &AtomicBool::new(false),
+                &RecordingEvents::default(),
+            )
+            .await;
+        let _ = sender.send(result.map(|run| {
+            (
+                run.findings.len(),
+                run.findings
+                    .iter()
+                    .filter(|finding| finding.cwe_exploited)
+                    .count(),
+            )
+        }));
+    });
+    let outcome = match receiver.recv_timeout(std::time::Duration::from_secs(30)) {
+        Ok(outcome) => outcome.expect("scan result"),
+        Err(_) => {
+            // The worker is stuck and dropping the runtime would wait on it
+            // forever; leak it so the failure is reported instead.
+            std::mem::forget(runtime);
+            panic!("the scan waited on its own catalog request and never finished");
+        }
+    };
+    served.join().unwrap();
+    assert_eq!(outcome.0, 40);
+    assert_eq!(outcome.1, 40, "the fetched catalog marked the findings");
+    runtime.shutdown_background();
+}
