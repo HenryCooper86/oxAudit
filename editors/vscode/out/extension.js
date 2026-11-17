@@ -4,7 +4,8 @@
 // shell) and parses its stable JSON contract:
 //   oxaudit-cli scan <dir> --format json --quiet
 //     stdout: { "summary": ScanSummary, "findings": Finding[] }
-//     exit 0: clean, exit 1: findings present, exit 2: usage, exit 3: failure
+//     exit 0: scan completed (with or without findings: no --fail-on is
+//     passed), exit 1: a --fail-on gate tripped, exit 2: usage, exit 3: failure
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -43,14 +44,21 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const node_child_process_1 = require("node:child_process");
+const cli_1 = require("./cli");
+const findings_1 = require("./findings");
 const INSTALL_URL = 'https://github.com/HenryCooper86/oxAudit#install';
 const DIAGNOSTIC_SOURCE = 'oxaudit';
 let collection;
 let statusBar;
 let scanning = false;
+/** The extension's own storage directory for the CLI's catalog cache. */
+let cacheDir;
+/** Whether each CLI path accepts `scan --cache-dir`, asked once per path. */
+const cacheDirSupport = new Map();
 function activate(context) {
     collection = vscode.languages.createDiagnosticCollection(DIAGNOSTIC_SOURCE);
     context.subscriptions.push(collection);
+    cacheDir = vscode.Uri.joinPath(context.globalStorageUri, 'cache').fsPath;
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBar.command = 'oxaudit.scanWorkspace';
     setIdleStatus();
@@ -149,6 +157,28 @@ function runCli(cliPath, args, cwd) {
         });
     });
 }
+/**
+ * The cache directory to pass, or `undefined` when caching is turned off or
+ * this CLI does not accept the flag. A CLI that cannot be asked is treated as
+ * not supporting it; the scan that follows reports the real problem.
+ */
+async function cacheDirFor(cliPath, cwd) {
+    const enabled = vscode.workspace.getConfiguration('oxaudit').get('cacheCatalog', true);
+    if (!enabled || !cacheDir) {
+        return undefined;
+    }
+    let supported = cacheDirSupport.get(cliPath);
+    if (supported === undefined) {
+        try {
+            supported = (0, cli_1.supportsCacheDir)((await runCli(cliPath, ['scan', '--help'], cwd)).stdout);
+            cacheDirSupport.set(cliPath, supported);
+        }
+        catch {
+            supported = false;
+        }
+    }
+    return supported ? cacheDir : undefined;
+}
 async function scanWorkspace() {
     if (scanning) {
         return;
@@ -165,10 +195,12 @@ async function scanWorkspace() {
     statusBar.text = '$(sync~spin) oxAudit: scanning…';
     statusBar.tooltip = 'oxAudit: scan in progress';
     try {
-        const { stdout } = await runCli(cliPath, ['scan', folder.uri.fsPath, '--format', 'json', '--quiet'], folder.uri.fsPath);
+        const { stdout } = await runCli(cliPath, (0, cli_1.scanArguments)(folder.uri.fsPath, await cacheDirFor(cliPath, folder.uri.fsPath)), folder.uri.fsPath);
         const report = parseReport(stdout);
-        const truncated = report.findings.length > maxFindings;
-        const capped = truncated ? report.findings.slice(0, maxFindings) : report.findings;
+        // Findings the project's review policy dismissed are not diagnostics.
+        const findings = (0, findings_1.reportableFindings)(report.findings);
+        const truncated = findings.length > maxFindings;
+        const capped = truncated ? findings.slice(0, maxFindings) : findings;
         // Finding filePath values are scan-root-relative; join with the folder.
         const byFile = new Map();
         for (const finding of capped) {

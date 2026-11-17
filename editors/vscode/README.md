@@ -20,6 +20,7 @@ Static security scanning for your workspace, surfaced as native VS Code diagnost
 | `oxaudit.cliPath` | string | `"oxaudit-cli"` | Path to the `oxaudit-cli` executable (resolved from `PATH` by default). |
 | `oxaudit.scanOnOpen` | boolean | `false` | Run one scan automatically when a workspace folder is opened. |
 | `oxaudit.maxFindings` | number | `500` | Maximum number of findings published as diagnostics per scan. |
+| `oxaudit.cacheCatalog` | boolean | `true` | Keep the public CISA KEV catalog in the extension's own storage for an hour, so repeat scans skip a download of about a second. Nothing about your workspace is stored. Needs an `oxaudit-cli` that accepts `scan --cache-dir`; with an older one the extension scans as before. |
 
 ## Status bar
 

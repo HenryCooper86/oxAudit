@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { scanArguments, supportsCacheDir } from "../editors/vscode/src/cli.ts";
 import { reportableFindings } from "../editors/vscode/src/findings.ts";
 
 /**
@@ -23,4 +24,24 @@ test("dismissed findings are not shown as diagnostics", () => {
     reportableFindings(findings).map((finding) => finding.id),
     ["undecided", "candidate", "confirmed", "null-review"],
   );
+});
+
+/**
+ * The extension passes `--cache-dir` only to a CLI that accepts it. An older
+ * CLI treats an unknown flag as a usage error, so guessing wrong would stop
+ * the editor scanning at all.
+ */
+test("the cache directory is offered only to a CLI whose help lists it", () => {
+  const current = "Options:\n      --db <DB>\n          Keep the run\n\n      --cache-dir <DIR>\n          Keep the catalog\n";
+  const older = "Options:\n      --db <DB>\n          Keep the run in this database\n";
+  assert.equal(supportsCacheDir(current), true);
+  assert.equal(supportsCacheDir(older), false);
+  assert.equal(supportsCacheDir("see --cache-directory for details"), false);
+  assert.equal(supportsCacheDir(""), false);
+
+  assert.deepEqual(scanArguments("/work/app"), ["scan", "/work/app", "--format", "json", "--quiet"]);
+  assert.deepEqual(scanArguments("/work/app", "/store/cache"), [
+    "scan", "/work/app", "--format", "json", "--quiet", "--cache-dir", "/store/cache",
+  ]);
+  assert.deepEqual(scanArguments("/work/app", ""), ["scan", "/work/app", "--format", "json", "--quiet"]);
 });

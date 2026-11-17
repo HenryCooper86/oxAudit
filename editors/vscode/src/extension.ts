@@ -8,6 +8,7 @@
 
 import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
+import { scanArguments, supportsCacheDir } from './cli';
 import { reportableFindings } from './findings';
 
 const INSTALL_URL = 'https://github.com/HenryCooper86/oxAudit#install';
@@ -34,10 +35,15 @@ interface CliReport {
 let collection: vscode.DiagnosticCollection;
 let statusBar: vscode.StatusBarItem;
 let scanning = false;
+/** The extension's own storage directory for the CLI's catalog cache. */
+let cacheDir: string | undefined;
+/** Whether each CLI path accepts `scan --cache-dir`, asked once per path. */
+const cacheDirSupport = new Map<string, boolean>();
 
 export function activate(context: vscode.ExtensionContext): void {
   collection = vscode.languages.createDiagnosticCollection(DIAGNOSTIC_SOURCE);
   context.subscriptions.push(collection);
+  cacheDir = vscode.Uri.joinPath(context.globalStorageUri, 'cache').fsPath;
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.command = 'oxaudit.scanWorkspace';
@@ -162,6 +168,28 @@ function runCli(cliPath: string, args: string[], cwd: string): Promise<ScanResul
   });
 }
 
+/**
+ * The cache directory to pass, or `undefined` when caching is turned off or
+ * this CLI does not accept the flag. A CLI that cannot be asked is treated as
+ * not supporting it; the scan that follows reports the real problem.
+ */
+async function cacheDirFor(cliPath: string, cwd: string): Promise<string | undefined> {
+  const enabled = vscode.workspace.getConfiguration('oxaudit').get<boolean>('cacheCatalog', true);
+  if (!enabled || !cacheDir) {
+    return undefined;
+  }
+  let supported = cacheDirSupport.get(cliPath);
+  if (supported === undefined) {
+    try {
+      supported = supportsCacheDir((await runCli(cliPath, ['scan', '--help'], cwd)).stdout);
+      cacheDirSupport.set(cliPath, supported);
+    } catch {
+      supported = false;
+    }
+  }
+  return supported ? cacheDir : undefined;
+}
+
 async function scanWorkspace(): Promise<void> {
   if (scanning) {
     return;
@@ -182,7 +210,7 @@ async function scanWorkspace(): Promise<void> {
   try {
     const { stdout } = await runCli(
       cliPath,
-      ['scan', folder.uri.fsPath, '--format', 'json', '--quiet'],
+      scanArguments(folder.uri.fsPath, await cacheDirFor(cliPath, folder.uri.fsPath)),
       folder.uri.fsPath,
     );
     const report = parseReport(stdout);

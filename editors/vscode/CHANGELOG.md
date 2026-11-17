@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Repeat scans skip the CISA KEV catalog download: the extension passes its
+  own storage directory to `oxaudit-cli scan --cache-dir`, where the CLI keeps
+  that public catalog for an hour. The extension asks the installed CLI
+  whether it accepts the flag, so an older CLI scans exactly as before.
+  `oxaudit.cacheCatalog` turns it off.
 - Findings that the project's review policy (`.oxaudit/policy.json`) marks as
   false positive, accepted risk or suppressed are no longer shown as
   diagnostics. They never failed the CLI's build gate, and now they no longer

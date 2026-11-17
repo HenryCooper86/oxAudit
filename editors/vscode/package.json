@@ -49,6 +49,11 @@
           "type": "number",
           "default": 500,
           "description": "Maximum number of findings published as diagnostics per scan."
+        },
+        "oxaudit.cacheCatalog": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the public CISA KEV catalog in the extension's own storage for an hour, so repeat scans skip the download. Nothing about your workspace is stored. Needs an oxaudit-cli that accepts scan --cache-dir; older ones scan as before."
         }
       }
     }
