@@ -1,0 +1,65 @@
+name: Registry access check
+
+# Asks the container registry whether this repository's workflows may push
+# the release image, without building or publishing anything. The release
+# builds for twenty minutes before its first push, so a refusal is cheaper
+# to find here. Run it after changing the package's access settings:
+#
+#   gh workflow run registry-access.yml
+#
+# It opens an upload session for the image and cancels it. Nothing is
+# written to the registry.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: May this repository push the image?
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Open and cancel an upload session
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          image="${GITHUB_REPOSITORY,,}"
+          echo "Image: ghcr.io/${image}"
+          # The same exchange `docker push` makes: trade the workflow token
+          # for a registry token scoped to pushing this image.
+          token="$(curl -fsS -u "${REGISTRY_USER}:${REGISTRY_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${image}:pull,push" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))')"
+          if [ -z "$token" ]; then
+            echo "::error::The registry issued no token for ${image}."
+            exit 1
+          fi
+          headers="$(mktemp)"
+          status="$(curl -sS -o body.txt -D "$headers" -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${token}" \
+            "https://ghcr.io/v2/${image}/blobs/uploads/")"
+          echo "Registry answered ${status} to opening an upload session."
+          if [ "$status" = "202" ]; then
+            # Cancel the session so nothing is left behind.
+            location="$(grep -i '^location:' "$headers" | tr -d '\r' | sed 's/^[Ll]ocation: *//')"
+            case "$location" in
+              http*) ;;
+              *) location="https://ghcr.io${location}" ;;
+            esac
+            curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer ${token}" "$location" || true
+            echo "This repository's workflows may push ghcr.io/${image}."
+            exit 0
+          fi
+          cat body.txt
+          echo
+          echo "::error::The registry refused a push to ghcr.io/${image} (HTTP ${status})."
+          echo "In the package's settings, under Manage Actions access, this repository needs the Write role."
+          exit 1
