@@ -4,12 +4,14 @@ Notable changes to oxAudit, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Not every tag became a GitHub release. Published releases are v0.1.0,
-v0.2.0, v0.2.1, v0.2.6, v0.2.7, v0.3.1 and v0.3.2. The v0.2.2 release exists only as an unpublished
-draft, the v0.2.3 and v0.2.5 release workflows were cancelled before
-publication, 0.2.4 was prepared but never tagged, and the v0.3.0 release
-workflow failed before publication. The repository was re-created on
-2026-11-07, and releases before v0.3.1 are no longer downloadable from it. A user moving between
+Published releases are v0.3.1, v0.3.2 and v0.3.3. Versions before 0.3.1 were
+released from an earlier copy of this repository. It was re-created on
+2026-11-07 without those releases, and their tags were removed on 2026-11-17;
+their entries below remain as history. Of those, 0.1.0, 0.2.0, 0.2.1, 0.2.6
+and 0.2.7 were published, 0.2.2 existed only as a draft, the 0.2.3 and 0.2.5
+release workflows were cancelled, and 0.2.4 was prepared but never tagged.
+0.3.0 was tagged, but its release workflow failed before publication.
+A user moving between
 published releases receives every intermediate entry below. The
 [release checklist](docs/release-checklist.md) records the verified
 publication state, and the
@@ -24,8 +26,7 @@ lists what each release ships.
 
 - No code changes. A rebuild after the container registry's access for this
   repository was corrected, so that a release can carry the container image
-  again; v0.3.1 and v0.3.2 shipped without one. The release page states
-  whether this release has an image.
+  again; v0.3.1 and v0.3.2 shipped without one. v0.3.3 has the image.
 - The release workflow holds the Linux binaries to glibc 2.34, the version
   the documentation promises, instead of 2.35.
 
@@ -51,7 +52,7 @@ in this release.
   binaries, checksums, SBOMs, attestations and signatures are published, and
   the release notes state that the release has no image.
 
-## [0.3.0] - 2026-11-17
+## 0.3.0 - 2026-11-17
 
 Tagged, not published; see 0.3.1.
 
@@ -324,7 +325,7 @@ Tagged, not published; see 0.3.1.
   ends in `exec` cannot skip the scan and lines after the block still run;
   reinstalling moves a block that earlier releases appended.
 
-## [0.2.7] - 2026-10-29
+## 0.2.7 - 2026-10-29
 
 Release notes: [docs/releases/v0.2.7.md](docs/releases/v0.2.7.md).
 
@@ -463,7 +464,7 @@ Release notes: [docs/releases/v0.2.7.md](docs/releases/v0.2.7.md).
 - Portfolio pages through saved projects in groups of 50 in desktop and
   server modes, with in-place retry of a failed page.
 
-## [0.2.6] - 2026-10-26
+## 0.2.6 - 2026-10-26
 
 Published release; GitHub's latest release at the time of writing. The first
 published release after v0.2.1, so it also delivers the 0.2.2–0.2.5 entries
@@ -476,7 +477,7 @@ below. Notes: [docs/releases/v0.2.6.md](docs/releases/v0.2.6.md).
   non-empty dependency list before upload. Recursive selection had picked a
   workspace helper, which stopped v0.2.5.
 
-## [0.2.5] - 2026-10-26
+## 0.2.5 - 2026-10-26
 
 Tagged; the release workflow was cancelled and no GitHub release exists. Its
 changes shipped in v0.2.6. Notes:
@@ -506,7 +507,7 @@ tagged; its changes first shipped in 0.2.5:
   an unreadable member name is counted as skipped. Advisory dumps and
   rule-pack archives with unreadable member names fail with a stated error.
 
-## [0.2.3] - 2026-10-25
+## 0.2.3 - 2026-10-25
 
 Tagged; the release workflow was cancelled and no GitHub release exists. Its
 changes shipped in v0.2.6.
@@ -519,7 +520,7 @@ changes shipped in v0.2.6.
 - The VEX trust and Portfolio pages ignore superseded responses, so a stale
   read cannot overwrite or unlock controls showing newer state.
 
-## [0.2.2] - 2026-10-25
+## 0.2.2 - 2026-10-25
 
 Tagged; the release exists only as an unpublished draft. Its changes shipped
 in v0.2.6.
@@ -533,7 +534,7 @@ in v0.2.6.
   previews show the backend's validity flag. History Scan states its budgets,
   and list caps are stated when reached. Disabled controls state why.
 
-## [0.2.1] - 2026-10-25
+## 0.2.1 - 2026-10-25
 
 Published release.
 
@@ -543,7 +544,7 @@ Published release.
   target. It previously considered only the newest hundred runs, so older
   targets silently left monitoring while the command reported success.
 
-## [0.2.0] - 2026-10-25
+## 0.2.0 - 2026-10-25
 
 Published release. The first with a Linux aarch64 CLI and a
 multi-architecture container image.
@@ -599,7 +600,7 @@ multi-architecture container image.
     and registry declarations without a readable packages inventory remain
     coverage errors.
 
-## [0.1.0] - 2026-09-26
+## 0.1.0 - 2026-09-26
 
 First published release: the desktop workbench and `oxaudit-cli` over one
 engine. Source pattern and secret scanning, Git history secret scanning,
@@ -614,13 +615,4 @@ composite GitHub Action and the installer script.
 [Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.3...HEAD
 [0.3.3]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.7...v0.3.0
-[0.2.7]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.6...v0.2.7
-[0.2.6]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.5...v0.2.6
-[0.2.5]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.3...v0.2.5
-[0.2.3]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.2...v0.2.3
-[0.2.2]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/HenryCooper86/oxAudit/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/HenryCooper86/oxAudit/releases/tag/v0.1.0
+[0.3.1]: https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.1

@@ -25,32 +25,26 @@ address in a browser and paste the token at the gate.
 
 ### Container
 
-A release can come with a multi-architecture image (linux/amd64,
-linux/arm64) carrying both `oxaudit-cli` and `oxaudit-server` with the built
-GUI; its release asset `oxaudit-container.txt` then holds the reference pinned
-by digest. v0.3.1 has no image: the registry refused the push when the release
-was built, so run its server from a source build. The most recent image is
-v0.2.7's:
-`ghcr.io/henrycooper86/oxaudit@sha256:c078067e3dcfc2055c3475462d7d80d10bd50874a2429741bf02b9c1e99e518c`.
+A release comes with a multi-architecture image (linux/amd64, linux/arm64)
+carrying both `oxaudit-cli` and `oxaudit-server` with the built GUI. Its
+release asset `oxaudit-container.txt` holds the reference pinned by digest;
+for [v0.3.3](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.3)
+that is
+`ghcr.io/henrycooper86/oxaudit@sha256:1825a8b82c7369ff98786e286e6910a7303eb02274cbffb149ed0ae13b0ffb54`.
 Use the digest, not a tag, and verify the image's signature as shown in the
-[installation guide](getting-started.md#what-verification-proves). An
-anonymous lookup of that digest on 2026-11-17 resolved its linux/amd64 and
-linux/arm64 manifests; running the v0.2.7 image has not been recorded yet
-(v0.2.6's image was pulled and run on 2026-10-29).
+[installation guide](getting-started.md#what-verification-proves). On
+2026-11-17 that image was pulled by digest, printed `oxaudit 0.3.3`, and its
+server served the GUI, compressed its assets and refused an `/api` request
+without a token. v0.3.1 and v0.3.2 were published without an image.
 
 The image's entrypoint is the CLI, so the server is one flag away. Inside the
 container the server binds `0.0.0.0:8080`, serves the GUI from `/app/dist`,
 and keeps all state under `/data`; it runs as the unprivileged `scanner`
-user, which must own the `/data` volume. Images up to and including v0.2.6
-do not create `/data`, so a fresh named volume is owned by root and the
-server exits with "cannot prepare the data directory". With those images,
-give the volume to `scanner` once before the first start (the `chown` line
-below); v0.2.7 and later images are built to create `/data` owned by
-`scanner`, and running the `chown` line against them is harmless:
+user, which owns `/data` in the image, so a fresh named volume works without
+preparation:
 
 ```bash
-IMAGE=ghcr.io/henrycooper86/oxaudit@sha256:c078067e3dcfc2055c3475462d7d80d10bd50874a2429741bf02b9c1e99e518c
-docker run --rm --user 0 -v oxaudit-data:/data --entrypoint chown "$IMAGE" scanner:scanner /data
+IMAGE=ghcr.io/henrycooper86/oxaudit@sha256:1825a8b82c7369ff98786e286e6910a7303eb02274cbffb149ed0ae13b0ffb54
 docker run -d --name oxaudit -p 127.0.0.1:8080:8080 -v oxaudit-data:/data \
   --entrypoint oxaudit-server "$IMAGE"
 docker logs oxaudit        # prints the generated access token on first start

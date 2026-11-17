@@ -23,8 +23,8 @@ and a finding on a workstation are the same finding.
 Two real paths, and they are different builds:
 
 - **Published release.** The [latest release](https://github.com/HenryCooper86/oxAudit/releases/latest)
-  — [v0.3.2](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.2)
-  (2026-10-29) at the time of writing — ships prebuilt `oxaudit-cli`
+  — [v0.3.3](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.3)
+  (2026-11-17) at the time of writing — ships prebuilt `oxaudit-cli`
   binaries for Linux x86_64 and aarch64, macOS (one universal x86_64 + arm64
   binary), and Windows x86_64, unsigned Linux x86_64 desktop packages, and a
   linux/amd64 + linux/arm64 container image with the CLI and the headless
@@ -587,7 +587,7 @@ Parser and range semantics follow the [npm lockfile documentation](https://githu
 ### In GitHub Actions
 
 For a complete pull-request gate, use the [complete consumer workflow](examples/ci/oxaudit.yml).
-It installs the published v0.3.2 Linux CLI, checks it against a pinned SHA-256
+It installs the published v0.3.3 Linux CLI, checks it against a pinned SHA-256
 and its build-provenance attestation, and needs no repository secret. The
 [installation guide](docs/getting-started.md#complete-consumer-ci-example) explains
 the tool pin, fork pull requests, main baseline authority, canonical single-run
@@ -602,7 +602,7 @@ verifies it against the release's `SHA256SUMS.txt`, and runs
 - uses: actions/checkout@<full-commit-sha>
 - uses: HenryCooper86/oxAudit/action@<full-commit-sha>   # a reviewed oxAudit commit
   with:
-    version: v0.3.2          # release tag of the CLI; default `latest`
+    version: v0.3.3          # release tag of the CLI; default `latest`
     target: .                # source path to scan; default `.`
     args: --fail-on high --format sarif -o oxaudit.sarif
 ```
@@ -614,8 +614,8 @@ whitespace with no shell evaluation, so quotes, globs and `$()` stay literal.
 `repo` (default `HenryCooper86/oxAudit`) names the repository hosting the
 releases. Pin the action to a full commit you have reviewed, not a branch:
 the v0.3.1 tag's commit (`8c53da8`) is the first release whose copy takes
-`command`; the copy at v0.2.7 runs `scan` only, and copies at v0.2.6 and earlier
-substitute `target` and `args` into their shell script, so do not pin those.
+`command`. Earlier copies run `scan` only, and the oldest substituted `target`
+and `args` into their shell script, so do not pin a commit before that one.
 Setting the repository variable `OXAUDIT_CODE_SCANNING=true` additionally
 uploads the SARIF to code
 scanning, so findings appear inline in pull requests and in the Security tab —

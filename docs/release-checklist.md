@@ -3,26 +3,33 @@
 Last reviewed **2026-11-17** against the GitHub repository/release API, the
 release workflow runs, the container registry, and a live download-and-verify
 exercise. The repository is public and
-[v0.3.2](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.2) is the
+[v0.3.3](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.3) is the
 latest published release (GitHub's release list on 2026-11-17). Earlier
 reviews (2026-10-10, 2026-10-20, 2026-10-29, 2026-11-02) covered earlier
 release states; their exercised evidence is kept below.
 
 **The repository was re-created on 2026-11-07.** Observed on 2026-11-17:
 
-- Its tags remain, but no GitHub release older than v0.3.1 exists in it: the
+- Its tags came across, but no GitHub release older than v0.3.1 exists in it: the
   release API listed none before v0.3.1 was published, and
   `releases/download/v0.2.7/SHA256SUMS.txt` returned 404. The rows for
   earlier releases below describe the repository before it was re-created.
-- The container package `ghcr.io/henrycooper86/oxaudit` is still in the
-  registry (v0.2.7's index resolved anonymously on 2026-11-17) but is linked
-  to no repository, and the registry refused pushes from this repository's
-  release workflow with `permission_denied: write_package`. The owner linked
-  the package to this repository at 08:49 UTC the same day, after v0.3.1 was
-  published. v0.3.2's release run was refused all the same: its token had
-  `Packages: write` and `docker login` succeeded, so the package itself does
-  not yet grant this repository's workflows write access (package settings,
-  "Manage Actions access", role Write).
+- The container package `ghcr.io/henrycooper86/oxaudit` survived the
+  re-creation but was linked to no repository, and the registry refused
+  pushes from this repository's release workflow with
+  `permission_denied: write_package` for v0.3.0, v0.3.1, v0.3.2 and the first
+  v0.3.3 run. The workflow token had `Packages: write` and `docker login`
+  succeeded each time; the owner's own token was accepted. The refusal ended
+  once the owner granted this repository the Write role under the package's
+  "Manage Actions access", and the second v0.3.3 run pushed and signed the
+  image. `gh workflow run registry-access.yml` asks the registry the same
+  question in about a minute, without building or writing anything; run it
+  before a release if the package's settings have changed.
+- The tags `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.2.3`, `v0.2.5`,
+  `v0.2.6`, `v0.2.7` and `v0.3.0` were deleted on 2026-11-17 at the owner's
+  request; none had a release in this repository. The remaining tags are
+  `v0.3.1`, `v0.3.2` and `v0.3.3`. Commands in the dated evidence below that
+  name the deleted tags no longer resolve.
 - The repository holds no Actions secrets or variables, so no minisign key
   and no native signing credentials.
 - Pushes do not start workflows, and the events API shows no push events;
@@ -41,9 +48,10 @@ release states; their exercised evidence is kept below.
 
 | Tag | Commit | Release workflow | GitHub release |
 | --- | --- | --- | --- |
+| `v0.3.3` | `7aad536` | first run: publish job succeeded but both container jobs failed, and its image-less draft was deleted unpublished; second run on the same tag succeeded in full | Published 2026-11-17 15:07 UTC, 16 uploaded assets: the 15 of v0.3.2 plus `oxaudit-container.txt`. No minisign signatures; the release notes say so |
 | `v0.3.2` | `30035a5` | publish job succeeded; both container jobs failed (registry refused the push, though the package was linked to the repository by then) | Published 2026-11-17 12:21 UTC, 15 uploaded assets with the same names as v0.3.1. Linux binaries built on Ubuntu 22.04. No container image and no minisign signatures; the release notes state both |
 | `v0.3.1` | `8c53da8` | publish job succeeded; both container jobs failed (registry refused the push) | Published 2026-11-17 08:29 UTC, 15 uploaded assets: four CLIs with a Sigstore bundle each, three Linux desktop packages, two SBOMs, `SHA256SUMS.txt` and its bundle. No container image and no minisign signatures; the release notes state both |
-| `v0.3.0` | `a1a648e` | failed three times: the container push was refused and, at that tag, a failed container job blocked publication | None. The tag is preserved; v0.3.1 is the same code with the workflow fixed |
+| `v0.3.0` | `a1a648e` | failed three times: the container push was refused and, at that tag, a failed container job blocked publication | None. The tag was deleted on 2026-11-17; v0.3.1 is the same code with the workflow fixed |
 | `v0.2.7` | `063b07e` | succeeded | Published 2026-10-29 08:43:55 UTC (release ID `427621649`, 25 uploaded assets); GitHub's latest-release response on 2026-11-02 |
 | `v0.2.6` | `c9f0568` | succeeded | Published 2026-10-26 08:58:36 UTC (release ID `423719831`, 25 uploaded assets) |
 | `v0.2.5` | `b9a1012` | cancelled | None. Its SBOM selection bug was fixed in v0.2.6 (see [the v0.2.6 notes](releases/v0.2.6.md)); the tag is preserved |
@@ -81,6 +89,31 @@ to which file — is the single matrix in
 Update that matrix instead of copying inventories here.
 
 ### Exercised verification
+
+#### 2026-11-17, v0.3.3, macOS arm64 and Linux containers
+
+- `shasum -a 256 -c` over the release `SHA256SUMS.txt` passed for the
+  downloaded `oxaudit-cli-linux-x86_64`, `oxaudit-cli-macos-universal` and
+  `oxaudit-container.txt`; the macOS binary printed `oxaudit 0.3.3`.
+- `gh attestation verify` with `--cert-identity` set to the
+  `refs/tags/v0.3.3` release workflow, `--source-ref refs/tags/v0.3.3` and
+  `--source-digest 7aad53677fc08adf0d3d7645f26ed22f092b0978` exited 0 for
+  both CLIs, `SHA256SUMS.txt` and `oxaudit-container.txt`.
+- The x86_64 CLI printed `oxaudit 0.3.3` in a `debian:12-slim` linux/amd64
+  container.
+- `docker buildx imagetools inspect` of
+  `ghcr.io/henrycooper86/oxaudit@sha256:1825a8b82c7369ff98786e286e6910a7303eb02274cbffb149ed0ae13b0ffb54`
+  (the reference in `oxaudit-container.txt`) resolved linux/amd64 and
+  linux/arm64 manifests. The image, pulled by that digest on arm64, printed
+  `oxaudit 0.3.3`; started with `--entrypoint oxaudit-server` on a fresh
+  container it served the GUI (HTTP 200), answered a request for the main
+  script with `Content-Encoding: gzip`, and refused `/api` without a token
+  (401).
+
+Not exercised for v0.3.3: the installer script, `cosign verify-blob` and
+`cosign verify` (cosign was not installed), the Linux aarch64 and Windows
+CLIs, the desktop packages, the amd64 image, and the CI templates on their
+systems.
 
 #### 2026-11-17, v0.3.2, macOS arm64 and Linux containers
 

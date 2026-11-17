@@ -17,8 +17,8 @@ oxaudit:
   variables:
     # Pin both together. The digest is oxaudit-cli-linux-x86_64 from that
     # release's SHA256SUMS.txt; use another asset's line on another architecture.
-    OXAUDIT_VERSION: "v0.3.2"
-    OXAUDIT_SHA256: "172d6f3bfbf04e2746a9c96bbc770874a63dc60fcdee8ac4ef8d8fa114e2883c"
+    OXAUDIT_VERSION: "v0.3.3"
+    OXAUDIT_SHA256: "9661d333eb8238b86b99e2c3993627c4d2b7405a228c391c6288e3dd0a827829"
     GIT_DEPTH: "1"
   before_script:
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl
