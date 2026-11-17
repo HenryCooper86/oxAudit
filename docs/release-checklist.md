@@ -3,7 +3,7 @@
 Last reviewed **2026-11-17** against the GitHub repository/release API, the
 release workflow runs, the container registry, and a live download-and-verify
 exercise. The repository is public and
-[v0.3.1](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.1) is the
+[v0.3.2](https://github.com/HenryCooper86/oxAudit/releases/tag/v0.3.2) is the
 latest published release (GitHub's release list on 2026-11-17). Earlier
 reviews (2026-10-10, 2026-10-20, 2026-10-29, 2026-11-02) covered earlier
 release states; their exercised evidence is kept below.
@@ -19,7 +19,10 @@ release states; their exercised evidence is kept below.
   to no repository, and the registry refused pushes from this repository's
   release workflow with `permission_denied: write_package`. The owner linked
   the package to this repository at 08:49 UTC the same day, after v0.3.1 was
-  published; the first release run to push to it since is v0.3.2's.
+  published. v0.3.2's release run was refused all the same: its token had
+  `Packages: write` and `docker login` succeeded, so the package itself does
+  not yet grant this repository's workflows write access (package settings,
+  "Manage Actions access", role Write).
 - The repository holds no Actions secrets or variables, so no minisign key
   and no native signing credentials.
 - Pushes do not start workflows, and the events API shows no push events;
@@ -38,6 +41,7 @@ release states; their exercised evidence is kept below.
 
 | Tag | Commit | Release workflow | GitHub release |
 | --- | --- | --- | --- |
+| `v0.3.2` | `30035a5` | publish job succeeded; both container jobs failed (registry refused the push, though the package was linked to the repository by then) | Published 2026-11-17 12:21 UTC, 15 uploaded assets with the same names as v0.3.1. Linux binaries built on Ubuntu 22.04. No container image and no minisign signatures; the release notes state both |
 | `v0.3.1` | `8c53da8` | publish job succeeded; both container jobs failed (registry refused the push) | Published 2026-11-17 08:29 UTC, 15 uploaded assets: four CLIs with a Sigstore bundle each, three Linux desktop packages, two SBOMs, `SHA256SUMS.txt` and its bundle. No container image and no minisign signatures; the release notes state both |
 | `v0.3.0` | `a1a648e` | failed three times: the container push was refused and, at that tag, a failed container job blocked publication | None. The tag is preserved; v0.3.1 is the same code with the workflow fixed |
 | `v0.2.7` | `063b07e` | succeeded | Published 2026-10-29 08:43:55 UTC (release ID `427621649`, 25 uploaded assets); GitHub's latest-release response on 2026-11-02 |
@@ -77,6 +81,23 @@ to which file — is the single matrix in
 Update that matrix instead of copying inventories here.
 
 ### Exercised verification
+
+#### 2026-11-17, v0.3.2, macOS arm64 and Linux containers
+
+- `shasum -a 256 -c` over the release `SHA256SUMS.txt` passed for the
+  downloaded `oxaudit-cli-linux-x86_64` and `oxaudit-cli-macos-universal`;
+  the macOS binary printed `oxaudit 0.3.2`.
+- `gh attestation verify` with `--cert-identity` set to the
+  `refs/tags/v0.3.2` release workflow, `--source-ref refs/tags/v0.3.2` and
+  `--source-digest 30035a526239cc4b0f62a14a931a20f8ccc61aa8` exited 0 for
+  both CLIs and for `SHA256SUMS.txt`.
+- Both Linux CLIs import no glibc symbol newer than `GLIBC_2.34`. The x86_64
+  CLI printed `oxaudit 0.3.2` in `debian:12-slim`, `ubuntu:22.04` and
+  `rockylinux:9-minimal` linux/amd64 containers, and the aarch64 CLI in a
+  `debian:12-slim` linux/arm64 container.
+
+Not exercised for v0.3.2: the installer script, `cosign verify-blob`, the
+Windows CLI, the desktop packages, and the CI templates on their systems.
 
 #### 2026-11-17, v0.3.1, macOS arm64 and a Linux x86_64 container
 

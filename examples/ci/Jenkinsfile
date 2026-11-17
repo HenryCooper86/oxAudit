@@ -5,14 +5,14 @@
 // above the gate is a failed test, everything else is a skipped one. The
 // stage fails on a `deny` violation of .oxaudit/component-policy.json or on
 // source findings at or above --fail-on; reports are archived either way.
-// The published Linux CLI needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13,
-// Fedora 40): run the stage on an agent that has it.
+// The Linux CLI needs glibc 2.34 or newer from v0.3.2 on (Debian 12, Ubuntu
+// 22.04, RHEL 9 and later): run the stage on an agent that has it.
 pipeline {
   agent any
   environment {
     // Pin both together. See install-oxaudit.sh for where the digest comes from.
-    OXAUDIT_VERSION = 'v0.3.1'
-    OXAUDIT_SHA256  = '7ee0e7a31fad9acd6e2771585c65be7b38980f550badad1a3824a28f7d4278fc'
+    OXAUDIT_VERSION = 'v0.3.2'
+    OXAUDIT_SHA256  = '172d6f3bfbf04e2746a9c96bbc770874a63dc60fcdee8ac4ef8d8fa114e2883c'
   }
   stages {
     stage('oxAudit') {

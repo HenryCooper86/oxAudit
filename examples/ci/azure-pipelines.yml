@@ -14,8 +14,8 @@ pr:
 
 variables:
   # Pin both together. See install-oxaudit.sh for where the digest comes from.
-  OXAUDIT_VERSION: v0.3.1
-  OXAUDIT_SHA256: 7ee0e7a31fad9acd6e2771585c65be7b38980f550badad1a3824a28f7d4278fc
+  OXAUDIT_VERSION: v0.3.2
+  OXAUDIT_SHA256: 172d6f3bfbf04e2746a9c96bbc770874a63dc60fcdee8ac4ef8d8fa114e2883c
 
 jobs:
   - job: oxaudit

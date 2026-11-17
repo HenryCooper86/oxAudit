@@ -100,7 +100,8 @@ jobs:
         include:
           # 22.04, not the newest runner: the build system's glibc is the
           # oldest the binaries and packages run on. Built here they need
-          # glibc 2.35, so they run on Ubuntu 22.04, Debian 12 and RHEL 9.
+          # glibc 2.34, so they run on Ubuntu 22.04, Debian 12 and RHEL 9
+          # (whose glibc is 2.34, which is why the check below allows no more).
           - os: ubuntu-22.04
             platform: linux-x86_64
             tauri_args: ""
@@ -199,7 +200,7 @@ jobs:
 
       - name: Check the glibc the command line needs
         if: runner.os == 'Linux'
-        run: sh tools/check-glibc-floor.sh src-tauri/target/release/oxaudit-cli 2.35
+        run: sh tools/check-glibc-floor.sh src-tauri/target/release/oxaudit-cli 2.34
 
       # A Tauri bundle whose CFBundleExecutable points at the wrong binary still
       # builds, installs, and launches — it just opens no window. Nothing else
@@ -476,7 +477,7 @@ jobs:
 
       - name: Check the glibc the command line needs
         if: runner.os == 'Linux'
-        run: sh tools/check-glibc-floor.sh src-tauri/target/release/oxaudit-cli 2.35
+        run: sh tools/check-glibc-floor.sh src-tauri/target/release/oxaudit-cli 2.34
 
       - name: Stage and checksum the artifact
         shell: bash

@@ -5,7 +5,7 @@ Notable changes to oxAudit, newest first. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Not every tag became a GitHub release. Published releases are v0.1.0,
-v0.2.0, v0.2.1, v0.2.6, v0.2.7 and v0.3.1. The v0.2.2 release exists only as an unpublished
+v0.2.0, v0.2.1, v0.2.6, v0.2.7, v0.3.1 and v0.3.2. The v0.2.2 release exists only as an unpublished
 draft, the v0.2.3 and v0.2.5 release workflows were cancelled before
 publication, 0.2.4 was prepared but never tagged, and the v0.3.0 release
 workflow failed before publication. The repository was re-created on
@@ -23,7 +23,7 @@ lists what each release ships.
 ### Changed
 
 - The Linux CLIs and desktop packages are built on Ubuntu 22.04 and need
-  glibc 2.35, so they run on Ubuntu 22.04, Debian 12 and RHEL 9. v0.3.1's
+  glibc 2.34, so they run on Ubuntu 22.04, Debian 12 and RHEL 9. v0.3.1's
   were built on Ubuntu 24.04 and needed glibc 2.39. The release workflow
   now fails if a Linux binary needs a newer glibc than that.
 

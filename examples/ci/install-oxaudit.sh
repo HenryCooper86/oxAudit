@@ -1,7 +1,7 @@
 #!/bin/sh
 # Download a pinned oxaudit-cli release and verify it before first use.
 #
-#   OXAUDIT_VERSION  release tag, for example v0.3.1. The `sca` and
+#   OXAUDIT_VERSION  release tag, for example v0.3.2. The `sca` and
 #                    `portfolio` commands and the junit / gitlab-* formats
 #                    need v0.3.1 or later.
 #   OXAUDIT_SHA256   the SHA-256 of the asset for this runner, copied from

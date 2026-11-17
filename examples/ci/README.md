@@ -25,11 +25,9 @@ exit code after every report is written.
 
 ## Runner requirements
 
-The published Linux CLI is built on Ubuntu 24.04 and needs glibc 2.39 or
-newer: Ubuntu 24.04, Debian 13, Fedora 40 and later. On Debian 12, Ubuntu
-22.04 or RHEL 9 it fails to start with a `GLIBC_2.39 not found` error. The
-templates name images that satisfy this; for an older runner, build the CLI
-from source on that system.
+From v0.3.2 the Linux CLI needs glibc 2.34 or newer: Debian 12, Ubuntu 22.04,
+RHEL 9 and later. v0.3.1's needed glibc 2.39 and fails on those systems with
+a `GLIBC_2.39 not found` error, so pin v0.3.2 or later there.
 
 ## Installing the CLI
 
@@ -45,8 +43,8 @@ All but the GitHub workflow install the CLI with
 The script downloads that one asset and refuses it unless the digest
 matches. The Bitbucket and CircleCI templates read both values from
 repository variables. The GitLab, Jenkins and Azure templates ship pinned to
-v0.3.1 with the digest of
-`oxaudit-cli-linux-x86_64` (`7ee0e7a31fad9acd6e2771585c65be7b38980f550badad1a3824a28f7d4278fc`),
+v0.3.2 with the digest of
+`oxaudit-cli-linux-x86_64` (`172d6f3bfbf04e2746a9c96bbc770874a63dc60fcdee8ac4ef8d8fa114e2883c`),
 which suits the Linux x86_64 runners they name. On another architecture, use
 that asset's line from `SHA256SUMS.txt`. Move both values together when you
 take a later release.
