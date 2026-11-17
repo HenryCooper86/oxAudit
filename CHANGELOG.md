@@ -18,6 +18,15 @@ lists what each release ships.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-17
+
+### Changed
+
+- The Linux CLIs and desktop packages are built on Ubuntu 22.04 and need
+  glibc 2.35, so they run on Ubuntu 22.04, Debian 12 and RHEL 9. v0.3.1's
+  were built on Ubuntu 24.04 and needed glibc 2.39. The release workflow
+  now fails if a Linux binary needs a newer glibc than that.
+
 ## [0.3.1] - 2026-11-17
 
 The first release of the 0.3 line. v0.3.0 was tagged but never published:
@@ -591,7 +600,8 @@ Windows x86_64, unsigned Linux desktop packages, SBOMs, checksums, minisign
 and Sigstore signatures, and build-provenance attestations, plus the
 composite GitHub Action and the installer script.
 
-[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.7...v0.3.0
 [0.2.7]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.6...v0.2.7

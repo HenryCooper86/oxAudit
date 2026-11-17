@@ -17,7 +17,9 @@ release states; their exercised evidence is kept below.
 - The container package `ghcr.io/henrycooper86/oxaudit` is still in the
   registry (v0.2.7's index resolved anonymously on 2026-11-17) but is linked
   to no repository, and the registry refused pushes from this repository's
-  release workflow with `permission_denied: write_package`.
+  release workflow with `permission_denied: write_package`. The owner linked
+  the package to this repository at 08:49 UTC the same day, after v0.3.1 was
+  published; the first release run to push to it since is v0.3.2's.
 - The repository holds no Actions secrets or variables, so no minisign key
   and no native signing credentials.
 - Pushes do not start workflows, and the events API shows no push events;
