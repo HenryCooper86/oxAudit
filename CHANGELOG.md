@@ -16,6 +16,8 @@ lists what each release ships.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-17
+
 ### Added
 
 - Software composition analysis. `oxaudit-cli sca <PATH>` runs the dependency
@@ -572,7 +574,8 @@ Windows x86_64, unsigned Linux desktop packages, SBOMs, checksums, minisign
 and Sigstore signatures, and build-provenance attestations, plus the
 composite GitHub Action and the installer script.
 
-[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.7...v0.3.0
 [0.2.7]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.3...v0.2.5

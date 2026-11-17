@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Repeat scans skip the CISA KEV catalog download: the extension passes its
   own storage directory to `oxaudit-cli scan --cache-dir`, where the CLI keeps

@@ -1,7 +1,7 @@
 # oxaudit-cli reference
 
 Every subcommand and option of `oxaudit-cli`, taken from its `--help` output
-(`oxaudit 0.2.7`). `oxaudit-cli <command> --help` prints the same text for
+(`oxaudit 0.3.0`). `oxaudit-cli <command> --help` prints the same text for
 the binary you have installed, and is authoritative if the two ever differ.
 The [README](../README.md#command-line) shows the common workflows; this page
 is the complete list.
