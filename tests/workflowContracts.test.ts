@@ -68,6 +68,21 @@ test("a release needs no configured secret, and minisign signs only when its key
   assert.match(releaseWorkflow, /They are signed with minisign as well/);
 });
 
+test("a refused container push does not block the release, and everything else does", () => {
+  const publish = releaseWorkflow.split("\n  publish:\n")[1] ?? "";
+  const condition = publish.split("runs-on:")[0];
+  for (const need of ["bundle-linux", "bundle-cli", "sbom"]) {
+    assert.match(condition, new RegExp(`needs\\.${need}\\.result == 'success'`), need);
+  }
+  assert.match(condition, /needs\.bundle-desktop\.result != 'failure'/);
+  assert.doesNotMatch(condition, /needs\.container/);
+  assert.doesNotMatch(condition, /!failure\(\)/);
+  assert.match(condition, /!cancelled\(\)/);
+  assert.match(condition, /startsWith\(github\.ref, 'refs\/tags\/v'\) && !inputs\.dry_run/);
+  // The notes state the absence instead of staying silent about it.
+  assert.match(releaseWorkflow, /This release has no container image/);
+});
+
 test("CI-installed Rust security tools use exact versions", () => {
   assert.match(securityWorkflow, /cargo install cargo-deny --version 0\.20\.2 --locked/);
   assert.match(securityWorkflow, /cargo install cargo-fuzz --version 0\.13\.2 --locked/);

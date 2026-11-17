@@ -666,11 +666,20 @@ jobs:
   publish:
     name: Publish
     needs: [bundle-linux, bundle-cli, bundle-desktop, sbom, container-publish]
-    # !failure()/!cancelled() instead of the default success(): a SKIPPED
-    # need (bundle-desktop and the container jobs while desktop bundles are
-    # off / on dry runs) must not skip the release — only an actual failure
-    # or cancellation may.
-    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run }}
+    # Each need is judged by name instead of with the default success(). A
+    # SKIPPED need (bundle-desktop while desktop bundles are off) must not
+    # skip the release, and neither may the container image: it is built in
+    # a registry this workflow does not control, and a refused push there
+    # says nothing about the binaries. The release then ships without an
+    # image and its notes say so. Verification, the binaries and the SBOMs
+    # must all have succeeded.
+    if: >-
+      ${{ !cancelled()
+      && needs.bundle-linux.result == 'success'
+      && needs.bundle-cli.result == 'success'
+      && needs.sbom.result == 'success'
+      && needs.bundle-desktop.result != 'failure'
+      && startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -781,6 +790,15 @@ jobs:
           binaries:
 
               cosign verify ${image_ref} --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          CONTAINER
+          else
+            cat >> notes.md <<'CONTAINER'
+
+          ## Container image
+
+          This release has no container image: the image could not be
+          published to the registry when the release was built. Use the
+          `oxaudit-cli` binaries above, or an image from another release.
           CONTAINER
           fi
           # State exactly which signatures this release carries. A release
