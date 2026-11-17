@@ -280,7 +280,18 @@ Saved redacted receipts can be reopened after navigation or restart and sent to
 **Export Center**. CLI history persists between invocations only with `--db`.
 See the README's “Git history secret scanning” section for coverage limits.
 
+For the project's third-party components, `oxaudit-cli sca .` runs the
+dependency scan and reports each component's license category, release
+health and open advisories. With a committed `.oxaudit/component-policy.json`
+it also judges them and exits 1 on a `deny` violation; without one it
+classifies and says that nothing was judged. See
+[Software composition analysis](composition-analysis.md).
+
 ## Complete consumer CI example
+
+This section covers GitHub Actions. For GitLab CI, Jenkins, Azure Pipelines,
+Bitbucket Pipelines and CircleCI, use the templates in
+[`examples/ci/`](../examples/ci/README.md).
 
 Copy [examples/ci/oxaudit.yml](../examples/ci/oxaudit.yml) to
 `.github/workflows/oxaudit.yml` in a consuming repository whose protected main

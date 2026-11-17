@@ -54,7 +54,8 @@ Two real paths, and they are different builds:
 
 The [platform availability and verification matrix](docs/getting-started.md#platform-availability-and-verification)
 names every published artifact exactly, separates checksum integrity from
-minisign/Sigstore/provenance publisher identity, and states what is not
+Sigstore/provenance publisher identity (and minisign, for releases that carry
+it), and states what is not
 published: macOS/Windows desktop installers. CLI and Linux releases publish without
 macOS/Windows credentials; native desktop-signing gates stay armed only for
 the optional desktop-bundle jobs (currently disabled). The
@@ -109,9 +110,16 @@ oxaudit-cli scan .
 # Put it in a pipeline. --fail-on is opt-in, so this reports without
 # breaking your build until you ask it to.
 oxaudit-cli scan . --format sarif --output oxaudit.sarif --fail-on high
+
+# What is in its dependencies, and does the project accept it?
+# Licenses, release health and advisories, judged against the policy
+# committed at .oxaudit/component-policy.json when there is one.
+oxaudit-cli sca .
 ```
 
-For GitHub Actions use the [complete pinned example](examples/ci/oxaudit.yml)
+For GitLab CI, Jenkins, Azure Pipelines, Bitbucket and CircleCI there is a
+[template for each](examples/ci/README.md). For GitHub Actions use the
+[complete pinned example](examples/ci/oxaudit.yml)
 and its [access/baseline instructions](docs/getting-started.md#complete-consumer-ci-example).
 It builds a trusted CLI, checks PR code as data, preserves reports on findings,
 and fails on missing baselines or incomplete scans.
@@ -298,6 +306,30 @@ oxaudit-cli scan .
 
 # SARIF for GitHub code scanning and most CI viewers
 oxaudit-cli scan . --format sarif --output oxaudit.sarif
+
+# JUnit XML for Jenkins, Azure Pipelines, Bitbucket and CircleCI; a finding at
+# or above the gate is a failed test, the rest are skipped with a reason
+oxaudit-cli scan . --fail-on high --format junit --output oxaudit-junit.xml
+
+# GitLab's Code Quality report, shown in merge requests on every tier
+oxaudit-cli scan . --format gitlab-code-quality --output gl-code-quality.json
+
+# Software composition analysis: the dependency scan, judged against the
+# committed component policy. Exits 1 on a deny violation; --report-only
+# lists them without failing. See docs/composition-analysis.md.
+oxaudit-cli sca . --db ~/.oxaudit/findings.db --notices THIRD-PARTY-NOTICES.md
+
+# The same stored run in another format, with no second advisory lookup
+oxaudit-cli sca . --db ~/.oxaudit/findings.db --offline --report-only \
+  --format gitlab-dependency-scanning --output gl-dependency-scanning-report.json
+
+# Across every project in that database: who is failing policy, and where is
+# this package used?
+oxaudit-cli portfolio summary --db ~/.oxaudit/findings.db
+oxaudit-cli portfolio where-used --db ~/.oxaudit/findings.db lodash
+
+# Skip the CISA KEV catalog download on repeat scans without a database
+oxaudit-cli scan . --cache-dir ~/.cache/oxaudit
 
 # Gate a build. Opt-in: --fail-on defaults to `none`
 oxaudit-cli scan . --fail-on high
@@ -1457,6 +1489,9 @@ src-tauri/            Rust backend (Tauri v2)
   src/models.rs       shared serde models (camelCase ⇄ TypeScript types)
   src/scanners/       secrets.rs (rules + entropy engine), patterns.rs (source rules)
   src/deps/           dependency scan service, osv.rs (OSV client + CVSS math)
+  src/sca/            component policy loading, release facts, portfolio over stored runs
+  src/cli/            oxaudit-cli commands and CI report formats
+  src/server/         headless HTTP + SSE server over the same commands
   src/binscan/        native binary scanner plus optional external-tool adapters
   src/findings/       durable runs, evidence, review, policy, diff and SQLite storage
   src/triage/         scope, falsification gates and silent-drop manifest
@@ -1467,9 +1502,11 @@ src-tauri/            Rust backend (Tauri v2)
 ```
 
 All *oxAudit* scanning is local. oxAudit itself contacts only NVD, OSV, CISA KEV,
-FIRST.org EPSS, Exploit-DB, the AI endpoint you configure, and — when you
-deliberately run `advisory-db update` — OSV's published dump bucket — all free and
-key-less except the optional NVD API key. The Exploit-DB index is cached locally
+FIRST.org EPSS, Exploit-DB, package registries for declared licenses during an
+online dependency scan (PyPI, crates.io, RubyGems, Packagist, Maven Central),
+deps.dev for release facts when you run `sca`, the AI endpoint you configure, and —
+when you deliberately run `advisory-db update` — OSV's published dump bucket — all
+free and key-less except the optional NVD API key. The Exploit-DB index is cached locally
 and refreshed weekly, so the public-exploit signal keeps working offline.
 
 The default **native binary scanner is local and needs no external tool or advisory

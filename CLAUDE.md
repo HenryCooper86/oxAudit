@@ -32,6 +32,8 @@ Rust:
 - Lint: `cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --all-features -- -D warnings`
 - CLI: `cargo build --locked --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli`, then `npm run pilot:smoke -- --cli ./src-tauri/target/debug/oxaudit-cli`. The `oxaudit-server` bin has `required-features = ["server"]`.
 
+Releases: `docs/release-checklist.md` records the process and the current state. The release workflow builds a draft on a `v*` tag; start it with `gh workflow run release.yml --ref <tag> -f dry_run=false` (a dry run on `main` validates the build without publishing). `gh workflow run registry-access.yml` checks in a minute whether the container registry accepts the image push.
+
 Other CI gates (see `.github/workflows/ci.yml`): `node tools/check-versions.mjs` (versions must agree across package.json/Cargo/tauri.conf), `node tools/build-corpus-suite.mjs --check`, `node tools/check-action-pins.mjs` (workflow actions must be SHA-pinned).
 
 ## Architecture
