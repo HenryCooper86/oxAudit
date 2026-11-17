@@ -31,7 +31,7 @@ pub fn benchmark_observations(
     let spans = parsed.spans();
     if source_patterns {
         let (mut hits, _) =
-            patterns::scan_content_bounded_with_syntax(content, language, usize::MAX, spans);
+            patterns::scan_content_bounded_with_syntax(content, language, usize::MAX, || spans);
         hits.retain(|hit| pattern_hit_stays_in_sink(&parsed, hit));
         hits.retain(|hit| workflow_hit_in_script(content, hit));
         parsed.drop_nested_duplicates(&mut hits);
@@ -605,11 +605,13 @@ fn scan_file_in_project_and_limit(
     let rel = relative_path.to_string();
     let mut findings = Vec::new();
     let mut covered_families = Vec::new();
-    // Parsed once and shared by both engines, so a scan and the benchmark
-    // cannot disagree about what counts as a comment.
+    // Parsed at most once and shared by both engines, so a scan and the
+    // benchmark cannot disagree about what counts as a comment. Parsed only
+    // when something asks: the tree qualifies matches, and most files have
+    // none, so most files are never parsed. Parsing costs more than all the
+    // matching, so this is where a scan's time goes or does not.
     let detected_language = fs_utils::detect_language(path).unwrap_or("");
-    let parsed = syntax::parse(&content, detected_language);
-    let spans = parsed.spans();
+    let parsed = std::cell::LazyCell::new(|| syntax::parse(&content, detected_language));
     let (raw_secret_hits, secret_hit_overflow) =
         secrets::scan_content_bounded(&content, max_findings.saturating_add(1));
     let secret_hits: Vec<_> = raw_secret_hits
@@ -674,7 +676,7 @@ fn scan_file_in_project_and_limit(
                 verified: None,
                 // Secret matches are checked against the tree for comments
                 // only; a credential in a string literal is the normal case.
-                analysis: if spans.analyzed() {
+                analysis: if parsed.spans().analyzed() {
                     crate::models::AnalysisTier::Syntax
                 } else {
                     crate::models::AnalysisTier::Text
@@ -703,7 +705,7 @@ fn scan_file_in_project_and_limit(
                 &content,
                 lang,
                 max_findings.saturating_add(1),
-                spans,
+                || parsed.spans(),
             );
             if pattern_hit_overflow {
                 return ScanFileOutcome {
@@ -719,12 +721,16 @@ fn scan_file_in_project_and_limit(
             // cannot suppress an unsafe SQL call nested in its parameters.
             hits.retain(|hit| pattern_hit_stays_in_sink(&parsed, hit));
             hits.retain(|hit| workflow_hit_in_script(&content, hit));
-            parsed.drop_nested_duplicates(&mut hits);
+            // Fewer than two hits have nothing to deduplicate against, and
+            // asking would parse a file that matched nothing.
+            if hits.len() > 1 {
+                parsed.drop_nested_duplicates(&mut hits);
+            }
             for hit in hits {
                 // A rule matching inside a comment or a string literal is
                 // describing code rather than being it — the single largest
                 // false-positive class the corpus measured.
-                if !spans.allows_code_match(hit.offset) {
+                if !parsed.spans().allows_code_match(hit.offset) {
                     continue;
                 }
                 // A sink whose argument is provably a constant, or sanitized
@@ -769,7 +775,7 @@ fn scan_file_in_project_and_limit(
                     recommendation: rule.recommendation.into(),
                     entropy: None,
                     verified: None,
-                    analysis: if spans.analyzed() {
+                    analysis: if parsed.spans().analyzed() {
                         crate::models::AnalysisTier::Syntax
                     } else {
                         crate::models::AnalysisTier::Text
@@ -795,7 +801,7 @@ fn scan_file_in_project_and_limit(
             &content,
             &rel,
             detected_language,
-            &|offset| spans.allows_secret_match(offset),
+            &|offset| parsed.spans().allows_secret_match(offset),
             scan_secrets,
             scan_vulnerabilities,
         );
@@ -903,7 +909,9 @@ mod tests {
         let source = r#"fn f() { vec![query("version+suffix")]; }"#;
         let parsed = super::syntax::parse(source, "unsupported");
         let (hits, overflow) =
-            super::patterns::scan_content_bounded_with_syntax(source, "rust", 10, parsed.spans());
+            super::patterns::scan_content_bounded_with_syntax(source, "rust", 10, || {
+                parsed.spans()
+            });
         assert!(!overflow);
         assert!(hits
             .iter()

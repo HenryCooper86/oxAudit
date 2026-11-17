@@ -990,9 +990,13 @@ Throughput is flat across three orders of magnitude of input size, which is the
 property that actually matters: a rule change that made matching quadratic would
 show up here as throughput falling as files grow.
 
-Syntax analysis is roughly 40× more expensive than rule matching and dominates
-scan time — it is the entire cost of the precision improvement above. End to
-end, this repository (576 files, 4.8 MB) scans in about 2.4 seconds.
+Syntax analysis is roughly 40× more expensive than rule matching, so a file is
+parsed only when a match needs the tree to qualify it: a secret or pattern hit to
+place in code or a comment, or the Rust SQL rule, which matches a view of the file
+with comments and strings blanked. A file where no rule matched is never parsed,
+and that is most files. On a 227 MB corpus of real Rust, C and JavaScript (8,600
+files) this cut scan CPU time from 10.8 to 4.2 seconds with identical findings;
+the scan takes under a second of wall time on an 18-core laptop.
 
 ### Dataflow
 

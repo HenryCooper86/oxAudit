@@ -145,6 +145,11 @@ lists what each release ships.
   DIR` keeps it in a directory of your choosing instead, for scans without a
   database (an editor, a pre-commit hook). Without either flag a scan still
   leaves nothing behind.
+- Source scans parse a file's syntax tree only when a match needs it. A
+  file where no rule matched is never parsed; a Rust file is parsed for the
+  SQL rule only when it contains the identifiers and markers that rule
+  requires. Findings, analysis tiers and gate notes are unchanged; scan CPU
+  time on a large mixed corpus fell by about 60%.
 - Git history scans read blobs in batches and scan each batch on every core.
   Blobs are still accounted for in the order git delivers them, so the byte,
   finding and time budgets stop a run at the same blob as before.

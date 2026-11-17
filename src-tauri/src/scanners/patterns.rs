@@ -442,25 +442,38 @@ pub fn scan_content_bounded(
     language: &str,
     limit: usize,
 ) -> (Vec<PatternHit>, bool) {
-    scan_content_bounded_with_syntax(
-        content,
-        language,
-        limit,
-        &super::syntax::SyntaxSpans::default(),
-    )
+    let spans = super::syntax::SyntaxSpans::default();
+    scan_content_bounded_with_syntax(content, language, limit, || &spans)
 }
 
-pub(super) fn scan_content_bounded_with_syntax(
+/// Whether the Rust SQL rule could match `content` at all, masked or not.
+/// The rule needs a query/execute identifier and a construction marker, and
+/// masking only blanks characters, so it can remove these but never add
+/// them. Without both, no view of the file can match, and the file's syntax
+/// is not needed to say so.
+fn rust_sql_rule_can_match(content: &str) -> bool {
+    (content.contains("query") || content.contains("execute"))
+        && (content.contains('+') || content.contains("format!") || content.contains("write!"))
+}
+
+pub(super) fn scan_content_bounded_with_syntax<'a>(
     content: &str,
     language: &str,
     limit: usize,
-    spans: &super::syntax::SyntaxSpans,
+    spans: impl Fn() -> &'a super::syntax::SyntaxSpans,
 ) -> (Vec<PatternHit>, bool) {
     // Only Rust SQL construction uses the masked view. Other rules need
     // literal values (algorithm names, configuration, etc.) in their matches.
     // No grammar means no masking: retain the existing text-only fallback.
-    let rust_code =
-        (language == "rust" && spans.analyzed()).then(|| spans.mask_non_code_ascii(content));
+    //
+    // `spans` is asked for only here, and only when the rule could match:
+    // obtaining it parses the file, which costs far more than every rule in
+    // this function together.
+    let rust_sql_possible = language == "rust" && rust_sql_rule_can_match(content);
+    let rust_code = rust_sql_possible
+        .then(&spans)
+        .filter(|spans| spans.analyzed())
+        .map(|spans| spans.mask_non_code_ascii(content));
     let mut hits = Vec::new();
     for (i, rule) in SOURCE_RULES.iter().enumerate() {
         if !rule.languages.is_empty() && !rule.languages.contains(&language) {
@@ -487,6 +500,9 @@ pub(super) fn scan_content_bounded_with_syntax(
             false
         };
         if rule.id == "rs-sql-format" {
+            if !rust_sql_possible {
+                continue;
+            }
             // An outer call can span into a nested sink or error handler.
             // Consider every sink start; rejecting the outer span must not
             // consume and hide the independently unsafe inner statement.
