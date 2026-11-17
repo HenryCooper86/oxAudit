@@ -92,3 +92,33 @@ test("install-oxaudit.sh refuses to run without a pinned version and digest", as
   const script = new URL("../../examples/ci/install-oxaudit.sh", import.meta.url).pathname;
   await assert.rejects(exec("sh", [script], { env: { PATH: process.env.PATH } }), /OXAUDIT_VERSION/);
 });
+
+async function glibcFloor(symbols: string, allowed: string) {
+  const root = await mkdtemp(path.join(tmpdir(), "oxaudit glibc "));
+  const bin = path.join(root, "bin");
+  await mkdir(bin);
+  await writeFile(path.join(root, "symbols.txt"), symbols);
+  // A stand-in objdump that prints the fixture's dynamic symbol table.
+  await writeFile(path.join(bin, "objdump"), `#!/bin/sh\ncat "${root}/symbols.txt"\n`);
+  await chmod(path.join(bin, "objdump"), 0o755);
+  const script = new URL("../../tools/check-glibc-floor.sh", import.meta.url).pathname;
+  return exec("sh", [script, "oxaudit-cli", allowed], {
+    cwd: root,
+    env: { PATH: `${bin}:${process.env.PATH}` },
+  });
+}
+
+const symbolTable = (...versions: string[]) =>
+  versions.map((version) => `0000000000000000      DF *UND*  0000000000000000 (GLIBC_${version}) read`).join("\n") + "\n";
+
+test("the glibc check passes a binary at or below the allowed version", async () => {
+  const { stdout } = await glibcFloor(symbolTable("2.2.5", "2.17", "2.35", "2.4"), "2.35");
+  assert.match(stdout, /needs glibc 2\.35 \(allowed up to 2\.35\)/);
+  // Versions compare numerically: 2.4 is older than 2.35, not newer.
+  await glibcFloor(symbolTable("2.4", "2.9"), "2.35");
+});
+
+test("the glibc check fails a binary that needs a newer glibc, or one it cannot read", async () => {
+  await assert.rejects(glibcFloor(symbolTable("2.17", "2.39", "2.38"), "2.35"), /needs glibc 2\.39, newer than the allowed 2\.35/);
+  await assert.rejects(glibcFloor("no versioned symbols here\n", "2.35"), /nothing to check/);
+});

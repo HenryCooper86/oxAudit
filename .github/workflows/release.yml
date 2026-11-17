@@ -98,7 +98,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          # 22.04, not the newest runner: the build system's glibc is the
+          # oldest the binaries and packages run on. Built here they need
+          # glibc 2.35, so they run on Ubuntu 22.04, Debian 12 and RHEL 9.
+          - os: ubuntu-22.04
             platform: linux-x86_64
             tauri_args: ""
     steps:
@@ -193,6 +196,10 @@ jobs:
           "$cli" scan benchmarks/ground-truth/source-smoke --fail-on high -q >/dev/null && {
             echo "::error::--fail-on high should have exited 1 on the fixtures"; exit 1;
           } || [ $? -eq 1 ]
+
+      - name: Check the glibc the command line needs
+        if: runner.os == 'Linux'
+        run: sh tools/check-glibc-floor.sh src-tauri/target/release/oxaudit-cli 2.35
 
       # A Tauri bundle whose CFBundleExecutable points at the wrong binary still
       # builds, installs, and launches — it just opens no window. Nothing else
@@ -429,7 +436,8 @@ jobs:
             platform: windows-x86_64
           # Native arm64 runner: a Rust release build under QEMU emulation
           # takes hours, so cross-arch is done by runner, not by emulator.
-          - os: ubuntu-24.04-arm
+          # 22.04 for the same glibc reason as the x86_64 build above.
+          - os: ubuntu-22.04-arm
             platform: linux-aarch64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -465,6 +473,10 @@ jobs:
               src-tauri/target/release/oxaudit-cli --version
             fi
           fi
+
+      - name: Check the glibc the command line needs
+        if: runner.os == 'Linux'
+        run: sh tools/check-glibc-floor.sh src-tauri/target/release/oxaudit-cli 2.35
 
       - name: Stage and checksum the artifact
         shell: bash
