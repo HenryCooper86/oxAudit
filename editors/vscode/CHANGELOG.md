@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3
+
+- Version aligned with oxAudit 0.3.3. No extension changes.
+
 ## 0.3.2
 
 - Version aligned with oxAudit 0.3.2. No extension changes.

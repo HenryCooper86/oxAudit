@@ -18,6 +18,17 @@ lists what each release ships.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-17
+
+### Changed
+
+- No code changes. A rebuild after the container registry's access for this
+  repository was corrected, so that a release can carry the container image
+  again; v0.3.1 and v0.3.2 shipped without one. The release page states
+  whether this release has an image.
+- The release workflow holds the Linux binaries to glibc 2.34, the version
+  the documentation promises, instead of 2.35.
+
 ## [0.3.2] - 2026-11-17
 
 ### Changed
@@ -600,7 +611,8 @@ Windows x86_64, unsigned Linux desktop packages, SBOMs, checksums, minisign
 and Sigstore signatures, and build-provenance attestations, plus the
 composite GitHub Action and the installer script.
 
-[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.7...v0.3.0
