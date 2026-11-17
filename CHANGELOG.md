@@ -16,7 +16,22 @@ lists what each release ships.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-17
+
+The first release of the 0.3 line. v0.3.0 was tagged but never published:
+its release workflow could not push the container image, and a failed
+container push blocked the whole release. The changes under 0.3.0 below ship
+in this release.
+
+### Changed
+
+- A container image that cannot be pushed no longer blocks a release. The
+  binaries, checksums, SBOMs, attestations and signatures are published, and
+  the release notes state that the release has no image.
+
 ## [0.3.0] - 2026-11-17
+
+Tagged, not published; see 0.3.1.
 
 ### Added
 
@@ -574,7 +589,8 @@ Windows x86_64, unsigned Linux desktop packages, SBOMs, checksums, minisign
 and Sigstore signatures, and build-provenance attestations, plus the
 composite GitHub Action and the installer script.
 
-[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/HenryCooper86/oxAudit/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.7...v0.3.0
 [0.2.7]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/HenryCooper86/oxAudit/compare/v0.2.5...v0.2.6
