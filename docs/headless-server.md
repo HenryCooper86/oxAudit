@@ -71,6 +71,14 @@ port, as described under [Security posture](#security-posture). Opening the
 workbench from a remote browser over plain HTTP is not a supported setup:
 the access token and every result would cross the network unencrypted.
 
+The server gzips the GUI's assets and `/api/invoke` responses for browsers
+that accept it, so a remote workbench loads about a third of the bytes. Files
+under `assets/` are named by content hash and served as immutable. The event
+stream is never compressed. Compressing authenticated responses is safe here
+because a request is authenticated by a bearer header the page adds itself,
+not by a cookie: another site cannot make the browser send authenticated
+requests whose compressed sizes it could then compare.
+
 ## Flags and environment
 
 | Flag | Environment | Default | Meaning |

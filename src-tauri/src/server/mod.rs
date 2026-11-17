@@ -14,6 +14,7 @@
 //! their desktop names (`scan://progress`, `run://event`, …) so the
 //! frontend needs no per-feature changes.
 
+mod compress;
 pub mod dispatch;
 pub mod hub;
 
@@ -100,7 +101,10 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
     crate::observability::init(&config.data_dir);
 
     let app = AppState::new();
-    let cve = crate::cve::CveState::new(app.http.clone());
+    // The server's cache directory outlives the process, so a restart does
+    // not download the KEV catalog again within its hour.
+    let cve =
+        crate::cve::CveState::new(app.http.clone()).with_kev_cache(&config.data_dir.join("cache"));
 
     // Persisted settings, exactly as the desktop loads them, minus the
     // legacy-profile migration (a fresh server has none).
@@ -287,13 +291,38 @@ static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 async fn invoke(
     State(ctx): State<Arc<ServerContext>>,
     axum::extract::Path(cmd): axum::extract::Path<String>,
+    request_headers: axum::http::HeaderMap,
     Json(args): Json<Value>,
-) -> Json<Value> {
+) -> Response {
     let outcome = dispatch::dispatch(&ctx, &cmd, args).await;
-    Json(match outcome {
+    let envelope = match outcome {
         Ok(data) => serde_json::json!({ "ok": true, "data": data }),
         Err(error) => serde_json::json!({ "ok": false, "error": error }),
-    })
+    };
+    let body = match serde_json::to_vec(&envelope) {
+        Ok(body) => body,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    // A page of findings is mostly repeated keys. The fastest level takes
+    // most of the saving at a fraction of the time, which matters here
+    // because every response is compressed as it is produced.
+    let compressed = (body.len() >= compress::MIN_COMPRESS_BYTES
+        && compress::accepts_gzip(&request_headers))
+    .then(|| compress::gzip(&body, 1))
+    .flatten();
+    let gzipped = compressed.is_some();
+    let mut response = (StatusCode::OK, compressed.unwrap_or(body)).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    if gzipped {
+        compress::mark_gzip(headers);
+    } else {
+        compress::mark_vary(headers);
+    }
+    response
 }
 
 async fn events(
@@ -333,6 +362,7 @@ async fn static_files(
         )
             .into_response();
     };
+    let accepts_gzip = compress::accepts_gzip(req.headers());
     let raw = req.uri().path().trim_start_matches('/');
     let raw = if raw.is_empty() { "index.html" } else { raw };
     let relative = match req_path_bytes(raw) {
@@ -366,11 +396,35 @@ async fn static_files(
     match std::fs::read(&path) {
         Ok(bytes) => {
             let mime = mime_guess::from_path(&path).first_or_octet_stream();
-            let mut response = (StatusCode::OK, bytes).into_response();
+            let may_compress = compress::compressible(mime.essence_str())
+                && bytes.len() >= compress::MIN_COMPRESS_BYTES;
+            let compressed = (may_compress && accepts_gzip)
+                .then(|| compress::gzip_asset(&path, &bytes))
+                .flatten();
+            let mut response = match &compressed {
+                Some(compressed) => (StatusCode::OK, compressed.as_ref().clone()).into_response(),
+                None => (StatusCode::OK, bytes).into_response(),
+            };
+            if compressed.is_some() {
+                compress::mark_gzip(response.headers_mut());
+            } else if may_compress {
+                compress::mark_vary(response.headers_mut());
+            }
             if let Ok(value) = header::HeaderValue::from_str(mime.essence_str()) {
                 response.headers_mut().insert(header::CONTENT_TYPE, value);
             }
-            if path.file_name().is_some_and(|name| name != "index.html") {
+            // Vite names everything under assets/ by content hash, so such a
+            // file never changes under its name and need not be asked for
+            // again. Other files keep a short lifetime.
+            let hashed = path
+                .strip_prefix(&root)
+                .is_ok_and(|relative| relative.starts_with("assets"));
+            if hashed {
+                response.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    "public, max-age=31536000, immutable".parse().unwrap(),
+                );
+            } else if path.file_name().is_some_and(|name| name != "index.html") {
                 response.headers_mut().insert(
                     header::CACHE_CONTROL,
                     "public, max-age=3600".parse().unwrap(),

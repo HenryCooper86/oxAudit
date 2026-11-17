@@ -150,6 +150,14 @@ lists what each release ships.
   SQL rule only when it contains the identifiers and markers that rule
   requires. Findings, analysis tiers and gate notes are unchanged; scan CPU
   time on a large mixed corpus fell by about 60%.
+- The headless server gzips the GUI's assets and `/api/invoke` responses for
+  clients that accept it, and serves content-hashed assets as immutable. The
+  main script goes from 306 KB to 94 KB on the wire and a 140 KB page of
+  findings to 28 KB. The event stream is not compressed. The server also
+  keeps the KEV catalog in its cache directory across restarts.
+- A scan running inside the server or the desktop app tells the async runtime
+  before it blocks on file matching, so progress events and other requests
+  are not held up behind it.
 - Git history scans read blobs in batches and scan each batch on every core.
   Blobs are still accounted for in the order git delivers them, so the byte,
   finding and time budgets stop a run at the same blob as before.
