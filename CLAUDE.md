@@ -43,8 +43,10 @@ Ports-and-adapters (ADR `docs/architecture/adr/0001-gui-first-ports-and-adapters
 - `oxaudit-application`: use cases, ports, stage manifests (reject dropped/invented/duplicate candidates), event sequencing.
 - `oxaudit-scanners`, `oxaudit-parsers`, `oxaudit-archive`, `oxaudit-compliance`, `oxaudit-benchmark`: deterministic native detectors/rule compilation, tree-sitter grammars, archive handling, compliance mapping, quality benchmarks.
 - `oxaudit-sca`: pure composition-analysis rules (license classification, `.oxaudit/component-policy.json` evaluation, the SCA report, portfolio aggregation). The host's `src/sca/` reads the policy, collects release facts and rebuilds reports from stored runs; `docs/composition-analysis.md` is the user guide.
+- `oxaudit-yara`: pure YARA rule compilation and byte scanning on YARA-X (no I/O, no `include`). `oxaudit-nuclei`: pure native Nuclei template model, DSL, matchers and request planning; it sends nothing. Neither is a dependency of the domain or application crates.
 - `src-tauri/src` (the `oxaudit` host crate, lib name `oxaudit_lib`): adapters for SQLite (`findings/`, `history.rs`), HTTP advisories, filesystem, git (`git_context*.rs`), OS credentials, optional external tools (cve-bin-tool/Grype, labelled external evidence), and Tauri `commands/`. Binaries: `main.rs` (desktop), `bin/oxaudit-cli.rs` (logic in `cli/`), `bin/oxaudit-server.rs`.
-- Cargo features: `grammars-all` (default; per-language `grammar-*`), `server`. Dropping a grammar makes analysis report Unknown rather than suppress, so recall is preserved.
+- Host modules for these: `sigpacks/` (signature-pack store, manifest verification, licence detection), `yara/` (YARA scan), `template/` (selection, file-protocol and live executors), `livenet/` (the only code that opens connections to user-named targets: scope, pinned resolution, limits, protocol clients), `filewalk` (walk shared by both scans).
+- Cargo features: `grammars-all` (default; per-language `grammar-*`), `yara` and `templates` (both default; without one that scan fails as unavailable, never empty), `server`. Dropping a grammar makes analysis report Unknown rather than suppress, so recall is preserved.
 
 One engine, multiple transports (ADR 0004): Tauri command bodies are lifted into `*_engine` / `*_inner` functions that both the Tauri command and `src/server/dispatch.rs` call. Add new engine behavior there, never duplicate it per transport. The server exposes `POST /api/invoke/{cmd}` plus an SSE stream at `/api/events` (same event names as desktop, e.g. `scan://progress`, `run://event`). A new command must be registered both in the Tauri `invoke_handler` and the server dispatch; `tests/commandParity.test.ts` and `tests/ipcContract.test.ts` guard this.
 
@@ -56,6 +58,8 @@ Frontend (`src/`): all backend calls go through `src/lib/api.ts`; `src/lib/trans
 - Absence is never proof: skipped files, cancelled/failed/unsaved runs, or missing coverage are "not evaluated"/"unknown", not "clean" or "resolved". Zero findings is not a safety claim.
 - Detection works offline; advisory enrichment is separate.
 - Project config lives in `.oxaudit/` (`policy.json` for reviewed suppressions with reason and expiry). Git inspection is read-only with a cleared environment; `scan --staged` scans index blobs.
+- Live-target template scans send traffic only to targets the user named, after a per-run authorization acknowledgement that is recorded and never remembered; the headless server refuses them unless started with `--allow-live-targets`. All outbound connections go through `livenet/`.
+- Never rely on `serde_json` map order: yara-x enables `preserve_order` workspace-wide. Sort explicitly (`oxaudit_parsers::canonical_json`, `sorted_entries`) so results and digests match builds without it.
 - Design tokens/theme rules: `docs/design-system.md` (covered by `tests/designSystem.test.ts`, `tests/themeContrast.test.ts`).
 
 ## Docs

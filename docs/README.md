@@ -18,6 +18,10 @@ How to install, run and rely on oxAudit today.
 - [Software composition analysis](composition-analysis.md): license
   classification, the component policy, release health, the portfolio view,
   and the [CI templates](../examples/ci/README.md).
+- [YARA scanning](yara.md): importing rules, running scans, reading results,
+  run states, modules and limits.
+- [Template scanning](template-scanning.md): Nuclei template packs, local-path
+  and live-target scans, scope, limits and the compatibility matrix.
 - [Scan reliability and recovery](project-reliability.md): scan ownership,
   saved evidence and recovery.
 - [Compliance readiness and professional reporting](compliance-and-reporting.md).

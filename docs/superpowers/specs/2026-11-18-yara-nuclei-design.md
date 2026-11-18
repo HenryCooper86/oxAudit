@@ -1,6 +1,6 @@
 # YARA rules and Nuclei templates
 
-Date: 2026-11-18. Status: in progress on branch `yara-nuclei`.
+Date: 2026-11-18. Status: implemented on branch `yara-nuclei`: both engines, signature packs, the YARA and Template scans on desktop, CLI and headless server, the live-target scope and limits, the UI pages and the user guides ([YARA](../../yara.md), [templates](../../template-scanning.md)). Where the code and this design differ, the code is the truth; see [As built](#as-built).
 
 ## Goal
 
@@ -249,3 +249,72 @@ Frontend:
 8. Docs (`docs/yara.md`, `docs/template-scanning.md`, README egress
    statement, `docs/headless-server.md`, `docs/cli.md`), `NOTICE`,
    `CHANGELOG.md`, Playwright smokes.
+
+## As built
+
+The design above was written before implementation. These are the differences
+found when the guides were written from the code.
+
+YARA and packs:
+
+- `include` is not supported at all; the design had it resolve inside the pack
+  root. A file using it is skipped with that reason, and the compiler never
+  reads other files.
+- Match excerpts are returned as lowercase hex (`excerptHex`), not as text.
+  The 64-byte and 32-per-rule caps are as designed.
+- A single rule file over 1 MiB, or any compiled `.yarc` (or a file starting
+  `YARA`), refuses the whole import rather than skipping that file. Import also
+  caps directory entries and archive members at 200,000.
+- Incomplete is broader than designed: a pack that fails verification, an
+  unreadable pack store, a YARA engine error on a file, and the 100,000-match
+  cap also make a run incomplete, besides timeouts and the file cap
+  (1,000,000 files). Rule files that do not compile, and files skipped for size,
+  links or read errors, do not.
+- The `yara` projection carries more than the designed fields: `state`,
+  `runId`, `target`, `bytesScanned`, `matchesDropped`, `skippedDropped`,
+  `rulesSkippedTotal`, `notes` and `durationMs`.
+- The per-file timeout is 30 s but YARA-X checks it against a clock with
+  one-second granularity.
+- A zip with a single top-level folder has that folder stripped on import, and
+  a licence file is detected only at the pack root.
+
+Templates:
+
+- Not implemented DSL helpers are more than designed: `resolve` and `rand_ip`
+  as well as the gadget generators, `aes_gcm`, `print_debug` and `wait_for`;
+  `generate_jwt` supports only HS256, HS384, HS512 and `none`; `ip_format`
+  indexes 10 and 11 fail at evaluation.
+- Not evaluated beyond the designed list: payload wordlist files, `file`
+  templates with `mime-type` or `archive: true`, `global-matchers`, response
+  analyzers, HTTP digest authentication, request signing, unknown raw
+  annotations, several `ssl` options (version and cipher enumeration,
+  `cipher_suites`, some `scan_mode` values), and DNS `trace` and record types
+  outside the ten listed. `@tls-sni` is accepted and ignored. TLS is 1.2 and
+  1.3 only.
+- DNS goes to the system resolvers only, `recursion: false` is not honoured and
+  `retries` is the resolver's.
+- Scope is stricter and more detailed than designed: at most 1,000 targets;
+  subdomains are not in scope for connections (they are for DNS questions); a
+  bare host or CIDR member is every port; a URL on its default port is ports 80
+  and 443; an off-scope redirect leaves the 3xx as the final response; metadata
+  endpoints cover more addresses and names than the three listed, and metadata
+  or link-local DNS answers are dropped.
+- Limits beyond the five designed: at most 10 redirects, a target is
+  unreachable after 30 consecutive connection failures, response cap range 1 to
+  32,768 KiB. The CLI adds `--concurrency`, `--timeout`, `--max-requests`,
+  `--proxy`, `--id`, `--max-file-size-mb`, `--db`, `--output` and `--format`
+  `oxaudit-json`, and reads no settings file; out-of-range flags are usage
+  errors, whereas settings are clamped with a note.
+- Redaction of credential-bearing output is keyed to template tags (`token`,
+  `keys`, `secret`, `secrets`, `credentials`, `creds`, `password`, `api-key`,
+  `apikey`, `private-key`; not `exposure`, a common tag for non-credential findings):
+  values are masked and the stored response body withheld. The design only
+  redacted headers.
+- The stored exchange is `NetworkExchangeEvidence` with `matcher_names` and
+  `response_truncated`; it has no single `matcher_name`.
+- The Template Scan page has no per-run rate-limit field; the setting (or the
+  CLI flag) supplies it. The page's authorization statement is limited to 200
+  characters, the engine's to 500.
+- The server exposes whether live targets are allowed to the GUI through
+  `/env.js` (`liveTargetsAllowed`), and also accepts `true` for the environment
+  variable.

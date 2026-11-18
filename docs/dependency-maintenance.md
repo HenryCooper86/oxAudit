@@ -154,3 +154,48 @@ updated CLI pilot, all six Chromium workflows against the real server, and all
 11 CI shell tests with the real CLI passed. The Linux/amd64 container release build also passed for both CLI and server.
 Native tests here use macOS; the hosted CI matrix remains responsible for
 Windows and Linux platform tests.
+
+## JSON key order and `preserve_order`
+
+`yara-x`, behind the host crate's default `yara` feature, enables
+`serde_json`'s `preserve_order` feature. Cargo unifies features across the
+whole build, so every crate in a default build sees it, not only `yara-x`. It
+turns `serde_json::Map` from a sorted `BTreeMap` into an insertion-ordered map,
+which changes the bytes of anything that serializes a `serde_json::Value`
+(including every `json!` literal and every struct converted with `to_value`)
+and the order in which code iterates one. Releases up to 0.3.3 were built
+without it, and CLI and report output is parsed, diffed and hashed downstream.
+
+The rules that keep output build-independent:
+
+- Serialize output, stored payloads and anything hashed with
+  `oxaudit_parsers::stable_json` (`to_vec`, `to_vec_pretty`, `to_string`,
+  `to_string_pretty`). It is byte-identical to `serde_json` in a build without
+  `preserve_order`: structs keep declaration order, `Value` objects and string
+  keyed maps are sorted. Do not call `serde_json::to_*` on a `Value` for output.
+- Hash a `Value` with `oxaudit_parsers::canonical_json::canonical_bytes`
+  (sorts every object).
+- Do not rely on `Map` iteration order. Sort explicitly where order is
+  meaningful.
+
+`npm run test:json-order` builds nothing; it compares two prebuilt CLIs over an
+offline scenario (scan, history, deps, sca, portfolio, image, export, import,
+vex, compliance, monitor, rule packs, benchmark) and fails with a diff on the
+first difference per command:
+
+```sh
+cargo build --manifest-path src-tauri/Cargo.toml --bin oxaudit-cli
+CARGO_TARGET_DIR=src-tauri/target/nopo cargo build --manifest-path src-tauri/Cargo.toml \
+  -p oxaudit --bin oxaudit-cli --no-default-features --features grammars-all
+npm run test:json-order          # or: node tools/check-json-order-parity.mjs --on A --off B [--only TEXT] [--dump DIR]
+```
+
+Confirm the second build really lacks the feature with
+`cargo tree --manifest-path src-tauri/Cargo.toml -p oxaudit --no-default-features
+--features grammars-all -e normal,features -i serde_json | grep preserve_order`
+(no output). Only volatile values (random ids, timestamps, durations, digests
+derived from a random run id) are replaced; output is never re-serialized.
+List order in graph-backed dependency reports follows random ids and changes
+between two runs of the same binary, so those few outputs are compared by line
+multiset plus per-object key order instead of byte for byte (the script says
+which).

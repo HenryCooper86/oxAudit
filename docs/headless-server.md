@@ -83,6 +83,7 @@ requests whose compressed sizes it could then compare.
 | `--config-dir` | `OXAUDIT_SERVER_CONFIG_DIR` | `~/.oxaudit-server/config` | `settings.json` and assistant sessions. |
 | `--web-root` | `OXAUDIT_SERVER_WEB_ROOT` | none | The built frontend (`dist/`). Without it only the API is served. |
 | `--token` | `OXAUDIT_SERVER_TOKEN` | generated | The access token every API call must present. |
+| `--allow-live-targets` | `OXAUDIT_SERVER_ALLOW_LIVE_TARGETS=1` | off | Serve template scans against live targets. Without it the server refuses them; local-path template scans work either way. |
 
 ## Security posture
 
@@ -96,6 +97,13 @@ requests whose compressed sizes it could then compare.
   bundle anyone can download from the repository.
 - Static paths are decoded before traversal checks, and symlink targets must
   remain within the configured web root; request bodies are bounded at 64 MiB.
+- Template scans against live targets are refused unless the server was
+  started with `--allow-live-targets`. Such a scan sends traffic from the
+  server's own network position, so without this switch anyone holding the
+  token could use the server to probe the network it sits in (internal
+  hosts, cloud metadata, services bound to its loopback). The refusal happens
+  before the request is validated or any target is parsed or contacted. The
+  `/env.js` bootstrap tells the GUI whether the switch is on.
 
 ## Stated limits
 

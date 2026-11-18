@@ -26,7 +26,8 @@ stderr; report output on stdout is unaffected. `-h`/`--help` and
 ## Shared values
 
 **Output formats** (`--format` on `scan`, `history`, `deps`, `image` and
-`monitor`; default `text`):
+`monitor`; default `text`. [`yara`](#yara) and [`template`](#template) accept
+only `text`, `json`, `sarif` and `oxaudit-json`):
 
 | Value | Output |
 | --- | --- |
@@ -116,6 +117,9 @@ fail_on_new = "high"
 | [`history`](#history) | Scan Git history for secrets committed at any point, including in files deleted long ago |
 | [`deps`](#deps) | Resolve lockfiles and check every pinned package against OSV |
 | [`image`](#image) | Scan a container image, firmware archive or binary tree with the native scanner, including its OS package database |
+| [`yara`](#yara) | Scan files and folders with YARA rules you supply, through the embedded YARA-X engine |
+| [`template`](#template) | Run Nuclei templates you supply against a local path, or against live targets you are authorized to test |
+| [`signature-pack`](#signature-pack) | Import, list, enable, disable or remove YARA rule packs and Nuclei template packs |
 | [`export`](#export) | Re-export a stored run in a standards format |
 | [`runs`](#runs) | List stored runs |
 | [`benchmark`](#benchmark) | Measure the scanners against the committed ground-truth corpus |
@@ -293,6 +297,107 @@ directly.
 | `--advisory-policy <FILE>` | — | Dismiss advisories by this policy file (the `.oxaudit/advisory-policy.json` format). Entries match the CVE id and component name. Dismissed advisories are still reported but never gate |
 | `--ignore-invalid-policy` | off | Run even when the advisory policy file is invalid |
 
+## yara
+
+```text
+oxaudit-cli yara [OPTIONS] <PATH>
+```
+
+`PATH` is a file or folder. Every file is read, ignore files are not applied
+and symbolic links are not followed. Rules come from `--rules` and/or from a
+signature-pack store; oxAudit ships none. See [YARA scanning](yara.md) for
+importing rules, results, run states and limits.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--rules <FILE\|DIR>` | — | A YARA rule file or folder of `.yar`/`.yara` files for this scan only, never installed. Repeatable |
+| `--pack <ID>` | every enabled YARA pack in `--pack-db` | Apply this installed pack. Repeatable. Needs `--pack-db` |
+| `--pack-db <FILE>` | — | The signature-pack store database. Without it installed packs are not consulted, and at least one `--rules` is required |
+| `--db <DB>` | in memory | Save the run for later reload, `export` and `runs` |
+| `--max-file-size-mb <MB>` | `64` | Files larger than this are listed as skipped. 1 to 1,024 |
+| `--format <FORMAT>` | `text` | `text`, `json`, `sarif` or `oxaudit-json`. These four are the only values `--help` lists; any other value is rejected as a usage error (exit `2`) |
+| `-o`, `--output <FILE>` | stdout | Write the report here |
+| `--fail-on <SEVERITY>` | `none` | Exit 1 when a match at this severity or higher is reported. A rule's severity comes from its `severity` or `score` metadata, else `medium` |
+| `--strict` | off | Exit `3` after printing the report when any rule file that was given (`--rules` or an installed pack) could not be compiled and was not applied. Without it such files are reported in the output but do not change the exit code |
+
+Exit `0`, `1` and `2` are as above. Exit `3` is a failed scan, and also a scan
+that ended `incomplete` (a pack failed verification, a file timed out, a cap was
+hit): the report is printed, the reasons go to stderr, and a pipeline does not
+read partial coverage as a pass. Zero matches exits `0` and prints "No rule
+matched", which is not a statement about the content. A scan with no compiled
+rules does not run and exits `3`, and says whether no pack is installed, every
+pack failed verification, or every rule file failed to compile.
+
+## template
+
+```text
+oxaudit-cli template [OPTIONS] (--path <DIR> | --target <TARGET>... | --target-file <FILE>)
+```
+
+Runs Nuclei templates you supply. `--path` runs `file`-protocol templates
+against local files and sends nothing. `--target` and `--target-file` run
+`http`, `dns`, `tcp` and `ssl` templates against live targets, send network
+traffic, and require `--i-am-authorized`. Give one of the two modes. Read
+[Template scanning](template-scanning.md), including its "Before you scan"
+section, before a live scan.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--path <DIR>` | — | Scan this file or folder with the templates' `file` protocol |
+| `--target <TARGET>` | — | A live target: URL, host, `host:port`, IP or CIDR (up to 256 addresses in all). Repeatable. At most 1,000 targets across `--target` and `--target-file` |
+| `--target-file <FILE>` | — | Live targets, one per line; blank lines and `#` comments ignored; at most 1 MiB |
+| `--i-am-authorized` | off | Confirm you are authorized to test the live targets. Required with `--target` and `--target-file`, recorded with the run, never remembered |
+| `--templates <FILE\|DIR>` | — | A template file or folder for this scan only, never installed. Repeatable |
+| `--pack <ID>` | every enabled Nuclei pack in `--pack-db` | Apply this installed pack. Repeatable. Needs `--pack-db` |
+| `--pack-db <FILE>` | — | The signature-pack store database. Without it, at least one `--templates` is required |
+| `--db <DB>` | in memory | Save the run for later reload, `export` and `runs` |
+| `--tags <TAGS>` | all | Run only templates with any of these tags (comma separated) |
+| `--exclude-tags <TAGS>` | — | Never run templates with any of these tags |
+| `--severity <SEVERITIES>` | all | Run only these severities: `info`, `low`, `medium`, `high`, `critical` |
+| `--id <IDS>` | all | Run only templates with these ids |
+| `--include-intrusive` | off | Also run templates tagged `intrusive` or `fuzz`. Templates tagged `dos` never run |
+| `--rate-limit <N>` | `50` | Live scans: requests per second overall, 1 to 1,000 |
+| `--concurrency <N>` | `10` | Live scans: requests in flight to one host, 1 to 100 |
+| `--timeout <SECONDS>` | `10` | Live scans: connect and overall timeout of one request, 1 to 120 |
+| `--max-requests <N>` | `100000` | Live scans: requests per run. Reaching it stops the scan, which is then incomplete |
+| `--proxy <URL>` | none | Live scans: send HTTP template requests through this `http://` or `https://` proxy. Proxy environment variables are never read; DNS, TCP and SSL connect directly |
+| `--max-file-size-mb <MB>` | `64` | Files larger than this are listed as skipped. 1 to 1,024 |
+| `--format <FORMAT>` | `text` | `text`, `json`, `sarif` or `oxaudit-json`. These four are the only values `--help` lists; any other value is rejected as a usage error (exit `2`) |
+| `-o`, `--output <FILE>` | stdout | Write the report here |
+| `--fail-on <SEVERITY>` | `none` | Exit 1 when a match at this severity or higher is reported |
+| `--strict` | off | Exit `3` after printing the report when any template file that was given (`--templates` or an installed pack) could not be loaded (invalid YAML, no `id`, unreadable, or a repeated id). Templates that are "not evaluated" because they use unsupported features or need the other scan mode are expected in any real pack and never count. Without it such files are reported in the output but do not change the exit code |
+
+The CLI reads no settings file; the live-scan limits are the defaults above,
+replaced by the flags. A limit flag out of range, a limit flag without a live
+target, `--path` together with a target, or a live target without
+`--i-am-authorized` is a usage error (exit `2`). So is an invalid target (a
+wildcard, a CIDR of more than 256 addresses, a URL with credentials, an
+unsupported scheme, more than 1,000 targets): it is rejected before anything
+is sent. Exit `3` is a scan that failed while running, or one that ended
+`incomplete`; a template that was not evaluated is counted in the report but
+does not by itself make a scan incomplete. A scan in which no template can run
+fails (exit `3`) and says why: the pack failed verification, your filters left
+nothing, the templates are tagged `dos`, none applies to this mode, or none
+loaded.
+
+## signature-pack
+
+Every `signature-pack` subcommand takes `--db <FILE>`, the signature-pack
+store database (the rule-pack database; required). Pack files are kept in a
+`sigpacks` folder beside it.
+
+| Subcommand | Usage | Meaning |
+| --- | --- | --- |
+| `install` | `signature-pack install --db <FILE> --kind <yara\|nuclei> --name <NAME> --license <LICENSE> [--version <V>] [--source <TEXT>] [--authors <TEXT>] <PATH>` | Import a rule or template file, folder or `.zip`. The name and the licence are required (an empty or blank value is a usage error, exit `2`) and the licence is stored with the pack and every run that used it; a licence file in the pack that looks different from the one you recorded is noted on stderr. Prints the pack id, file and rule counts, and every file or rule that was not applied |
+| `list` | `signature-pack list --db <FILE> [--json]` | List the packs: id, kind, rule count, enabled state, licence. `--json` emits JSON instead of a table |
+| `enable` | `signature-pack enable --db <FILE> <ID>` | Apply the pack to scans that do not name packs |
+| `disable` | `signature-pack disable --db <FILE> <ID>` | Leave the pack out by default; `--pack` still selects it |
+| `remove` | `signature-pack remove --db <FILE> <ID>` | Delete the pack and its files. Past runs keep what they recorded |
+
+A pack is verified against its hash manifest before every scan that uses it.
+Limits and what import refuses are in
+[YARA scanning](yara.md#import-rules-as-a-signature-pack).
+
 ## export
 
 ```text
@@ -303,7 +408,7 @@ oxaudit-cli export [OPTIONS] --db <DB> --run <RUN>
 | --- | --- | --- |
 | `--db <DB>` | required | Database holding the run |
 | `--run <RUN>` | required | Run to export |
-| `--format <FORMAT>` | `sarif` | One of `sarif`, `oxaudit-json`, `cyclonedx`, `spdx`, `openvex`, `cyclonedx-vex`, `github-issues-csv`, `jira-csv` |
+| `--format <FORMAT>` | `sarif` | One of `sarif`, `oxaudit-json`, `cyclonedx`, `spdx`, `openvex`, `cyclonedx-vex`, `github-issues-csv`, `jira-csv`. A [`yara`](#yara) or [`template`](#template) run exports only `sarif` and `oxaudit-json`; the others are refused with exit `3`, like every other export that cannot be rendered |
 | `-o`, `--output <FILE>` | stdout | Write here |
 | `--sarif-uri-prefix <PREFIX>` | none | Prefix SARIF result paths with the scanned directory's path inside the repository. There is no automatic default: a stored run does not record where its scan root sits in a checkout |
 
@@ -316,7 +421,7 @@ oxaudit-cli runs [OPTIONS] --db <DB>
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--db <DB>` | required | Database to list runs from |
-| `--kind <KIND>` | — | Explicit canonical run listing: `source`, `dependencies`, `binary`, `image`, `history` or `all`. Omit it to keep the source project summary format |
+| `--kind <KIND>` | — | Explicit canonical run listing: `source`, `dependencies`, `binary`, `image`, `history`, `yara`, `template` or `all`. Omit it to keep the source project summary format |
 | `--limit <LIMIT>` | `20` | Most runs to list |
 | `--json` | off | Emit JSON instead of a table |
 

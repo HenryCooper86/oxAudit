@@ -37,6 +37,51 @@ transcribed from cve-bin-tool's checkers, which are GPL-3.0-or-later. See
 docs/binary-signatures.md for the method and its provenance.
 
 --------------------------------------------------------------------------------
+YARA rules and Nuclei templates
+--------------------------------------------------------------------------------
+
+oxAudit bundles no YARA rules and no Nuclei templates. You import your own, and
+each imported pack keeps the licence it was published under: oxAudit records
+the licence you enter with the pack and with every run that used it, and does
+not alter, relicense or redistribute the content.
+
+A user may import a pack published under a copyleft licence, including the
+GPL. As with cve-bin-tool above, that is at arm's length: the pack is copied
+into the user's own data directory, is read as data, and is never compiled into
+or shipped with oxAudit. Nothing from such a pack is in this repository; the
+test fixtures are original work.
+
+The engines that run them are libraries compiled into oxAudit. Their licences,
+read from each crate's manifest in the version in Cargo.lock:
+
+  yara-x            BSD-3-Clause            VirusTotal
+                    https://github.com/VirusTotal/yara-x
+                    The YARA-X rule engine (src-tauri/crates/oxaudit-yara)
+  rsa               MIT OR Apache-2.0       RustCrypto Developers
+                    Enabled only to satisfy a feature yara-x needs
+  hickory-resolver  MIT OR Apache-2.0       The contributors to Hickory DNS
+                    https://github.com/hickory-dns/hickory-dns
+                    DNS questions for live template scans
+  rustls            Apache-2.0 OR ISC OR MIT
+                    https://github.com/rustls/rustls
+                    TLS handshakes for live template scans
+  tokio-rustls      MIT OR Apache-2.0
+                    https://github.com/rustls/tokio-rustls
+  x509-parser       MIT OR Apache-2.0       Pierre Chifflier
+                    https://github.com/rusticata/x509-parser
+                    Certificate fields for ssl templates
+  serde-saphyr      MIT OR Apache-2.0
+                    https://github.com/bourumir-wyngs/serde-saphyr
+                    Reads Nuclei template YAML
+  md-5              MIT OR Apache-2.0       RustCrypto Developers
+                    The md5 template helper
+
+oxAudit is not affiliated with VirusTotal or ProjectDiscovery. YARA and Nuclei
+are the names of their respective projects. The Nuclei template format is
+implemented independently from its public documentation; no Nuclei source code
+is included.
+
+--------------------------------------------------------------------------------
 Methodology adopted from other projects
 --------------------------------------------------------------------------------
 
