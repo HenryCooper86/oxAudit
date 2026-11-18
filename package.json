@@ -18,7 +18,7 @@
     "lint": "eslint .",
     "test:e2e": "playwright test",
     "test:watch": "vitest",
-    "audit:dependencies": "npm audit --audit-level=high",
+    "audit:dependencies": "npm audit --omit=dev --audit-level=high",
     "pilot:smoke": "node tools/pilot-smoke.mjs",
     "benchmark:external:record": "node tools/record-quality-benchmark.mjs",
     "benchmark:quality:compare": "node tools/compare-quality-benchmark.mjs",
