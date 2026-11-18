@@ -263,11 +263,15 @@ pub fn monitor(
             coverage_error: None,
             notes: Vec::new(),
         };
-        let deps: Vec<Dependency> = inventory
+        // Keep each queryable component with its own dependency: components
+        // that were never queried (local and git sources) drop out of the list,
+        // so pairing the two lists by position would attribute advisories to
+        // the wrong component.
+        let (matched_components, deps): (Vec<&InventoryComponentView>, Vec<Dependency>) = inventory
             .components
             .iter()
-            .filter_map(rebuild_dependency)
-            .collect();
+            .filter_map(|component| rebuild_dependency(component).map(|dep| (component, dep)))
+            .unzip();
         monitored.components_matched = deps.len();
         if deps.is_empty() {
             // Nothing was ever queried for this inventory; monitoring has no
@@ -288,7 +292,7 @@ pub fn monitor(
                 monitored.notes = outcome.notes.warnings();
                 let by_key: std::collections::HashMap<String, Vec<crate::models::Vulnerability>> =
                     outcome.results;
-                for (component, dep) in inventory.components.iter().zip(deps.iter()) {
+                for (component, dep) in matched_components.iter().zip(deps.iter()) {
                     let Some(vulns) = by_key.get(&crate::deps::osv::dependency_query_key(dep))
                     else {
                         continue;
@@ -611,6 +615,46 @@ mod tests {
         // The advisory affects only the excluded component, so the delta is
         // empty while the counts state what was and was not re-matched.
         assert!(monitored.newly_matching.is_empty());
+    }
+
+    #[test]
+    fn a_never_queried_component_does_not_shift_advisories_onto_its_neighbours() {
+        let repository = FindingsRepository::open_in_memory().unwrap();
+        let run = stored_run(&repository, "/project/shifted", 4_000);
+        repository
+            .canonical_append_observations(
+                &run.id,
+                &[advisory_observation(
+                    &run,
+                    "component_registry",
+                    "GHSA-known",
+                )],
+            )
+            .unwrap();
+        repository
+            .canonical_append_components(
+                &run.id,
+                &[
+                    // Listed first and never queried (no purl): the queryable
+                    // list is one shorter than the inventory from here on.
+                    component("component_a_local", "npm", "local-pkg", "0.0.0", None),
+                    component(
+                        "component_registry",
+                        "npm",
+                        "registry-pkg",
+                        "1.0.0",
+                        Some("pkg/npm/registry-pkg@1.0.0"),
+                    ),
+                ],
+            )
+            .unwrap();
+        let db = advisory_db(&[(
+            "GHSA-known.json".to_string(),
+            advisory_json("GHSA-known", "registry-pkg", "2.0.0", &[]),
+        )]);
+        let outcome = monitor_repository(&repository, &db);
+        // The stored run already reported GHSA-known for registry-pkg.
+        assert!(outcome.runs[0].newly_matching.is_empty());
     }
 
     #[test]
