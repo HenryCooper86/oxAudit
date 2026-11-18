@@ -1,0 +1,212 @@
+{
+  "title": "oxAudit UI/UX source review",
+  "date": "2026-11-04",
+  "commit": "5e5b9ab1b6dd62a92c5de8a2a5d241b9889b87d4",
+  "scope": "Source and component review of the everyday developer/AppSec path: setup, open/check project, find and review results, recheck, export. Ancillary research, image/binary, compliance and reporting journeys were not individually audited.",
+  "verdict": "The core workflow has strong automated safeguards, but five reproduced interaction/recovery issues and three structural opportunities prevent a confident claim that the UI is efficient and easy to use.",
+  "evidence_limit": "No live screenshots or real user observations were captured. The browser access host was unavailable. Desktop access was rejected with: Computer Use was not approved to use oxAudit. This is a source review with component/data-loading reproductions, not a completed visual UX audit or accessibility compliance assessment. JSDOM does not measure native layout, viewport clipping, rendering performance or screen-reader announcements.",
+  "validation": {
+    "npm test": "Passed: 178 node tests and 692 Vitest tests (68 component/module files), 870 total.",
+    "targeted probes": "5/5 passed, reproducing the five behaviors identified as UX-01 through UX-05; passing does not mean fixed.",
+    "npm run build": "Passed: TypeScript and Vite production build. Vite warned that the non-module /env.js script cannot be bundled; no build error.",
+    "npm run lint": "Passed, exit 0.",
+    "native dev build": "Compiled successfully and launched; live app access was not approved. The dev process started for this review was stopped."
+  },
+  "strengths": [
+    "Opening a project and running a scan are separate explicit actions. AI is optional during onboarding.",
+    "Latest attempts, saved evidence and incomplete/cancelled states are distinguished; shared scan ownership prevents conflicting checks.",
+    "Saved findings are paginated, filters expose totals, and rechecks retain original evidence.",
+    "Secret previews and handoffs are redacted; human review decisions remain explicit.",
+    "Both themes have passing token-contrast checks; focus-visible styling, reduced-motion support and a workspace skip link already exist. These do not establish complete accessibility compliance.",
+    "Export tests cover exact run identity, failed-load retries, destination changes and duplicate pending writes."
+  ],
+  "steps": [
+    [
+      1,
+      "First launch and setup",
+      "Implemented; live experience unverified",
+      "Tests cover skipping/reopening setup, folder errors, and checking a project without AI."
+    ],
+    [
+      2,
+      "Open a project and start a check",
+      "Strong automated coverage",
+      "Explicit scan start, shared scan ownership, cancellation and durable evidence are covered."
+    ],
+    [
+      3,
+      "Resume projects and choose work",
+      "Needs improvement",
+      "UX-04 and UX-08 affect recovery and dependency prioritization."
+    ],
+    [
+      4,
+      "Navigate and reach findings",
+      "Needs improvement",
+      "UX-01, UX-06 and UX-07 affect keyboard navigation and the route to primary results."
+    ],
+    [
+      5,
+      "Read evidence and record a decision",
+      "Needs improvement",
+      "UX-02, UX-03 and UX-05 affect review entry, draft preservation and validation."
+    ],
+    [
+      6,
+      "Fix, recheck and export evidence",
+      "Strong automated coverage; native flow unverified",
+      "Tests cover editor handoff, original-run evidence, recheck ownership and exact-run export/retry."
+    ]
+  ],
+  "findings": [
+    {
+      "id": "UX-01",
+      "priority": "High",
+      "title": "Command palette lets keyboard focus escape behind the modal",
+      "evidence": "Reproduced in a component probe",
+      "problem": "Open the palette, press Shift+Tab, then Escape. Focus reaches a background button while the modal remains open, and Escape no longer calls onClose because its handler belongs to the search input. Background controls remain available to keyboard input.",
+      "cause": "aria-modal is present, but the palette does not trap Tab or make the rest of the app inert. Escape handling is attached only to its input. The readiness wizard already demonstrates focus trapping and isolation in this codebase.",
+      "sources": [
+        "src/components/workbench/CommandPalette.tsx:75",
+        "src/components/workbench/CommandPalette.tsx:107",
+        "src/components/workbench/CommandPalette.tsx:140",
+        "src/components/onboarding/ReadinessWizard.tsx:155"
+      ],
+      "recommendation": "Reuse the existing modal isolation and focus-management pattern. Keep Tab and Shift+Tab within the palette, handle Escape throughout the dialog, and provide a visible close control.",
+      "acceptance": "From every palette control, Tab and Shift+Tab remain inside it; background controls cannot activate; Escape closes it; focus returns to the invoker. Verify in the native WebView and with VoiceOver."
+    },
+    {
+      "id": "UX-03",
+      "priority": "High",
+      "title": "Switching findings silently loses an unsaved review draft",
+      "evidence": "Reproduced in a component probe",
+      "problem": "Start a review, choose Accepted risk, and type a reason. Select a different finding, then return. The review form is closed and reopening it starts from Candidate; the typed reason is gone. Saved reviews are not affected.",
+      "cause": "FindingDetail closes the editor on fingerprint changes, and FindingReviewForm holds its draft only in component state. No per-finding draft cache or recovery exists on this path.",
+      "sources": [
+        "src/components/FindingDetail.tsx:54",
+        "src/components/FindingDetail.tsx:269",
+        "src/features/source-scan/FindingReviewForm.tsx:54"
+      ],
+      "recommendation": "Keep unsaved review drafts in session state keyed by project and finding fingerprint, restore them when the analyst returns, and show a clear unsaved indicator. Keep draft content separate from saved decisions; preserve the explicit Save review action.",
+      "acceptance": "Type a review reason, switch findings and tools, then return: the draft is restored only for its original project/finding. No review decision is saved automatically; explicit discard clears the draft."
+    },
+    {
+      "id": "UX-02",
+      "priority": "Medium",
+      "title": "Review finding does not hand the user to the review form",
+      "evidence": "Reproduced in a component probe; visual distance unverified",
+      "problem": "Clicking Review finding mounts the editor after all detail content, including recommendations and any remediation/history. Focus remains on the trigger, and there is no scroll handoff. A long detail can leave the newly opened editor outside the visible area.",
+      "cause": "The trigger only sets reviewing=true; the appended form has no autofocus or reveal effect.",
+      "sources": [
+        "src/components/FindingDetail.tsx:136",
+        "src/components/FindingDetail.tsx:269",
+        "src/features/source-scan/FindingReviewForm.tsx:78"
+      ],
+      "recommendation": "On explicit activation, focus the review heading or Decision control and reveal the editor within the workspace scroll owner. On cancel, return focus to Review finding.",
+      "acceptance": "With a long finding at the top of a small window, activate Review finding by mouse and keyboard. The editor becomes visible and focus enters it. Cancelling returns focus without losing the finding selection."
+    },
+    {
+      "id": "UX-04",
+      "priority": "Medium",
+      "title": "One history request failure rejects the complete project-home history",
+      "evidence": "Reproduced in a data-loading probe",
+      "problem": "When two projects are available and the run-list request for one rejects, loadProjectHome rejects instead of returning the healthy project. On the first load this leaves the recent-project section unavailable; a later refresh retains old rows with a section-wide error. The selected-project controls are a separate region and are not necessarily lost.",
+      "cause": "The loader uses Promise.all for every project run-list request, and the home page catches only the aggregate result.",
+      "sources": [
+        "src/features/project-home/history.ts:34",
+        "src/features/project-home/ProjectHome.tsx:38",
+        "src/features/project-home/ProjectHome.tsx:313"
+      ],
+      "recommendation": "Isolate per-project history failures, keep healthy projects usable, mark the affected project as history unavailable, and offer retry. Preserve unknown counts instead of presenting them as zero. Handle failure of the two initial list requests explicitly as well.",
+      "acceptance": "Make one project run-list request fail while another succeeds. The successful project remains selectable; the failed row shows an honest unavailable state; retry clears that row error without resetting unrelated work."
+    },
+    {
+      "id": "UX-05",
+      "priority": "Medium",
+      "title": "Review expiry errors are not programmatically attached to the input",
+      "evidence": "Reproduced in a component probe; actual announcements unverified",
+      "problem": "Choose Accepted risk and enter an expiry in the past. A visible error appears and Save review is disabled, but the expiry input has neither aria-invalid nor aria-describedby pointing to the error. The shared Field component renders error/hint IDs but does not connect them to its child controls. Reason already connects its description manually; several other fields do not.",
+      "cause": "Error rendering and input accessibility attributes are maintained independently.",
+      "sources": [
+        "src/components/workbench/Field.tsx:16",
+        "src/features/source-scan/FindingReviewForm.tsx:138",
+        "src/features/source-scan/FindingReviewForm.tsx:198",
+        "src/features/source-scan/FindingReviewForm.tsx:211"
+      ],
+      "recommendation": "Make shared field wiring consistent: associate hints and errors with each control, mark invalid controls, and make required completion steps clear near the disabled save action.",
+      "acceptance": "For an invalid expiry and deciding gate, accessibility inspection links the control to its error and exposes invalid state. Correcting the value removes that state. Confirm announcement and recovery with VoiceOver."
+    },
+    {
+      "id": "UX-06",
+      "priority": "Medium",
+      "title": "Run history can occupy the workspace before users reach findings",
+      "evidence": "Confirmed source structure; rendered position not measured",
+      "problem": "The source loader requests up to 50 runs. RunHistory renders every run without a collapsed state, height bound, or pagination. Its grid appears before the evidence summary and source-results section, so a growing history can push the primary work farther down the page. The narrow layout stacks these sections.",
+      "cause": "A full auxiliary run list participates in the normal document flow ahead of the primary results.",
+      "sources": [
+        "src/features/source-scan/projectLoader.ts:30",
+        "src/features/source-scan/RunHistory.tsx:25",
+        "src/pages/SourceScan.tsx:998",
+        "src/pages/SourceScan.tsx:1058"
+      ],
+      "recommendation": "Show the selected run and a short recent list by default; put the full history behind an explicit expansion or run picker. Keep existing saved-run selection, truthful coverage, and one main workspace scroll owner.",
+      "acceptance": "Compare projects with 1 and 50 runs at 900x700 and 1440x900. Reaching current findings requires similar effort. Every historical run remains reachable with keyboard focus preserved."
+    },
+    {
+      "id": "UX-07",
+      "priority": "Opportunity",
+      "title": "The fastest navigation path has no visible entry point",
+      "evidence": "Source-based design assessment; user impact needs observation",
+      "problem": "The sidebar exposes 20 destinations including Settings, with ten tools in Trust & quality. The command palette can navigate tools/projects, but its only opening path is Cmd/Ctrl+K in App; the header does not offer a search control or shortcut hint. New users must discover that shortcut elsewhere.",
+      "cause": "Advanced destinations and daily work share a single expanded hierarchy; the keyboard accelerator is not advertised in the interface.",
+      "sources": [
+        "src/components/Sidebar.tsx:35",
+        "src/App.tsx:178",
+        "src/components/workbench/WorkbenchHeader.tsx:75"
+      ],
+      "recommendation": "Add a visible Go to or Search tools and projects control with the shortcut displayed. Test whether collapsing advanced tool groups by default makes the daily project/source/dependency path easier to find; keep expert access available.",
+      "acceptance": "A new developer can find project switching and source/dependency results without knowing a shortcut. A returning analyst can navigate with the palette without scrolling through the sidebar."
+    },
+    {
+      "id": "UX-08",
+      "priority": "Opportunity",
+      "title": "Home does not surface saved dependency finding counts",
+      "evidence": "Confirmed source behavior; prioritization impact needs user testing",
+      "problem": "Even when a completed dependency run exists, the home view always says Dependency findings: unknown and requires opening saved results for counts and coverage. This is honest, but home cannot answer which project needs dependency attention.",
+      "cause": "The home model retains canonical run references without retrieving a bounded summary of their dependency findings and coverage.",
+      "sources": [
+        "src/features/project-home/ProjectHome.tsx:171",
+        "src/features/project-home/history.ts:23"
+      ],
+      "recommendation": "Expose a lightweight saved-run summary on home: critical/high/open counts when available, coverage, and age. Label the summary as saved evidence, distinguish the latest attempt from the last completed run, and retain unknown when unavailable.",
+      "acceptance": "After a completed dependency scan and app restart, home can show the exact saved run summary without loading its full component population. Failed, cancelled, partial, and unavailable runs never appear clean."
+    }
+  ],
+  "recommended_order": [
+    "First: contain palette focus, reveal the review editor, and preserve per-finding review drafts.",
+    "Next: isolate history failures and associate validation errors with their controls.",
+    "Then: shorten the route to findings, expose command search, and surface bounded saved dependency summaries.",
+    "Before usability signoff: observe first-time developers and returning AppSec users completing real tasks."
+  ],
+  "pending_validation": [
+    "Live native screenshots at 900x700 and 1440x900; actual placement of the review editor and history.",
+    "Keyboard-only completion of open/check, filter/select, review, recheck and export tasks; focus restoration and modal isolation.",
+    "200% zoom/reflow and both themes; clipped controls, long paths and long evidence.",
+    "VoiceOver announcements for navigation, review validation, loading, failure and completion states.",
+    "Native file/editor/export dialogs, real persistence across restart, and end-to-end operation against an isolated disposable project.",
+    "Observe task completion, time, wrong turns, repeated scrolling and lost work. Record real user results; do not treat maintainer tests as external user feedback."
+  ],
+  "references": [
+    {
+      "title": "W3C APG modal dialog pattern",
+      "url": "https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/",
+      "use": "Modal focus containment, background isolation and Escape behavior."
+    },
+    {
+      "title": "W3C WAI form user notifications",
+      "url": "https://www.w3.org/WAI/tutorials/forms/notifications/",
+      "use": "Actionable validation feedback and associations between input controls and errors."
+    }
+  ],
+  "changes": "No production source changes. Only this report, machine-readable notes, and retained reproduction artifacts were added. The temporary probe in src was removed."
+}
