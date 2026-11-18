@@ -23,6 +23,9 @@ lists what each release ships.
 
 ### Added
 
+- Assistant answers and the CVE briefing render tables, strikethrough and task
+  lists (GitHub-flavoured markdown). Wide tables scroll inside the answer; raw
+  HTML stays off and links still open only http, https and mailto addresses.
 - YARA scanning. `oxaudit-cli yara <PATH>` and the YARA Scan page apply YARA
   rules you import to every file under a path, through the embedded YARA-X
   engine: no external binary and no network. Matches carry byte offsets and
@@ -59,7 +62,66 @@ lists what each release ships.
 - `yara` and `templates` Cargo features, on by default. A build without one
   reports that scan as unavailable rather than returning an empty result.
 
+### Changed
+
+- Dropdowns share the field styling (a chevron instead of the system arrow, the
+  same border and hover as text fields), the Assistant composer shows focus with
+  an accent border instead of a ring, and "Open Settings" from the Assistant,
+  Template Scan and Binary Scan opens the section that holds the setting.
+- The desktop workbench now follows oxFuzz's visual structure, so the two
+  products read as one family. The sidebar carries the brand, an **Open
+  project** action, your five most recent projects, the tools regrouped as
+  Workspace, Scanning, Results, Intelligence and Quality, and a footer with
+  Settings, a **Press ⌘K to search** button and the version. It is either
+  shown or hidden from a button at the left of the header; the 52px icon rail
+  and the Assistant's automatic narrowing are gone, and an earlier rail choice
+  no longer applies. The header shows the current page's icon and title, the
+  status bar gains a clock, and pages, results, dialogs and toasts use 12px
+  cards with a hairline border. The Dashboard opens with a bar naming the
+  selected project. On macOS the window uses the overlay title bar, with the
+  window controls above the brand. See [Design system](docs/design-system.md).
+- Settings is organised as oxFuzz organises it. Choosing it replaces the
+  sidebar's tools with a settings sub-navigation (General, AI, Scan defaults,
+  Live scanning, Data sources, Binary scanner, Diagnostics, About) and a
+  **Back** row that returns to the page you came from. The header shows the
+  section's title, with **Reset** and **Save** on its right, and each section is
+  a scrolling pane of labelled groups of 44px rows. Drafts carry across
+  sections; leaving Settings still discards unsaved edits. "Configure AI" and
+  the readiness wizard open the AI section, and the scan-settings recovery
+  button opens Scan defaults. Nothing was removed: every setting, hint and
+  validation message is unchanged.
+- The AI Assistant follows oxFuzz's assistant. The conversation is one
+  full-width column with the composer docked beneath it; the permanent
+  conversation list and activity rail are now **Conversations** and
+  **Activity** panels that open on the right from header buttons (one at a
+  time, closed by default, remembered, and a drawer below 1100px), beside a
+  **Search conversation** button. An empty conversation shows a welcome with a
+  project selector (recent projects, or Browse on the desktop and a typed
+  server path in server mode) and starter prompts that fill the composer
+  without sending. Your messages are right-aligned bubbles, answers sit in a
+  bordered card beside the oxAudit mark, and tool calls, attached source
+  context and compaction notices keep their own shapes so they cannot be read
+  as the model's prose. The composer gains an **Auto / Plan & act** mode:
+  Plan & act asks the model to outline a numbered plan before acting by
+  prefixing the copy of your message sent to the model; the transcript, saved
+  conversation, rewind, steering and attached context keep exactly what you
+  typed, and it is not a read-only mode. The composer also grows with its
+  text, can be expanded, shows the conversation's project as a chip, and sends
+  or stops from one round button. Readiness and project problems are notices
+  above the composer, and the approval, question, rewind and context-review
+  dialogs use the shared dialog style with their behaviour unchanged.
+- Every other page follows the same page anatomy: shared inputs, selects and
+  checkboxes (28/32px, 8px radius, one focus ring) replace the native-looking
+  controls on Source Scan, Template Scan, CVE Research, Verification, VEX Trust
+  and others; scan summaries on Source Scan, Dependencies and Quality Lab are
+  metric tiles in an auto-fit grid; result tabs use the tab-card style; and
+  panels, notices and code boxes share the 8px radius and the 10.5px section
+  label.
+
 ### Fixed
+
+- The last navigation items no longer sit hidden behind the pinned Settings
+  row on short windows: the tool list scrolls as one region above the footer.
 
 - The YARA-X dependency turns on insertion-ordered JSON maps for the whole
   build. Parsers, receipt digests and JSON outputs that depended on key order

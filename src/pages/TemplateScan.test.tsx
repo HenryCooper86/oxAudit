@@ -68,7 +68,10 @@ test("the mode control switches between a local path and live targets", async ()
   expect(screen.getByLabelText("Targets")).toBeInTheDocument();
   expect(screen.queryByLabelText("Template target")).not.toBeInTheDocument();
   expect(screen.getByText(/send network requests to the listed targets only/)).toBeInTheDocument();
-  expect(screen.getByText(/limits come from Settings, Live scanning/)).toBeInTheDocument();
+  expect(screen.getByText(/limits come from/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Settings, Live scanning" }));
+  expect(useAppStore.getState().page).toBe("settings");
+  expect(useAppStore.getState().settingsSection).toBe("live-scanning");
   expect(screen.getByRole("switch", { name: "Include intrusive templates" })).not.toBeChecked();
   expect(screen.getByText(/Templates tagged dos never run/)).toBeInTheDocument();
 });
@@ -290,4 +293,20 @@ test("a saved local run reopens with paged matches and a paged Not evaluated lis
   expect(within(section).getByLabelText("Reasons on this page")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Next page of template matches" }));
   await waitFor(() => expect(within(screen.getByRole("list", { name: "Template matches" })).getAllByRole("listitem")).toHaveLength(5));
+});
+
+test("the template filters are labelled primitives: tag inputs, severity checkboxes and pack checkboxes", async () => {
+  render(<TemplateScanPage />);
+  await screen.findByText(/Packs \(1 of 1 selected\)/);
+  const only = screen.getByLabelText("Only tags");
+  const exclude = screen.getByLabelText("Exclude tags");
+  expect(only).toHaveClass("rounded-md");
+  expect(exclude).toHaveClass("rounded-md");
+  const severities = screen.getByRole("group", { name: /Severities/ });
+  const boxes = within(severities).getAllByRole("checkbox");
+  expect(boxes.map(box => (box.closest("label") as HTMLElement).textContent)).toEqual(["critical", "high", "medium", "low", "info"]);
+  expect(boxes[0]).toHaveClass("h-4", "w-4");
+  await userEvent.click(within(severities).getByRole("checkbox", { name: "high" }));
+  expect(within(severities).getByRole("checkbox", { name: "high" })).toBeChecked();
+  expect(within(screen.getByRole("group", { name: /Packs/ })).getByRole("checkbox", { name: /Acme templates/ })).toBeChecked();
 });

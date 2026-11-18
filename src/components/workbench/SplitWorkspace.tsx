@@ -5,6 +5,11 @@ import { revealWorkspaceDetail } from "../../lib/workspaceScroll";
 import { Button } from "../ui";
 import { PanelCollapseButton } from "./PanelCollapseButton";
 
+/**
+ * Master-detail results, after oxFuzz's triage view: a list column of card
+ * rows (see `listRowClassName`) beside a detail card. Below 900px only one
+ * side shows at a time. The list column can collapse to a 44px rail.
+ */
 export function SplitWorkspace(props: {
   panelId: string;
   listLabel: string;
@@ -20,7 +25,7 @@ export function SplitWorkspace(props: {
   const detailRef = useRef<HTMLElement>(null);
 
   return (
-    <div className={`grid min-h-[28rem] transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${listCollapsed ? "min-[900px]:grid-cols-[44px_minmax(0,1fr)]" : "min-[900px]:grid-cols-[minmax(17rem,0.8fr)_minmax(0,1.35fr)]"}`}>
+    <div className={`grid min-h-[28rem] items-start gap-3 p-3 transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${listCollapsed ? "min-[900px]:grid-cols-[44px_minmax(0,1fr)]" : "min-[900px]:grid-cols-[minmax(17rem,0.8fr)_minmax(0,1.35fr)]"}`}>
       {/* Delegated listener, not a mouse-only control: [data-detail-trigger]
           elements are buttons, and keyboard activation of a button dispatches
           the same bubbling click. */}
@@ -33,11 +38,11 @@ export function SplitWorkspace(props: {
             revealWorkspaceDetail(detailRef.current);
           }
         }}
-        className={`min-w-0 border-border min-[900px]:border-r ${hasSelection ? "max-[900px]:hidden" : ""}`}
+        className={`min-w-0 ${hasSelection ? "max-[900px]:hidden" : ""}`}
       >
-        <div className={`hidden h-9 items-center border-b border-border min-[900px]:flex ${listCollapsed ? "justify-center px-1" : "justify-between px-3"}`}>
+        <div className={`hidden h-8 items-center min-[900px]:flex ${listCollapsed ? "justify-center" : "justify-between pl-1"}`}>
           {!listCollapsed && (
-            <span className="truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+            <span className="truncate text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
               {listLabel}
             </span>
           )}
@@ -58,7 +63,7 @@ export function SplitWorkspace(props: {
       <section
         ref={detailRef}
         aria-label={detailLabel}
-        className={`min-w-0 ${hasSelection ? "" : "max-[900px]:hidden"}`}
+        className={`surface-card min-w-0 shadow-none ${hasSelection ? "" : "max-[900px]:hidden"}`}
       >
         {hasSelection && onBackToList && (
           <div className="border-b border-border px-3 py-2 min-[900px]:hidden">

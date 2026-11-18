@@ -42,10 +42,10 @@ export function SeverityTrend(props: { runs: ScanRunSummary[] }): JSX.Element {
   return (
     <section
       aria-labelledby="severity-trend-title"
-      className="overflow-hidden rounded-sm border border-border bg-surface-secondary"
+      className="overflow-hidden surface-card"
     >
       <div className="border-b border-border px-3 py-2.5">
-        <h2 id="severity-trend-title" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+        <h2 id="severity-trend-title" className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
           Severity trend
         </h2>
       </div>

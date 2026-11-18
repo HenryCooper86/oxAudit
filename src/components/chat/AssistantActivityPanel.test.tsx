@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, test, vi } from "vitest";
 
 import type { TodoItem, ToolRecord, UsageSummary } from "../../lib/types";
 import { AssistantActivityPanel } from "./AssistantActivityPanel";
@@ -136,5 +137,17 @@ describe("AssistantActivityPanel", () => {
   test("formats cost to four decimal places", () => {
     const panel = renderPanel({ usage });
     expect(within(panel).getByText("$0.0123")).toBeInTheDocument();
+  });
+  test("is the target of the header toggle and closes through onClose", async () => {
+    const onClose = vi.fn();
+    const panel = renderPanel({ onClose });
+    expect(panel).toHaveAttribute("id", "assistant-activity-panel");
+    await userEvent.click(within(panel).getByRole("button", { name: "Close activity" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test("has no close button when it cannot close", () => {
+    const panel = renderPanel();
+    expect(within(panel).queryByRole("button", { name: "Close activity" })).not.toBeInTheDocument();
   });
 });

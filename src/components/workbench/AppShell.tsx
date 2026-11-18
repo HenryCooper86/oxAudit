@@ -1,33 +1,41 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
 import {
-  cacheNavigationCollapsed,
-  readNavigationCollapsed,
-  resolveNavigationCollapsed,
+  cacheNavigationHidden,
+  readNavigationHidden,
+  resolveNavigationHidden,
 } from "../../lib/navigationPreference";
+import { isMacDesktopHost } from "../../lib/platform";
 import { useAppStore } from "../../lib/stores";
 import { useAppTheme } from "../../lib/useTheme";
 import { Sidebar } from "../Sidebar";
 import { StatusBar } from "./StatusBar";
 import { WorkbenchHeader } from "./WorkbenchHeader";
 
+/**
+ * The workbench frame, following oxFuzz: a 240px sidebar that is either shown
+ * or hidden (no icon rail), and a column of header (52px), workspace and
+ * status bar (28px). Below 900px the sidebar becomes a drawer.
+ *
+ * DOM contract (tests and overlay isolation depend on it):
+ * `#root > div > section > footer`, `main#main-content` is the only vertical
+ * scroller, the first `header` in the document is the shell header, and
+ * overlays walk `main` → section → this grid to make the rest inert.
+ */
 export function AppShell({ children, onOpenCommands }: { children: React.ReactNode; onOpenCommands(): void }): JSX.Element {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const page = useAppStore((state) => state.page);
+  const settingsSection = useAppStore((state) => state.settingsSection);
   const mainRef = useRef<HTMLElement>(null);
-  const [collapsedPreference, setCollapsedPreference] = useState<boolean | null>(
-    readNavigationCollapsed,
-  );
-  const compactNavigation = resolveNavigationCollapsed(
-    collapsedPreference,
-    page === "assistant",
-  );
+  const [hiddenPreference, setHiddenPreference] = useState<boolean | null>(readNavigationHidden);
+  const navigationHidden = resolveNavigationHidden(hiddenPreference);
+  const [macDesktop] = useState(isMacDesktopHost);
 
   useAppTheme();
 
   // Tool navigation starts at its heading; result activation owns in-page scrolling.
   useLayoutEffect(() => {
     if (mainRef.current) mainRef.current.scrollTop = 0;
-  }, [page]);
+  }, [page, settingsSection]);
 
   const closeNavigation = useCallback(() => {
     setNavigationOpen(false);
@@ -36,11 +44,11 @@ export function AppShell({ children, onOpenCommands }: { children: React.ReactNo
     });
   }, []);
 
-  const toggleCompactNavigation = useCallback(() => {
-    const next = !compactNavigation;
-    setCollapsedPreference(next);
-    cacheNavigationCollapsed(next);
-  }, [compactNavigation]);
+  const toggleNavigationHidden = useCallback(() => {
+    const next = !navigationHidden;
+    setHiddenPreference(next);
+    cacheNavigationHidden(next);
+  }, [navigationHidden]);
 
   useEffect(() => {
     if (!navigationOpen) return;
@@ -90,11 +98,12 @@ export function AppShell({ children, onOpenCommands }: { children: React.ReactNo
 
   return (
     <div
-      className={`relative grid h-full min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-surface-primary transition-[grid-template-columns] duration-200 motion-reduce:transition-none max-[900px]:grid-cols-1 ${compactNavigation ? "grid-cols-[52px_minmax(0,1fr)]" : "grid-cols-[240px_minmax(0,1fr)]"}`}
+      data-navigation={navigationHidden ? "hidden" : "shown"}
+      className={`relative grid h-full min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden bg-surface-primary max-[900px]:grid-cols-1 ${navigationHidden ? "grid-cols-[minmax(0,1fr)]" : "grid-cols-[240px_minmax(0,1fr)]"}`}
     >
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-sm focus:bg-surface-primary focus:px-4 focus:py-2 focus:text-text-primary"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-surface-primary focus:px-4 focus:py-2 focus:text-text-primary"
         onClick={(event) => {
           event.preventDefault();
           document.getElementById("main-content")?.focus();
@@ -105,14 +114,19 @@ export function AppShell({ children, onOpenCommands }: { children: React.ReactNo
       <Sidebar
         open={navigationOpen}
         onClose={closeNavigation}
-        compact={compactNavigation}
-        onToggleCompact={toggleCompactNavigation}
+        hidden={navigationHidden}
+        onOpenCommands={onOpenCommands}
       />
       <section
         inert={navigationOpen}
         className="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[52px_minmax(0,1fr)_28px] overflow-hidden"
       >
-        <WorkbenchHeader onOpenNavigation={() => setNavigationOpen(true)} onOpenCommands={onOpenCommands} />
+        <WorkbenchHeader
+          onOpenNavigation={() => setNavigationOpen(true)}
+          navigationHidden={navigationHidden}
+          onToggleNavigation={toggleNavigationHidden}
+          reserveTrafficLights={macDesktop && navigationHidden}
+        />
         <main ref={mainRef} id="main-content" tabIndex={-1} className="relative min-h-0 min-w-0 overflow-y-auto overscroll-y-contain">
           {children}
         </main>

@@ -29,7 +29,7 @@ export function ToolCallCard({
     record.status === "error" ? (
       <X size={12} aria-hidden="true" className="text-error" />
     ) : running ? (
-      <Clock3 size={12} aria-hidden="true" className="animate-pulse text-accent" />
+      <Clock3 size={12} aria-hidden="true" className="animate-status-pulse text-accent" />
     ) : (
       <Check size={12} aria-hidden="true" className="text-success" />
     );
@@ -41,10 +41,10 @@ export function ToolCallCard({
         aria-expanded={open}
         aria-controls={detailsId}
         onClick={() => setOpen(!open)}
-        className={`flex max-w-full items-center gap-1.5 rounded-sm border border-border bg-surface-code px-2.5 py-1.5 text-left transition-colors hover:border-border-strong hover:bg-surface-tertiary ${fill ? "w-full" : ""}`}
+        className={`flex max-w-full items-center gap-1.5 rounded-md border border-border bg-surface-code px-2.5 py-1 text-left transition-colors duration-150 hover:border-border-strong hover:bg-surface-hover ${fill ? "w-full" : ""}`}
       >
         <Wrench size={12} aria-hidden="true" className="shrink-0 text-text-muted" />
-        <span className="min-w-0 truncate font-mono text-[12px] font-medium text-text-primary">
+        <span className="min-w-[4ch] max-w-[60%] shrink-0 truncate font-mono text-[11px] font-medium text-text-primary">
           {record.name}
         </span>
         {statusIcon}
@@ -57,7 +57,7 @@ export function ToolCallCard({
           </span>
         )}
         {record.status === "error" && (
-          <span className="truncate text-[11px] text-error">
+          <span className="min-w-0 truncate text-[11px] text-error">
             {record.resultPreview?.slice(0, 60) ?? "failed"}
           </span>
         )}
@@ -68,13 +68,13 @@ export function ToolCallCard({
         />
       </button>
       {open && (
-        <div id={detailsId} className="selectable mt-1 space-y-2 rounded-md bg-surface-secondary px-3 py-2.5">
+        <div id={detailsId} className="selectable mt-1 space-y-2 rounded-md border border-border bg-surface-secondary px-3 py-2.5">
           {record.arguments && (
             <div>
               <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
                 Arguments
               </div>
-              <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded-sm bg-surface-code px-2.5 py-2 font-mono text-[12px] leading-relaxed text-text-secondary">
+              <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all rounded-md border border-border bg-surface-code px-2.5 py-2 font-mono text-[11px] leading-relaxed text-text-secondary">
                 {record.arguments}
               </pre>
             </div>
@@ -84,14 +84,14 @@ export function ToolCallCard({
               <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
                 Result
               </div>
-              <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-all rounded-sm bg-surface-code px-2.5 py-2 font-mono text-[12px] leading-relaxed text-text-secondary">
+              <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-all rounded-md border border-border bg-surface-code px-2.5 py-2 font-mono text-[11px] leading-relaxed text-text-secondary">
                 {record.resultPreview}
               </pre>
             </div>
           )}
           {running && (
             <div className="flex items-center gap-1.5 text-[11px] text-text-secondary">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+              <span className="h-1.5 w-1.5 animate-status-pulse rounded-full bg-accent" />
               running…
             </div>
           )}

@@ -1,41 +1,81 @@
-import { Fragment, useDeferredValue, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
-  Ban,
+  Fragment,
+  useDeferredValue,
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from "react";
+import {
+  Activity,
   ClipboardPaste,
   CornerDownLeft,
   FolderOpen,
-  History,
   Loader2,
-  PanelRightClose,
-  PanelRightOpen,
-  Send,
+  Maximize2,
+  MessagesSquare,
+  Minimize2,
   Search,
+  Send,
   Settings2,
-  Sparkles,
+  Square,
   Trash2,
-  User,
   X,
 } from "lucide-react";
-import { BrandMark } from "../components/brand/BrandMark";
 import { AssistantActivityPanel } from "../components/chat/AssistantActivityPanel";
+import { AgentTodoPanel } from "../components/chat/AgentTodoPanel";
 import { ApprovalModal } from "../components/chat/ApprovalModal";
 import { AskUserModal } from "../components/chat/AskUserModal";
-import { ConfirmDialog } from "../components/chat/ConfirmDialog";
+import { AssistantNotice } from "../components/chat/AssistantNotice";
+import { AssistantPanelDock } from "../components/chat/AssistantPanelDock";
+import { AssistantWelcome, projectName } from "../components/chat/AssistantWelcome";
+import {
+  AssistantAnswer,
+  AssistantRow,
+  AttachedContextMessage,
+  ToolCallList,
+  UserMessage,
+} from "../components/chat/ChatMessage";
 import { ChatSearchToolbar } from "../components/chat/ChatSearchToolbar";
+import { ComposerModeToggle } from "../components/chat/ComposerModeToggle";
+import { ConfirmDialog } from "../components/chat/ConfirmDialog";
 import { ContextBudgetMeter } from "../components/chat/ContextBudgetMeter";
 import { ContextCompactedNotice } from "../components/chat/ContextCompactedNotice";
-import { HighlightedText, SearchableMarkdown } from "../components/chat/SearchHighlight";
+import {
+  DIALOG_CARD_CLASS,
+  DIALOG_OVERLAY_CLASS,
+  DIALOG_TITLE_CLASS,
+} from "../components/chat/dialogRecipe";
 import { SessionSidebar } from "../components/chat/SessionSidebar";
 import { SlashCommandMenu } from "../components/chat/SlashCommandMenu";
 import { ThinkingCard } from "../components/chat/ThinkingCard";
-import { ToolCallCard } from "../components/chat/ToolCallCard";
+import { useMediaQuery } from "../components/chat/useMediaQuery";
 import { streamChat, type StreamHandle } from "../lib/aiEvents";
+import {
+  applyMode,
+  composerLayout,
+  parseAttachedContext,
+  readChatMode,
+  saveChatMode,
+  type ChatMode,
+} from "../lib/assistantComposer";
+import {
+  ASSISTANT_DRAWER_QUERY,
+  readAssistantPanel,
+  saveAssistantPanel,
+  toggleAssistantPanel,
+  type AssistantPanel,
+} from "../lib/assistantPanels";
 import { nextSearchIndex } from "../lib/chatSearch";
 import {
   buildContextBudget,
   estimateMessageTokens,
   type ContextBudgetMetadata,
 } from "../lib/contextBudget";
+import { useHeaderActions, type HeaderAction } from "../lib/headerActions";
 import { planRewind } from "../lib/rewind";
 import { matchingSlashCommands, type SlashCommand } from "../lib/slashCommands";
 import { api } from "../lib/api";
@@ -48,6 +88,7 @@ import {
   type RequestToken,
 } from "../lib/latestRequest";
 import { useAppStore, useToastStore } from "../lib/stores";
+import { serverMode } from "../lib/transport";
 import type {
   AskQuestion,
   ChatMessage,
@@ -62,13 +103,6 @@ import { Button } from "../components/ui";
 import { errorMessage } from "../lib/commandError";
 import { newId } from "../lib/ids";
 
-const SUGGESTIONS = [
-  "Explain the difference between stored, reflected and DOM XSS with code examples.",
-  "I found a `pickle.loads()` call on untrusted input — how do I fix it?",
-  "Help me build a focused checklist for reviewing an authentication flow.",
-  "What should I check when triaging a reported SQL injection in a Java app?",
-];
-
 interface UiMessage {
   id: string;
   role: "user" | "assistant";
@@ -78,6 +112,8 @@ interface UiMessage {
   tools?: ToolRecord[];
   /** This answer was generated from a compacted conversation. */
   compaction?: { summarizedMessages: number; summary: string };
+  /** When it was written (ISO); shown as the message's time. */
+  at?: string;
 }
 
 interface StreamingState {
@@ -119,6 +155,7 @@ function toUiMessages(messages: StoredMessage[]): UiMessage[] {
     content: message.content,
     tools: message.tools,
     compaction: message.compaction,
+    at: message.at,
   }));
 }
 
@@ -134,6 +171,7 @@ export function AssistantPage() {
     (state) => state.setActiveProject,
   );
   const setPage = useAppStore((state) => state.setPage);
+  const openSettings = useAppStore((state) => state.openSettings);
   const push = useToastStore((state) => state.push);
 
   const [messages, setMessages] = useState<UiMessage[]>([]);
@@ -178,7 +216,6 @@ export function AssistantPage() {
   const [contextAttaching, setContextAttaching] = useState(false);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [askUser, setAskUser] = useState<AskPrompt | null>(null);
-  const [activityOpen, setActivityOpen] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -193,6 +230,21 @@ export function AssistantPage() {
   } | null>(null);
   /** Highlighted row in the composer's slash-command menu. */
   const [slashIndex, setSlashIndex] = useState(0);
+  /** Auto, or "Plan & act": a planning instruction on the model's copy of each message. */
+  const [mode, setModeState] = useState<ChatMode>(() => readChatMode());
+  /** The composer's taller "expanded" size. */
+  const [expanded, setExpanded] = useState(false);
+  /** Narrow windows open the side panels as a drawer over the conversation. */
+  const drawer = useMediaQuery(ASSISTANT_DRAWER_QUERY);
+  const drawerRef = useRef(drawer);
+  drawerRef.current = drawer;
+  /** The open side panel (Conversations or Activity); one at a time, closed by default. */
+  const [panel, setPanelState] = useState<AssistantPanel | null>(() =>
+    typeof window !== "undefined" && window.matchMedia?.(ASSISTANT_DRAWER_QUERY)?.matches
+      ? null
+      : readAssistantPanel(),
+  );
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const conversationId = useRef<string>(newId());
   const streamHandleRef = useRef<StreamHandle | null>(null);
@@ -225,6 +277,17 @@ export function AssistantPage() {
 
   const activeSession =
     sessions.find((session) => session.id === activeSessionId) ?? null;
+
+  /** Open or close a side panel. Only the docked layout's choice is remembered. */
+  const setPanel = (next: AssistantPanel | null) => {
+    setPanelState(next);
+    if (!drawerRef.current) saveAssistantPanel(next);
+  };
+
+  const setMode = (next: ChatMode) => {
+    setModeState(next);
+    saveChatMode(next);
+  };
   const activeUnavailableProject =
     unavailableProject?.sessionId === activeSessionId
       ? unavailableProject
@@ -399,7 +462,12 @@ export function AssistantPage() {
       );
       if (!current) await activateSession(list[0], token);
     } catch (error) {
-      if (requestIsCurrent(token)) setSessionsError(errorMessage(error));
+      if (requestIsCurrent(token)) {
+        setSessionsError(errorMessage(error));
+        // Retry lives in the Conversations panel; nothing can be sent until
+        // it succeeds, so open the panel rather than leave the reason hidden.
+        setPanelState("sessions");
+      }
     } finally {
       finishSessionRequest(token);
     }
@@ -610,6 +678,7 @@ export function AssistantPage() {
         content: stored.content,
         tools: stored.tools,
         compaction: compactionRecord ?? undefined,
+        at: stored.at,
       },
     ]);
     setModel(modelName);
@@ -634,13 +703,18 @@ export function AssistantPage() {
    * Shared by `send` (full history, compaction allowed) and
    * `regenerateWithFullContext` (history rebuilt from a truncated transcript,
    * compaction suppressed).
+   *
+   * `modelContent` is what the model receives for this turn (the Plan & act
+   * prefix, when that mode is on). The transcript, the session file and
+   * rewind always keep `content`, the text the person typed.
    */
   const runStreamedTurn = async (
     history: ChatMessage[],
     content: string,
     allowCompaction: boolean,
+    modelContent: string = content,
   ) => {
-    const next: ChatMessage[] = [...history, { role: "user", content }];
+    const next: ChatMessage[] = [...history, { role: "user", content: modelContent }];
     const stored: StoredMessage = {
       id: newId(),
       role: "user",
@@ -649,7 +723,7 @@ export function AssistantPage() {
     };
     setMessages((current) => [
       ...current,
-      { id: stored.id, role: stored.role, content: stored.content },
+      { id: stored.id, role: stored.role, content: stored.content, at: stored.at },
     ]);
     setInput("");
     setBusy(true);
@@ -736,7 +810,7 @@ export function AssistantPage() {
           };
           setMessages((current) => [
             ...current,
-            { id: stored.id, role: "user", content: text, steer: true },
+            { id: stored.id, role: "user", content: text, steer: true, at: stored.at },
           ]);
           const sessionId = activeSessionIdRef.current;
           if (sessionId) {
@@ -771,6 +845,7 @@ export function AssistantPage() {
                   ? `${partial}\n\n_— interrupted (${message})_`
                   : `_— interrupted (${message})_`,
                 tools: tools.length ? tools : undefined,
+                at: new Date().toISOString(),
               },
             ]);
           } else if (!message.toLowerCase().includes("cancelled")) {
@@ -786,7 +861,12 @@ export function AssistantPage() {
     if (streamHandleRef.current === handle) streamHandleRef.current = null;
   };
 
-  const send = async (text?: string) => {
+  /**
+   * Start a turn. `planMode` false sends the text as typed whatever the
+   * composer mode (a declined steer re-sent as its own turn was never a
+   * planning request).
+   */
+  const send = async (text?: string, planMode = true) => {
     const content = (text ?? input).trim();
     if (
       !content ||
@@ -801,7 +881,7 @@ export function AssistantPage() {
       role: message.role,
       content: message.content,
     }));
-    await runStreamedTurn(history, content, true);
+    await runStreamedTurn(history, content, true, applyMode(content, planMode ? mode : "auto"));
   };
 
   /**
@@ -836,7 +916,7 @@ export function AssistantPage() {
       role: message.role,
       content: message.content,
     }));
-    await runStreamedTurn(history, question.content, false);
+    await runStreamedTurn(history, question.content, false, applyMode(question.content, mode));
   };
 
   /**
@@ -879,7 +959,7 @@ export function AssistantPage() {
     setPendingSteers([]);
     const info = sessions.find((session) => session.id === activeSessionId);
     if (info) updateSessionInfo({ ...info, messageCount: plan.keepCount });
-    document.getElementById("assistant-composer")?.focus();
+    composerRef.current?.focus();
   };
 
   /**
@@ -926,7 +1006,7 @@ export function AssistantPage() {
   // run had already produced. `send` is an effect event: the latest one runs,
   // and recreating it each render does not re-trigger the follow-up.
   const sendFollowUp = useEffectEvent((content: string) => {
-    void send(content);
+    void send(content, false);
   });
 
   useEffect(() => {
@@ -969,7 +1049,7 @@ export function AssistantPage() {
       if (activeSessionIdRef.current === targetSessionId) {
         setMessages((current) => [
           ...current,
-          { id: stored.id, role: stored.role, content: stored.content },
+          { id: stored.id, role: stored.role, content: stored.content, at: stored.at },
         ]);
       }
       updateSessionInfo(info);
@@ -1057,6 +1137,56 @@ export function AssistantPage() {
     setContextOpen(true);
   };
 
+  /**
+   * Give the empty conversation a project. A session's project is fixed when
+   * it is created, so this starts a new conversation in that project and opens
+   * it through the same activation (and runtime-project coordinator) as any
+   * other session. The empty, auto-titled conversation it replaces is deleted
+   * once the new one is open; if that delete fails it simply stays listed.
+   */
+  const startConversationInProject = async (projectPath: string | null) => {
+    if (busy || sessionActivationPendingRef.current) return;
+    const previous = activeSession;
+    const replaceable =
+      previous !== null &&
+      previous.autoTitle &&
+      previous.messageCount === 0 &&
+      messages.length === 0;
+    const token = beginSessionRequest();
+    try {
+      const session = await api.sessionCreate(null, projectPath);
+      if (!requestIsCurrent(token)) return;
+      setSessions((list) => [session, ...list]);
+      await activateSession(session, token, []);
+      if (replaceable && previous && requestIsCurrent(token)) {
+        api
+          .sessionDelete(previous.id)
+          .then(() => {
+            if (mountedRef.current) {
+              setSessions((list) => list.filter((item) => item.id !== previous.id));
+            }
+          })
+          .catch(() => undefined);
+      }
+    } catch (error) {
+      if (requestIsCurrent(token)) push("error", errorMessage(error));
+    } finally {
+      finishSessionRequest(token);
+    }
+  };
+
+  /** A starter prompt fills the composer for editing; it never sends by itself. */
+  const fillComposer = (text: string) => {
+    setInput(text);
+    setSlashIndex(0);
+    requestAnimationFrame(() => {
+      const composer = composerRef.current;
+      if (!composer || composer.disabled) return;
+      composer.focus();
+      composer.setSelectionRange(text.length, text.length);
+    });
+  };
+
   const showThinking =
     streaming.thinking || streaming.reasoning.trim().length > 0;
   const activityTools = useMemo(() => {
@@ -1096,7 +1226,7 @@ export function AssistantPage() {
     activeSessionId || sessionActivating
       ? null
       : sessionsError
-        ? "Conversations could not be loaded. Use Retry in the conversation list, or start a new chat."
+        ? "Conversations could not be loaded. Use Retry in the Conversations panel, or start a new chat."
         : "No conversation is open. Start a new chat to send a message.";
   const availabilityLabel = {
     loading: "AI settings loading",
@@ -1127,10 +1257,110 @@ export function AssistantPage() {
     checking: "Checking the newly persisted AI endpoint…",
     unconfigured: "Configure an AI provider to send messages",
     offline: "The saved AI endpoint is offline",
-    ready: "Ask a security question or describe what you want to analyze…",
+    ready:
+      mode === "plan"
+        ? "Describe the task; the assistant outlines a plan, then acts…"
+        : "Ask a security question or describe what you want to analyze…",
     unavailable: "Review Settings to restore AI readiness",
     unsupported: "AI is not available in the browser build",
   }[aiReadiness.status];
+
+
+  // Entering the narrow layout closes a docked panel instead of throwing a
+  // drawer over the conversation the person was reading.
+  useEffect(() => {
+    if (drawer) setPanelState(null);
+  }, [drawer]);
+
+  // oxFuzz's auto-grow: about three lines at rest, growing with the text up to
+  // a share of the window, then scrolling inside the composer.
+  useLayoutEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    composer.style.height = "auto";
+    const layout = composerLayout({
+      scrollHeight: composer.scrollHeight,
+      expanded,
+      viewportHeight: window.innerHeight,
+    });
+    composer.style.height = `${layout.height}px`;
+    composer.style.overflowY = layout.scroll ? "auto" : "hidden";
+  }, [input, expanded]);
+
+  // The header toggles read the latest handlers through a ref, so the actions
+  // array only changes when what they show changes.
+  const headerHandlersRef = useRef({
+    toggleSearch: () => undefined as void,
+    togglePanel: (_panel: AssistantPanel) => undefined as void,
+  });
+  headerHandlersRef.current = {
+    toggleSearch: () => (searchOpen ? closeSearch() : openSearch()),
+    togglePanel: (requested) => setPanel(toggleAssistantPanel(panel, requested)),
+  };
+  const headerActions = useMemo<HeaderAction[]>(
+    () => [
+      {
+        id: "search",
+        label: "Search conversation",
+        icon: Search,
+        pressed: searchOpen,
+        keyShortcuts: "Meta+F Control+F",
+        onSelect: () => headerHandlersRef.current.toggleSearch(),
+      },
+      {
+        id: "conversations",
+        label: "Conversations",
+        icon: MessagesSquare,
+        pressed: panel === "sessions",
+        controls: panel === "sessions" ? "assistant-sessions-panel" : undefined,
+        onSelect: () => headerHandlersRef.current.togglePanel("sessions"),
+      },
+      {
+        id: "activity",
+        label: "Activity",
+        icon: Activity,
+        pressed: panel === "activity",
+        controls: panel === "activity" ? "assistant-activity-panel" : undefined,
+        onSelect: () => headerHandlersRef.current.togglePanel("activity"),
+      },
+    ],
+    [searchOpen, panel],
+  );
+  useHeaderActions("assistant", headerActions);
+
+  const conversationTitle = activeSession?.title || "New security conversation";
+  const empty = messages.length === 0 && !busy;
+  const composerDisabled = !aiReady || sessionActivating || !activeSessionId;
+  const hasText = input.trim().length > 0;
+  const canSend = hasText && !composerDisabled;
+  const canClear = messages.length > 0 && !busy && !sessionActivating;
+  const projectPath = activeSession?.projectPath ?? null;
+  const projectDetachable = messages.length === 0 && !busy && !sessionActivating;
+  const readinessRole =
+    aiReadiness.status === "offline" ||
+    aiReadiness.status === "unavailable" ||
+    aiReadiness.status === "unsupported"
+      ? "alert"
+      : "status";
+  const readinessTone =
+    aiReadiness.status === "offline"
+      ? "error"
+      : aiReadiness.status === "unsupported"
+        ? "info"
+        : aiReadiness.status === "loading" || aiReadiness.status === "checking"
+          ? "progress"
+          : "warning";
+  const modelLabel = aiReady
+    ? model ?? settings?.ai.model ?? "AI ready"
+    : availabilityLabel;
+  const drawerOpen = drawer && panel !== null;
+
+  const selectSession = (id: string) => {
+    if (id !== activeSessionId && !busy && !sessionActivating) {
+      void loadSession(id);
+    }
+    if (drawerRef.current) setPanelState(null);
+  };
 
   return (
     <div
@@ -1140,542 +1370,415 @@ export function AssistantPage() {
       <div
         inert={contextOpen}
         aria-hidden={contextOpen ? "true" : undefined}
-        className="flex h-full min-h-0"
+        className="flex h-full min-h-0 min-w-0"
       >
-        <SessionSidebar
-          sessions={sessions}
-          activeId={activeSessionId}
-          busy={busy}
-          disabled={sessionActivating}
-          onSelect={(id) => {
-            if (id !== activeSessionId && !busy && !sessionActivating) {
-              void loadSession(id);
-            }
-          }}
-          onCreate={() => {
-            if (!busy && !sessionActivating) void createNewChat();
-          }}
-          onRename={(id, title) => {
-            // The list only adopts the new title after the write succeeds, so
-            // a failed rename leaves the old title instead of claiming one
-            // that was never persisted.
-            api
-              .sessionRename(id, title)
-              .then(() => {
-                const info = sessions.find((session) => session.id === id);
-                if (info) updateSessionInfo({ ...info, title, autoTitle: false });
-              })
-              .catch((error) => {
-                push("error", `Could not rename the conversation: ${errorMessage(error)}`);
-              });
-          }}
-          loadError={sessionsError}
-          onRetry={retrySessions}
-          onDelete={async (id) => {
-            // Drop the session from the list only after the delete persists;
-            // on failure it stays visible instead of vanishing until reload.
-            try {
-              await api.sessionDelete(id);
-            } catch (error) {
-              push("error", `Could not delete the conversation: ${errorMessage(error)}`);
-              return;
-            }
-            setSessions((list) =>
-              list.filter((session) => session.id !== id),
-            );
-            if (id === activeSessionId) {
-              // Cleared first, so a failed replacement leaves no session to
-              // send to rather than one whose transcript is already gone.
-              clearActiveSession();
-              await createNewChat();
-            }
-          }}
-        />
-
-        <div className="flex min-w-0 flex-1">
-          <section
-            ref={assistantFallbackRef}
-            tabIndex={-1}
-            aria-label="Assistant conversation"
-            className="flex min-w-0 flex-1 flex-col"
-          >
-        <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-border px-4">
-          <div className="min-w-0 flex-1">
-            <h2 className="truncate font-display text-[15px] font-normal italic text-text-primary">
-              {activeSession?.title || "New security conversation"}
-            </h2>
-            <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-muted">
-              <span
-                aria-hidden="true"
-                className={`h-1.5 w-1.5 rounded-full ${ aiReady ? "bg-success" : aiReadiness.status === "offline" ? "bg-error" : aiReadiness.status === "checking" ? "bg-accent" : "bg-text-muted" }`}
-              />
-              {availabilityLabel}
-            </p>
-          </div>
-
-          <div className="flex min-w-0 items-center justify-end gap-1">
-            {activeUnavailableProject ? (
-              <span
-                title={activeUnavailableProject.path}
-                className="inline-flex max-w-[min(22rem,30vw)] items-center gap-1.5 rounded-sm border border-warning-border bg-warning-subtle px-2 py-1 text-[10px] text-warning"
-              >
-                <FolderOpen size={11} aria-hidden="true" className="shrink-0" />
-                <span className="shrink-0 font-medium">Project unavailable</span>
-                <code className="truncate font-mono">
-                  {activeUnavailableProject.path}
-                </code>
-              </span>
-            ) : activeSession?.projectPath ? (
-              <span
-                title={activeSession.projectPath}
-                className="inline-flex max-w-[min(22rem,30vw)] items-center gap-1.5 rounded-sm border border-accent-glow bg-accent-subtle px-2 py-1 text-[10px] text-accent"
-              >
-                <FolderOpen size={11} aria-hidden="true" className="shrink-0" />
-                <span className="shrink-0 font-medium">Project context</span>
-                <code className="truncate font-mono">
-                  {activeSession.projectPath}
-                </code>
-              </span>
-            ) : null}
-            <button
-              type="button"
-              onClick={openSearch}
-              aria-expanded={searchOpen}
-              title="Search conversation (⌘/Ctrl+F)"
-              aria-label="Search conversation"
-              className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
-            >
-              <Search size={14} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setActivityOpen((open) => !open)}
-              aria-expanded={activityOpen}
-              aria-controls="assistant-activity-panel"
-              title={activityOpen ? "Hide activity" : "Show activity"}
-              className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary max-[1180px]:hidden"
-            >
-              {activityOpen ? (
-                <PanelRightClose size={14} aria-hidden="true" />
-              ) : (
-                <PanelRightOpen size={14} aria-hidden="true" />
-              )}
-              <span className="sr-only">{activityOpen ? "Hide" : "Show"} assistant activity</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void clearConversation()}
-              disabled={busy || sessionActivating || messages.length === 0}
-              title="Clear conversation"
-              aria-label="Clear conversation"
-              className="flex h-8 w-8 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-error-subtle hover:text-error disabled:opacity-30"
-            >
-              <Trash2 size={13} aria-hidden="true" />
-            </button>
-          </div>
-        </header>
-
-        {searchOpen && (
-          <ChatSearchToolbar
-            ref={searchInputRef}
-            query={searchQuery}
-            current={searchIndex}
-            total={searchTotal}
-            onQueryChange={(query) => {
-              setSearchQuery(query);
-              setSearchIndex(0);
-            }}
-            onNext={() =>
-              setSearchIndex((current) => nextSearchIndex(current, searchTotal, 1))
-            }
-            onPrevious={() =>
-              setSearchIndex((current) => nextSearchIndex(current, searchTotal, -1))
-            }
-            onClose={closeSearch}
-          />
-        )}
-
-        {activeUnavailableProject && (
-          <div
-            role="status"
-            className="shrink-0 border-b border-warning-border bg-warning-subtle px-4 py-2 text-[12px] text-warning"
-          >
-            Project unavailable ·{" "}
-            <code className="font-mono">{activeUnavailableProject.path}</code>.
-            The persisted transcript remains available and runtime project context is cleared.
-          </div>
-        )}
-
-        {!aiReady && (
-          <div
-            role={
-              aiReadiness.status === "offline" ||
-              aiReadiness.status === "unavailable" ||
-              aiReadiness.status === "unsupported"
-                ? "alert"
-                : "status"
-            }
-            className="flex shrink-0 items-center justify-between gap-3 border-b border-warning-border bg-warning-subtle px-4 py-1.5"
-          >
-            <p className="truncate text-[11px] text-warning">
-              {unavailableMessage}
-            </p>
-            {aiReadiness.status !== "unsupported" && (
-              <button
-                type="button"
-                onClick={() => setPage("settings")}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] font-medium text-warning hover:bg-surface-hover"
-              >
-                <Settings2 size={11} aria-hidden="true" />
-                Open Settings
-              </button>
-            )}
-          </div>
-        )}
-
-        <div
-          ref={conversationScrollRef}
-          aria-busy={busy}
-          className="min-h-0 flex-1 overflow-y-auto"
+        <section
+          ref={assistantFallbackRef}
+          tabIndex={-1}
+          aria-label="Assistant conversation"
+          inert={drawerOpen}
+          className="flex min-w-0 flex-1 animate-fade-in flex-col"
         >
-          <div className="mx-auto flex min-h-full w-full max-w-[780px] flex-col px-4 py-4 sm:px-6">
-            {messages.length === 0 && !busy && (
-              <div className="flex flex-1 flex-col items-center justify-center gap-5 py-10">
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-surface-tertiary text-accent">
-                  <BrandMark className="h-[17px] w-[17px]" />
-                </div>
-                <div className="text-center">
-                  <h2 className="font-display text-[18px] font-normal text-text-primary">
-                    What would you like to audit?
-                  </h2>
-                  <p className="mx-auto mt-1.5 max-w-md text-[13px] leading-relaxed text-text-muted">
-                    Ask a security question, investigate a finding, or attach source
-                    context for a focused review.
-                  </p>
-                </div>
-                <div className="grid w-full max-w-[620px] gap-1.5 sm:grid-cols-2">
-                  {SUGGESTIONS.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      type="button"
-                      onClick={() => void send(suggestion)}
-                      disabled={
-                        busy ||
-                        sessionActivating ||
-                        !aiReady ||
-                        !activeSessionId
-                      }
-                      className="group/suggestion flex items-start gap-2 rounded-md border border-border bg-surface-secondary px-3 py-2.5 text-left text-[12px] leading-relaxed text-text-secondary transition-colors hover:border-border-strong hover:bg-surface-tertiary hover:text-text-primary disabled:opacity-40"
-                    >
-                      <Sparkles
-                        size={12}
-                        aria-hidden="true"
-                        className="mt-0.5 shrink-0 text-accent opacity-70"
-                      />
-                      <span>{suggestion}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+          {searchOpen && (
+            <ChatSearchToolbar
+              ref={searchInputRef}
+              query={searchQuery}
+              current={searchIndex}
+              total={searchTotal}
+              onQueryChange={(query) => {
+                setSearchQuery(query);
+                setSearchIndex(0);
+              }}
+              onNext={() =>
+                setSearchIndex((current) => nextSearchIndex(current, searchTotal, 1))
+              }
+              onPrevious={() =>
+                setSearchIndex((current) => nextSearchIndex(current, searchTotal, -1))
+              }
+              onClose={closeSearch}
+            />
+          )}
 
-            <div className="space-y-1">
-              {messages.map((message) => (
-                <Fragment key={message.id}>
-                  {message.compaction && (
-                    <div className="px-2 py-1.5">
-                      <ContextCompactedNotice
-                        summarizedMessages={message.compaction.summarizedMessages}
-                        summary={message.compaction.summary}
-                        onRetry={
-                          message.id === messages[messages.length - 1]?.id
-                            ? () => void regenerateWithFullContext(message.id)
-                            : undefined
-                        }
-                      />
-                    </div>
-                  )}
-                  <div
-                    className={`group flex gap-3 rounded-sm px-2 py-3 transition-colors hover:bg-surface-hover ${ message.role === "user" ? "justify-end" : "" }`}
-                  >
-                  {message.role === "user" && !busy && (
-                    <button
-                      type="button"
-                      onClick={() => requestRewind(message.id)}
-                      title="Discard this and everything after it, and put the text back in the composer"
-                      aria-label="Rewind the conversation to this message"
-                      className="mt-5 flex h-7 w-7 shrink-0 items-center justify-center self-start rounded-sm text-text-muted opacity-0 transition-opacity hover:bg-surface-tertiary hover:text-text-primary focus-visible:opacity-100 group-hover:opacity-100"
-                    >
-                      <History size={13} aria-hidden="true" />
-                    </button>
-                  )}
-                  {message.role !== "user" && (
-                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-accent">
-                      <BrandMark className="h-[11px] w-[11px]" />
-                    </div>
-                  )}
-                  <div className={`min-w-0 ${message.role === "user" ? "max-w-[76%]" : "max-w-[720px] flex-1"}`}>
-                    <div className={`mb-1 text-[11px] font-medium text-text-muted ${message.role === "user" ? "text-right" : ""}`}>
-                      {message.role === "user" ? "You" : "Assistant"}
-                    </div>
-                    {message.tools && message.tools.length > 0 && (
-                      <div className="mb-2 flex flex-wrap gap-1.5">
-                        {message.tools.map((tool) => (
-                          <ToolCallCard key={tool.toolCallId} record={tool} />
-                        ))}
-                      </div>
-                    )}
-                    <div
-                      className={message.role === "user"
-                        ? "selectable ml-auto inline-block rounded-md rounded-tr-sm border border-border bg-surface-tertiary px-3.5 py-2.5 text-[14px] leading-relaxed text-text-primary"
-                        : "selectable md-body text-[14px] leading-[1.72] text-text-primary"}
-                    >
-                      {message.role === "user" ? (
-                        <div className="whitespace-pre-wrap break-words">
-                          {message.steer && (
-                            <span className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-accent opacity-80">
-                              <CornerDownLeft size={10} aria-hidden="true" />
-                              steered mid-run
-                            </span>
-                          )}
-                          <HighlightedText text={message.content} query={deferredSearchQuery} />
-                        </div>
-                      ) : (
-                        <SearchableMarkdown content={message.content} query={deferredSearchQuery} />
+          <div
+            ref={conversationScrollRef}
+            aria-busy={busy}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="flex min-h-full w-full flex-col px-4 pb-2 pt-4">
+              <h2
+                className={
+                  empty
+                    ? "sr-only"
+                    : "mb-3 truncate text-center text-[11px] font-medium text-text-muted"
+                }
+              >
+                {conversationTitle}
+              </h2>
+
+              {empty && (
+                <AssistantWelcome
+                  projectPath={projectPath}
+                  onSelectProject={(path) => void startConversationInProject(path)}
+                  projectDisabled={busy || sessionActivating}
+                  serverMode={serverMode}
+                  onSuggestion={fillComposer}
+                />
+              )}
+
+              <div className="flex flex-col gap-3">
+                {messages.map((message) => {
+                  const onRewind =
+                    message.role === "user" && !busy
+                      ? () => requestRewind(message.id)
+                      : undefined;
+                  const attached =
+                    message.role === "user" ? parseAttachedContext(message.content) : null;
+                  return (
+                    <Fragment key={message.id}>
+                      {message.compaction && (
+                        <ContextCompactedNotice
+                          summarizedMessages={message.compaction.summarizedMessages}
+                          summary={message.compaction.summary}
+                          onRetry={
+                            message.id === messages[messages.length - 1]?.id
+                              ? () => void regenerateWithFullContext(message.id)
+                              : undefined
+                          }
+                        />
                       )}
-                    </div>
-                  </div>
-                  {message.role === "user" && (
-                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-subtle">
-                      <User
-                        size={13}
-                        aria-hidden="true"
-                        className="text-accent"
-                      />
-                    </div>
-                  )}
-                  </div>
-                </Fragment>
-              ))}
+                      {message.role === "user" ? (
+                        attached ? (
+                          <AttachedContextMessage
+                            label={attached.label}
+                            body={attached.body}
+                            at={message.at}
+                            query={deferredSearchQuery}
+                            onRewind={onRewind}
+                          />
+                        ) : (
+                          <UserMessage
+                            content={message.content}
+                            at={message.at}
+                            steer={message.steer}
+                            query={deferredSearchQuery}
+                            onRewind={onRewind}
+                          />
+                        )
+                      ) : (
+                        <AssistantRow>
+                          <ToolCallList tools={message.tools ?? []} />
+                          {(message.content.trim() || !message.tools?.length) && (
+                            <AssistantAnswer
+                              content={message.content}
+                              query={deferredSearchQuery}
+                              at={message.at}
+                            />
+                          )}
+                        </AssistantRow>
+                      )}
+                    </Fragment>
+                  );
+                })}
 
-              {busy && compaction && (
-                <div className="px-2 py-1.5">
+                {busy && compaction && (
                   <ContextCompactedNotice
                     summarizedMessages={compaction.summarizedMessages}
                     summary={compaction.summary}
                   />
-                </div>
-              )}
+                )}
 
-              {busy && (
-                <div className="flex gap-3 rounded-sm px-2 py-3">
-                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-tertiary text-accent">
-                    <BrandMark className="h-[11px] w-[11px]" />
-                  </div>
-                  <div className="min-w-0 max-w-[720px] flex-1">
-                    <div className="mb-1 text-[11px] font-medium text-text-muted">
-                      Assistant
-                    </div>
-                    {toolRecords.length > 0 && (
-                      <div className="mb-2 flex flex-wrap gap-1.5">
-                        {toolRecords.map((tool) => (
-                          <ToolCallCard key={tool.toolCallId} record={tool} />
-                        ))}
-                      </div>
-                    )}
+                {busy && (
+                  <AssistantRow busy>
+                    <ToolCallList tools={toolRecords} />
                     {showThinking && (
                       <ThinkingCard
                         text={streaming.reasoning}
                         streaming={streaming.thinking}
                       />
                     )}
-                    {streaming.text && (
-                      <div className="selectable md-body text-[14px] leading-[1.72] text-text-primary">
-                        <SearchableMarkdown content={streaming.text} query={deferredSearchQuery} />
-                        <span
-                          aria-hidden="true"
-                          className="ml-0.5 inline-block h-3.5 w-[6px] animate-pulse rounded-[2px] bg-accent align-middle"
-                        />
+                    {todos.length > 0 && panel !== "activity" && (
+                      <div className="w-[min(420px,100%)]">
+                        <AgentTodoPanel items={todos} />
                       </div>
                     )}
+                    {streaming.text && (
+                      <AssistantAnswer
+                        content={streaming.text}
+                        query={deferredSearchQuery}
+                        streaming
+                      />
+                    )}
                     {!streaming.text && toolRecords.length === 0 && (
-                      <div className="flex items-center gap-2 py-1 text-[12px] text-text-muted">
-                        <Loader2
-                          size={13}
-                          aria-hidden="true"
-                          className="animate-spin"
-                        />
+                      <div className="flex items-center gap-2 px-1 py-1 text-[13px] text-text-muted">
+                        <Loader2 size={14} aria-hidden="true" className="animate-spin" />
                         {showThinking ? "Reasoning…" : "Waiting for response…"}
                       </div>
                     )}
-                  </div>
-                </div>
-              )}
+                  </AssistantRow>
+                )}
+              </div>
               <div ref={bottomRef} />
             </div>
           </div>
-        </div>
 
-        <div className="shrink-0 bg-surface-primary px-4 pb-3 pt-2 sm:px-6">
-          <form
-            className="mx-auto w-full max-w-[780px]"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submit();
-            }}
-          >
-            {pendingSteers.length > 0 && (
-              <ul
-                aria-label="Queued messages"
-                className="mb-2 flex flex-wrap items-center gap-1.5"
-              >
-                {pendingSteers.map((queued) => (
-                  <li
-                    key={queued.id}
-                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-accent-glow bg-accent-subtle px-2.5 py-1 text-[11px] text-accent"
-                  >
-                    <CornerDownLeft size={11} aria-hidden="true" className="shrink-0" />
-                    <span className="truncate">{queued.text}</span>
-                    <span className="shrink-0 opacity-70">queued</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <label htmlFor="assistant-composer" className="sr-only">
-              Message the AI Assistant
-            </label>
-            {slashOpen && (
-              <SlashCommandMenu
-                commands={slashCommands}
-                selectedIndex={slashIndex}
-                onSelect={(command) => void executeSlashCommand(command)}
-                onHighlight={setSlashIndex}
-              />
-            )}
-            <div className="overflow-hidden rounded-md border border-border bg-surface-secondary shadow-sm transition-[border-color,box-shadow] focus-within:border-border-focus focus-within:shadow-md">
-              <textarea
-                id="assistant-composer"
-                value={input}
-                onChange={(event) => {
-                  setInput(event.target.value);
-                  setSlashIndex(0);
-                }}
-                onKeyDown={(event) => {
-                  if (slashOpen) {
-                    if (event.key === "ArrowDown") {
-                      event.preventDefault();
-                      setSlashIndex((current) =>
-                        (current + 1) % slashCommands.length,
-                      );
-                      return;
-                    }
-                    if (event.key === "ArrowUp") {
-                      event.preventDefault();
-                      setSlashIndex(
-                        (current) =>
-                          (current - 1 + slashCommands.length) %
-                          slashCommands.length,
-                      );
-                      return;
-                    }
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void executeSlashCommand(slashCommands[slashIndex]);
-                      return;
-                    }
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      setInput("");
-                      setSlashIndex(0);
-                      return;
-                    }
-                  }
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void submit();
-                  }
-                }}
-                rows={2}
-                aria-describedby="assistant-composer-help"
-                disabled={!aiReady || sessionActivating || !activeSessionId}
-                placeholder={
-                  busy
-                    ? "Steer the run — your message is folded in at the next step…"
-                    : noSessionMessage
-                      ? sessionsError
-                        ? "Conversations could not be loaded"
-                        : "Start a new chat to send a message"
-                      : composerPlaceholder
-                }
-                className="selectable block min-h-[58px] w-full resize-none border-0 bg-transparent px-4 py-3 text-[14px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-60"
-              />
-              <div className="flex min-h-10 items-center gap-1 border-t border-border px-2 py-1.5">
-                <button
-                  type="button"
-                  onClick={openManualContext}
-                  disabled={busy || sessionActivating || !activeSessionId}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-[11px] text-text-muted transition-colors hover:bg-surface-tertiary hover:text-text-primary disabled:opacity-35"
-                >
-                  <ClipboardPaste size={12} aria-hidden="true" />
-                  Context
-                </button>
-                <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
-                <span className="inline-flex min-w-0 items-center gap-1.5 px-1 text-[10px] text-text-muted">
-                  <span
-                    aria-hidden="true"
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${aiReady ? "bg-success" : aiReadiness.status === "offline" ? "bg-error" : "bg-text-muted"}`}
-                  />
-                  <span className="truncate">{aiReady ? model ?? "AI ready" : availabilityLabel}</span>
-                </span>
-                <span className="flex-1" />
-                {convUsage && (
-                  <span className="hidden shrink-0 font-mono text-[10px] tabular-nums text-text-muted sm:inline">
-                    {(convUsage.totalTokens / 1000).toFixed(1)}k · ${convUsage.costUsd.toFixed(4)}
-                  </span>
+          <div className="shrink-0 px-4 pb-4 pt-2">
+            {(activeUnavailableProject || !aiReady) && (
+              <div className="mb-2 space-y-2">
+                {activeUnavailableProject && (
+                  <AssistantNotice role="status" tone="warning" title="Project unavailable">
+                    <code className="font-mono">{activeUnavailableProject.path}</code>. The persisted
+                    transcript remains available and runtime project context is cleared.
+                  </AssistantNotice>
                 )}
-                <ContextBudgetMeter budget={contextBudget} />
-                {busy ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => void cancel()}
-                      title="Cancel the running turn"
-                      aria-label="Cancel the running turn"
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-error transition-colors hover:bg-error-subtle"
-                    >
-                      <Ban size={14} aria-hidden="true" />
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={!input.trim()}
-                      title="Steer the running turn"
-                      aria-label="Steer the running turn"
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-accent text-accent-contrast transition-transform hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-25"
-                    >
-                      <CornerDownLeft size={14} aria-hidden="true" />
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={
-                      !input.trim() ||
-                      sessionActivating ||
-                      !aiReady ||
-                      !activeSessionId
+                {!aiReady && (
+                  <AssistantNotice
+                    role={readinessRole}
+                    tone={readinessTone}
+                    title={availabilityLabel}
+                    action={
+                      aiReadiness.status !== "unsupported" && (
+                        <Button variant="outline" size="sm" onClick={() => openSettings("ai")}>
+                          <Settings2 size={12} aria-hidden="true" />
+                          Open Settings
+                        </Button>
+                      )
                     }
-                    title="Send message"
-                    aria-label="Send message"
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-accent text-accent-contrast transition-transform hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-25"
                   >
-                    <Send size={14} aria-hidden="true" />
-                  </button>
+                    {unavailableMessage}
+                  </AssistantNotice>
                 )}
               </div>
-            </div>
+            )}
+
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submit();
+              }}
+            >
+              {pendingSteers.length > 0 && (
+                <ul
+                  aria-label="Queued messages"
+                  className="mb-2 flex flex-wrap items-center gap-1.5"
+                >
+                  {pendingSteers.map((queued) => (
+                    <li
+                      key={queued.id}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-accent-glow bg-accent-subtle px-2.5 py-1 text-[11px] text-accent"
+                    >
+                      <CornerDownLeft size={11} aria-hidden="true" className="shrink-0" />
+                      <span className="truncate">{queued.text}</span>
+                      <span className="shrink-0 opacity-70">queued</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {slashOpen && (
+                <SlashCommandMenu
+                  commands={slashCommands}
+                  selectedIndex={slashIndex}
+                  onSelect={(command) => void executeSlashCommand(command)}
+                  onHighlight={setSlashIndex}
+                />
+              )}
+              <div className="assistant-composer-card @container flex flex-col rounded-composer border border-border bg-surface-secondary px-3 pb-2 pt-2.5 transition-[border-color,box-shadow] duration-150 focus-within:border-border-strong">
+                {projectPath && (
+                  <div className="mb-2 flex items-center gap-1.5 self-start">
+                    <span
+                      title={
+                        activeUnavailableProject
+                          ? `Project unavailable: ${projectPath}`
+                          : projectDetachable
+                            ? projectPath
+                            : `${projectPath}. A conversation keeps its project; start a new chat to use another.`
+                      }
+                      className={`inline-flex max-w-[min(28rem,70vw)] items-center gap-1.5 rounded-md border border-border bg-surface-active px-2 py-[3px] font-mono text-[11px] ${activeUnavailableProject ? "text-warning" : "text-text-secondary"}`}
+                    >
+                      <FolderOpen
+                        size={12}
+                        aria-hidden="true"
+                        className={`shrink-0 ${activeUnavailableProject ? "text-warning" : "text-accent"}`}
+                      />
+                      <span className="sr-only">Project context: </span>
+                      <span className="truncate">{projectName(projectPath)}</span>
+                      {projectDetachable && (
+                        <button
+                          type="button"
+                          onClick={() => void startConversationInProject(null)}
+                          aria-label="Remove the project from this conversation"
+                          title="Remove the project from this conversation"
+                          className="inline-flex shrink-0 items-center rounded-sm text-text-muted transition-colors duration-150 hover:text-text-primary"
+                        >
+                          <X size={12} aria-hidden="true" />
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                )}
+                <label htmlFor="assistant-composer" className="sr-only">
+                  Message the AI Assistant
+                </label>
+                <textarea
+                  ref={composerRef}
+                  id="assistant-composer"
+                  value={input}
+                  onChange={(event) => {
+                    setInput(event.target.value);
+                    setSlashIndex(0);
+                  }}
+                  onKeyDown={(event) => {
+                    if (slashOpen) {
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setSlashIndex((current) =>
+                          (current + 1) % slashCommands.length,
+                        );
+                        return;
+                      }
+                      if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setSlashIndex(
+                          (current) =>
+                            (current - 1 + slashCommands.length) %
+                            slashCommands.length,
+                        );
+                        return;
+                      }
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        void executeSlashCommand(slashCommands[slashIndex]);
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setInput("");
+                        setSlashIndex(0);
+                        return;
+                      }
+                    }
+                    // WebKit can report the IME confirmation as keyCode 229 after compositionend.
+                    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void submit();
+                    }
+                  }}
+                  rows={3}
+                  aria-describedby="assistant-composer-help"
+                  disabled={composerDisabled}
+                  placeholder={
+                    busy
+                      ? "Steer the run — your message is folded in at the next step…"
+                      : noSessionMessage
+                        ? sessionsError
+                          ? "Conversations could not be loaded"
+                          : "Start a new chat to send a message"
+                        : composerPlaceholder
+                  }
+                  className="assistant-composer-input selectable block min-h-[76px] w-full resize-none border-0 bg-transparent px-0.5 py-1 text-[14px] leading-normal text-text-primary outline-none [overflow-wrap:anywhere] placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <div className="flex shrink-0 items-center gap-1">
+                    <ComposerModeToggle mode={mode} onChange={setMode} />
+                    <button
+                      type="button"
+                      onClick={openManualContext}
+                      disabled={busy || sessionActivating || !activeSessionId}
+                      aria-label="Context"
+                      title="Review source material and attach it to this conversation. Nothing is sent until you send a message."
+                      className="inline-flex h-[30px] min-w-[30px] items-center justify-center gap-1.5 rounded-md px-1.5 text-[12px] text-text-muted transition-colors duration-150 hover:bg-surface-hover hover:text-text-primary disabled:pointer-events-none disabled:opacity-55 @[520px]:px-2"
+                    >
+                      <ClipboardPaste size={15} aria-hidden="true" />
+                      <span aria-hidden="true" className="hidden @[520px]:inline">
+                        Context
+                      </span>
+                    </button>
+                    {canClear && (
+                      <button
+                        type="button"
+                        onClick={() => void clearConversation()}
+                        title="Clear conversation"
+                        aria-label="Clear conversation"
+                        className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-text-muted transition-colors duration-150 hover:bg-error-subtle hover:text-error"
+                      >
+                        <Trash2 size={15} aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex min-w-0 items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpanded((current) => !current)}
+                      title={expanded ? "Collapse input" : "Expand input"}
+                      aria-label={expanded ? "Collapse input" : "Expand input"}
+                      className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md text-text-muted transition-colors duration-150 hover:bg-surface-hover hover:text-text-primary"
+                    >
+                      {expanded ? (
+                        <Minimize2 size={15} aria-hidden="true" />
+                      ) : (
+                        <Maximize2 size={15} aria-hidden="true" />
+                      )}
+                    </button>
+                    {convUsage && (
+                      <span className="hidden shrink-0 font-mono text-[10px] tabular-nums text-text-muted @[760px]:inline">
+                        {(convUsage.totalTokens / 1000).toFixed(1)}k · ${convUsage.costUsd.toFixed(4)}
+                      </span>
+                    )}
+                    <ContextBudgetMeter budget={contextBudget} className="hidden @[600px]:flex" />
+                    <span
+                      className="inline-flex min-w-0 items-center gap-1.5 px-1 text-[12px] text-text-muted"
+                      title={aiReady ? `Model: ${modelLabel}` : unavailableMessage}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${aiReady ? "bg-success" : aiReadiness.status === "offline" ? "bg-error" : aiReadiness.status === "checking" ? "bg-accent" : "bg-text-muted"}`}
+                      />
+                      <span className="max-w-[200px] truncate">{modelLabel}</span>
+                    </span>
+                    {busy ? (
+                      <>
+                        {hasText && (
+                          <button
+                            type="submit"
+                            title="Steer the running turn"
+                            aria-label="Steer the running turn"
+                            className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-accent text-accent-contrast transition-colors duration-150 hover:bg-accent-hover"
+                          >
+                            <CornerDownLeft size={15} aria-hidden="true" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void cancel()}
+                          title="Cancel the running turn"
+                          aria-label="Cancel the running turn"
+                          className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full border border-border bg-surface-active text-text-primary transition-colors duration-150 hover:bg-surface-hover"
+                        >
+                          <Square size={12} fill="currentColor" aria-hidden="true" />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="submit"
+                        disabled={!canSend}
+                        title="Send message"
+                        aria-label="Send message"
+                        className={
+                          canSend
+                            ? "inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-accent text-accent-contrast transition-colors duration-150 hover:bg-accent-hover"
+                            : "inline-flex h-[30px] w-[30px] shrink-0 cursor-default items-center justify-center rounded-full bg-transparent text-text-secondary disabled:opacity-55"
+                        }
+                      >
+                        <Send size={15} aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </form>
             <div
               id="assistant-composer-help"
-              className="mt-1.5 flex items-center justify-between gap-2 px-1 text-[10px] text-text-muted"
+              className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 px-1 text-[10.5px] text-text-muted"
             >
               <span>
                 {busy
@@ -1683,28 +1786,80 @@ export function AssistantPage() {
                   : noSessionMessage ??
                     "Enter to send · Shift+Enter for a new line"}
               </span>
-              <span className="shrink-0">Project reads run without asking; other tools ask for approval</span>
+              <span>Project reads run without asking; other tools ask for approval</span>
             </div>
-          </form>
-          <p className="sr-only" aria-live="polite">
-            {busy
-              ? showThinking
-                ? "The Assistant is reasoning."
-                : "The Assistant is responding."
-              : "The Assistant is idle."}
-          </p>
-        </div>
-          </section>
-          {activityOpen && (
-            <AssistantActivityPanel
-              busy={busy}
-              model={model}
-              tools={activityTools}
-              todos={todos}
-              usage={convUsage}
-            />
-          )}
-        </div>
+            <p className="sr-only" aria-live="polite">
+              {busy
+                ? showThinking
+                  ? "The Assistant is reasoning."
+                  : "The Assistant is responding."
+                : "The Assistant is idle."}
+            </p>
+          </div>
+        </section>
+
+        {panel && (
+          <AssistantPanelDock drawer={drawer} onClose={() => setPanel(null)}>
+            {panel === "sessions" ? (
+              <SessionSidebar
+                sessions={sessions}
+                activeId={activeSessionId}
+                busy={busy}
+                disabled={sessionActivating}
+                onClose={() => setPanel(null)}
+                onSelect={selectSession}
+                onCreate={() => {
+                  if (!busy && !sessionActivating) void createNewChat();
+                  if (drawerRef.current) setPanelState(null);
+                }}
+                onRename={(id, title) => {
+                  // The list only adopts the new title after the write succeeds, so
+                  // a failed rename leaves the old title instead of claiming one
+                  // that was never persisted.
+                  api
+                    .sessionRename(id, title)
+                    .then(() => {
+                      const info = sessions.find((session) => session.id === id);
+                      if (info) updateSessionInfo({ ...info, title, autoTitle: false });
+                    })
+                    .catch((error) => {
+                      push("error", `Could not rename the conversation: ${errorMessage(error)}`);
+                    });
+                }}
+                loadError={sessionsError}
+                onRetry={retrySessions}
+                onDelete={async (id) => {
+                  // Drop the session from the list only after the delete persists;
+                  // on failure it stays visible instead of vanishing until reload.
+                  try {
+                    await api.sessionDelete(id);
+                  } catch (error) {
+                    push("error", `Could not delete the conversation: ${errorMessage(error)}`);
+                    return;
+                  }
+                  setSessions((list) =>
+                    list.filter((session) => session.id !== id),
+                  );
+                  if (id === activeSessionId) {
+                    // Cleared first, so a failed replacement leaves no session to
+                    // send to rather than one whose transcript is already gone.
+                    clearActiveSession();
+                    await createNewChat();
+                  }
+                }}
+              />
+            ) : (
+              <AssistantActivityPanel
+                busy={busy}
+                model={model ?? (settings?.ai.model || null)}
+                tools={activityTools}
+                todos={todos}
+                usage={convUsage}
+                onClose={() => setPanel(null)}
+              />
+            )}
+          </AssistantPanelDock>
+        )}
       </div>
 
       {permission && (
@@ -1760,7 +1915,7 @@ export function AssistantPage() {
         // The backdrop is a pointer-only dismiss target; Escape is the keyboard path.
         <div
           role="presentation"
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4 sm:p-6"
+          className={DIALOG_OVERLAY_CLASS}
           onMouseDown={(event) => {
             if (
               !contextAttachPendingRef.current &&
@@ -1778,22 +1933,22 @@ export function AssistantPage() {
             aria-busy={contextAttaching}
             aria-labelledby="assistant-context-title"
             aria-describedby="assistant-context-description"
-            className="w-full max-w-2xl rounded-md border border-border bg-surface-secondary p-5 shadow-lg"
+            className={`${DIALOG_CARD_CLASS} flex max-h-[calc(100vh-2rem)] max-w-2xl flex-col overflow-y-auto`}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2
                   id="assistant-context-title"
-                  className="flex items-center gap-2 text-[14px] font-semibold text-text-primary"
+                  className={`flex items-center gap-2 ${DIALOG_TITLE_CLASS}`}
                 >
                   <ClipboardPaste
-                    size={15}
+                    size={18}
                     aria-hidden="true"
-                    className="text-accent"
+                    className="shrink-0 text-accent"
                   />
                   Review context before attaching
                 </h2>
-                <p className="mt-1 truncate text-[13px] font-medium text-accent">
+                <p className="mt-1 truncate text-[12px] font-medium text-accent">
                   {contextLabel}
                 </p>
               </div>
@@ -1803,14 +1958,14 @@ export function AssistantPage() {
                 aria-label="Close"
                 onClick={discardContext}
                 disabled={contextAttaching}
-                className="rounded-sm p-1 text-text-muted hover:bg-surface-hover hover:text-text-primary disabled:opacity-40"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors duration-150 hover:bg-surface-hover hover:text-text-primary disabled:opacity-55"
               >
                 <X size={15} aria-hidden="true" />
               </button>
             </div>
             <p
               id="assistant-context-description"
-              className="mt-2 text-[13px] leading-relaxed text-text-secondary"
+              className="mt-3 text-[12px] leading-relaxed text-text-secondary"
             >
               Review and edit this source material before it is saved to the
               current conversation. Findings can contain source code or secrets.
@@ -1818,13 +1973,13 @@ export function AssistantPage() {
               only on your next explicit Send.
             </p>
             {contextProjectPath && (
-              <p className="mt-2 break-all rounded-sm border border-border bg-surface-secondary px-2.5 py-2 font-mono text-[12px] text-text-secondary">
+              <p className="mt-2 break-all rounded-md border border-border bg-surface-secondary px-2.5 py-1.5 font-mono text-[12px] text-text-secondary">
                 Source scope: {contextProjectPath}
               </p>
             )}
             <label
               htmlFor="assistant-context-content"
-              className="mt-4 block text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
+              className="mt-4 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted"
             >
               Context content
             </label>
@@ -1834,25 +1989,25 @@ export function AssistantPage() {
               onChange={(event) => setContextText(event.target.value)}
               readOnly={contextAttaching}
               rows={14}
-              className="selectable mt-2 max-h-[55vh] w-full resize-y rounded-sm border border-border bg-surface-primary px-3 py-2.5 font-mono text-[13px] leading-relaxed text-text-primary focus:border-accent"
+              className="selectable mt-2 max-h-[55vh] min-h-24 w-full resize-y rounded-md border border-border bg-surface-code px-3 py-2.5 font-mono text-[12px] leading-relaxed text-text-primary outline-none focus:border-border-focus"
             />
-            <div className="mt-4 flex justify-end gap-2">
+            <div className="mt-4 flex items-center justify-end gap-2">
               <Button
                 type="button"
                 onClick={discardContext}
                 disabled={contextAttaching}
-                variant="ghost"
+                variant="outline"
                 size="md"
               >
                 Cancel
               </Button>
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="md"
                 onClick={() => void attachContext()}
                 disabled={
                   contextAttaching || !contextText.trim() || !activeSessionId
                 }
-                className="inline-flex items-center gap-1.5 rounded-sm bg-accent px-3.5 py-2 text-[12px] font-semibold text-accent-contrast hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {contextAttaching ? (
                   <Loader2 size={13} aria-hidden="true" className="animate-spin" />
@@ -1860,7 +2015,7 @@ export function AssistantPage() {
                   <ClipboardPaste size={13} aria-hidden="true" />
                 )}
                 {contextAttaching ? "Attaching…" : "Attach context"}
-              </button>
+              </Button>
             </div>
           </section>
         </div>

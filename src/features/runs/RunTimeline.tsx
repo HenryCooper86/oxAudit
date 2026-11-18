@@ -42,7 +42,7 @@ export function RunTimeline({ kind, running, hasCompletedResult, progress, detai
     && progress.done! >= 0 && progress.total! > 0 && progress.done! <= progress.total!;
 
   return (
-    <section aria-label="Scan progress" className="min-w-0 rounded-sm border border-border bg-surface-secondary px-4 py-3">
+    <section aria-label="Scan progress" className="min-w-0 surface-card px-4 py-3">
       <div className="flex min-w-0 items-start gap-2">
         <LoaderCircle size={15} aria-hidden="true" className="mt-0.5 shrink-0 animate-spin text-accent" />
         <div className="min-w-0 flex-1">
@@ -61,7 +61,7 @@ export function RunTimeline({ kind, running, hasCompletedResult, progress, detai
       </div>
       {observed && <ol aria-label="Reported scan stages" className="mt-3 flex flex-wrap gap-2">
         {observed.stages.map(stage => <li key={stage} aria-current={stage === current ? "step" : undefined}
-          className={`rounded-sm border px-2 py-1 text-[11px] ${stage === current ? "border-accent-glow text-accent" : "border-border text-text-muted"}`}>{RUN_STAGE_LABELS[stage]}</li>)}
+          className={`rounded-md border px-2 py-1 text-[11px] ${stage === current ? "border-accent-glow text-accent" : "border-border text-text-muted"}`}>{RUN_STAGE_LABELS[stage]}</li>)}
       </ol>}
       {hasCompletedResult && <p className="mt-2 text-[11px] text-text-muted">A previous result remains available. This operation has separate progress and completion.</p>}
       {logs && logs.length > 0 && <details className="mt-2">

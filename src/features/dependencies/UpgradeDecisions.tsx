@@ -2,11 +2,11 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DependencyScanResult, Vulnerability } from '../../lib/types';
 import { upgradeGroups } from './decisions';
 import { usePagination } from '../../lib/pagination';
+import { Button } from '../../components/ui';
 import { ResultPagination } from '../../components/workbench/ResultPagination';
 import { revealWorkspaceDetail } from '../../lib/workspaceScroll';
 const noAdvisories: Vulnerability[]=[];
 
-const control='rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] text-text-primary hover:bg-surface-active disabled:opacity-50';
 function timestamp(value: number | null | undefined) { return value == null ? 'unknown' : new Date(value).toLocaleString(); }
 export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:DependencyScanResult;onSelect:(v:Vulnerability)=>void;onRecheck:()=>void;disabled:boolean}) {
   const groups=useMemo(()=>upgradeGroups(result.vulnerabilities),[result.vulnerabilities]);
@@ -30,11 +30,11 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
     try { await navigator.clipboard.writeText(text);publish(`Copied ${kind}`); }
     catch { publish('Copy unavailable. Select and copy the displayed text.'); }
   }
-  return <section aria-label="Dependency upgrade decisions" className="rounded-sm border border-border bg-surface-secondary text-[13px]">
+  return <section aria-label="Dependency upgrade decisions" className="surface-card text-[13px]">
     <div className="space-y-2 border-b border-border p-4 text-text-secondary">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-semibold text-text-primary">Upgrade decisions · {groups.length} groups</h2>
-        <button type="button" className={control} disabled={disabled} onClick={onRecheck}>Recheck dependencies</button>
+        <Button variant="outline" size="sm" disabled={disabled} onClick={onRecheck}>Recheck dependencies</Button>
       </div>
       <p>Advisory source: {result.summary.advisorySource ?? 'unknown'} · checked {timestamp(result.summary.advisoryFetchedAtMs)} · coverage {result.summary.advisoryCoverage ?? 'unknown'}.</p>
       {result.summary.inventoryNotes?.map((note,index)=><p className="text-warning" key={`inventory-note-${index}:${note}`}>{note}</p>)}
@@ -48,8 +48,8 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
     {selected ? <div className="grid min-[1000px]:grid-cols-[minmax(240px,1fr)_minmax(0,2fr)]">
       <div className="overflow-x-auto border-b border-border min-[1000px]:border-b-0 min-[1000px]:border-r">
         <table className="w-full text-left"><caption className="sr-only">Upgrade groups by installation and update entry point</caption>
-          <thead><tr><th scope="col" className="p-3">Package / location</th><th scope="col" className="p-3">Advisories</th></tr></thead>
-          <tbody>{groupPagination.items.map(group=>{const first=group.advisories[0];return <tr key={group.key} className={selected.key===group.key?'bg-surface-active':''}>
+          <thead className="border-b border-border text-[11px] font-semibold uppercase tracking-[0.06em] text-text-muted"><tr><th scope="col" className="px-3 py-2.5">Package / location</th><th scope="col" className="px-3 py-2.5">Advisories</th></tr></thead>
+          <tbody className="divide-y divide-border">{groupPagination.items.map(group=>{const first=group.advisories[0];return <tr key={group.key} className={selected.key===group.key?'bg-surface-active':''}>
             <td className="p-3"><button type="button" aria-pressed={selected.key===group.key} className="w-full text-left text-info" onClick={()=>{setSelectedKey(group.key);setCopyFeedback(null);copyRequest.current+=1;revealWorkspaceDetail(detailRef.current);}}>
               <span className="font-mono">{first.packageName}@{first.installedVersion}</span>
               <span className="mt-1 block break-all text-[11px] text-text-muted">{group.paths[0] ? group.paths[0].workspace || 'Root manifest' : 'Workspace unknown'} · {group.paths[0]?.entryPoint ?? 'Entry point unknown'}</span>
@@ -80,10 +80,10 @@ export function UpgradeDecisions({result,onSelect,onRecheck,disabled}: {result:D
         </li>)}</ul>
         {advisoryPagination.pageCount>1 ? <ResultPagination pagination={advisoryPagination} label="upgrade group advisories" onPageChange={advisoryPagination.setPage}/> : null}
         {selected.command ? <><p>Copy for review and run manually from the lockfile directory. This updates the recorded direct declaration with lifecycle scripts disabled.</p>
-          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-sm bg-surface-tertiary p-3 font-mono text-[12px]">{selected.command}</pre>
-          <button type="button" className={control} onClick={()=>void copy(selected.command!,'npm command')}>Copy npm command</button></> : null}
-        <pre className="max-h-[24rem] overflow-auto whitespace-pre-wrap break-words rounded-sm bg-surface-tertiary p-3 text-[12px]">{selected.checklist}</pre>
-        <button type="button" className={control} onClick={()=>void copy(selected.checklist,'remediation checklist')}>Copy remediation checklist</button>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-surface-tertiary p-3 font-mono text-[12px]">{selected.command}</pre>
+          <Button variant="outline" size="sm" onClick={()=>void copy(selected.command!,'npm command')}>Copy npm command</Button></> : null}
+        <pre className="max-h-[24rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-tertiary p-3 text-[12px]">{selected.checklist}</pre>
+        <Button variant="outline" size="sm" onClick={()=>void copy(selected.checklist,'remediation checklist')}>Copy remediation checklist</Button>
         {copyStatus ? <p role="status">{copyStatus}</p> : null}
       </div>
     </div> : <p className="p-4 text-text-muted">No advisory groups in this result.</p>}

@@ -221,7 +221,7 @@ export function ImageScanPage() {
         </EvidenceSummary>}
 
         {outcome && summary && (
-          <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary text-[13px]">
+          <section className="overflow-hidden surface-card text-[13px]">
             <div className="border-b border-border px-4 py-3 font-semibold">
               {outcome.result.target}: {summary.components} component{summary.components === 1 ? "" : "s"},{" "}
               {summary.vulnerabilities} vulnerabilit{summary.vulnerabilities === 1 ? "y" : "ies"}
@@ -241,7 +241,7 @@ export function ImageScanPage() {
           </section>
         )}
 
-        <p className="border-t border-border px-4 py-3 text-[11px] text-text-muted">
+        <p className="px-1 text-[11px] leading-relaxed text-text-muted">
           Registry pulls verify every blob against its manifest digest. Saved runs retain resolved image and layer identities and the effective advisory mode. Offline absence does not establish a clean result.
         </p>
       </div>

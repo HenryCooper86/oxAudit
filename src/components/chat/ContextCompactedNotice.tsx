@@ -25,7 +25,7 @@ export function ContextCompactedNotice({
   return (
     <section
       aria-label="Context compaction"
-      className="rounded-sm border border-border bg-surface-secondary"
+      className="rounded-md border border-dashed border-border-strong bg-surface-secondary"
     >
       <button
         type="button"
@@ -56,7 +56,7 @@ export function ContextCompactedNotice({
               <button
                 type="button"
                 onClick={onRetry}
-                className="flex items-center gap-1.5 rounded-sm border border-border px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-surface-tertiary hover:text-text-primary"
+                className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface-primary px-2.5 text-[11px] font-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary"
               >
                 <RotateCcw size={11} aria-hidden="true" />
                 Retry with full context

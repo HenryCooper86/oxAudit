@@ -211,37 +211,89 @@ test("long finding lists stay in the single workspace scroll; keyboard, reveal a
   expect(pageErrors).toEqual([]);
 });
 
-test("navigation boundary: 900px collapse/expand control and 899px drawer", async ({ page, backend }) => {
+test("navigation boundary: 900px show/hide control, nothing clipped at 700px, and the 899px drawer", async ({ page, backend }) => {
   test.setTimeout(120_000);
   await connectThroughGate(page, backend);
   await skipReadinessWizard(page);
 
   await page.setViewportSize({ width: 900, height: 700 });
   const aside = page.locator('aside[aria-label="Primary navigation"]');
-  // At exactly 900px the sidebar is in-flow with a collapse/expand control.
-  await expect(page.getByRole("button", { name: "Collapse navigation" })).toBeVisible();
+  // At exactly 900px the sidebar is in-flow at full width, with the
+  // show/hide control in the header.
+  const toggle = page.locator("header").getByRole("button", { name: "Collapse navigation" });
+  await expect(toggle).toBeVisible();
   await expect(page.locator("#navigation-menu-button")).toBeHidden();
   expect((await aside.boundingBox()).width).toBeGreaterThan(200);
 
-  await page.getByRole("button", { name: "Collapse navigation" }).click();
+  // Nothing in the sidebar is cut off at 700px: the brand, project actions and
+  // every tool live in one scroll region that ends above the pinned footer,
+  // so each item can be scrolled fully into view, and the footer (Settings,
+  // search hint, version) is entirely on screen.
+  const sidebarFit = await page.evaluate(() => {
+    const sidebar = document.querySelector('aside[aria-label="Primary navigation"]');
+    const scroller = sidebar.querySelector("[data-sidebar-scroll]");
+    const footer = scroller.nextElementSibling;
+    const s = scroller.getBoundingClientRect();
+    const f = footer.getBoundingClientRect();
+    const unreachable = [];
+    for (const button of scroller.querySelectorAll("button")) {
+      const r = button.getBoundingClientRect();
+      const top = r.top - s.top + scroller.scrollTop;
+      if (top < 0 || top + r.height > scroller.scrollHeight + 1) unreachable.push(button.textContent);
+    }
+    scroller.scrollTop = scroller.scrollHeight;
+    const buttons = scroller.querySelectorAll("button");
+    const last = buttons[buttons.length - 1].getBoundingClientRect();
+    const afterScroll = scroller.getBoundingClientRect();
+    return {
+      unreachable,
+      scrolls: scroller.scrollHeight > scroller.clientHeight,
+      lastName: buttons[buttons.length - 1].textContent,
+      lastVisible: last.top >= afterScroll.top - 1 && last.bottom <= afterScroll.bottom + 1,
+      scrollerEndsAboveFooter: s.bottom <= f.top + 1,
+      footerOnScreen: f.top >= 0 && f.bottom <= window.innerHeight + 1,
+      sidebarFits: sidebar.getBoundingClientRect().bottom <= window.innerHeight + 1,
+    };
+  });
+  expect(sidebarFit.scrolls).toBe(true);
+  expect(sidebarFit.unreachable).toEqual([]);
+  expect(sidebarFit.lastName).toBe("Quality Lab");
+  expect(sidebarFit.lastVisible).toBe(true);
+  expect(sidebarFit.scrollerEndsAboveFooter).toBe(true);
+  expect(sidebarFit.footerOnScreen).toBe(true);
+  expect(sidebarFit.sidebarFits).toBe(true);
+  await expect(aside.getByRole("button", { name: "Settings", exact: true })).toBeInViewport();
+  await expect(aside.getByRole("button", { name: "Search tools and projects" })).toBeInViewport();
+
+  // Hiding removes the whole sidebar (there is no icon rail); showing restores it.
+  await toggle.click();
   await expect(page.getByRole("button", { name: "Expand navigation" })).toBeVisible();
-  await expect.poll(async () => (await aside.boundingBox()).width).toBeLessThan(60);
+  await expect(aside).toBeHidden();
   await page.getByRole("button", { name: "Expand navigation" }).click();
   await expect(page.getByRole("button", { name: "Collapse navigation" })).toBeVisible();
   await expect.poll(async () => (await aside.boundingBox()).width).toBeGreaterThan(200);
 
-  // Compact screen-reader labels remain inside navigation even when they
-  // extend below its scrollport; they must not enlarge the document.
+  // The Assistant no longer forces the sidebar narrow; hiding it there still
+  // keeps the document within the viewport.
   await page.getByRole("button", { name: "AI Assistant", exact: true }).click();
   await expect(page.locator("#assistant-composer")).toBeVisible();
+  expect((await aside.boundingBox()).width).toBeGreaterThan(200);
   await page.getByRole("button", { name: "Collapse navigation" }).click();
-  await expect.poll(async () => (await aside.boundingBox()).width).toBeLessThan(60);
-  const compactShell = await shellGeometry(page);
-  expect(compactShell.docScrollHeight).toBeLessThanOrEqual(compactShell.docClientHeight + 1);
-  expect(compactShell.rootScrollHeight).toBeLessThanOrEqual(compactShell.rootClientHeight + 1);
+  await expect(aside).toBeHidden();
+  await expect(page.locator("#assistant-composer")).toBeVisible();
+  const hiddenShell = await shellGeometry(page);
+  expect(hiddenShell.docScrollHeight).toBeLessThanOrEqual(hiddenShell.docClientHeight + 1);
+  expect(hiddenShell.docScrollWidth).toBeLessThanOrEqual(hiddenShell.docClientWidth + 1);
+  expect(hiddenShell.rootScrollHeight).toBeLessThanOrEqual(hiddenShell.rootClientHeight + 1);
+  expect(hiddenShell.headerTop).toBeCloseTo(0, 1);
 
-  // Below 900px the sidebar is a drawer; Escape closes it and restores focus
-  // to the opener.
+  // The choice survives a reload.
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Expand navigation" })).toBeVisible();
+  await expect(aside).toBeHidden();
+
+  // Below 900px the sidebar is a drawer whatever the desktop preference;
+  // Escape closes it and restores focus to the opener.
   await page.setViewportSize({ width: 899, height: 700 });
   await expect(page.locator("#navigation-menu-button")).toBeVisible();
   await expect(aside).toBeHidden();
@@ -250,4 +302,64 @@ test("navigation boundary: 900px collapse/expand control and 899px drawer", asyn
   await page.keyboard.press("Escape");
   await expect(aside).toBeHidden();
   await expect(page.locator("#navigation-menu-button")).toBeFocused();
+});
+
+test("Settings swaps the navigation for its sections, Back restores it, and nothing scrolls the document", async ({ page, backend }) => {
+  test.setTimeout(120_000);
+  await connectThroughGate(page, backend);
+  await skipReadinessWizard(page);
+  const aside = page.locator('aside[aria-label="Primary navigation"]');
+  const documentFits = () =>
+    page.evaluate(() => {
+      const root = document.documentElement;
+      const rootEl = document.getElementById("root");
+      return {
+        docY: root.scrollHeight - root.clientHeight,
+        docX: root.scrollWidth - root.clientWidth,
+        rootY: rootEl.scrollHeight - rootEl.clientHeight,
+      };
+    });
+
+  for (const [width, height] of [[1440, 900], [899, 700]]) {
+    await page.setViewportSize({ width, height });
+    const drawer = width < 900;
+    const openDrawer = async () => {
+      if (!drawer) return;
+      await page.locator("#navigation-menu-button").click();
+      await expect(aside).toBeVisible();
+    };
+
+    await openDrawer();
+    await aside.getByRole("button", { name: "Settings", exact: true }).click();
+    // The main navigation is replaced, not extended.
+    await openDrawer();
+    const sections = aside.getByRole("navigation", { name: "Settings sections" });
+    await expect(sections).toBeVisible();
+    await expect(aside.getByRole("button", { name: "Back", exact: true })).toBeVisible();
+    await expect(aside.getByRole("button", { name: "Source Scan", exact: true })).toHaveCount(0);
+    // Settings reopens on the section last viewed (General on the first visit).
+    await expect(sections.locator('button[aria-current="true"]')).toHaveCount(1);
+    await expect(page.locator("header").getByRole("button", { name: "Save", exact: true })).toBeVisible();
+    await expect(page.locator("header").getByRole("button", { name: "Reset", exact: true })).toBeVisible();
+
+    // Every section fits the viewport without a document scrollbar.
+    for (const title of ["General", "AI", "Scan defaults", "Live scanning", "Data sources", "Binary scanner", "Diagnostics", "About"]) {
+      if (drawer && !(await aside.isVisible())) await openDrawer();
+      await sections.getByRole("button", { name: title, exact: true }).click();
+      await expect(page.locator("header").getByRole("heading", { level: 1, name: title })).toBeVisible();
+      // The drawer closes on choosing a section; the in-flow sidebar stays.
+      if (!drawer) await expect(sections.getByRole("button", { name: title, exact: true })).toHaveAttribute("aria-current", "true");
+      const fit = await documentFits();
+      expect(fit.docY, `${title} document height at ${width}x${height}`).toBeLessThanOrEqual(1);
+      expect(fit.docX, `${title} document width at ${width}x${height}`).toBeLessThanOrEqual(1);
+      expect(fit.rootY, `${title} root height at ${width}x${height}`).toBeLessThanOrEqual(1);
+    }
+
+    if (drawer && !(await aside.isVisible())) await openDrawer();
+    await aside.getByRole("button", { name: "Back", exact: true }).click();
+    await openDrawer();
+    await expect(aside.getByRole("button", { name: "Dashboard", exact: true })).toBeVisible();
+    await expect(aside.getByRole("navigation", { name: "Settings sections" })).toHaveCount(0);
+    if (drawer) await page.keyboard.press("Escape");
+  }
 });

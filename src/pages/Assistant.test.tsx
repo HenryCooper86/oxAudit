@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -43,6 +43,7 @@ import { api } from "../lib/api";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { AiReadinessStatus } from "../lib/settingsRequests";
 import type { ChatRequest, SessionInfo, StoredMessage } from "../lib/types";
+import { WorkbenchHeader } from "../components/workbench/WorkbenchHeader";
 import { AssistantPage } from "./Assistant";
 
 function sessionInfo(id: string, title: string, updatedAt: string, messageCount = 0): SessionInfo {
@@ -82,6 +83,9 @@ function setReadiness(status: AiReadinessStatus) {
 
 beforeEach(() => {
   bus.handlers.clear();
+  // The open side panel and the composer mode are remembered; start each test
+  // from the defaults (both panels closed, Auto).
+  localStorage.clear();
   useAppStore.setState({
     settings: null,
     assistantHandoff: null,
@@ -116,6 +120,36 @@ function composer() {
   return screen.getByRole("textbox", { name: "Message the AI Assistant" });
 }
 
+/**
+ * The page as the shell shows it: the Assistant registers its Search,
+ * Conversations and Activity toggles in the shell header, so the header is
+ * rendered beside it.
+ */
+function renderAssistant(before?: React.ReactNode) {
+  return render(
+    <>
+      {before}
+      <WorkbenchHeader onOpenNavigation={() => undefined} navigationHidden={false} onToggleNavigation={() => undefined} />
+      <AssistantPage />
+    </>,
+  );
+}
+
+function headerToggle(name: "Search conversation" | "Conversations" | "Activity") {
+  return within(screen.getByRole("banner")).getByRole("button", { name });
+}
+
+/** Unmount the page (a navigation away), keeping localStorage. */
+function cleanupPage() {
+  cleanup();
+}
+
+/** Open the Conversations panel from its header toggle. */
+async function openConversations(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(headerToggle("Conversations"));
+  return screen.getByRole("complementary", { name: "Chat sessions" });
+}
+
 test("command search does not open over the Assistant context dialog's actual focus trap", async () => {
   const { default: App } = await import("../App");
   const { projectSettings } = await import("../../tests/fixtures/projectHome");
@@ -135,7 +169,7 @@ test("command search does not open over the Assistant context dialog's actual fo
   await user.keyboard("{Meta>}k{/Meta}");
   expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Search tools and projects" })).not.toBeInTheDocument();
-  expect(search.closest("header")?.inert).toBe(true);
+  expect(search.closest("aside")?.inert).toBe(true);
   expect(context).toContainElement(document.activeElement as HTMLElement);
   await user.tab();
   expect(context).toContainElement(document.activeElement as HTMLElement);
@@ -152,6 +186,7 @@ test("command search does not open over the Assistant context dialog's actual fo
   expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
 });
 
+/** The Conversations panel; open it first with `openConversations`. */
 function sidebar() {
   return screen.getByRole("complementary", { name: "Chat sessions" });
 }
@@ -163,7 +198,7 @@ function toastMessages() {
 /** Render and wait until the newest session is active and its transcript shown. */
 async function renderLoaded() {
   const user = userEvent.setup();
-  render(<AssistantPage />);
+  renderAssistant();
   await screen.findByText("Yes, the answer depends on the driver.");
   await waitFor(() => expect(composer()).toBeEnabled());
   return user;
@@ -236,13 +271,18 @@ describe("sending and streaming", () => {
     expect(streamChat).not.toHaveBeenCalled();
   });
 
-  test("a suggestion starts a turn in an empty conversation", async () => {
+  test("a suggestion fills the composer without sending, and Enter sends it", async () => {
     sessionList.mockResolvedValue([sessionInfo("s3", "Empty", "2026-10-02T00:00:00Z")]);
     const user = userEvent.setup();
-    render(<AssistantPage />);
+    renderAssistant();
     const suggestion = await screen.findByRole("button", { name: /pickle\.loads/ });
-    await waitFor(() => expect(suggestion).toBeEnabled());
+    await waitFor(() => expect(composer()).toBeEnabled());
     await user.click(suggestion);
+    // Filling is not sending: the person reviews the prompt first.
+    expect(composer()).toHaveValue("I found a `pickle.loads()` call on untrusted input — how do I fix it?");
+    await waitFor(() => expect(composer()).toHaveFocus());
+    expect(streamChat).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
     await runIdOf();
     const { messages } = streamChat.mock.calls[0][0] as ChatRequest;
     expect(messages[messages.length - 1].content).toMatch(/pickle\.loads/);
@@ -256,6 +296,7 @@ describe("sending and streaming", () => {
     expect(screen.getByText("Reasoning…")).toBeInTheDocument();
 
     emitEvent(runId, { type: "tool_start", toolCallId: "t1", name: "grep_project", arguments: '{"q":"exec"}' });
+    await user.click(headerToggle("Activity"));
     const activity = screen.getByRole("complementary", { name: "Assistant activity" });
     expect(within(activity).getByRole("button", { name: /grep_project\s*Running/ })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /grep_project/ }).length).toBe(2);
@@ -439,7 +480,7 @@ describe("AI readiness", () => {
   test("an unconfigured provider pauses sending and links to Settings", async () => {
     setReadiness("unconfigured");
     const user = userEvent.setup();
-    render(<AssistantPage />);
+    renderAssistant();
     await screen.findByText("Yes, the answer depends on the driver.");
     expect(screen.getByRole("status")).toHaveTextContent(/Configure an AI provider before sending a message/);
     expect(composer()).toBeDisabled();
@@ -447,18 +488,19 @@ describe("AI readiness", () => {
     expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Open Settings" }));
     expect(useAppStore.getState().page).toBe("settings");
+    expect(useAppStore.getState().settingsSection).toBe("ai");
   });
 
   test("an offline endpoint is announced as an alert", async () => {
     setReadiness("offline");
-    render(<AssistantPage />);
+    renderAssistant();
     expect(await screen.findByRole("alert")).toHaveTextContent(/cannot be reached/);
     expect(screen.getAllByText("AI endpoint unavailable").length).toBeGreaterThan(0);
   });
 
   test("server mode explains that AI runs only in the desktop app", async () => {
     setReadiness("unsupported");
-    render(<AssistantPage />);
+    renderAssistant();
     await screen.findByText("Yes, the answer depends on the driver.");
     expect(screen.getByRole("alert")).toHaveTextContent(
       "AI is available in the oxAudit desktop app; this server does not accept AI requests.",
@@ -470,7 +512,7 @@ describe("AI readiness", () => {
 
   test("readiness becoming ready re-enables the composer", async () => {
     setReadiness("checking");
-    render(<AssistantPage />);
+    renderAssistant();
     await screen.findByText("Yes, the answer depends on the driver.");
     expect(composer()).toBeDisabled();
     act(() => setReadiness("ready"));
@@ -481,7 +523,8 @@ describe("AI readiness", () => {
 
 describe("sessions", () => {
   test("the newest session opens with its transcript and the list shows every session", async () => {
-    await renderLoaded();
+    const user = await renderLoaded();
+    await openConversations(user);
     const list = sidebar();
     expect(within(list).getByRole("button", { name: /^Triage chat/ })).toHaveAttribute("aria-current", "true");
     expect(within(list).getByRole("button", { name: /^Older chat/ })).not.toHaveAttribute("aria-current");
@@ -491,7 +534,7 @@ describe("sessions", () => {
 
   test("an empty session store starts a fresh conversation", async () => {
     sessionList.mockResolvedValue([]);
-    render(<AssistantPage />);
+    renderAssistant();
     expect(await screen.findByRole("heading", { name: "New conversation" })).toBeInTheDocument();
     expect(sessionCreate).toHaveBeenCalledWith(null, null);
     expect(screen.getByText("What would you like to audit?")).toBeInTheDocument();
@@ -499,6 +542,7 @@ describe("sessions", () => {
 
   test("selecting another session loads its transcript", async () => {
     const user = await renderLoaded();
+    await openConversations(user);
     await user.click(within(sidebar()).getByRole("button", { name: /^Older chat/ }));
     expect(await screen.findByText("The session cookie lacks HttpOnly.")).toBeInTheDocument();
     expect(screen.queryByText("Yes, the answer depends on the driver.")).not.toBeInTheDocument();
@@ -513,6 +557,7 @@ describe("sessions", () => {
 
   test("New chat creates and opens an empty conversation", async () => {
     const user = await renderLoaded();
+    await openConversations(user);
     await user.click(within(sidebar()).getByRole("button", { name: "New chat" }));
     expect(await screen.findByRole("heading", { name: "New conversation" })).toBeInTheDocument();
     expect(screen.getByText("What would you like to audit?")).toBeInTheDocument();
@@ -524,6 +569,7 @@ describe("sessions", () => {
 
   test("session controls are locked while a turn runs", async () => {
     const user = await renderLoaded();
+    await openConversations(user);
     await sendMessage(user, "Long task");
     expect(within(sidebar()).getByRole("button", { name: "New chat" })).toBeDisabled();
     expect(within(sidebar()).getByRole("button", { name: /^Older chat/ })).toBeDisabled();
@@ -534,6 +580,7 @@ describe("sessions", () => {
   test("deleting another session removes it after the delete persists", async () => {
     const sessionDelete = vi.spyOn(api, "sessionDelete").mockResolvedValue(undefined);
     const user = await renderLoaded();
+    await openConversations(user);
     await user.click(within(sidebar()).getByRole("button", { name: "Delete Older chat" }));
     await user.click(within(sidebar()).getByRole("button", { name: "Yes" }));
     expect(sessionDelete).toHaveBeenCalledWith("s2");
@@ -547,6 +594,7 @@ describe("sessions", () => {
   test("deleting the active session opens a fresh one", async () => {
     vi.spyOn(api, "sessionDelete").mockResolvedValue(undefined);
     const user = await renderLoaded();
+    await openConversations(user);
     await user.click(within(sidebar()).getByRole("button", { name: "Delete Triage chat" }));
     await user.click(within(sidebar()).getByRole("button", { name: "Yes" }));
     expect(await screen.findByRole("heading", { name: "New conversation" })).toBeInTheDocument();
@@ -557,6 +605,7 @@ describe("sessions", () => {
   test("a failed delete keeps the session and reports why", async () => {
     vi.spyOn(api, "sessionDelete").mockRejectedValue(new Error("file is locked"));
     const user = await renderLoaded();
+    await openConversations(user);
     await user.click(within(sidebar()).getByRole("button", { name: "Delete Older chat" }));
     await user.click(within(sidebar()).getByRole("button", { name: "Yes" }));
     await waitFor(() =>
@@ -569,6 +618,7 @@ describe("sessions", () => {
     vi.spyOn(api, "sessionDelete").mockResolvedValue(undefined);
     sessionCreate.mockRejectedValue(new Error("disk full"));
     const user = await renderLoaded();
+    await openConversations(user);
     await user.click(within(sidebar()).getByRole("button", { name: "Delete Triage chat" }));
     await user.click(within(sidebar()).getByRole("button", { name: "Yes" }));
     await waitFor(() => expect(toastMessages()).toEqual(["error: disk full"]));
@@ -583,6 +633,7 @@ describe("sessions", () => {
   test("renaming adopts the new title only after it persists", async () => {
     const rename = vi.spyOn(api, "sessionRename").mockResolvedValue(undefined);
     const user = await renderLoaded();
+    await openConversations(user);
     await user.click(within(sidebar()).getByRole("button", { name: "Rename Triage chat" }));
     const field = within(sidebar()).getByRole("textbox", { name: "Rename Triage chat" });
     await user.clear(field);
@@ -594,6 +645,7 @@ describe("sessions", () => {
   test("a failed rename keeps the old title", async () => {
     vi.spyOn(api, "sessionRename").mockRejectedValue(new Error("read-only store"));
     const user = await renderLoaded();
+    await openConversations(user);
     await user.click(within(sidebar()).getByRole("button", { name: "Rename Triage chat" }));
     const field = within(sidebar()).getByRole("textbox", { name: "Rename Triage chat" });
     await user.clear(field);
@@ -614,6 +666,7 @@ describe("sessions", () => {
 
   test("a session that cannot be opened reports the failure and keeps the current one", async () => {
     const user = await renderLoaded();
+    await openConversations(user);
     vi.mocked(api.sessionGetMessages).mockRejectedValueOnce(new Error("corrupt transcript"));
     await user.click(within(sidebar()).getByRole("button", { name: /^Older chat/ }));
     await waitFor(() => expect(toastMessages()).toEqual(["error: corrupt transcript"]));
@@ -626,9 +679,10 @@ describe("loading sessions fails", () => {
   test("the sidebar shows a persistent error with Retry instead of the empty state", async () => {
     sessionList.mockRejectedValueOnce(new Error("database is locked"));
     const user = userEvent.setup();
-    render(<AssistantPage />);
+    renderAssistant();
 
-    const alert = await within(sidebar()).findByRole("alert");
+    // Retry lives in the Conversations panel, which opens itself on a load failure.
+    const alert = await within(await screen.findByRole("complementary", { name: "Chat sessions" })).findByRole("alert");
     expect(alert).toHaveTextContent(/Conversations could not be loaded/);
     expect(alert).toHaveTextContent(/database is locked/);
     expect(within(sidebar()).queryByText("Your security conversations will appear here.")).not.toBeInTheDocument();
@@ -651,8 +705,9 @@ describe("loading sessions fails", () => {
       .mockRejectedValueOnce(new Error("database is locked"))
       .mockRejectedValueOnce(new Error("still locked"));
     const user = userEvent.setup();
-    render(<AssistantPage />);
-    const alert = await within(sidebar()).findByRole("alert");
+    renderAssistant();
+    // Retry lives in the Conversations panel, which opens itself on a load failure.
+    const alert = await within(await screen.findByRole("complementary", { name: "Chat sessions" })).findByRole("alert");
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(within(sidebar()).getByRole("alert")).toHaveTextContent(/still locked/));
     expect(composer()).toBeDisabled();
@@ -661,8 +716,8 @@ describe("loading sessions fails", () => {
   test("starting a new chat still works when the list could not be loaded", async () => {
     sessionList.mockRejectedValueOnce(new Error("database is locked"));
     const user = userEvent.setup();
-    render(<AssistantPage />);
-    await within(sidebar()).findByRole("alert");
+    renderAssistant();
+    await within(await screen.findByRole("complementary", { name: "Chat sessions" })).findByRole("alert");
     await user.click(within(sidebar()).getByRole("button", { name: "New chat" }));
     expect(await screen.findByRole("heading", { name: "New conversation" })).toBeInTheDocument();
     await waitFor(() => expect(composer()).toBeEnabled());
@@ -680,7 +735,7 @@ describe("attaching context", () => {
   test("a handoff from another page opens the review dialog and attaches on confirm", async () => {
     useAppStore.setState({ assistantHandoff: handoff } as never);
     const user = userEvent.setup();
-    render(<AssistantPage />);
+    renderAssistant();
 
     const dialog = await screen.findByRole("dialog", { name: "Review context before attaching" });
     expect(within(dialog).getByText(handoff.label)).toBeInTheDocument();
@@ -707,7 +762,7 @@ describe("attaching context", () => {
   test("context edited in the dialog is what gets attached", async () => {
     useAppStore.setState({ assistantHandoff: handoff } as never);
     const user = userEvent.setup();
-    render(<AssistantPage />);
+    renderAssistant();
     const dialog = await screen.findByRole("dialog", { name: "Review context before attaching" });
     // The dialog focuses Close one frame after opening. Typing before that lands
     // would send a space to Close mid-word, which no person types fast enough to do.
@@ -744,7 +799,7 @@ describe("attaching context", () => {
 
   test("delayed context focus restoration does not steal focus from the user's next action", async () => {
     const user = userEvent.setup();
-    render(<><button>Another action</button><AssistantPage /></>);
+    renderAssistant(<button>Another action</button>);
     await screen.findByText("Yes, the answer depends on the driver.");
     await user.click(screen.getByRole("button", { name: "Context" }));
     const dialog = screen.getByRole("dialog", { name: "Review context before attaching" });
@@ -762,7 +817,7 @@ describe("attaching context", () => {
     sessionAppend.mockRejectedValueOnce(new Error("transcript is read-only"));
     useAppStore.setState({ assistantHandoff: handoff } as never);
     const user = userEvent.setup();
-    render(<AssistantPage />);
+    renderAssistant();
     const dialog = await screen.findByRole("dialog", { name: "Review context before attaching" });
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "Attach context" })).toBeEnabled());
     await user.click(within(dialog).getByRole("button", { name: "Attach context" }));
@@ -808,5 +863,342 @@ describe("conversation search", () => {
     const toolbar = screen.getByRole("search", { name: "Search conversation" });
     expect(toolbar).toHaveTextContent("0 / 0");
     expect(within(toolbar).getByRole("button", { name: "Next match" })).toBeDisabled();
+  });
+});
+
+describe("layout: header toggles and side panels", () => {
+  test("both panels are closed by default and open from their header toggles, one at a time", async () => {
+    const user = await renderLoaded();
+    expect(screen.queryByRole("complementary", { name: "Chat sessions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Assistant activity" })).not.toBeInTheDocument();
+    expect(headerToggle("Conversations")).toHaveAttribute("aria-pressed", "false");
+    expect(headerToggle("Activity")).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(headerToggle("Conversations"));
+    expect(screen.getByRole("complementary", { name: "Chat sessions" })).toBeInTheDocument();
+    expect(headerToggle("Conversations")).toHaveAttribute("aria-pressed", "true");
+    expect(headerToggle("Conversations")).toHaveAttribute("aria-controls", "assistant-sessions-panel");
+
+    // Opening Activity replaces Conversations: the panels are mutually exclusive.
+    await user.click(headerToggle("Activity"));
+    expect(screen.getByRole("complementary", { name: "Assistant activity" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Chat sessions" })).not.toBeInTheDocument();
+    expect(headerToggle("Conversations")).toHaveAttribute("aria-pressed", "false");
+    expect(headerToggle("Activity")).toHaveAttribute("aria-pressed", "true");
+
+    // Pressing the open panel's toggle closes it; so does the panel's own close button.
+    await user.click(headerToggle("Activity"));
+    expect(screen.queryByRole("complementary", { name: "Assistant activity" })).not.toBeInTheDocument();
+    await user.click(headerToggle("Conversations"));
+    await user.click(screen.getByRole("button", { name: "Close conversations" }));
+    expect(screen.queryByRole("complementary", { name: "Chat sessions" })).not.toBeInTheDocument();
+    // The docked panels never cover the conversation.
+    expect(screen.getByRole("region", { name: "Assistant conversation" })).not.toHaveAttribute("inert");
+  });
+
+  test("the open panel is remembered across visits", async () => {
+    const user = await renderLoaded();
+    await user.click(headerToggle("Activity"));
+    cleanupPage();
+    renderAssistant();
+    expect(await screen.findByRole("complementary", { name: "Assistant activity" })).toBeInTheDocument();
+    expect(headerToggle("Activity")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("below 1100px a panel opens as a drawer over the conversation and Escape closes it", async () => {
+    localStorage.setItem("oxaudit.panel.assistant.v1", "sessions");
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches: query === "(max-width: 1099px)",
+          media: query,
+          onchange: null,
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+          addListener: () => undefined,
+          removeListener: () => undefined,
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList,
+    );
+    const user = await renderLoaded();
+    // A remembered docked panel does not reopen as a drawer over the transcript.
+    expect(screen.queryByRole("complementary", { name: "Chat sessions" })).not.toBeInTheDocument();
+
+    const toggle = headerToggle("Conversations");
+    await user.click(toggle);
+    const panel = screen.getByRole("complementary", { name: "Chat sessions" });
+    expect(panel.closest("[data-assistant-panel]")).toHaveAttribute("data-assistant-panel", "drawer");
+    expect(document.querySelector("[data-assistant-panel-backdrop]")).not.toBeNull();
+    const conversation = screen.getByRole("region", { name: "Assistant conversation", hidden: true });
+    // jsdom has no `inert` property; React writes the attribute.
+    expect(conversation).toHaveAttribute("inert");
+    await waitFor(() => expect(panel).toContainElement(document.activeElement as HTMLElement));
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("complementary", { name: "Chat sessions" })).not.toBeInTheDocument();
+    expect(conversation).not.toHaveAttribute("inert");
+    expect(toggle).toHaveFocus();
+    // Drawer use does not overwrite the docked layout's remembered panel.
+    expect(localStorage.getItem("oxaudit.panel.assistant.v1")).toBe("sessions");
+  });
+
+  test("choosing a conversation in the drawer closes it", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches: query === "(max-width: 1099px)",
+          media: query,
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+        }) as unknown as MediaQueryList,
+    );
+    const user = await renderLoaded();
+    await user.click(headerToggle("Conversations"));
+    await user.click(within(sidebar()).getByRole("button", { name: /^Older chat/ }));
+    expect(await screen.findByText("The session cookie lacks HttpOnly.")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Chat sessions" })).not.toBeInTheDocument();
+  });
+
+  test("the live plan shows in the turn while the Activity panel is closed", async () => {
+    const user = await renderLoaded();
+    const runId = await sendMessage(user, "Plan the review");
+    emitEvent(runId, {
+      type: "todos",
+      items: [
+        { id: 1, text: "Find sinks", status: "done" },
+        { id: 2, text: "Trace inputs", status: "pending" },
+      ],
+    });
+    const turn = screen.getByRole("article", { name: "Assistant is working" });
+    expect(within(turn).getByRole("region", { name: "Agent plan" })).toHaveTextContent("1/2");
+    // With Activity open the plan lives there instead of twice on screen.
+    await user.click(headerToggle("Activity"));
+    expect(screen.getAllByRole("region", { name: "Agent plan" })).toHaveLength(1);
+    expect(within(turn).queryByRole("region", { name: "Agent plan" })).not.toBeInTheDocument();
+  });
+});
+
+describe("messages", () => {
+  test("turns render as distinct messages: the person's, the assistant's, tools and attached context", async () => {
+    transcripts.s3 = [
+      {
+        id: "c1",
+        role: "user",
+        content: "[User-attached source context: Finding: SQLi]\n\ncursor.execute(q)",
+        at: "2026-10-02T00:00:00Z",
+      },
+      { id: "c2", role: "user", content: "Is it reachable?", at: "2026-10-02T00:00:01Z" },
+      {
+        id: "c3",
+        role: "assistant",
+        content: "It is **reachable**.",
+        at: "2026-10-02T00:00:02Z",
+        tools: [
+          {
+            toolCallId: "t9",
+            name: "read_file",
+            arguments: "{}",
+            status: "success",
+            durationMs: 5,
+            resultPreview: "ok",
+          },
+        ],
+      },
+    ];
+    sessionList.mockResolvedValue([sessionInfo("s3", "Reachability", "2026-10-02T00:00:00Z", 3)]);
+    renderAssistant();
+    await screen.findByText("Is it reachable?");
+
+    const attached = screen.getByRole("article", { name: "Attached source context" });
+    expect(attached).toHaveTextContent("User-attached source context: Finding: SQLi");
+    expect(attached).toHaveTextContent("cursor.execute(q)");
+    expect(within(attached).getByText(/included when you next send/)).toBeInTheDocument();
+
+    const mine = screen.getAllByRole("article", { name: "Your message" });
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toHaveTextContent("Is it reachable?");
+
+    const answer = screen.getByRole("article", { name: "Assistant message" });
+    const tools = within(answer).getByRole("group", { name: "Tool calls" });
+    expect(within(tools).getByRole("button", { name: /read_file\s*Completed/ })).toBeInTheDocument();
+    // The prose sits in its own card, apart from the tool chips.
+    const prose = within(answer).getByText("reachable").closest(".md-body");
+    expect(prose).not.toBeNull();
+    expect(tools).not.toContainElement(prose as HTMLElement);
+    expect(within(answer).getByText("reachable").tagName).toBe("STRONG");
+    delete transcripts.s3;
+  });
+});
+
+describe("welcome", () => {
+  test("an empty conversation shows the welcome, and a starter chip only fills the composer", async () => {
+    sessionList.mockResolvedValue([sessionInfo("s3", "Empty", "2026-10-02T00:00:00Z")]);
+    const user = userEvent.setup();
+    renderAssistant();
+    expect(await screen.findByRole("heading", { name: "Welcome to oxAudit" })).toBeInTheDocument();
+    expect(screen.getByText("What would you like to audit?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Project for this conversation: No project" })).toBeInTheDocument();
+    await waitFor(() => expect(composer()).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Auth flow checklist" }));
+    expect(composer()).toHaveValue("Help me build a focused checklist for reviewing an authentication flow.");
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(sessionAppend).not.toHaveBeenCalled();
+  });
+
+  test("starter chips work while AI is not configured, but sending stays locked", async () => {
+    setReadiness("unconfigured");
+    sessionList.mockResolvedValue([sessionInfo("s3", "Empty", "2026-10-02T00:00:00Z")]);
+    const user = userEvent.setup();
+    renderAssistant();
+    await user.click(await screen.findByRole("button", { name: "Triage a SQL injection" }));
+    expect(composer()).toHaveValue("What should I check when triaging a reported SQL injection in a Java app?");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
+  test("choosing a recent project starts this conversation in it through the runtime project", async () => {
+    vi.spyOn(api, "listSourceProjects").mockResolvedValue([
+      {
+        projectId: "p1",
+        canonicalPath: "/work/payments",
+        displayName: "payments",
+        lastOpenedAt: "2026-10-02T00:00:00Z",
+        lastCompletedRunId: null,
+        lastCompletedAt: null,
+        openFindings: 0,
+      } as never,
+    ]);
+    const sessionDelete = vi.spyOn(api, "sessionDelete").mockResolvedValue(undefined);
+    const empty = { ...sessionInfo("s3", "New conversation", "2026-10-02T00:00:00Z"), autoTitle: true };
+    sessionList.mockResolvedValue([empty, older]);
+    sessionCreate.mockResolvedValue({
+      ...sessionInfo("s-proj", "New conversation", "2026-10-03T00:00:00Z"),
+      autoTitle: true,
+      projectPath: "/work/payments",
+    });
+    const user = userEvent.setup();
+    renderAssistant();
+    await user.click(await screen.findByRole("button", { name: /Project for this conversation/ }));
+    const list = screen.getByRole("listbox", { name: "Choose a project" });
+    await user.click(await within(list).findByRole("option", { name: "payments" }));
+
+    await waitFor(() => expect(sessionCreate).toHaveBeenCalledWith(null, "/work/payments"));
+    await waitFor(() => expect(api.setActiveProject).toHaveBeenLastCalledWith("/work/payments"));
+    expect(useAppStore.getState().activeProject).toBe("/work/payments");
+    expect(
+      await screen.findByRole("button", { name: "Project for this conversation: payments" }),
+    ).toBeInTheDocument();
+    // The project shows on the composer as a removable chip while the conversation is empty.
+    expect(screen.getByText("Project context:").parentElement).toHaveTextContent("payments");
+    expect(screen.getByRole("button", { name: "Remove the project from this conversation" })).toBeInTheDocument();
+    // The empty conversation it replaced is deleted, and only after the new one opened.
+    await waitFor(() => expect(sessionDelete).toHaveBeenCalledWith("s3"));
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  test("a conversation with messages keeps its project: the chip cannot be removed", async () => {
+    sessionList.mockResolvedValue([{ ...triage, projectPath: "/work/repo" }]);
+    await renderLoaded();
+    expect(screen.getByText("Project context:").parentElement).toHaveTextContent("repo");
+    expect(screen.queryByRole("button", { name: "Remove the project from this conversation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Welcome to oxAudit" })).not.toBeInTheDocument();
+  });
+});
+
+describe("composer", () => {
+  test("Plan & act prefixes the model's copy only; the transcript and session keep the typed text", async () => {
+    const user = await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Plan & act" }));
+    expect(screen.getByRole("button", { name: "Plan & act" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "false");
+    expect(localStorage.getItem("oxaudit.assistant.mode.v1")).toBe("plan");
+
+    const runId = await sendMessage(user, "Audit the upload handler");
+    const [request] = streamChat.mock.calls[0] as [ChatRequest];
+    const sent = request.messages[request.messages.length - 1].content;
+    expect(sent.startsWith("[Plan mode]")).toBe(true);
+    expect(sent.endsWith("\n\nAudit the upload handler")).toBe(true);
+    // Earlier turns are sent as they were typed, never re-prefixed.
+    expect(request.messages[0].content).toBe("Is this SQL injection exploitable?");
+    expect(screen.getByText("Audit the upload handler")).toBeInTheDocument();
+    expect(screen.queryByText(/\[Plan mode\]/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(sessionAppend).toHaveBeenCalledWith("s1", expect.objectContaining({ content: "Audit the upload handler" })),
+    );
+
+    // A steer is folded into the running turn as typed.
+    const steerChat = vi.spyOn(api, "steerChat").mockResolvedValue(true);
+    await user.type(composer(), "only the multipart path{Enter}");
+    expect(steerChat).toHaveBeenCalledWith(runId, "only the multipart path");
+  });
+
+  test("the composer mode is remembered", async () => {
+    localStorage.setItem("oxaudit.assistant.mode.v1", "plan");
+    await renderLoaded();
+    expect(screen.getByRole("button", { name: "Plan & act" })).toHaveAttribute("aria-pressed", "true");
+    expect(composer()).toHaveAttribute("placeholder", "Describe the task; the assistant outlines a plan, then acts…");
+  });
+
+  test("a declined steer re-sent as its own turn is not given the plan prefix", async () => {
+    localStorage.setItem("oxaudit.assistant.mode.v1", "plan");
+    vi.spyOn(api, "steerChat").mockResolvedValue(false);
+    const user = await renderLoaded();
+    const runId = await sendMessage(user, "Summarize the findings");
+    await user.type(composer(), "and rank them{Enter}");
+    emitDone(runId, "Three findings.");
+    await runIdOf(1);
+    const [request] = streamChat.mock.calls[1] as [ChatRequest];
+    expect(request.messages[request.messages.length - 1].content).toBe("and rank them");
+  });
+
+  test("attaching context in Plan & act stores it unprefixed and sends nothing", async () => {
+    localStorage.setItem("oxaudit.assistant.mode.v1", "plan");
+    const user = await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Context" }));
+    const dialog = await screen.findByRole("dialog", { name: "Review context before attaching" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Close" })).toHaveFocus());
+    await user.type(within(dialog).getByRole("textbox", { name: "Context content" }), "snippet");
+    await user.click(within(dialog).getByRole("button", { name: "Attach context" }));
+    await waitFor(() => expect(sessionAppend).toHaveBeenCalled());
+    expect(sessionAppend.mock.calls[0][1].content).toBe("[User-attached source context: Manual context]\n\nsnippet");
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  test("the composer grows to its expanded size and back", async () => {
+    const user = await renderLoaded();
+    expect(composer().style.height).toBe("76px");
+    await user.click(screen.getByRole("button", { name: "Expand input" }));
+    expect(composer().style.height).toBe("200px");
+    await user.click(screen.getByRole("button", { name: "Collapse input" }));
+    expect(composer().style.height).toBe("76px");
+  });
+
+  test("the round send button arms with text and becomes stop (and steer) while a turn runs", async () => {
+    const user = await renderLoaded();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    await user.type(composer(), "Hello");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    await user.keyboard("{Enter}");
+    await runIdOf();
+    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel the running turn" })).toBeEnabled();
+    // Steering appears only once there is something to steer with.
+    expect(screen.queryByRole("button", { name: "Steer the running turn" })).not.toBeInTheDocument();
+    await user.type(composer(), "x");
+    expect(screen.getByRole("button", { name: "Steer the running turn" })).toBeEnabled();
+    // Clearing the transcript is not offered mid-run.
+    expect(screen.queryByRole("button", { name: "Clear conversation" })).not.toBeInTheDocument();
+  });
+
+  test("the toolbar names the configured model, or the readiness state", async () => {
+    useAppStore.setState({
+      settings: { ai: { model: "local-coder", contextWindow: 32000, maxTokens: 1024 } },
+    } as never);
+    await renderLoaded();
+    expect(screen.getByText("local-coder")).toBeInTheDocument();
+    act(() => setReadiness("offline"));
+    expect(screen.queryByText("local-coder")).not.toBeInTheDocument();
+    const notice = screen.getByRole("alert");
+    expect(notice).toHaveTextContent("AI endpoint unavailable");
+    expect(within(notice).getByRole("button", { name: "Open Settings" })).toBeInTheDocument();
   });
 });

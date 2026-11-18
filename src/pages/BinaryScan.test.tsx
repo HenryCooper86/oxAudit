@@ -103,3 +103,10 @@ test('binary reloads the saved A receipt after completing A, editing B, and retu
   expect(scan).toHaveBeenCalledTimes(1);
   expect(useScanWorkStore.getState().recoveryRevision).toBe(revision);
 });
+
+test('the Docker-runtime hint opens Settings on the Binary scanner section', async () => {
+  render(<BinaryScanPage />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
+  expect(useAppStore.getState().page).toBe('settings');
+  expect(useAppStore.getState().settingsSection).toBe('binary-scanner');
+});

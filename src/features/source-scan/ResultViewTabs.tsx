@@ -31,7 +31,7 @@ export function ResultViewTabs(props: {
   };
 
   return (
-    <div role="tablist" aria-label="Finding views" className="flex min-w-0 flex-wrap items-center gap-1 border-b border-border px-3 pt-2">
+    <div role="tablist" aria-label="Finding views" className="flex min-w-0 flex-wrap items-end gap-1 border-b border-border px-3 pt-2">
       {VIEWS.map((view, index) => {
         const selected = value === view.value;
         return (
@@ -49,10 +49,10 @@ export function ResultViewTabs(props: {
             }}
             onClick={() => onChange(view.value)}
             onKeyDown={(event) => moveFocus(event, index)}
-            className={`inline-flex h-8 shrink-0 items-center gap-2 border-b-2 px-2 text-[12px] font-medium transition-colors ${selected ? "border-accent text-text-primary" : "border-transparent text-text-muted hover:text-text-primary"}`}
+            className={`-mb-px inline-flex h-8 shrink-0 items-center gap-2 rounded-t-md border border-b-0 px-2.5 text-[12px] transition-colors ${selected ? "border-border bg-surface-active text-text-primary" : "border-transparent text-text-secondary hover:text-text-primary"}`}
           >
             {view.label}
-            <span className={`min-w-5 rounded-full px-1.5 py-0.5 text-center font-mono text-[10px] ${selected ? "bg-accent-subtle text-accent" : "bg-surface-tertiary text-text-muted"}`}>
+            <span className="tabular-nums text-text-muted">
               {loading ? "…" : counts[view.value]}
             </span>
           </button>

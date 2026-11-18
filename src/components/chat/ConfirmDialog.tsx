@@ -1,5 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
+import { Button } from "../ui";
+import { DIALOG_CARD_CLASS, DIALOG_OVERLAY_CLASS, DIALOG_TITLE_CLASS } from "./dialogRecipe";
 
 /**
  * Modal confirmation for destructive actions, following ApprovalModal's
@@ -76,7 +78,7 @@ export function ConfirmDialog({
     // The backdrop is a pointer-only dismiss target; Escape is the keyboard path.
     <div
       role="presentation"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6"
+      className={DIALOG_OVERLAY_CLASS}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
@@ -88,33 +90,24 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
         aria-describedby="confirm-dialog-description"
-        className="w-full max-w-md rounded-md border border-warning-border bg-surface-secondary p-5 shadow-lg"
+        className={`${DIALOG_CARD_CLASS} max-w-[440px]`}
       >
         <div className="flex items-center gap-2">
-          <AlertTriangle size={17} aria-hidden="true" className="text-warning" />
-          <h3 id="confirm-dialog-title" className="text-[14px] font-semibold text-text-primary">
+          <AlertTriangle size={18} aria-hidden="true" className="shrink-0 text-warning" />
+          <h3 id="confirm-dialog-title" className={DIALOG_TITLE_CLASS}>
             {title}
           </h3>
         </div>
-        <div id="confirm-dialog-description" className="mt-2 space-y-2 text-[13px] leading-relaxed text-text-secondary">
+        <div id="confirm-dialog-description" className="mt-3 space-y-2 text-[12px] leading-relaxed text-text-secondary">
           {children}
         </div>
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <button
-            ref={cancelRef}
-            type="button"
-            onClick={onCancel}
-            className="rounded-sm border border-border bg-transparent px-3 py-2 text-[12px] font-semibold text-text-secondary hover:bg-surface-hover hover:text-text-primary"
-          >
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <Button ref={cancelRef} variant="outline" size="md" onClick={onCancel}>
             Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            className="rounded-sm border border-error-border bg-transparent px-3 py-2 text-[12px] font-semibold text-error hover:bg-error-subtle"
-          >
+          </Button>
+          <Button variant="danger" size="md" onClick={onConfirm}>
             {confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

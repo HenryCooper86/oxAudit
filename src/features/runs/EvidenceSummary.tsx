@@ -150,7 +150,7 @@ export function EvidenceSummary({ label, evidence, running = false, cancelling =
   const differentAttempt = attempt && attempt.id !== receipt.id;
   const attemptWarnings = warnings(differentAttempt ? canonicalWarnings(attempt) : [], operationWarnings);
   const operationLabel = running ? cancelling ? "Cancellation requested" : "Operation running" : operation || (differentAttempt ? `Latest attempt ${attempt.state}` : attempt?.state === "failed" || attempt?.state === "cancelled" ? `Latest saved attempt: ${attempt.state}` : receipt.state === "completed" ? "Operation completed" : receipt.state ? `Receipt ${receipt.state}` : "Operation state unknown");
-  return <section aria-label={`${label} evidence summary`} className="rounded-sm border border-border bg-surface-secondary text-[12px]">
+  return <section aria-label={`${label} evidence summary`} className="surface-card text-[12px]">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
       <h2 className="font-semibold text-text-primary">Evidence summary</h2>
       <p role="status" className={running ? "text-accent" : differentAttempt || operation && operation !== "Operation completed" || !operation && receipt.state !== "completed" ? "text-warning" : "text-text-secondary"}>{operationLabel}</p>

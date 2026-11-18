@@ -128,7 +128,7 @@ incomplete scan as clean.
    explicitly check it. Open `js-eval`, identify the code location and explain why
    it is relevant to the fixture's JSON input contract. Stop the actionable-finding
    timer. Skip and reopen setup once; confirm it never scans without the action.
-3. Choose the preferred editor in Settings, open the finding's file, and replace
+3. Choose the preferred editor in Settings → General, open the finding's file, and replace
    code evaluation with the corrected JSON implementation. Start the resolution
    timer before editing, then use **Recheck finding** after saving. Record the
    exact covered-file result and run IDs. Only count a verified resolution when

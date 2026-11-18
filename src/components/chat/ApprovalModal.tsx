@@ -1,5 +1,12 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
+import { Button } from "../ui";
+import {
+  DIALOG_CARD_CLASS,
+  DIALOG_CODE_CHIP_CLASS,
+  DIALOG_OVERLAY_CLASS,
+  DIALOG_TITLE_CLASS,
+} from "./dialogRecipe";
 
 /**
  * HITL permission approval modal (y-agent hitl.rs): a tool call is waiting for
@@ -81,7 +88,7 @@ export function ApprovalModal({
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
+    <div className={DIALOG_OVERLAY_CLASS}>
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -89,45 +96,33 @@ export function ApprovalModal({
         aria-modal="true"
         aria-labelledby="approval-dialog-title"
         aria-describedby="approval-dialog-description"
-        className="w-full max-w-md rounded-md border border-warning-border bg-surface-secondary p-5 shadow-lg"
+        className={`${DIALOG_CARD_CLASS} max-w-[480px]`}
       >
         <div className="flex items-center gap-2">
-          <ShieldAlert size={17} aria-hidden="true" className="text-warning" />
-          <h3 id="approval-dialog-title" className="text-[14px] font-semibold text-text-primary">
+          <ShieldAlert size={18} aria-hidden="true" className="shrink-0 text-warning" />
+          <h3 id="approval-dialog-title" className={DIALOG_TITLE_CLASS}>
             Tool permission required
           </h3>
-        </div>
-        <p id="approval-dialog-description" className="mt-2 text-[13px] leading-relaxed text-text-secondary">
-          The AI wants to call{" "}
-          <span className="rounded-sm bg-surface-tertiary px-1.5 py-0.5 font-mono text-[12px] text-accent">
-            {tool}
+          <span className="ml-auto shrink-0 text-[11px] font-medium tabular-nums text-warning">
+            Auto-denies in {remaining}s
           </span>
-          . Approve to let it run, or deny to skip it.
+        </div>
+        <p id="approval-dialog-description" className="mt-3 text-[12px] leading-relaxed text-text-secondary">
+          The AI wants to call <code className={DIALOG_CODE_CHIP_CLASS}>{tool}</code>. Approve to
+          let it run, or deny to skip it.
         </p>
         {argumentsPreview && (
-          <pre className="selectable mt-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] leading-relaxed text-text-secondary">
+          <pre className="selectable mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md border border-border bg-surface-code px-3 py-2 font-mono text-[12px] leading-relaxed text-text-secondary">
             {argumentsPreview}
           </pre>
         )}
-        <div className="mt-2 text-right text-[11px] tabular-nums text-text-muted">
-          Auto-denies in {remaining}s
-        </div>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <button
-            ref={denyRef}
-            type="button"
-            onClick={() => onDecide(false)}
-            className="rounded-sm border border-error-border bg-transparent px-3 py-2 text-[12px] font-semibold text-error hover:bg-error-subtle"
-          >
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <Button ref={denyRef} variant="outline" size="md" onClick={() => onDecide(false)}>
             Deny
-          </button>
-          <button
-            type="button"
-            onClick={() => onDecide(true)}
-            className="rounded-sm border border-success-border bg-transparent px-3 py-2 text-[12px] font-semibold text-success hover:bg-success-subtle"
-          >
+          </Button>
+          <Button variant="primary" size="md" onClick={() => onDecide(true)}>
             Approve
-          </button>
+          </Button>
         </div>
       </div>
     </div>

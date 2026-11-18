@@ -2,7 +2,7 @@ import { CircleX, Crosshair } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import { MarkdownLink } from "../components/MarkdownLink";
 import { SeverityBadge } from "../components/SeverityBadge";
-import { Button, Switch, Textarea } from "../components/ui";
+import { Button, Checkbox, Input, SearchField, Switch, Textarea } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultPagination } from "../components/workbench/ResultPagination";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
@@ -42,6 +42,7 @@ export function TemplateScanPage(): JSX.Element {
   const push = useToastStore(state => state.push);
   const openExport = useAppStore(state => state.openExport);
   const setPage = useAppStore(state => state.setPage);
+  const openSettings = useAppStore(state => state.openSettings);
   const setPageStatus = useAppStore(state => state.setPageStatus);
   const clearPageStatus = useAppStore(state => state.clearPageStatus);
   const activeWork = useScanWorkStore(state => state.active);
@@ -220,25 +221,21 @@ export function TemplateScanPage(): JSX.Element {
     {packs && packs.length > 0 && <PackSelector packs={packs} excluded={excluded} onChange={setExcluded} disabled={busy} unit="templates" />}
     <div className="grid gap-3 sm:grid-cols-2">
       <div>
-        <label htmlFor="template-tags" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Only tags</label>
-        <input id="template-tags" value={tagsText} disabled={busy} onChange={event => setTagsText(event.target.value)} placeholder="cve, exposure"
-          className="w-full rounded-sm border border-border bg-surface-secondary px-3 py-2 text-xs text-text-primary placeholder:text-text-muted disabled:opacity-50" />
+        <label htmlFor="template-tags" className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Only tags</label>
+        <Input id="template-tags" value={tagsText} disabled={busy} onChange={event => setTagsText(event.target.value)} placeholder="cve, exposure" />
         <p className="mt-1 text-[11px] text-text-muted">Comma separated. Empty means every tag.</p>
       </div>
       <div>
-        <label htmlFor="template-exclude-tags" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Exclude tags</label>
-        <input id="template-exclude-tags" value={excludeTagsText} disabled={busy} onChange={event => setExcludeTagsText(event.target.value)} placeholder="tech, misc"
-          className="w-full rounded-sm border border-border bg-surface-secondary px-3 py-2 text-xs text-text-primary placeholder:text-text-muted disabled:opacity-50" />
+        <label htmlFor="template-exclude-tags" className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Exclude tags</label>
+        <Input id="template-exclude-tags" value={excludeTagsText} disabled={busy} onChange={event => setExcludeTagsText(event.target.value)} placeholder="tech, misc" />
         <p className="mt-1 text-[11px] text-text-muted">Comma separated.</p>
       </div>
     </div>
     <fieldset disabled={busy}>
-      <legend className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Severities (none selected means all)</legend>
+      <legend className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Severities (none selected means all)</legend>
       <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-        {SEVERITY_CHOICES.map(item => <label key={item} className="inline-flex cursor-pointer items-center gap-2 text-[12px] capitalize text-text-secondary">
-          <input type="checkbox" checked={severities.includes(item)} className="accent-[var(--accent)]"
-            onChange={event => setSeverities(event.target.checked ? [...severities, item] : severities.filter(value => value !== item))} />{item}
-        </label>)}
+        {SEVERITY_CHOICES.map(item => <Checkbox key={item} labelClassName="capitalize" checked={severities.includes(item)}
+          onChange={event => setSeverities(event.target.checked ? [...severities, item] : severities.filter(value => value !== item))}>{item}</Checkbox>)}
       </div>
     </fieldset>
     {mode === "targets" && <div>
@@ -261,9 +258,9 @@ export function TemplateScanPage(): JSX.Element {
       <div className="space-y-4">
         <fieldset disabled={busy} className="min-w-0">
           <legend className="sr-only">Scan mode</legend>
-          <div role="radiogroup" aria-label="Scan mode" className="inline-flex rounded-sm border border-border bg-surface-secondary p-0.5 text-[12px]">
+          <div role="radiogroup" aria-label="Scan mode" className="inline-flex h-9 items-center gap-0.5 rounded-md border border-control-border bg-surface-primary p-[3px] text-[12px] transition-colors hover:border-text-muted">
             {([["path", "Local path"], ["targets", "Live targets"]] as Array<[Mode, string]>).map(([value, label]) => (
-              <label key={value} className={`cursor-pointer rounded-sm px-3 py-1.5 font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent ${mode === value ? "bg-surface-active text-text-primary" : "text-text-muted hover:text-text-primary"}`}>
+              <label key={value} className={`inline-flex h-7 cursor-pointer items-center rounded-sm px-3 font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent ${mode === value ? "bg-accent-subtle text-accent" : "text-text-secondary hover:bg-surface-hover hover:text-text-primary"}`}>
                 <input type="radio" name="template-mode" value={value} checked={mode === value} onChange={() => changeMode(value)} className="sr-only" />{label}
               </label>
             ))}
@@ -273,21 +270,20 @@ export function TemplateScanPage(): JSX.Element {
         {mode === "targets" && !liveAllowed && <InlineState tone="unavailable" title="Live targets are turned off on this server"
           description="This headless server was started without live-target scanning. Start it with --allow-live-targets (or OXAUDIT_SERVER_ALLOW_LIVE_TARGETS=1) to scan live targets. No request is sent from here. Local path scans work without it." />}
 
-        {live && <p role="note" className="rounded-sm border border-border bg-surface-secondary px-4 py-3 text-[12px] leading-relaxed text-text-secondary">
-          Live scans send network requests to the listed targets only. Redirects and lookups outside them are refused. Rate, concurrency, timeout and proxy limits come from Settings, Live scanning.
+        {live && <p role="note" className="surface-card px-4 py-3 text-[12px] leading-relaxed text-text-secondary">
+          Live scans send network requests to the listed targets only. Redirects and lookups outside them are refused. Rate, concurrency, timeout and proxy limits come from{" "}
+          <button type="button" className="rounded-sm text-accent underline underline-offset-2 hover:text-accent-hover" onClick={() => openSettings("live-scanning")}>Settings, Live scanning</button>.
         </p>}
 
         <TargetBar primary={primary} secondary={<>
-          {live && <div className="mb-3 space-y-2 rounded-sm border border-border bg-surface-primary p-3">
+          {live && <div className="mb-3 space-y-2 rounded-md border border-border bg-surface-primary p-3">
             <h2 className="text-[12px] font-semibold text-text-primary">Authorization (required for each run)</h2>
-            <label className="inline-flex cursor-pointer items-center gap-2 text-[12px] text-text-primary">
-              <input type="checkbox" checked={authorized} disabled={busy} onChange={event => setAuthorized(event.target.checked)} className="accent-[var(--accent)]" />
+            <Checkbox labelClassName="text-text-primary" checked={authorized} disabled={busy} onChange={event => setAuthorized(event.target.checked)}>
               I am authorized to test these targets
-            </label>
+            </Checkbox>
             <div>
               <label htmlFor="template-authorization-statement" className="mb-1 block text-[11px] font-semibold text-text-muted">Statement (optional)</label>
-              <input id="template-authorization-statement" value={statement} disabled={busy} maxLength={200} onChange={event => setStatement(event.target.value)} placeholder="Engagement reference or who approved this"
-                className="w-full rounded-sm border border-border bg-surface-secondary px-3 py-2 text-xs text-text-primary placeholder:text-text-muted disabled:opacity-50" />
+              <Input id="template-authorization-statement" value={statement} disabled={busy} maxLength={200} onChange={event => setStatement(event.target.value)} placeholder="Engagement reference or who approved this" />
               <p className="mt-1 text-[11px] text-text-muted">Saved with this run's results, with the time. The acknowledgement is not remembered; tick it again for every run.</p>
             </div>
           </div>}
@@ -303,7 +299,7 @@ export function TemplateScanPage(): JSX.Element {
             />
           ) : (
             <div className="min-w-0">
-              <label htmlFor="template-targets" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Targets</label>
+              <label htmlFor="template-targets" className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Targets</label>
               <Textarea id="template-targets" rows={5} value={targetsText} disabled={busy} spellCheck={false} className="font-mono text-xs"
                 placeholder={"https://staging.example.com\n10.0.0.5:8080\n192.168.1.0/28"}
                 onChange={event => { setTargetsText(event.target.value); setAuthorized(false); }} />
@@ -343,12 +339,10 @@ export function TemplateScanPage(): JSX.Element {
         )}
 
         {result && matchTotal > 0 && (
-          <section aria-label="Template results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+          <section aria-label="Template results" className="overflow-hidden surface-card">
             <ResultsToolbar
               countLabel={receipt && savedMatches.loading ? `Loading this view · ${matchTotal.toLocaleString()} matches` : receipt && savedMatches.error ? `This view is unavailable · ${matchTotal.toLocaleString()} matches` : `${matches.total.toLocaleString()} shown · ${matchTotal.toLocaleString()} ${matchTotal === 1 ? "match" : "matches"}`}
-              search={<label className="relative min-w-0"><span className="sr-only">Search matches</span>
-                <input value={search} onChange={event => { setSearch(event.target.value); setSelectedId(null); }} placeholder="Search template, target, matcher…"
-                  className="w-56 rounded-sm border border-border bg-surface-primary px-2 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted" /></label>}
+              search={<SearchField aria-label="Search matches" wrapperClassName="w-60" value={search} onChange={event => { setSearch(event.target.value); setSelectedId(null); }} placeholder="Search template, target, matcher…" />}
             />
             {receipt && <ServerPageState page={savedMatches} />}
             <SplitWorkspace panelId="template-matches" listLabel="Template matches"
@@ -381,16 +375,14 @@ export function TemplateScanPage(): JSX.Element {
         )}
 
         {result && notEvaluatedTotal > 0 && (
-          <section aria-label="Not evaluated" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+          <section aria-label="Not evaluated" className="overflow-hidden surface-card">
             <div className="border-b border-border px-4 py-3">
               <h2 className="text-[13px] font-semibold text-text-primary">Not evaluated ({notEvaluatedTotal.toLocaleString()})</h2>
               <p className="mt-1 text-[12px] text-text-muted">These templates or checks did not run, so nothing is known from them. They are listed rather than dropped.{result.notEvaluatedDropped > 0 ? ` ${result.notEvaluatedDropped.toLocaleString()} more were not listed.` : ""}</p>
               {reasonCounts.length > 0 && <ul aria-label={receipt ? "Reasons on this page" : "Reasons"} className="mt-2 flex flex-wrap gap-2">
-                {reasonCounts.map(([reason, count]) => <li key={reason} className="rounded-sm border border-border bg-surface-primary px-2 py-1 text-[11px] text-text-secondary">{count.toLocaleString()} · {reason}</li>)}
+                {reasonCounts.map(([reason, count]) => <li key={reason} className="rounded-md border border-border bg-surface-primary px-2 py-1 text-[11px] text-text-secondary">{count.toLocaleString()} · {reason}</li>)}
               </ul>}
-              <label className="mt-2 block"><span className="sr-only">Search not evaluated</span>
-                <input value={notEvaluatedSearch} onChange={event => setNotEvaluatedSearch(event.target.value)} placeholder="Search reason, template, target…"
-                  className="w-64 rounded-sm border border-border bg-surface-primary px-2 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted" /></label>
+              <SearchField aria-label="Search not evaluated" wrapperClassName="mt-2 w-72" value={notEvaluatedSearch} onChange={event => setNotEvaluatedSearch(event.target.value)} placeholder="Search reason, template, target…" />
             </div>
             {receipt && <ServerPageState page={savedNotEvaluated} />}
             <ul aria-label="Templates and checks that were not evaluated" className="divide-y divide-border">
@@ -407,7 +399,7 @@ export function TemplateScanPage(): JSX.Element {
           render={file => <><span className="break-all font-mono text-text-primary">{file.path}</span><span className="mt-0.5 block text-text-muted">{file.reason}</span></>} />}
 
         {result && result.notes.length > 0 && (
-          <section aria-label="Run notes" className="rounded-sm border border-border bg-surface-secondary px-4 py-3">
+          <section aria-label="Run notes" className="surface-card px-4 py-3">
             <h2 className="text-[13px] font-semibold text-text-primary">Run notes</h2>
             <ul className="mt-1 list-disc space-y-1 pl-4 text-[12px] text-text-secondary">{result.notes.map(note => <li key={note}>{note}</li>)}</ul>
           </section>
@@ -419,7 +411,7 @@ export function TemplateScanPage(): JSX.Element {
 
 function PagedSection<T>({ title, note, label, items, render }: { title: string; note?: string; label: string; items: readonly T[]; render(item: T): ReactNode }): JSX.Element {
   const pagination = usePagination(items, 25);
-  return <section aria-label={title} className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+  return <section aria-label={title} className="overflow-hidden surface-card">
     <div className="border-b border-border px-4 py-3">
       <h2 className="text-[13px] font-semibold text-text-primary">{title}</h2>
       {note && <p className="mt-1 text-[12px] text-text-muted">{note}</p>}
@@ -434,7 +426,7 @@ function PagedSection<T>({ title, note, label, items, render }: { title: string;
 function ScopeSummary({ result }: { result: TemplateScanResult }): JSX.Element {
   const authorization = result.authorization;
   const when = authorization ? new Date(authorization.acknowledgedAtMs) : null;
-  return <section aria-label="Scope" className="rounded-sm border border-border bg-surface-secondary">
+  return <section aria-label="Scope" className="surface-card">
     <div className="border-b border-border px-4 py-3"><h2 className="text-[13px] font-semibold text-text-primary">Scope</h2>
       <p className="mt-1 text-[12px] text-text-muted">What this live run was allowed to reach, and what it did.</p></div>
     <dl className="grid gap-3 px-4 py-3 text-[12px] min-[700px]:grid-cols-3">
@@ -458,7 +450,7 @@ function Block({ title, children }: { title: string; children: ReactNode }): JSX
 
 function CodeBlock({ label, text }: { label: string; text: string }): JSX.Element {
   // Text node only: stored exchanges are untrusted network content.
-  return <pre aria-label={label} className="selectable max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-sm border border-border bg-surface-code p-2 font-mono text-[11px] text-text-primary">{text}</pre>;
+  return <pre aria-label={label} className="selectable max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-surface-code p-2 font-mono text-[11px] text-text-primary">{text}</pre>;
 }
 
 function MatchDetail({ row }: { row: TemplateMatchRow }): JSX.Element {
@@ -496,7 +488,7 @@ function MatchDetail({ row }: { row: TemplateMatchRow }): JSX.Element {
       <ul aria-label="Matched lines" className="space-y-1">
         {lines.items.map((line, index) => <li key={`${line.line}:${line.startColumn}:${index}`}>
           <span className="font-mono text-[11px] text-text-muted">Line {line.line}, columns {line.startColumn}–{line.endColumn}</span>
-          <pre className="selectable mt-0.5 overflow-x-auto whitespace-pre-wrap break-all rounded-sm border border-border bg-surface-code p-2 font-mono text-[11px] text-text-primary">{line.text}</pre>
+          <pre className="selectable mt-0.5 overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-border bg-surface-code p-2 font-mono text-[11px] text-text-primary">{line.text}</pre>
         </li>)}
       </ul>
       {lines.pageCount > 1 && <ResultPagination pagination={lines} label="matched lines" onPageChange={lines.setPage} />}

@@ -32,7 +32,7 @@ export const ChatSearchToolbar = forwardRef<HTMLInputElement, ChatSearchToolbarP
       <div
         role="search"
         aria-label="Search conversation"
-        className="flex items-center gap-1.5 border-b border-border bg-surface-secondary px-3 py-2"
+        className="flex shrink-0 items-center gap-1.5 border-b border-border bg-surface-secondary px-4 py-2"
       >
         <Search size={14} aria-hidden="true" className="shrink-0 text-text-muted" />
         <Input

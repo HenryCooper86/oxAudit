@@ -1,7 +1,7 @@
 import { CircleX, ScanSearch } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { SeverityBadge } from "../components/SeverityBadge";
-import { Button, Select } from "../components/ui";
+import { Button, Input, SearchField, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultPagination } from "../components/workbench/ResultPagination";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
@@ -188,10 +188,10 @@ export function YaraScanPage(): JSX.Element {
         </>} secondary={<div className="flex min-w-0 flex-wrap items-start gap-x-6 gap-y-3">
           {packs && packs.length > 0 && <PackSelector packs={packs} excluded={excluded} onChange={setExcluded} disabled={running} unit="rules" />}
           <div>
-            <label htmlFor="yara-max-file" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Max file size (MiB)</label>
-            <input id="yara-max-file" inputMode="numeric" value={maxFileMb} disabled={running} aria-invalid={fileSize.error ? true : undefined}
+            <label htmlFor="yara-max-file" className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Max file size (MiB)</label>
+            <Input id="yara-max-file" inputMode="numeric" value={maxFileMb} disabled={running} aria-invalid={fileSize.error ? true : undefined}
               onChange={event => setMaxFileMb(event.target.value)}
-              className="w-28 rounded-sm border border-border bg-surface-secondary px-3 py-2 text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-50" />
+              className="w-28" />
             <p className="mt-1.5 max-w-xs text-[11px] text-text-muted">Larger files are listed as not scanned. Default 64.</p>
             {fileSize.error && <p role="alert" className="mt-1 text-[12px] text-error">{fileSize.error}</p>}
           </div>
@@ -236,15 +236,13 @@ export function YaraScanPage(): JSX.Element {
         )}
 
         {result && matchTotal > 0 && (
-          <section aria-label="YARA results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+          <section aria-label="YARA results" className="overflow-hidden surface-card">
             <ResultsToolbar
               countLabel={receipt && savedMatches.loading ? `Loading this view · ${matchTotal.toLocaleString()} matches` : receipt && savedMatches.error ? `This view is unavailable · ${matchTotal.toLocaleString()} matches` : `${matches.total.toLocaleString()} shown · ${matchTotal.toLocaleString()} ${matchTotal === 1 ? "match" : "matches"}`}
               filters={<Select aria-label="Match severity" variant="compact" value={severity} onChange={event => { setSeverity(event.target.value as Severity | "all"); setSelectedId(null); }}>
                 {SEVERITIES.map(item => <option key={item} value={item}>{item === "all" ? "All severities" : item}</option>)}
               </Select>}
-              search={<label className="relative min-w-0"><span className="sr-only">Search matches</span>
-                <input value={search} onChange={event => { setSearch(event.target.value); setSelectedId(null); }} placeholder="Search rule, pack, path…"
-                  className="w-52 rounded-sm border border-border bg-surface-primary px-2 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted" /></label>}
+              search={<SearchField aria-label="Search matches" wrapperClassName="w-56" value={search} onChange={event => { setSearch(event.target.value); setSelectedId(null); }} placeholder="Search rule, pack, path…" />}
             />
             {receipt && <ServerPageState page={savedMatches} />}
             <SplitWorkspace panelId="yara-matches" listLabel="Rule matches"
@@ -276,7 +274,7 @@ export function YaraScanPage(): JSX.Element {
         )}
 
         {result && skippedTotal > 0 && (
-          <section aria-label="Not scanned" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+          <section aria-label="Not scanned" className="overflow-hidden surface-card">
             <div className="border-b border-border px-4 py-3">
               <h2 className="text-[13px] font-semibold text-text-primary">Not scanned ({skippedTotal.toLocaleString()})</h2>
               <p className="mt-1 text-[12px] text-text-muted">These files were not evaluated. Nothing is known about them from this run.{result.skippedDropped > 0 ? ` ${result.skippedDropped.toLocaleString()} more were not listed.` : ""}</p>
@@ -292,7 +290,7 @@ export function YaraScanPage(): JSX.Element {
         )}
 
         {result && result.rulesSkipped.length > 0 && (
-          <section aria-label="Rule files that were not applied" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+          <section aria-label="Rule files that were not applied" className="overflow-hidden surface-card">
             <div className="border-b border-border px-4 py-3">
               <h2 className="text-[13px] font-semibold text-text-primary">Rule files that were not applied ({result.rulesSkippedTotal.toLocaleString()})</h2>
               <p className="mt-1 text-[12px] text-text-muted">These rule files did not compile. What they would have matched is unknown.</p>
@@ -307,7 +305,7 @@ export function YaraScanPage(): JSX.Element {
         )}
 
         {result && result.notes.length > 0 && (
-          <section aria-label="Run notes" className="rounded-sm border border-border bg-surface-secondary px-4 py-3">
+          <section aria-label="Run notes" className="surface-card px-4 py-3">
             <h2 className="text-[13px] font-semibold text-text-primary">Run notes</h2>
             <ul className="mt-1 list-disc space-y-1 pl-4 text-[12px] text-text-secondary">{result.notes.map(note => <li key={note}>{note}</li>)}</ul>
           </section>
@@ -346,7 +344,7 @@ function MatchDetail({ row }: { row: YaraMatchRow }): JSX.Element {
               <td className="py-1.5 pr-3 font-mono text-text-primary">{match.identifier}</td>
               <td className="py-1.5 pr-3 font-mono">{offsetLabel(match.offset)}</td>
               <td className="py-1.5 pr-3 font-mono">{match.length.toLocaleString()} bytes</td>
-              <td className="py-1.5"><code className="block break-all rounded-sm border border-border bg-surface-code px-2 py-1 font-mono text-[11px] text-text-primary">{spacedHex(match.excerptHex)}</code>
+              <td className="py-1.5"><code className="block break-all rounded-md border border-border bg-surface-code px-2 py-1 font-mono text-[11px] text-text-primary">{spacedHex(match.excerptHex)}</code>
                 <code className="mt-1 block break-all font-mono text-[11px] text-text-muted" aria-label="Printable rendering">{printableAscii(match.excerptHex)}</code>
                 {match.excerptMasked && <span className="mt-0.5 block text-[11px] text-text-muted">Masked: this rule reports secrets, so only the first bytes (if any) and the length are kept.</span>}
                 {!match.excerptMasked && match.length > spacedHex(match.excerptHex).split(" ").filter(Boolean).length && <span className="mt-0.5 block text-[11px] text-text-muted">Excerpt shows the first {spacedHex(match.excerptHex).split(" ").filter(Boolean).length} of {match.length.toLocaleString()} bytes.</span>}

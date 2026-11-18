@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import Markdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { normalizeSearchQuery, splitSearchMatches } from "../../lib/chatSearch";
 import { MarkdownLink } from "../MarkdownLink";
 
@@ -83,11 +84,17 @@ export function HighlightedText({ text, query }: { text: string; query: string }
   return <>{highlightNode(text, normalizeSearchQuery(query))}</>;
 }
 
+const REMARK_PLUGINS = [remarkGfm];
+
 export function SearchableMarkdown({ content, query }: { content: string; query: string }) {
   const normalizedQuery = normalizeSearchQuery(query);
   const components = useMemo(
     () => markdownComponents(normalizedQuery),
     [normalizedQuery],
   );
-  return <Markdown components={components}>{content}</Markdown>;
+  return (
+    <Markdown remarkPlugins={REMARK_PLUGINS} components={components}>
+      {content}
+    </Markdown>
+  );
 }

@@ -49,7 +49,7 @@ function SummaryCards({ assessment }: { assessment: ComplianceAssessment }): JSX
   return (
     <div className="grid grid-cols-2 gap-2 min-[680px]:grid-cols-6">
       {metrics.map(([label, value]) => (
-        <div key={label} className="rounded-sm border border-border bg-surface-primary px-3 py-2.5">
+        <div key={label} className="rounded-md border border-border bg-surface-primary px-3 py-2.5">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">{label}</p>
           <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{value}</p>
         </div>
@@ -111,7 +111,7 @@ function ControlReviewCard({
           {control.evidence.length ? (
             <ul className="mt-1.5 space-y-1.5">
               {control.evidence.map((evidence) => (
-                <li key={`${evidence.kind}:${evidence.locator}`} className="break-all rounded-sm border border-border bg-surface-secondary px-2.5 py-2 font-mono text-[10px] text-text-secondary">
+                <li key={`${evidence.kind}:${evidence.locator}`} className="break-all rounded-md border border-border bg-surface-secondary px-2.5 py-2 font-mono text-[10px] text-text-secondary">
                   <span className="mr-2 font-sans font-semibold uppercase text-accent">{evidence.kind}</span>{evidence.locator}
                   {evidence.contentSha256 ? <span className="mt-1 block text-text-muted">SHA-256 {evidence.contentSha256}</span> : null}
                 </li>
@@ -120,7 +120,7 @@ function ControlReviewCard({
           ) : <p className="mt-1 text-[11px] text-text-muted">No matching evidence was collected for this control.</p>}
         </div>
         {latestReview ? (
-          <div className="mt-3 rounded-sm border border-success-border bg-success-subtle px-3 py-2 text-[11px] text-text-secondary">
+          <div className="mt-3 rounded-md border border-success-border bg-success-subtle px-3 py-2 text-[11px] text-text-secondary">
             Latest review by <strong>{latestReview.author}</strong> on {new Date(latestReview.reviewedAtMs).toLocaleString()}: {latestReview.note}
           </div>
         ) : null}
@@ -240,11 +240,11 @@ export function ComplianceCenterPage(): JSX.Element {
       description="Collect bounded project evidence, map it to readiness profiles, and record qualified human decisions without claiming certification."
       actions={<Button variant="outline" onClick={() => setPage("report-studio")}><FileCheck2 size={13} aria-hidden="true" />Open Report Studio</Button>}
     >
-      <div className="rounded-sm border border-warning-border bg-warning-subtle px-4 py-3 text-[12px] leading-relaxed text-text-secondary">
+      <div className="rounded-md border border-warning-border bg-warning-subtle px-4 py-3 text-[12px] leading-relaxed text-text-secondary">
         <p className="flex items-start gap-2"><ShieldAlert size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-warning" /><span><strong>Evidence readiness, not certification.</strong> Built-in profiles are original high-level mappings to official sources. oxAudit never bundles copyrighted ISO requirements or substitutes for legal, safety, privacy, audit, or type-approval judgment.</span></p>
       </div>
 
-      <section className="rounded-sm border border-border bg-surface-secondary p-4">
+      <section className="surface-card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><h2 className="text-[13px] font-semibold text-text-primary">1. Choose evidence scope</h2><p className="mt-1 text-[11px] text-text-muted">The collector follows no symlinks, skips build/vendor trees, caps depth and file count, and sends no file contents to the UI.</p></div>
           <span className="rounded-full border border-border bg-surface-primary px-2 py-1 text-[10px] text-text-muted">Local-only · bounded · content hashes</span>
@@ -258,7 +258,7 @@ export function ComplianceCenterPage(): JSX.Element {
         </div>
       </section>
 
-      <section className="rounded-sm border border-border bg-surface-secondary p-4">
+      <section className="surface-card p-4">
       <div className="flex items-center justify-between gap-3"><div><h2 className="text-[13px] font-semibold text-text-primary">2. Select frameworks</h2><p className="mt-1 text-[11px] text-text-muted">{selectedIds.length} of {profiles?.length ?? 0} selected. Each produces a separate immutable assessment.</p></div><Button variant="primary" disabled={!canRun || running} onClick={() => void runAssessment()}><Play size={13} aria-hidden="true" />{running ? "Collecting…" : "Collect selected evidence"}</Button></div>
         {!profiles && !error ? <div className="mt-3"><InlineState compact tone="running" title="Loading built-in profiles" /></div> : null}
         <div className="mt-4 grid gap-2 min-[720px]:grid-cols-2">
@@ -276,7 +276,7 @@ export function ComplianceCenterPage(): JSX.Element {
       {error ? <InlineState tone="error" title="Compliance workflow unavailable" description={error} /> : null}
 
       <div className={`grid transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${historyCollapsed ? "gap-3 min-[1000px]:grid-cols-[44px_minmax(0,1fr)]" : "gap-5 min-[1000px]:grid-cols-[17rem_minmax(0,1fr)]"}`}>
-        <section className="min-w-0 rounded-sm border border-border bg-surface-secondary">
+        <section className="min-w-0 surface-card">
           <header className={`flex min-h-10 items-center justify-between border-b border-border px-3 py-2 ${historyCollapsed ? "min-[1000px]:justify-center min-[1000px]:px-1 min-[1000px]:py-0" : ""}`}><h2 className={`flex items-center gap-2 text-[12px] font-semibold text-text-primary ${historyCollapsed ? "min-[1000px]:hidden" : ""}`}><History size={13} aria-hidden="true" />Assessment history</h2><PanelCollapseButton controls="compliance-history-content" expanded={!historyCollapsed} label="assessment history" onToggle={toggleHistoryCollapsed} className="hidden min-[1000px]:inline-flex" /></header>
           <div id="compliance-history-content" className={historyCollapsed ? "min-[1000px]:hidden" : undefined}>
           {!history ? <div className="p-3"><InlineState compact tone="running" title="Loading history" /></div> : null}
@@ -291,7 +291,7 @@ export function ComplianceCenterPage(): JSX.Element {
           </div>
         </section>
 
-        <section className="min-w-0 overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <section className="min-w-0 overflow-hidden surface-card">
           {loadingView ? <div className="p-4"><InlineState tone="running" title="Loading assessment evidence" /></div> : null}
           {!selectedView && !loadingView ? <div className="p-4"><InlineState tone="idle" title="Select or run an assessment" description="The durable control matrix, evidence paths, and append-only review tools will appear here." /></div> : null}
           {selectedView && !loadingView ? (

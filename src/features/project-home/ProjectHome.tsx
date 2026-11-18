@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FolderPicker } from "../../components/FolderPicker";
 import { Button } from "../../components/ui";
+import { listRowClassName } from "../../components/workbench/listRow";
 import { normalizeCommandError } from "../../lib/commandError";
 import { api } from "../../lib/api";
 import { resolveRuntimeProject } from "../../lib/assistantSessions";
@@ -31,6 +32,16 @@ export function ProjectHome() {
   const [selecting, setSelecting] = useState(false);
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
+  const sectionRef = useRef<HTMLElement>(null);
+  const projectFieldRequest = useAppStore((state) => state.projectFieldRequest);
+  const consumeProjectFieldRequest = useAppStore((state) => state.consumeProjectFieldRequest);
+  // The shell's "Open project" in server mode (no native picker) asks for the
+  // typed folder field; focus it once and clear the request.
+  useEffect(() => {
+    if (projectFieldRequest === null) return;
+    sectionRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+    consumeProjectFieldRequest();
+  }, [projectFieldRequest, consumeProjectFieldRequest]);
   useEffect(() => {
     let current = true;
     setLoading(true);
@@ -100,12 +111,13 @@ export function ProjectHome() {
   };
   return (
     <section
+      ref={sectionRef}
       aria-label="Project home"
       className="space-y-4 text-[13px] text-text-secondary"
     >
-      <div className="space-y-3 rounded-sm bg-surface-secondary p-4">
+      <div className="surface-card space-y-3 p-4">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-[13px] font-semibold">Your project</h2>
+          <h2 className="text-[13px] font-semibold text-text-primary">Your project</h2>
           <Button
             variant="outline"
             onClick={() => setRevision((value) => value + 1)}
@@ -301,7 +313,7 @@ export function ProjectHome() {
             {displayedCheck.status === "failed" && (
               <Button
                 variant="outline"
-                onClick={() => useAppStore.getState().setPage("settings")}
+                onClick={() => useAppStore.getState().openSettings("scan-defaults")}
               >
                 Review Settings
               </Button>
@@ -310,7 +322,7 @@ export function ProjectHome() {
         )}
       </div>
       <div className="space-y-2">
-        <h2 className="text-[13px] font-semibold">Recent projects</h2>
+        <h2 className="px-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Recent projects</h2>
         {loading && <p role="status">Loading project history…</p>}
         {loadError && (
           <p role="alert" className="text-error">
@@ -328,7 +340,7 @@ export function ProjectHome() {
             type="button"
             aria-current={project.path === selected ? "true" : undefined}
             onClick={() => choose(project.path)}
-            className="block w-full rounded-sm border border-border bg-surface-secondary p-3 text-left hover:bg-surface-hover"
+            className={`block w-full px-3.5 py-3 text-left ${listRowClassName(project.path === selected)}`}
           >
             <span className="font-medium text-[13px]">{project.name}</span>
             <span className="block break-all font-mono text-[12px] text-text-muted">

@@ -9,7 +9,7 @@ export function ResultsToolbar(props: {
   const { countLabel, filters, search, actions } = props;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-secondary px-3 py-2.5">
+    <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-secondary px-3 py-2">
       <span className="mr-1 text-[12px] font-medium tabular-nums text-text-secondary">{countLabel}</span>
       {filters && <div className="flex flex-wrap items-center gap-2">{filters}</div>}
       {(search || actions) && (

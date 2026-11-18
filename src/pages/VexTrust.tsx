@@ -3,7 +3,7 @@ import { BadgeCheck, ShieldOff, Wand2 } from "lucide-react";
 import { api } from "../lib/api";
 import type { CanonicalRun, VexClaimSet, VexSuggestions } from "../lib/types";
 import { useToastStore } from "../lib/stores";
-import { Button, SectionLabel } from "../components/ui";
+import { Button, Input, SectionLabel, Select } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { normalizeCommandError } from "../lib/commandError";
 
@@ -119,22 +119,22 @@ export function VexTrustPage() {
       description="Imported claims are inert until a person trusts their document. Trusted not_affected claims then surface as triage suggestions — never automatic review changes (ADR 0003)."
     >
       <div className="space-y-4">
-        <section className="rounded-sm border border-border bg-surface-secondary p-4">
+        <section className="surface-card p-4">
           <SectionLabel>Trust grants</SectionLabel>
           <p className="mt-2 text-[12px] text-text-secondary">
             Recorded for audit: who granted trust, when, and the document's content hash. Revocable.
           </p>
           <div className="mt-2 flex flex-wrap gap-2 text-[12px]">
-            <input
+            <Input
               aria-label="Granted by"
-              className="min-w-[160px] rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
+              className="h-8 min-w-[160px] flex-1 text-[12px] sm:max-w-xs"
               placeholder="granted by (your name)"
               value={grantedBy}
               onChange={(event) => setGrantedBy(event.target.value)}
             />
-            <input
+            <Input
               aria-label="Trust note"
-              className="min-w-[240px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
+              className="h-8 min-w-[240px] flex-[2] text-[12px]"
               placeholder="note (why this document is trusted)"
               value={note}
               onChange={(event) => setNote(event.target.value)}
@@ -148,20 +148,20 @@ export function VexTrustPage() {
         </section>
 
         {claimsError && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-warning">
+          <section className="surface-card p-4 text-[13px] text-warning">
             <p>{claimsError}</p>
             <Button variant="outline" onClick={() => void refreshClaims()}>Retry claim documents</Button>
           </section>
         )}
         {claimSets === null ? !claimsError && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-text-secondary">Loading claim documents…</section>
+          <section className="surface-card p-4 text-[13px] text-text-secondary">Loading claim documents…</section>
         ) : claimSets.length === 0 ? (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-text-secondary">
+          <section className="surface-card p-4 text-[13px] text-text-secondary">
             No imported claim documents. Import a SARIF, OpenVEX, or CycloneDX VEX report from the
             Export Center, or with <code>oxaudit-cli import</code>.
           </section>
         ) : (
-          <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary text-[13px]">
+          <section className="overflow-hidden surface-card text-[13px]">
             <ul className="divide-y divide-border">
               {claimSets.map((set) => (
                 <li key={set.contentSha256} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
@@ -192,12 +192,13 @@ export function VexTrustPage() {
           </section>
         )}
 
-        <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px]">
+        <section className="surface-card p-4 text-[13px]">
           <SectionLabel>Suggestions against a dependency run</SectionLabel>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <select
+            <Select
               aria-label="Dependency run"
-              className="min-w-[280px] rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
+              variant="compact"
+              className="min-w-[280px]"
               value={runId}
               onChange={(event) => {
                 invalidateSuggestions();
@@ -210,7 +211,7 @@ export function VexTrustPage() {
                   {run.targetLabel} · {new Date(run.updatedAtMs).toLocaleString()}
                 </option>
               ))}
-            </select>
+            </Select>
             <Button disabled={!runId || busy !== null} onClick={suggest}>
               <Wand2 size={13} aria-hidden />
               Suggest
@@ -219,7 +220,7 @@ export function VexTrustPage() {
         </section>
 
         {suggestions && (
-          <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary text-[13px]">
+          <section className="overflow-hidden surface-card text-[13px]">
             {suggestions.suggestions.length === 0 ? (
               <div className="px-4 py-3 text-text-secondary">
                 No suggestions from trusted documents against this run.
@@ -259,7 +260,7 @@ export function VexTrustPage() {
         )}
 
         {suggestionError && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-warning">{suggestionError}</section>
+          <section className="surface-card p-4 text-[13px] text-warning">{suggestionError}</section>
         )}
 
         <p className="border-t border-border px-4 py-3 text-[11px] text-text-muted">

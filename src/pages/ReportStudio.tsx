@@ -139,7 +139,7 @@ export function ReportStudioPage(): JSX.Element {
 
   return (
     <ToolPage title="Report Studio" description="Compile one durable assessment into a professional, reproducible report without changing its evidence or review history.">
-      <div className="rounded-sm border border-warning-border bg-warning-subtle px-4 py-3 text-[12px] text-text-secondary"><p className="flex items-start gap-2"><ShieldAlert size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-warning" /><span>Every format carries the same claim boundary: evidence readiness is not certification, legal advice, or a conformity determination.</span></p></div>
+      <div className="rounded-md border border-warning-border bg-warning-subtle px-4 py-3 text-[12px] text-text-secondary"><p className="flex items-start gap-2"><ShieldAlert size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-warning" /><span>Every format carries the same claim boundary: evidence readiness is not certification, legal advice, or a conformity determination.</span></p></div>
       {!assessments && !error ? <InlineState tone="running" title="Loading durable assessments" /> : null}
       {assessments?.length === 0 ? <InlineState tone="empty" title="No compliance assessments are available" description="Run checks in Compliance Center before compiling a report." /> : null}
       {error ? <InlineState tone="error" title="Report Studio unavailable" description={error} /> : null}
@@ -148,13 +148,13 @@ export function ReportStudioPage(): JSX.Element {
       {assessments?.length ? (
         <div className="grid gap-5 min-[1050px]:grid-cols-[minmax(0,1fr)_minmax(24rem,0.9fr)]">
           <div className="space-y-5">
-            <section className="rounded-sm border border-border bg-surface-secondary p-4">
+            <section className="surface-card p-4">
               <h2 className="text-[13px] font-semibold text-text-primary">1. Report source</h2>
               <label className="mt-3 block text-[11px] text-text-secondary">Durable assessment<Select className="mt-1" value={assessmentId} onChange={(event) => selectAssessment(event.target.value)}>{assessments.map((assessment) => <option key={assessment.id} value={assessment.id}>{assessment.profileName} · {assessment.summary.evidenceCoveragePercent}% · {new Date(assessment.createdAtMs).toLocaleString()}</option>)}</Select></label>
-              {selectedAssessment ? <div className="mt-3 grid grid-cols-2 gap-2 text-[10px] min-[640px]:grid-cols-4"><div className="rounded-sm border border-border bg-surface-primary p-2"><span className="text-text-muted">Controls</span><strong className="mt-1 block text-base text-text-primary">{selectedAssessment.summary.total}</strong></div><div className="rounded-sm border border-border bg-surface-primary p-2"><span className="text-text-muted">Coverage</span><strong className="mt-1 block text-base text-text-primary">{selectedAssessment.summary.evidenceCoveragePercent}%</strong></div><div className="rounded-sm border border-border bg-surface-primary p-2"><span className="text-text-muted">Gaps</span><strong className="mt-1 block text-base text-text-primary">{selectedAssessment.summary.gap}</strong></div><div className="rounded-sm border border-border bg-surface-primary p-2"><span className="text-text-muted">Manual</span><strong className="mt-1 block text-base text-text-primary">{selectedAssessment.summary.manualReview}</strong></div></div> : null}
+              {selectedAssessment ? <div className="mt-3 grid grid-cols-2 gap-2 text-[10px] min-[640px]:grid-cols-4"><div className="rounded-md border border-border bg-surface-primary p-2"><span className="text-text-muted">Controls</span><strong className="mt-1 block text-base text-text-primary">{selectedAssessment.summary.total}</strong></div><div className="rounded-md border border-border bg-surface-primary p-2"><span className="text-text-muted">Coverage</span><strong className="mt-1 block text-base text-text-primary">{selectedAssessment.summary.evidenceCoveragePercent}%</strong></div><div className="rounded-md border border-border bg-surface-primary p-2"><span className="text-text-muted">Gaps</span><strong className="mt-1 block text-base text-text-primary">{selectedAssessment.summary.gap}</strong></div><div className="rounded-md border border-border bg-surface-primary p-2"><span className="text-text-muted">Manual</span><strong className="mt-1 block text-base text-text-primary">{selectedAssessment.summary.manualReview}</strong></div></div> : null}
             </section>
 
-            <section className="rounded-sm border border-border bg-surface-secondary p-4">
+            <section className="surface-card p-4">
               <h2 className="text-[13px] font-semibold text-text-primary">2. Document identity</h2>
               <div className="mt-3 grid gap-3 min-[700px]:grid-cols-2">
                 <label className="text-[11px] text-text-secondary min-[700px]:col-span-2">Report title<Input className="mt-1" value={metadata.title} onChange={(event) => updateMetadata("title", event.target.value)} maxLength={160} /></label>
@@ -165,7 +165,7 @@ export function ReportStudioPage(): JSX.Element {
               </div>
             </section>
 
-            <section className="rounded-sm border border-border bg-surface-secondary p-4">
+            <section className="surface-card p-4">
               <h2 className="text-[13px] font-semibold text-text-primary">3. Format and disclosure</h2>
               <div className="mt-3 grid gap-2 min-[700px]:grid-cols-2">
                 {REPORT_FORMATS.map((item) => { const Icon = item.icon; const active = format === item.id; return <button key={item.id} type="button" aria-pressed={active} onClick={() => { invalidatePreview(); setFormat(item.id); }} className={`flex items-start gap-3 rounded-sm border p-3 text-left ${active ? "border-accent bg-accent-subtle" : "border-border bg-surface-primary hover:bg-surface-hover"}`}><Icon size={15} aria-hidden="true" className={active ? "text-accent" : "text-text-muted"} /><span><strong className="block text-[11px] text-text-primary">{item.label}</strong><span className="mt-1 block text-[10px] leading-relaxed text-text-muted">{item.description}</span></span></button>; })}
@@ -174,7 +174,7 @@ export function ReportStudioPage(): JSX.Element {
             </section>
           </div>
 
-          <section className="min-w-0 self-start overflow-hidden rounded-sm border border-border bg-surface-secondary min-[1050px]:sticky min-[1050px]:top-5">
+          <section className="min-w-0 self-start overflow-hidden surface-card min-[1050px]:sticky min-[1050px]:top-5">
             {serverMode && <div className="border-b border-border p-4"><label className="block text-[12px] text-text-secondary">Report file on server<Input className="mt-1" value={serverPath} onChange={(event) => { invalidatePreview(); setServerPath(event.target.value); }} placeholder={`/data/report.${format === "markdown" ? "md" : format}`} aria-describedby="report-server-path-help" /></label><p id="report-server-path-help" className="mt-2 text-[11px] text-text-muted">Enter the full file path on the server, including the extension. The destination folder must exist. Saving replaces an existing file at this path.</p></div>}
             <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3"><div><h2 className="text-[13px] font-semibold text-text-primary">Report preview</h2><p className="mt-1 text-[10px] text-text-muted">{selectedFormat.label} · generated from saved assessment truth</p></div><div className="flex gap-2"><Button variant="outline" disabled={!canGenerate || working} onClick={() => void buildPreview()}><RefreshCw size={13} aria-hidden="true" />{working ? "Working…" : "Build preview"}</Button><Button variant="primary" disabled={!canGenerate || working || (serverMode && !serverPath.trim())} onClick={() => void saveReport()}><Download size={13} aria-hidden="true" />{serverMode ? "Save to server" : "Save…"}</Button></div></header>
             {!preview ? <div className="p-4"><InlineState tone="idle" title="Preview has not been compiled" description="Choose a format and build a fresh preview. PDF previews show document size and contents summary; saved PDF output is fully paginated." /></div> : null}

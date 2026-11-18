@@ -3,6 +3,7 @@ import { HelpCircle } from "lucide-react";
 import { api } from "../../lib/api";
 import type { AskQuestion } from "../../lib/types";
 import { Button } from "../ui";
+import { DIALOG_CARD_CLASS, DIALOG_OVERLAY_CLASS, DIALOG_TITLE_CLASS } from "./dialogRecipe";
 import { errorMessage } from "../../lib/commandError";
 
 /**
@@ -120,7 +121,7 @@ export function AskUserModal({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
+    <div className={DIALOG_OVERLAY_CLASS}>
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -128,13 +129,16 @@ export function AskUserModal({
         aria-modal="true"
         aria-labelledby="ask-user-dialog-title"
         aria-describedby="ask-user-dialog-description"
-        className="w-full max-w-lg rounded-md border border-accent-glow bg-surface-secondary p-5 shadow-lg"
+        className={`${DIALOG_CARD_CLASS} max-h-[calc(100vh-2rem)] max-w-[520px] overflow-y-auto`}
       >
         <div className="flex items-center gap-2">
-          <HelpCircle size={17} aria-hidden="true" className="text-accent" />
-          <h3 id="ask-user-dialog-title" className="text-[14px] font-semibold text-text-primary">
+          <HelpCircle size={18} aria-hidden="true" className="shrink-0 text-accent" />
+          <h3 id="ask-user-dialog-title" className={DIALOG_TITLE_CLASS}>
             The AI has questions
           </h3>
+          <span className="ml-auto shrink-0 text-[11px] font-medium tabular-nums text-text-muted">
+            {remaining}s remaining
+          </span>
         </div>
         <p id="ask-user-dialog-description" className="mt-1 text-[12px] leading-relaxed text-text-muted">
           Answer every question to continue, or skip this request.
@@ -178,7 +182,7 @@ export function AskUserModal({
                             return next;
                           });
                         }}
-                        className={`rounded-sm border px-3 py-1.5 text-[12px] transition-colors ${ isSelected ? "border-accent-glow bg-accent-subtle text-accent" : "border-border bg-surface-secondary text-text-secondary hover:text-text-primary" }`}
+                        className={`rounded-md border px-3 py-1.5 text-[12px] transition-colors ${ isSelected ? "border-accent-glow bg-accent-subtle text-accent" : "border-border bg-surface-primary text-text-secondary hover:bg-surface-hover hover:text-text-primary" }`}
                       >
                         {option}
                       </button>
@@ -198,7 +202,7 @@ export function AskUserModal({
                     if (event.key === "Enter" && done) void submit();
                   }}
                   placeholder="Type your answer…"
-                  className="selectable mt-1.5 w-full rounded-sm border border-border bg-surface-primary px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted focus:border-accent"
+                  className="selectable mt-1.5 w-full rounded-md border border-border bg-surface-primary px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted focus:border-border-focus"
                 />
               )}
             </fieldset>
@@ -209,27 +213,19 @@ export function AskUserModal({
             {submitError}
           </p>
         )}
-        <div className="mt-2 text-right text-[11px] tabular-nums text-text-muted">
-          {remaining}s remaining
-        </div>
-        <div className="mt-3 flex justify-end gap-2">
+        <div className="mt-4 flex items-center justify-end gap-2">
           <Button
             ref={skipButtonRef}
             type="button"
             onClick={skip}
-            variant="ghost"
+            variant="outline"
             size="md"
           >
             Skip
           </Button>
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={!done}
-            className="rounded-sm bg-accent px-4 py-2 text-[12px] font-semibold text-accent-contrast hover:bg-accent-hover disabled:opacity-40"
-          >
+          <Button type="button" variant="primary" size="md" onClick={() => void submit()} disabled={!done}>
             Answer
-          </button>
+          </Button>
         </div>
       </div>
     </div>

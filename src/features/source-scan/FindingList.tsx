@@ -2,6 +2,7 @@ import { FileCode2, KeyRound } from "lucide-react";
 import { useLayoutEffect, useRef, type JSX, type KeyboardEvent } from "react";
 import { SeverityBadge } from "../../components/SeverityBadge";
 import { ResultPagination } from "../../components/workbench/ResultPagination";
+import { listRowClassName } from "../../components/workbench/listRow";
 import type { Pagination } from "../../lib/pagination";
 import { usePagination } from "../../lib/pagination";
 import type { DiffStatus, Finding, FindingScope, ReviewState } from "../../lib/types";
@@ -173,7 +174,7 @@ export function FindingList(props: {
         aria-multiselectable={bulkEnabled || undefined}
         tabIndex={0}
         onKeyDown={onKeyDown}
-        className="divide-y divide-border outline-none focus-visible:ring-1 focus-visible:ring-border-focus"
+        className="flex flex-col gap-1.5 rounded-md outline-none"
       >
         {pagination.items.map((finding, index) => {
           const Icon = finding.category === "secret" ? KeyRound : FileCode2;
@@ -188,9 +189,7 @@ export function FindingList(props: {
               aria-setsize={pagination.total}
               aria-selected={active}
               data-active={active}
-              className={`flex w-full items-start gap-2 border-l-2 px-3 py-3 text-left transition-colors ${
-                active ? "border-accent bg-accent-subtle" : "border-transparent hover:bg-surface-hover"
-              }`}
+              className={`flex w-full items-start gap-2 px-3 py-2.5 text-left ${listRowClassName(active)}`}
             >
               {bulkEnabled && (
                 <input
@@ -204,7 +203,7 @@ export function FindingList(props: {
                     )
                   }
                   onClick={(event) => event.stopPropagation()}
-                  className="mt-1 shrink-0 accent-accent"
+                  className="mt-1 h-4 w-4 shrink-0 rounded-sm accent-accent"
                 />
               )}
               <button

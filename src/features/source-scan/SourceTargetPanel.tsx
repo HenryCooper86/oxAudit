@@ -1,7 +1,7 @@
 import { Ban, Clock3, FolderClock, Play } from "lucide-react";
 import { useCallback, useState, type JSX } from "react";
 import { TargetInput } from "../../components/workbench/TargetInput";
-import { Button, Switch } from "../../components/ui";
+import { Button, Input, Switch } from "../../components/ui";
 import { InlineState } from "../../components/workbench/InlineState";
 import type { ProjectContext, RecentProject, ScanProgress } from "../../lib/types";
 import type {
@@ -59,7 +59,7 @@ export function SourceTargetPanel(props: {
   const runDisabled = props.blocked || !path.trim() || !project || running || !options.resolved || noCategories || policyInvalid;
 
   return (
-    <section aria-label="Source scan target" className={`rounded-sm border bg-surface-secondary p-4 ${activeDrop ? "border-accent bg-accent-subtle" : "border-border"}`}>
+    <section aria-label="Source scan target" className={`rounded-md border bg-surface-secondary p-4 ${activeDrop ? "border-accent bg-accent-subtle" : "border-border"}`}>
       <div className="grid gap-4 min-[980px]:grid-cols-[minmax(0,1.5fr)_minmax(18rem,0.8fr)]">
         <div className="min-w-0">
           <div className="flex flex-wrap items-end gap-3">
@@ -104,23 +104,23 @@ export function SourceTargetPanel(props: {
               <Switch checked={values.followSymlinks} onChange={(checked) => onOptionChange("followSymlinks", checked)} label="Follow in-project symlinks" disabled={running} />
               <label className="flex items-center gap-2 text-[12px] text-text-secondary">
                 Max file size
-                <input
+                <Input
                   type="number"
                   value={values.maxFileSizeKb}
                   min={1}
                   max={10240}
                   onChange={(event) => onOptionChange("maxFileSizeKb", Number(event.target.value) || 1024)}
                   disabled={running}
-                  className="w-20 rounded-sm border border-border bg-surface-primary px-2 py-1 font-mono text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-7 w-24 text-right font-mono text-[12px] tabular-nums"
                 />
                 KB
               </label>
             </div>
             <label className="mt-3 block text-[12px] text-text-secondary">
               Rule pack files (comma-separated paths, applied to this scan only)
-              <input
+              <Input
                 aria-label="Rule pack files for this scan"
-                className="mt-1.5 w-full rounded-sm border border-border bg-surface-primary px-2 py-1 font-mono text-xs text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-1.5 font-mono text-[12px]"
                 placeholder="/path/to/pack.toml"
                 value={rulePackFiles}
                 onChange={(event) => onRulePackFilesChange(event.target.value)}
@@ -151,7 +151,7 @@ export function SourceTargetPanel(props: {
 
         <aside aria-labelledby="recent-projects-title" className="min-w-0 border-t border-border pt-3 min-[980px]:border-l min-[980px]:border-t-0 min-[980px]:pl-4 min-[980px]:pt-0">
           <div className="flex items-center justify-between gap-3">
-            <h2 id="recent-projects-title" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Recent targets</h2>
+            <h2 id="recent-projects-title" className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Recent targets</h2>
             <Clock3 size={14} aria-hidden="true" className="text-text-muted" />
           </div>
           {recentProjects.length === 0 ? (

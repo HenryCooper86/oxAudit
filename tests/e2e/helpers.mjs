@@ -361,9 +361,15 @@ async function skipReadinessWizard(page) {
   await expect(title).toHaveCount(0);
 }
 
-/** The value cell of a summary metric such as "Files" or "Vulnerabilities". */
+/**
+ * The value cell of a summary metric such as "Files" or "Vulnerabilities": the
+ * span after a metric tile's label, or the second paragraph of a labelled
+ * detail cell such as "Observed in run".
+ */
 function metric(scope, label) {
-  return scope.locator(`div:has(> p:text-is("${label}")) > p`).nth(1);
+  return scope
+    .locator(`span:text-is("${label}") + span, div:has(> p:text-is("${label}")) > p:nth-child(2)`)
+    .first();
 }
 
 /**

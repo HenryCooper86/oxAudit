@@ -1,7 +1,7 @@
-import { CheckCircle2, FileCheck2, PackagePlus, Search, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
+import { CheckCircle2, FileCheck2, PackagePlus, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
 import { open } from "../lib/dialog";
 import { useEffect, useMemo, useState, type JSX } from "react";
-import { Button, Switch } from "../components/ui";
+import { Button, Input, SearchField, Switch } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { ToolPage } from "../components/workbench/ToolPage";
@@ -135,7 +135,7 @@ export function RuleLibraryPage(): JSX.Element {
       title="Rule Library"
       description="Inspect the deterministic rules included in oxAudit, where they came from, and which fixture claims are actually verified."
     >
-      <section className="rounded-sm border border-border bg-surface-secondary p-4">
+      <section className="surface-card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="max-w-2xl">
             <h2 className="text-[13px] font-semibold text-text-primary">Install a public pack</h2>
@@ -143,12 +143,12 @@ export function RuleLibraryPage(): JSX.Element {
           </div>
           <div className="flex flex-wrap items-end gap-2">
             {serverMode && <label className="text-[12px] text-text-secondary">Rule pack file on server
-              <input value={serverPackPath} onChange={event => {
+              <Input value={serverPackPath} onChange={event => {
                 setServerPackPath(event.target.value);
                 setExternalPreview(null);
                 setExternalPath(null);
                 setExternalError(null);
-              }} disabled={validating || installing} placeholder="/data/pack.toml" className="mt-1 block rounded-sm border border-border bg-surface-primary px-3 py-2 text-[12px] text-text-primary" />
+              }} disabled={validating || installing} placeholder="/data/pack.toml" className="mt-1 block w-72 font-mono text-[12px]" />
             </label>}
             <Button type="button" variant="outline" size="md" onClick={() => void validateExternalPack()} disabled={validating || installing || (serverMode && !serverPackPath.trim())}>
               <FileCheck2 size={13} aria-hidden="true" />{validating ? "Validating…" : serverMode ? "Validate pack" : "Choose pack…"}
@@ -157,7 +157,7 @@ export function RuleLibraryPage(): JSX.Element {
         </div>
         {externalError && <div className="mt-3"><InlineState compact tone="error" title="Pack validation failed" description={externalError} /></div>}
         {externalPreview && (
-          <div className="mt-3 rounded-sm border border-success-subtle bg-surface-primary p-3">
+          <div className="mt-3 rounded-md border border-success-subtle bg-surface-primary p-3">
             <p className="inline-flex items-center gap-1 text-[12px] font-medium text-success"><CheckCircle2 size={13} aria-hidden="true" />Safe declarative pack verified</p>
             <p className="mt-1 text-[13px] text-text-primary">{externalPreview.name} <span className="font-mono text-[10px] text-text-muted">{externalPreview.id} · v{externalPreview.version}</span></p>
             <p className="mt-1 text-[11px] text-text-secondary">{externalPreview.ruleCount} rules · {externalPreview.fixtureCount} fixtures · {externalPreview.engines.join(", ")} · {externalPreview.license}</p>
@@ -172,7 +172,7 @@ export function RuleLibraryPage(): JSX.Element {
         )}
       </section>
 
-      <section aria-labelledby="installed-packs-title" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+      <section aria-labelledby="installed-packs-title" className="overflow-hidden surface-card">
         <div className="border-b border-border px-4 py-3">
           <h2 id="installed-packs-title" className="text-[13px] font-semibold text-text-primary">Installed packs</h2>
           <p className="mt-1 text-[12px] text-text-muted">
@@ -216,20 +216,17 @@ export function RuleLibraryPage(): JSX.Element {
       {!packs && !error && <InlineState tone="running" title="Validating built-in rule packs" />}
       {error && <InlineState tone="error" title="Rule metadata is unavailable" description={error} />}
       {packs && (
-        <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <section className="overflow-hidden surface-card">
           <ResultsToolbar
             countLabel={`${packs.length} packs · ${packs.reduce((total, pack) => total + pack.rules.length, 0)} rules`}
             search={
-              <label className="relative min-w-0">
-                <span className="sr-only">Search rules</span>
-                <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search rule, scope, or engine…"
-                  className="w-64 rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[12px] text-text-primary placeholder:text-text-muted"
-                />
-              </label>
+              <SearchField
+                aria-label="Search rules"
+                wrapperClassName="w-64"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search rule, scope, or engine…"
+              />
             }
           />
           {visible.length === 0 ? (
@@ -258,7 +255,7 @@ export function RuleLibraryPage(): JSX.Element {
                     <Metadata label="Licence" value={pack.license} />
                     <Metadata label="Fixture health" value={pack.fixtureSummary} />
                   </dl>
-                  <details className="mt-4 rounded-sm border border-border bg-surface-primary">
+                  <details className="mt-4 rounded-md border border-border bg-surface-primary">
                     <summary className="cursor-pointer px-3 py-2 text-[12px] font-medium text-text-primary">
                       {pack.rules.length} rules in this view
                     </summary>
@@ -297,5 +294,5 @@ export function RuleLibraryPage(): JSX.Element {
 }
 
 function Metadata({ label, value }: { label: string; value: string }): JSX.Element {
-  return <div><dt className="font-semibold uppercase tracking-[0.1em] text-text-muted">{label}</dt><dd className="mt-1 leading-relaxed text-text-secondary">{value}</dd></div>;
+  return <div><dt className="font-semibold uppercase tracking-[0.08em] text-text-muted">{label}</dt><dd className="mt-1 leading-relaxed text-text-secondary">{value}</dd></div>;
 }

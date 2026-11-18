@@ -226,7 +226,7 @@ export function ExportCenterPage(): JSX.Element {
       title="Export Center"
       description="Choose saved evidence, preview exactly what leaves oxAudit, validate the format, and save the complete report. Incomplete or failed receipts retain their coverage state."
     >
-      <section className="rounded-sm border border-border bg-surface-secondary p-4">
+      <section className="surface-card p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="max-w-2xl">
             <h2 className="text-[13px] font-semibold text-text-primary">Import and conflict preview</h2>
@@ -265,7 +265,7 @@ export function ExportCenterPage(): JSX.Element {
         )}
         {importError && <div className="mt-3"><InlineState compact tone="error" title="Import preview failed" description={importError} /></div>}
         {importPreview && (
-          <div className="mt-3 overflow-hidden rounded-sm border border-border bg-surface-primary">
+          <div className="mt-3 overflow-hidden rounded-md border border-border bg-surface-primary">
             <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-2">
               <div>
                 <p className="text-[12px] font-medium text-text-primary">{importPreview.fileName} <span className="font-mono text-[10px] text-text-muted">{importPreview.format}</span></p>
@@ -313,7 +313,7 @@ export function ExportCenterPage(): JSX.Element {
           </div>
         )}
       </section>
-      <section className="rounded-sm border border-border bg-surface-secondary p-4">
+      <section className="surface-card p-4">
         <div className="grid gap-4 min-[760px]:grid-cols-2">
           <label className="text-[12px] text-text-secondary">Saved run
             <Select className="mt-1 w-full" value={runId} onChange={(event) => selectRun(event.target.value)} disabled={!runs?.length && !runId}>
@@ -366,7 +366,7 @@ export function ExportCenterPage(): JSX.Element {
       {error && <InlineState tone="error" title="Export is unavailable" description={error} />}
       {savedPath && <p role="status" className="break-all text-[12px] text-success">Saved export to {savedPath}</p>}
       {preview && !loading && (
-        <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <section className="overflow-hidden surface-card">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
             <div>
               <h2 className="flex items-center gap-2 text-[13px] font-semibold text-text-primary"><FileJson size={14} aria-hidden="true" />{selectedFormat.label} preview</h2>

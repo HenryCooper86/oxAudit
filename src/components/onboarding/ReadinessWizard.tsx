@@ -44,6 +44,7 @@ export function ReadinessWizard() {
   const settingsLoadError = useAppStore((state) => state.settingsLoadError);
   const aiReadiness = useAppStore((state) => state.aiReadiness);
   const setPage = useAppStore((state) => state.setPage);
+  const openSettings = useAppStore((state) => state.openSettings);
   const [open, setOpen] = useState(() => {
     // Resolving the `localStorage` binding itself can throw (SecurityError) in
     // hardened WebViews; `isReadinessWizardComplete` only guards its own read.
@@ -217,7 +218,7 @@ export function ReadinessWizard() {
   return (
     <div
       ref={rootRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px] sm:p-6"
     >
       <section
         ref={dialogRef}
@@ -225,15 +226,15 @@ export function ReadinessWizard() {
         aria-modal="true"
         aria-labelledby="readiness-wizard-title"
         aria-describedby="readiness-wizard-description"
-        className="flex max-h-[min(680px,calc(100vh-2rem))] w-full max-w-2xl flex-col overflow-hidden rounded-md border border-border bg-surface-primary shadow-lg"
+        className="surface-card flex max-h-[min(680px,calc(100vh-2rem))] w-full max-w-2xl animate-dialog-in flex-col overflow-hidden shadow-lg"
       >
         <div className="border-b border-border bg-surface-secondary px-5 py-4 sm:px-6">
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-accent-subtle text-accent">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent-subtle text-accent">
               <BrandMark className="h-4 w-4" />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-accent">
+              <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-accent">
                 First-launch readiness
               </p>
               <h1 id="readiness-wizard-title" className="mt-0.5 text-[17px] font-semibold text-text-primary">
@@ -305,7 +306,7 @@ export function ReadinessWizard() {
               <p id="readiness-wizard-description" className="text-[13px] leading-relaxed text-text-secondary">
                 The assistant supports OpenAI-compatible cloud and local endpoints. You can skip this and configure it later from Settings.
               </p>
-              <div className="mt-4 rounded-sm border border-border bg-surface-secondary p-4">
+              <div className="mt-4 rounded-md border border-border bg-surface-secondary p-4">
                 <div className="flex items-start gap-3">
                   <span className={`mt-0.5 ${aiReady ? "text-success" : "text-text-muted"}`}>
                     {aiReadiness.status === "checking" ? <Loader2 size={17} className="animate-spin" /> : <Sparkles size={17} />}
@@ -325,7 +326,7 @@ export function ReadinessWizard() {
                 variant="outline"
                 onClick={() => {
                   finish();
-                  setPage("settings");
+                  openSettings("ai");
                 }}
               >
                 <Settings2 size={13} aria-hidden="true" />
@@ -387,7 +388,7 @@ export function ReadinessWizard() {
 
 function Feature({ icon, title, text }: { icon: ReactNode; title: string; text: string }) {
   return (
-    <div className="rounded-sm border border-border bg-surface-secondary p-3.5">
+    <div className="rounded-md border border-border bg-surface-secondary p-3.5">
       <span className="text-accent" aria-hidden="true">{icon}</span>
       <p className="mt-2 text-[13px] font-medium text-text-primary">{title}</p>
       <p className="mt-1 text-[11px] leading-relaxed text-text-muted">{text}</p>
@@ -397,7 +398,7 @@ function Feature({ icon, title, text }: { icon: ReactNode; title: string; text: 
 
 function CheckRow({ ready, pending, title, description }: { ready: boolean; pending: boolean; title: string; description: string }) {
   return (
-    <div className="flex items-start gap-3 rounded-sm border border-border bg-surface-secondary p-3.5">
+    <div className="flex items-start gap-3 rounded-md border border-border bg-surface-secondary p-3.5">
       {pending ? (
         <Loader2 size={16} aria-hidden="true" className="mt-0.5 shrink-0 animate-spin text-accent" />
       ) : (

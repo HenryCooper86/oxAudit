@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
+import { listRowClassName } from "../components/workbench/listRow";
 import { openUrl } from "../lib/opener";
 import { ChevronLeft, ChevronRight, PackageSearch, Search } from "lucide-react";
 import { CveDossier } from "../components/CveDossier";
@@ -12,7 +13,7 @@ import { api } from "../lib/api";
 import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { CveDetail, CveItem, CveSearchResult } from "../lib/types";
-import { Button, Select } from "../components/ui";
+import { Button, Checkbox, Input, Select } from "../components/ui";
 import { errorMessage } from "../lib/commandError";
 
 const PER_PAGE = 20;
@@ -191,15 +192,14 @@ export function CveResearchPage(): JSX.Element {
     >
       <TargetBar
         primary={
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={() => void search({ query, recent, startIndex: 0 })}
             disabled={loading}
-            className="inline-flex items-center gap-1.5 rounded-sm bg-accent px-3.5 py-2 text-[12px] font-semibold text-accent-contrast hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Search size={13} aria-hidden="true" />
             {loading ? "Searching…" : "Search NVD"}
-          </button>
+          </Button>
         }
         secondary={
           <PackageLookup
@@ -217,12 +217,12 @@ export function CveResearchPage(): JSX.Element {
       >
         <label
           htmlFor="cve-query"
-          className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted"
+          className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted"
         >
           CVE ID or keyword
         </label>
         <div className="flex flex-wrap items-center gap-2">
-          <input
+          <Input
             id="cve-query"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -232,17 +232,11 @@ export function CveResearchPage(): JSX.Element {
               }
             }}
             placeholder="apache log4j rce, nginx, CVE-2024-…"
-            className="min-w-[min(100%,18rem)] flex-1 rounded-sm border border-border bg-surface-secondary px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted"
+            className="h-8 !min-h-8 min-w-[min(100%,18rem)] flex-1"
           />
-          <label className="flex cursor-pointer items-center gap-2 text-[12px] text-text-muted">
-            <input
-              type="checkbox"
-              checked={recent}
-              onChange={(event) => setRecent(event.target.checked)}
-              className="accent-accent"
-            />
+          <Checkbox checked={recent} onChange={(event) => setRecent(event.target.checked)}>
             Modified last 7 days
-          </label>
+          </Checkbox>
         </div>
       </TargetBar>
 
@@ -252,18 +246,17 @@ export function CveResearchPage(): JSX.Element {
           title="CVE search unavailable"
           description={searchError}
           action={
-            <button
-              type="button"
+            <Button
+              variant="outline"
               onClick={() =>
                 void search(
                   failedSearch ??
                     completedSearch ?? { query, recent, startIndex: 0 },
                 )
               }
-              className="rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active"
             >
               Retry search
-            </button>
+            </Button>
           }
         />
       )}
@@ -283,7 +276,7 @@ export function CveResearchPage(): JSX.Element {
       {result && completedSearch && result.items.length > 0 && (
         <section
           aria-label="CVE search results"
-          className="overflow-hidden rounded-sm border border-border bg-surface-secondary"
+          className="overflow-hidden surface-card"
         >
           <ResultsToolbar
             countLabel={`${total.toLocaleString()} results${completedSearch.query ? ` for “${completedSearch.query}”` : completedSearch.recent ? " (recent)" : ""} · ${start + 1}–${Math.min(start + PER_PAGE, total)}`}
@@ -331,13 +324,9 @@ export function CveResearchPage(): JSX.Element {
                     description={detailError}
                     action={
                       selectedItem ? (
-                        <button
-                          type="button"
-                          onClick={() => void openDetail(selectedItem.id)}
-                          className="rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active"
-                        >
+                        <Button variant="outline" onClick={() => void openDetail(selectedItem.id)}>
                           Retry details
-                        </button>
+                        </Button>
                       ) : undefined
                     }
                   />
@@ -430,25 +419,24 @@ function PackageLookup({
         </label>
         <label className="min-w-[min(100%,16rem)] flex-1 text-[11px] text-text-muted">
           Package name
-          <input
+          <Input
             value={packageName}
             onChange={(event) => onPackage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") void onLookup();
             }}
             placeholder="lodash"
-            className="mt-1 block w-full rounded-sm border border-border bg-surface-secondary px-3 py-1.5 text-[13px] text-text-primary placeholder:text-text-muted"
+            className="mt-1 block"
           />
         </label>
-        <button
-          type="button"
+        <Button
+          variant="outline"
           onClick={() => void onLookup()}
           disabled={loading || !packageName.trim()}
-          className="inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-tertiary px-3 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Search size={12} aria-hidden="true" />
           {loading ? "Looking up…" : "Look up"}
-        </button>
+        </Button>
       </div>
       {error && (
         <p role="alert" className="mt-2 text-[12px] text-error">
@@ -552,7 +540,7 @@ function CveList({
   onSelect: (id: string) => void;
 }): JSX.Element {
   return (
-    <ul aria-label="CVE results">
+    <ul aria-label="CVE results" className="flex flex-col gap-1.5">
       {items.map((item) => {
         const selected = item.id === selectedId;
         return (
@@ -563,7 +551,7 @@ function CveList({
               disabled={disabled}
               aria-current={selected ? "true" : undefined}
               onClick={() => void onSelect(item.id)}
-              className={`block w-full border-l-2 border-b border-border px-3 py-3 text-left transition-colors disabled:cursor-wait disabled:opacity-65 ${selected ? "border-l-accent bg-accent-subtle" : "border-l-transparent hover:bg-surface-hover"}`}
+              className={`block w-full px-3 py-2.5 text-left disabled:cursor-wait disabled:opacity-65 ${listRowClassName(selected)}`}
             >
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="font-mono text-[13px] font-semibold text-info">

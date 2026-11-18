@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from "react";
 
-/** 10px uppercase label used for sidebar sections and panel toolbars. */
+/** oxFuzz's uppercase section label (sidebar groups, panel toolbars). */
 export function SectionLabel({
   children,
   className = "",
@@ -10,7 +10,7 @@ export function SectionLabel({
 }): JSX.Element {
   return (
     <span
-      className={`text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted ${className}`}
+      className={`text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted ${className}`}
     >
       {children}
     </span>

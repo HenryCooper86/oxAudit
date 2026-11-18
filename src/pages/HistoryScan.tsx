@@ -9,7 +9,7 @@ import { ResultPagination } from "../components/workbench/ResultPagination";
 import { SplitWorkspace } from "../components/workbench/SplitWorkspace";
 import { TargetBar } from "../components/workbench/TargetBar";
 import { ToolPage } from "../components/workbench/ToolPage";
-import { Button, Select, Switch } from "../components/ui";
+import { Button, SearchField, Select, Switch } from "../components/ui";
 import { api } from "../lib/api";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { CanonicalRun, Finding, HistoryScanResult, Severity } from "../lib/types";
@@ -190,8 +190,18 @@ export function HistoryScanPage(): JSX.Element {
       description="Was this credential ever committed — including in files deleted long ago? Reads blobs reachable from any ref under stated budgets — blob count, blob size, total bytes, findings kept, wall clock — and a scan stopped by a budget says so; rotation, not deletion, closes a leaked credential."
       context={<span className="rounded-sm border border-border px-1.5 py-0.5 text-[11px] text-text-muted">{running ? "Running" : result?.runId ? "Receipt available" : "Ready"}</span>}
     >
-      <div className="mt-4 space-y-4">
+      <div className="space-y-4">
         <TargetBar
+          secondary={
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <Switch checked={validate} onChange={setValidate} disabled={running} label="Validate live against providers" />
+              <p className="min-w-0 flex-1 text-[12px] text-text-muted">
+                Off by default: the check puts each leaked credential on the wire to its own provider — GitHub, AWS,
+                GitLab, OpenAI, Anthropic, Hugging Face, npm, Stripe, Slack — to learn whether it still authenticates.
+                Nothing is sent anywhere else, and only the verdict is kept.
+              </p>
+            </div>
+          }
           primary={
             <>
             <Button type="button" variant="primary" onClick={() => void run()} disabled={Boolean(activeWork) || running || !path.trim()}>
@@ -204,15 +214,6 @@ export function HistoryScanPage(): JSX.Element {
         >
           <TargetInput label="Repository folder" pickers={["folder"]} hint="Supports an existing Git repository folder. Choose Scan history when ready." value={path} onChange={value => { pathEdited.current = true; receiptRequest.current += 1; setPath(value); setResult(null); setReceipt(null); setAttempt(null); setOperationState(null); setSelectedFingerprint(null); setError(null); }} disabled={running || Boolean(activeWork)} inputLabel="Repository folder" placeholder="Choose a repository…" />
         </TargetBar>
-
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <Switch checked={validate} onChange={setValidate} disabled={running} label="Validate live against providers" />
-          <p className="min-w-0 flex-1 text-[12px] text-text-muted">
-            Off by default: the check puts each leaked credential on the wire to its own provider — GitHub, AWS,
-            GitLab, OpenAI, Anthropic, Hugging Face, npm, Stripe, Slack — to learn whether it still authenticates.
-            Nothing is sent anywhere else, and only the verdict is kept.
-          </p>
-        </div>
 
         {attempt && !result && attempt.state !== "completed" && <InlineState tone="unavailable" title={`Latest saved history attempt: ${attempt.state}`} description={attempt.id} />}
         {result && <EvidenceSummary label="History" evidence={historyEvidence(result, receipt, total)} running={running} cancelling={activeWork?.cancelling} attempt={attempt}
@@ -272,7 +273,7 @@ export function HistoryScanPage(): JSX.Element {
         )}
 
         {result && total > 0 && (
-          <section aria-label="History scan results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+          <section aria-label="History scan results" className="overflow-hidden surface-card">
             <ResultsToolbar
               countLabel={receipt && savedFindings.loading ? `Loading this view · ${total} historical secrets` : receipt && savedFindings.error ? `This view is unavailable · ${total} historical secrets` : `${pagination.total} shown · ${total} historical ${total === 1 ? "secret" : "secrets"}`}
               filters={
@@ -290,15 +291,13 @@ export function HistoryScanPage(): JSX.Element {
                 </Select>
               }
               search={
-                <label className="relative min-w-0">
-                  <span className="sr-only">Search history findings</span>
-                  <input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Search findings…"
-                    className="w-44 rounded-sm border border-border bg-surface-primary py-1.5 px-2 text-[12px] text-text-primary placeholder:text-text-muted"
-                  />
-                </label>
+                <SearchField
+                  aria-label="Search history findings"
+                  wrapperClassName="w-48"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search findings…"
+                />
               }
             />
             {receipt && <ServerPageState page={savedFindings} />}
@@ -385,13 +384,13 @@ export function HistoryScanPage(): JSX.Element {
                       </div>
                       <div>
                         <h3 className="text-[12px] font-semibold uppercase tracking-wide text-text-muted">Match</h3>
-                        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-sm border border-border bg-surface-primary p-2 font-mono text-[12px]">
+                        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-border bg-surface-primary p-2 font-mono text-[12px]">
                           {selected.matchText}
                         </pre>
                       </div>
                       <div>
                         <h3 className="text-[12px] font-semibold uppercase tracking-wide text-text-muted">Context</h3>
-                        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-sm border border-border bg-surface-primary p-2 font-mono text-[12px]">
+                        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-border bg-surface-primary p-2 font-mono text-[12px]">
                           {selected.context}
                         </pre>
                       </div>

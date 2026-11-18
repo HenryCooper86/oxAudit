@@ -4,7 +4,7 @@ import { acquireScan, cancelActiveScan, detachScan, refreshScanWork, releaseScan
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { listen, type UnlistenFn } from "../lib/events";
 import { openUrl } from "../lib/opener";
-import { Ban, Boxes, ExternalLink, Play, Search } from "lucide-react";
+import { Ban, Boxes, Bug, ExternalLink, FileText, Package, PackageSearch, Play, Search, ShieldAlert } from "lucide-react";
 import { TargetInput } from "../components/workbench/TargetInput";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { InlineState } from "../components/workbench/InlineState";
@@ -24,7 +24,7 @@ import { latestCompletedRun, normalizedTarget } from "../lib/durableRuns";
 import { fmtDate } from "../lib/format";
 import { useAppStore, useToastStore } from "../lib/stores";
 import type { CanonicalRun, DependencyScanResult, LockfileInfo, Vulnerability, ResultPageQuery } from "../lib/types";
-import { Button, Switch } from "../components/ui";
+import { Button, Input, MetricGrid, MetricTile, SearchField, Switch } from "../components/ui";
 import { RunTimeline } from "../features/runs/RunTimeline";
 import { dependencyEvidence, EvidenceSummary } from "../features/runs/EvidenceSummary";
 
@@ -528,7 +528,6 @@ export function DepsScanPage() {
                 <Play size={13} aria-hidden="true" />Check dependencies
               </Button>
             )}
-            <Switch checked={offline} onChange={setOffline} disabled={running || discovering} label="Offline (use exact saved OSV queries only)" />
           </>
         }
         secondary={
@@ -598,18 +597,19 @@ export function DepsScanPage() {
           placeholder="Choose a project folder…"
           hint="Supports a project folder with lockfiles. Choose Check dependencies when ready."
         />
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
           <Switch
             checked={useAdvisoryDb}
             onChange={changeAdvisoryDb}
             disabled={running || discovering}
             label="Local advisory database"
           />
+          <Switch checked={offline} onChange={setOffline} disabled={running || discovering} label="Offline (use exact saved OSV queries only)" />
           {useAdvisoryDb && (
-            <input
+            <Input
               aria-label="Advisory database path"
               title="Answer advisories from this local database instead of the network, built on the Advisory Database page"
-              className="min-w-0 basis-full sm:basis-auto sm:flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
+              className="h-8 min-w-0 basis-full font-mono text-[12px] sm:flex-1 sm:basis-auto"
               placeholder="advisories.sqlite3"
               value={advisoryDbPath}
               onChange={(event) => {
@@ -644,16 +644,13 @@ export function DepsScanPage() {
       </EvidenceSummary>}
 
       {result && (
-        <section
-          aria-label="Dependency scan summary"
-          className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[700px]:grid-cols-5"
-        >
-          <SummaryMetric label="Lockfiles" value={result.summary.lockfilesFound.length.toLocaleString()} />
-          <SummaryMetric label="Packages found" value={result.summary.packagesFound.toLocaleString()} />
-          <SummaryMetric label="Packages checked" value={result.summary.packagesQueried.toLocaleString()} />
-          <SummaryMetric label="Vulnerabilities" value={vulnerabilityTotal.toLocaleString()} />
-          <SummaryMetric label="Critical / High" value={`${critical} / ${high}`} />
-        </section>
+        <MetricGrid label="Dependency scan summary" minTile={170}>
+          <MetricTile icon={<FileText size={16} aria-hidden="true" />} label="Lockfiles" value={result.summary.lockfilesFound.length.toLocaleString()} />
+          <MetricTile icon={<Package size={16} aria-hidden="true" />} label="Packages found" value={result.summary.packagesFound.toLocaleString()} />
+          <MetricTile icon={<PackageSearch size={16} aria-hidden="true" />} label="Packages checked" value={result.summary.packagesQueried.toLocaleString()} />
+          <MetricTile icon={<Bug size={16} aria-hidden="true" />} label="Vulnerabilities" value={vulnerabilityTotal.toLocaleString()} />
+          <MetricTile icon={<ShieldAlert size={16} aria-hidden="true" />} label="Critical / High" value={`${critical} / ${high}`} attention={Number(critical) + Number(high) > 0} />
+        </MetricGrid>
       )}
 
       {result && (!receipt || completeDecisions?.runId === receipt.id) && <UpgradeDecisions result={receipt ? completeDecisions!.data : result} disabled={running || discovering || activeWork !== null || advisoryDbRequired} onRecheck={() => { void run(); }} onSelect={(advisory) => {
@@ -665,24 +662,17 @@ export function DepsScanPage() {
       {decisionsError && <InlineState tone="error" compact title="Upgrade decisions unavailable" description={decisionsError} />}
 
       {result && vulnerabilityTotal > 0 && (
-        <section id="dependency-advisories" aria-label="Dependency vulnerabilities" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <section id="dependency-advisories" aria-label="Dependency vulnerabilities" className="overflow-hidden surface-card">
           <ResultsToolbar
             countLabel={receipt && savedVulns.loading ? `Loading this view · ${vulnerabilityTotal} vulnerabilities` : receipt && savedVulns.error ? `This view is unavailable · ${vulnerabilityTotal} vulnerabilities` : `${receipt ? savedVulns.total : filteredVulns.length} of ${vulnerabilityTotal} vulnerabilities`}
             search={
-              <label className="relative min-w-0">
-                <span className="sr-only">Search dependency vulnerabilities</span>
-                <Search
-                  size={13}
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-                />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search package or advisory…"
-                  className="w-52 rounded-sm border border-border bg-surface-secondary py-1.5 pl-8 pr-2 text-[12px] text-text-primary placeholder:text-text-muted"
-                />
-              </label>
+              <SearchField
+                aria-label="Search dependency vulnerabilities"
+                wrapperClassName="w-56"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search package or advisory…"
+              />
             }
           />
           {receipt && <ServerPageState page={savedVulns} />}
@@ -703,13 +693,9 @@ export function DepsScanPage() {
               title="No vulnerabilities match the current search"
               description="Clear or broaden the search to review the remaining advisories."
               action={
-                <button
-                  type="button"
-                  onClick={() => setQuery("")}
-                  className="rounded-sm border border-border bg-surface-tertiary px-2.5 py-1.5 text-[12px] font-medium text-text-primary hover:bg-surface-active"
-                >
+                <Button variant="outline" onClick={() => setQuery("")}>
                   Clear search
-                </button>
+                </Button>
               }
             />
           )}
@@ -799,7 +785,7 @@ function VulnerabilityTable({
     <div className="min-w-0 overflow-x-auto" aria-label="Scrollable vulnerable package table">
       <table className="min-w-[44rem] w-full table-fixed border-collapse text-left">
         <caption className="sr-only">Vulnerable packages and their advisory risk</caption>
-        <thead className="border-b border-border bg-surface-secondary text-[12px] font-semibold uppercase tracking-[0.1em] text-text-muted">
+        <thead className="border-b border-border bg-surface-secondary text-[11px] font-semibold uppercase tracking-[0.06em] text-text-muted">
           <tr>
             <th scope="col" className="w-[31%] px-3 py-2">Package</th>
             <th scope="col" className="w-[17%] px-3 py-2">Installed</th>
@@ -1042,19 +1028,8 @@ function AdvisoryDetail({
 function DetailSection({ label, children }: { label: string; children: JSX.Element }): JSX.Element {
   return (
     <div>
-      <h3 className="mb-1 text-[12px] font-semibold uppercase tracking-[0.1em] text-text-muted">{label}</h3>
+      <h3 className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">{label}</h3>
       {children}
-    </div>
-  );
-}
-
-function SummaryMetric({ label, value }: { label: string; value: string }): JSX.Element {
-  return (
-    <div className="min-w-0 border-b border-r border-border px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">{label}</p>
-      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-text-primary" title={value}>
-        {value}
-      </p>
     </div>
   );
 }
@@ -1089,7 +1064,7 @@ function DependencyError({
           </Button>
           <details className="text-[11px] text-text-muted">
             <summary className="cursor-pointer hover:text-text-primary">Technical details</summary>
-            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-sm border border-border bg-surface-primary p-2 font-mono text-[11px] text-text-muted">
+            <pre className="selectable mt-2 max-h-28 max-w-full overflow-auto whitespace-pre-wrap rounded-md border border-border bg-surface-primary p-2 font-mono text-[11px] text-text-muted">
               {detail}
             </pre>
           </details>

@@ -5,7 +5,7 @@ import { useReviewChanges } from "../features/source-scan/useReviewChanges";
 import { acquireScan, cancelActiveScan, detachScan, reconcileSourceRunSave, refreshScanWork, releaseScan, scanOperationId, useScanWorkStore } from "../features/project-home/coordinator";
 import { EvidenceSummary, sourceEvidence } from "../features/runs/EvidenceSummary";
 import { listen, type UnlistenFn } from "../lib/events";
-import { Clipboard, RotateCcw, Search } from "lucide-react";
+import { Bug, Clipboard, Files, KeyRound, RotateCcw, ShieldAlert, Timer } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -16,7 +16,7 @@ import {
   type JSX,
 } from "react";
 import { FindingDetail } from "../components/FindingDetail";
-import { Button, Select } from "../components/ui";
+import { Button, MetricGrid, MetricTile, SearchField, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { useServerPage } from "../lib/serverPagination";
 import { ServerPageState } from "../components/workbench/ServerPageState";
@@ -995,19 +995,21 @@ export function SourceScanPage(): JSX.Element {
       )}
       {cancelled && !running && <ScanCancelled hasPreviousResults={Boolean(run)} />}
 
+      {project && run && (
+        <MetricGrid label="Scan summary" minTile={190}>
+                <MetricTile icon={<Files size={16} aria-hidden="true" />} label="Files" value={run.summary.filesScanned.toLocaleString()} />
+                <MetricTile icon={<KeyRound size={16} aria-hidden="true" />} label="Secrets" value={run.summary.secretsFound.toLocaleString()} />
+                <MetricTile icon={<Bug size={16} aria-hidden="true" />} label="Vulnerabilities" value={run.summary.vulnerabilitiesFound.toLocaleString()} />
+                <MetricTile icon={<ShieldAlert size={16} aria-hidden="true" />} label="Critical / High" value={`${run.summary.critical} / ${run.summary.high}`} attention={run.summary.critical + run.summary.high > 0} />
+                <MetricTile icon={<Timer size={16} aria-hidden="true" />} label="Scanned" value={`${fmtBytes(run.summary.bytesScanned)} · ${fmtDuration(run.summary.durationMs)}`} />
+              </MetricGrid>
+      )}
+
       {project && (
         <div className="grid items-start gap-4 min-[980px]:grid-cols-[minmax(0,1fr)_20rem]">
           <div className="grid gap-4">
             <SeverityTrend runs={runs} />
-            {run ? (
-              <section aria-label="Scan summary" className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[700px]:grid-cols-5">
-                <SummaryMetric label="Files" value={run.summary.filesScanned.toLocaleString()} />
-                <SummaryMetric label="Secrets" value={run.summary.secretsFound.toLocaleString()} />
-                <SummaryMetric label="Vulnerabilities" value={run.summary.vulnerabilitiesFound.toLocaleString()} />
-                <SummaryMetric label="Critical / High" value={`${run.summary.critical} / ${run.summary.high}`} />
-                <SummaryMetric label="Scanned" value={`${fmtBytes(run.summary.bytesScanned)} · ${fmtDuration(run.summary.durationMs)}`} />
-              </section>
-            ) : (
+            {!run && (
               <InlineState tone="idle" title="Project ready" description="No completed source scan has been saved for this project yet." />
             )}
           </div>
@@ -1043,7 +1045,7 @@ export function SourceScanPage(): JSX.Element {
       )}
 
       {recheck && recheck.originalRunId === run?.runId && (
-        <section aria-label="Finding recheck outcome" className="my-3 rounded-sm border border-border bg-surface-secondary p-4 text-[12px] text-text-secondary">
+        <section aria-label="Finding recheck outcome" className="my-3 surface-card p-4 text-[12px] text-text-secondary">
           <p role="status">{recheck.message}</p>
           <p className="mt-2 break-all font-mono">Original fingerprint: {recheck.fingerprint}</p>
           <div className="mt-2 flex gap-3">
@@ -1056,7 +1058,7 @@ export function SourceScanPage(): JSX.Element {
         </section>
       )}
       {run && findingsTotal > 0 && (
-        <section aria-label="Source scan results" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <section aria-label="Source scan results" className="overflow-hidden surface-card">
           <ResultViewTabs
             value={query.view}
             counts={counts}
@@ -1093,11 +1095,13 @@ export function SourceScanPage(): JSX.Element {
               </>
             }
             search={
-              <label className="relative min-w-0">
-                <span className="sr-only">Search findings</span>
-                <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input value={query.search} onChange={(event) => setQuery((current) => ({ ...current, search: event.target.value }))} placeholder="Search findings…" className="w-44 rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[12px] text-text-primary placeholder:text-text-muted" />
-              </label>
+              <SearchField
+                aria-label="Search findings"
+                wrapperClassName="w-48"
+                value={query.search}
+                onChange={(event) => setQuery((current) => ({ ...current, search: event.target.value }))}
+                placeholder="Search findings…"
+              />
             }
             actions={
               <Button type="button" onClick={() => void copyJson()} disabled={copyingJson} variant="outline" size="md">
@@ -1188,15 +1192,6 @@ export function SourceScanPage(): JSX.Element {
 
       <p className="sr-only" aria-live="polite">{reviewAnnouncement}</p>
     </ToolPage>
-  );
-}
-
-function SummaryMetric({ label, value }: { label: string; value: string }): JSX.Element {
-  return (
-    <div className="min-w-0 border-b border-r border-border px-3 py-2.5 last:border-r-0 min-[700px]:border-b-0">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">{label}</p>
-      <p className="mt-1 truncate text-[13px] font-medium tabular-nums text-text-primary" title={value}>{value}</p>
-    </div>
   );
 }
 
