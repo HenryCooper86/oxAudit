@@ -15,6 +15,8 @@ pub enum RunKind {
     Import,
     ExternalEvidence,
     Verification,
+    Yara,
+    Template,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -27,6 +27,8 @@ mod dependency_baseline;
 mod project_config;
 mod sca;
 mod staged;
+mod template;
+mod yara;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -81,6 +83,18 @@ enum Command {
     /// Scan a container image, firmware archive, or binary tree with the
     /// native scanner — including the OS package database inside it.
     Image(ImageArgs),
+    /// Scan files with YARA rules you supply (one-off with --rules, or
+    /// installed packs): offsets and excerpts for every string match.
+    Yara(yara::YaraArgs),
+    /// Scan a local path with Nuclei `file` templates you supply (--path), or
+    /// live targets you are authorized to test (--target, --i-am-authorized).
+    Template(template::TemplateArgs),
+    /// Import, list, enable, disable, or remove signature packs (YARA rules
+    /// and Nuclei templates). oxAudit ships none; you supply them.
+    SignaturePack {
+        #[command(subcommand)]
+        command: yara::SignaturePackCommand,
+    },
     /// Re-export a stored run in a standards format.
     Export(ExportArgs),
     /// List stored runs.
@@ -694,6 +708,8 @@ enum RunListKind {
     Binary,
     Image,
     History,
+    Yara,
+    Template,
     All,
 }
 
@@ -923,6 +939,9 @@ pub fn run() -> i32 {
         Command::History(args) => run_history(args, cli.quiet),
         Command::Deps(args) => run_deps(args, cli.quiet),
         Command::Image(args) => run_image(args, cli.quiet),
+        Command::Yara(args) => yara::run_yara(args, cli.quiet),
+        Command::Template(args) => template::run_template(args, cli.quiet),
+        Command::SignaturePack { command } => yara::run_signature_pack(command, cli.quiet),
         Command::Export(args) => run_export(args),
         Command::Runs(args) => run_runs(args),
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
@@ -1003,7 +1022,7 @@ fn run_rule_pack(command: &RulePackCommand, quiet: bool) -> CliResult {
             let store = RulePackStore::open(db).map_err(failure)?;
             let packs = store.list().map_err(failure)?;
             if *json {
-                let rendered = serde_json::to_vec_pretty(&packs)
+                let rendered = oxaudit_parsers::stable_json::to_vec_pretty(&packs)
                     .map_err(|error| failure(error.to_string()))?;
                 write_output(None, &rendered)?;
                 return Ok(0);
@@ -1067,7 +1086,7 @@ fn run_rule_pack(command: &RulePackCommand, quiet: bool) -> CliResult {
             if *json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
+                    oxaudit_parsers::stable_json::to_string_pretty(&serde_json::json!({
                         "installed": report.installed,
                         "skipped": report.skipped,
                     }))
@@ -1116,7 +1135,7 @@ fn run_import(args: &ImportArgs) -> CliResult {
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
+            oxaudit_parsers::stable_json::to_string_pretty(&serde_json::json!({
                 "runId": run.id.as_str(),
                 "format": analysis.format,
                 "contentSha256": analysis.content_sha256,
@@ -1164,7 +1183,7 @@ fn run_vex(command: &VexCommand) -> CliResult {
                 });
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&document)
+                    oxaudit_parsers::stable_json::to_string_pretty(&document)
                         .map_err(|error| failure(error.to_string()))?
                 );
             } else if sets.is_empty() {
@@ -1222,7 +1241,7 @@ fn run_vex(command: &VexCommand) -> CliResult {
             if *json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
+                    oxaudit_parsers::stable_json::to_string_pretty(&serde_json::json!({
                         "run": run,
                         "suggestions": report.suggestions,
                         "unmapped": report.unmapped,
@@ -1306,7 +1325,7 @@ fn run_advisory_db(command: &AdvisoryDbCommand, quiet: bool) -> CliResult {
             ))
             .map_err(failure)?;
             if *json {
-                let rendered = serde_json::to_vec_pretty(&serde_json::json!({
+                let rendered = oxaudit_parsers::stable_json::to_vec_pretty(&serde_json::json!({
                     "db": db.display().to_string(),
                     "ecosystems": report.ecosystems.iter()
                         .map(|e| serde_json::json!({
@@ -1357,7 +1376,7 @@ fn run_advisory_db(command: &AdvisoryDbCommand, quiet: bool) -> CliResult {
                 });
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&rendered)
+                    oxaudit_parsers::stable_json::to_string_pretty(&rendered)
                         .map_err(|error| failure(error.to_string()))?
                 );
             } else {
@@ -1553,7 +1572,7 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
 
     let rendered = match args.format {
         OutputFormat::Text => render_findings_text(&detail),
-        OutputFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
+        OutputFormat::Json => oxaudit_parsers::stable_json::to_vec_pretty(&serde_json::json!({
             "summary": summary,
             "findings": detail.findings,
         }))
@@ -1568,10 +1587,9 @@ fn run_scan(args: &ScanArgs, quiet: bool) -> CliResult {
                 }),
             )
         }
-        OutputFormat::GitlabCodeQuality => serde_json::to_vec_pretty(&ci::code_quality_source(
-            &detail.findings,
-            &ci::workspace_prefix(path),
-        ))
+        OutputFormat::GitlabCodeQuality => oxaudit_parsers::stable_json::to_vec_pretty(
+            &ci::code_quality_source(&detail.findings, &ci::workspace_prefix(path)),
+        )
         .map_err(|error| failure(error.to_string()))?,
         OutputFormat::GitlabDependencyScanning => {
             unreachable!("refused before the scan started")
@@ -1705,7 +1723,7 @@ fn run_history(args: &HistoryArgs, quiet: bool) -> CliResult {
 
     let rendered = match args.format {
         OutputFormat::Text => render_history_text(&outcome, validation_summary),
-        OutputFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
+        OutputFormat::Json => oxaudit_parsers::stable_json::to_vec_pretty(&serde_json::json!({
             "summary": {
                 "blobsScanned": outcome.blobs_scanned,
                 "blobsSkipped": outcome.blobs_skipped,
@@ -1930,16 +1948,21 @@ fn run_deps(args: &DepsArgs, quiet: bool) -> CliResult {
                 }),
             )
         }
-        OutputFormat::GitlabCodeQuality => serde_json::to_vec_pretty(&Value::Array(
-            ci::code_quality_advisories(&result, &ci::workspace_prefix(&root)),
-        ))
-        .map_err(|error| failure(error.to_string()))?,
-        OutputFormat::GitlabDependencyScanning => serde_json::to_vec_pretty(
+        OutputFormat::GitlabCodeQuality => {
+            oxaudit_parsers::stable_json::to_vec_pretty(&Value::Array(ci::code_quality_advisories(
+                &result,
+                &ci::workspace_prefix(&root),
+            )))
+            .map_err(|error| failure(error.to_string()))?
+        }
+        OutputFormat::GitlabDependencyScanning => oxaudit_parsers::stable_json::to_vec_pretty(
             &ci::gitlab_dependency_scanning(&result, &ci::workspace_prefix(&root), epoch_millis()),
         )
         .map_err(|error| failure(error.to_string()))?,
-        OutputFormat::Json => serde_json::to_vec_pretty(&dependency_baseline::report(&result))
-            .map_err(|error| failure(error.to_string()))?,
+        OutputFormat::Json => {
+            oxaudit_parsers::stable_json::to_vec_pretty(&dependency_baseline::report(&result))
+                .map_err(|error| failure(error.to_string()))?
+        }
         OutputFormat::Text => {
             let mut bytes = render_deps_text(
                 &result
@@ -2136,7 +2159,7 @@ fn run_image(args: &ImageArgs, quiet: bool) -> CliResult {
     ))
     .map_err(failure)?;
     let rendered = match args.format {
-        OutputFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
+        OutputFormat::Json => oxaudit_parsers::stable_json::to_vec_pretty(&serde_json::json!({
             "kind": "image", "runId": outcome.run_id, "target": args.path.display().to_string(),
             "summary": outcome.result.summary, "components": outcome.result.components,
             "notes": outcome.notes, "imageDigest": outcome.image_digest, "layers": outcome.layers,
@@ -2295,6 +2318,8 @@ fn run_runs(args: &RunsArgs) -> CliResult {
             RunListKind::Binary => Some("binary"),
             RunListKind::Image => Some("image"),
             RunListKind::History => Some("history"),
+            RunListKind::Yara => Some("yara"),
+            RunListKind::Template => Some("template"),
             RunListKind::All => None,
         };
         let runs = service
@@ -2302,7 +2327,8 @@ fn run_runs(args: &RunsArgs) -> CliResult {
             .canonical_list_runs(kind, args.limit)
             .map_err(|error| failure(error.to_string()))?;
         let bytes = if args.json {
-            serde_json::to_vec_pretty(&runs).map_err(|error| failure(error.to_string()))?
+            oxaudit_parsers::stable_json::to_vec_pretty(&runs)
+                .map_err(|error| failure(error.to_string()))?
         } else {
             runs.iter()
                 .map(|run| {
@@ -2322,8 +2348,8 @@ fn run_runs(args: &RunsArgs) -> CliResult {
         .map_err(|error| failure(error.to_string()))?;
 
     if args.json {
-        let bytes =
-            serde_json::to_vec_pretty(&projects).map_err(|error| failure(error.to_string()))?;
+        let bytes = oxaudit_parsers::stable_json::to_vec_pretty(&projects)
+            .map_err(|error| failure(error.to_string()))?;
         write_output(None, &bytes)?;
         return Ok(EXIT_OK);
     }
@@ -2333,7 +2359,10 @@ fn run_runs(args: &RunsArgs) -> CliResult {
         return Ok(EXIT_OK);
     }
     for project in &projects {
-        println!("{}", serde_json::to_string(project).unwrap_or_default());
+        println!(
+            "{}",
+            oxaudit_parsers::stable_json::to_string(project).unwrap_or_default()
+        );
     }
     Ok(EXIT_OK)
 }
@@ -2416,9 +2445,8 @@ fn run_monitor(args: &MonitorArgs, quiet: bool) -> CliResult {
     let outcome = crate::monitor::monitor(&advisory_db, &inventories).map_err(failure)?;
 
     let rendered = match args.format {
-        OutputFormat::Json => {
-            serde_json::to_vec_pretty(&outcome).map_err(|error| failure(error.to_string()))?
-        }
+        OutputFormat::Json => oxaudit_parsers::stable_json::to_vec_pretty(&outcome)
+            .map_err(|error| failure(error.to_string()))?,
         OutputFormat::Text => render_monitor_text(&outcome, &args.advisory_db),
         other => {
             return Err(usage(format!(
@@ -2626,8 +2654,8 @@ fn run_benchmark(args: &BenchmarkArgs, quiet: bool) -> CliResult {
         crate::quality::run(&args.corpus, &suite).map_err(|error| failure(error.to_string()))?;
 
     let rendered = if args.json {
-        let mut bytes =
-            serde_json::to_vec_pretty(&report).map_err(|error| failure(error.to_string()))?;
+        let mut bytes = oxaudit_parsers::stable_json::to_vec_pretty(&report)
+            .map_err(|error| failure(error.to_string()))?;
         bytes.push(b'\n');
         bytes
     } else {
@@ -3251,7 +3279,7 @@ fn prefix_sarif_uris(sarif: &[u8], prefix: &str) -> Result<Vec<u8>, CliError> {
     // generated report is, before anything is written.
     reporting::validate(&log, ReportFormat::Sarif)
         .map_err(|error| failure(format!("prefixed SARIF failed validation: {error}")))?;
-    serde_json::to_vec_pretty(&log).map_err(|error| failure(error.to_string()))
+    oxaudit_parsers::stable_json::to_vec_pretty(&log).map_err(|error| failure(error.to_string()))
 }
 
 /// One workflow annotation line per finding that still gates the build, with
@@ -3436,7 +3464,9 @@ fn run_external_benchmark(args: &ExternalBenchmarkArgs) -> CliResult {
         crate::external::score(&args.path, &cases).map_err(|error| failure(error.to_string()))?;
 
     let rendered = if args.json {
-        serde_json::to_string_pretty(&report).map_err(|error| failure(error.to_string()))? + "\n"
+        oxaudit_parsers::stable_json::to_string_pretty(&report)
+            .map_err(|error| failure(error.to_string()))?
+            + "\n"
     } else {
         render_external(&report)
     };

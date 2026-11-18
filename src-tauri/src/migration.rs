@@ -352,7 +352,7 @@ fn read_checkpoint(path: &Path) -> Result<Option<MigrationCheckpoint>, CommandEr
 fn write_checkpoint(path: &Path, phase: MigrationPhase) -> Result<(), CommandError> {
     let parent = path.parent().ok_or_else(CommandError::migration_failed)?;
     ensure_directory(parent)?;
-    let content = serde_json::to_vec_pretty(&MigrationCheckpoint::new(phase))
+    let content = oxaudit_parsers::stable_json::to_vec_pretty(&MigrationCheckpoint::new(phase))
         .map_err(|_| CommandError::migration_failed())?;
     let mut temporary =
         NamedTempFile::new_in(parent).map_err(|_| CommandError::migration_failed())?;

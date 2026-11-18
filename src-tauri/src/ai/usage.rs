@@ -94,7 +94,8 @@ impl UsageStore {
     }
 
     fn save_unlocked(&self, path: &Path) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let content =
+            oxaudit_parsers::stable_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         crate::private_storage::atomic_write(path, content.as_bytes())
             .map_err(|error| format!("cannot write usage: {error}"))
     }

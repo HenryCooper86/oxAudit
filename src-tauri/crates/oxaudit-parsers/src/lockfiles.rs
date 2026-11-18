@@ -609,7 +609,7 @@ fn parse_package_lock(content: &str) -> Result<Vec<(String, String)>, String> {
             let deps = deps_value.as_object().ok_or_else(|| {
                 "invalid package-lock.json: dependencies must be an object".to_string()
             })?;
-            for (name, val) in deps {
+            for (name, val) in crate::sorted_entries(deps) {
                 let dependency = val.as_object().ok_or_else(|| {
                     format!("invalid package-lock.json: dependency {name:?} must be an object")
                 })?;
@@ -1082,7 +1082,7 @@ fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
             .as_ref()
             .and_then(serde_json::Value::as_object)
         {
-            for importer in importers.values() {
+            for (_, importer) in crate::sorted_entries(importers) {
                 let importer = importer
                     .as_object()
                     .ok_or("invalid pnpm-lock.yaml: importer entries must be mappings")?;
@@ -1093,7 +1093,7 @@ fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
                     let declarations = declarations.as_object().ok_or(
                         "invalid pnpm-lock.yaml: importer dependency sections must be mappings",
                     )?;
-                    for entry in declarations.values() {
+                    for (_, entry) in crate::sorted_entries(declarations) {
                         let evidence = match entry {
                             serde_json::Value::String(_) | serde_json::Value::Number(_) => {
                                 registry_version_evidence(entry)
@@ -1144,7 +1144,7 @@ fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, String> {
             .as_ref()
             .and_then(serde_json::Value::as_object)
         {
-            for spec in specifiers.values() {
+            for (_, spec) in crate::sorted_entries(specifiers) {
                 if !matches!(
                     spec,
                     serde_json::Value::String(_) | serde_json::Value::Number(_)
@@ -1255,7 +1255,7 @@ fn parse_bun_lock(content: &str) -> Result<Vec<(String, String)>, String> {
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| "bun.lock has no packages object".to_string())?;
     let mut out = Vec::new();
-    for (key, entry) in packages {
+    for (key, entry) in crate::sorted_entries(packages) {
         let invalid =
             || format!("invalid bun.lock package {key}: expected a resolved name@version tuple");
         let resolution = entry
@@ -2205,11 +2205,11 @@ fn parse_packages_lock_json(content: &str) -> Result<Vec<(String, String)>, Stri
         .ok_or_else(|| "invalid packages.lock.json: no dependencies inventory".to_string())?;
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    for (_framework, packages) in dependencies {
+    for (_framework, packages) in crate::sorted_entries(dependencies) {
         let Some(packages) = packages.as_object() else {
             return Err("invalid packages.lock.json: framework inventory must be an object".into());
         };
-        for (name, details) in packages {
+        for (name, details) in crate::sorted_entries(packages) {
             if details.get("type").and_then(|value| value.as_str()) == Some("Project") {
                 continue;
             }
@@ -2354,7 +2354,7 @@ fn parse_deno_lock(content: &str) -> Result<(Vec<LockedPackage>, Vec<String>), S
         let npm = npm
             .as_object()
             .ok_or("invalid deno.lock: npm must be an object")?;
-        for key in npm.keys() {
+        for (key, _) in crate::sorted_entries(npm) {
             let (name, version) = deno_npm_key(key)
                 .ok_or_else(|| format!("invalid deno.lock: npm entry {key} is not name@version"))?;
             // Peer variants of one release are one package.
@@ -5238,5 +5238,88 @@ mod content_tests {
         assert!(parse_lockfile_inventory(&path, "go")
             .unwrap_err()
             .contains("supply the sibling go.mod"));
+    }
+}
+
+/// Regression guard for `serde_json`'s `preserve_order` feature.
+///
+/// `yara-x` enables `preserve_order` for the whole workspace whenever the host's
+/// `yara` feature is on, which turns `serde_json::Map` from a key-sorted map
+/// into an insertion-ordered one. These fixtures list their JSON keys
+/// deliberately out of order: parser output must follow key order in every
+/// build, so a parser that iterates a `Map` directly fails here when the
+/// feature is on (the workspace-wide test run), not silently in a release.
+#[cfg(test)]
+mod map_order_independence {
+    use super::*;
+
+    fn names(pairs: &[(String, String)]) -> Vec<&str> {
+        pairs.iter().map(|(name, _)| name.as_str()).collect()
+    }
+
+    #[test]
+    fn the_fixtures_really_are_out_of_key_order() {
+        let value: serde_json::Value = serde_json::from_str(r#"{"b":1,"a":2}"#).unwrap();
+        let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+        // Sorted without `preserve_order`, file order with it: either way the
+        // helper below must give the sorted order.
+        assert!(keys == ["a", "b"] || keys == ["b", "a"]);
+        let sorted: Vec<&String> = crate::sorted_entries(value.as_object().unwrap())
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(sorted, ["a", "b"]);
+    }
+
+    #[test]
+    fn npm_v3_inventory_follows_key_order_not_file_order() {
+        let out = parse_package_lock(
+            r#"{"lockfileVersion":3,"packages":{
+                "node_modules/zeta":{"version":"1.0.0"},
+                "":{"name":"root","version":"1.0.0"},
+                "node_modules/mid":{"version":"2.0.0"},
+                "node_modules/alpha":{"version":"3.0.0"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(names(&out), ["alpha", "mid", "zeta"]);
+    }
+
+    #[test]
+    fn npm_v1_inventory_follows_key_order_not_file_order() {
+        let out = parse_package_lock(
+            r#"{"lockfileVersion":1,"dependencies":{
+                "zeta":{"version":"1.0.0","dependencies":{"yy":{"version":"1.0.0"},"bb":{"version":"1.0.0"}}},
+                "alpha":{"version":"2.0.0"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(names(&out), ["alpha", "zeta", "bb", "yy"]);
+    }
+
+    #[test]
+    fn nuget_inventory_follows_key_order_not_file_order() {
+        let out = parse_packages_lock_json(
+            r#"{"version":1,"dependencies":{
+                "net8.0":{"Zed":{"type":"Direct","resolved":"1.0.0"},"Abe":{"type":"Direct","resolved":"2.0.0"}},
+                "net6.0":{"Mid":{"type":"Direct","resolved":"3.0.0"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(names(&out), ["Mid", "Abe", "Zed"]);
+    }
+
+    #[test]
+    fn deno_npm_inventory_follows_key_order_not_file_order() {
+        let (packages, _) =
+            parse_deno_lock(r#"{"version":"4","npm":{"zeta@1.0.0":{},"alpha@2.0.0":{}}}"#).unwrap();
+        let found: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(found, ["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn bun_inventory_follows_key_order_not_file_order() {
+        let out = parse_bun_lock(
+            r#"{"lockfileVersion":1,"packages":{"zeta":["zeta@1.0.0"],"alpha":["alpha@2.0.0"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(names(&out), ["alpha", "zeta"]);
     }
 }

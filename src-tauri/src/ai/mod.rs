@@ -467,7 +467,7 @@ pub fn research_cve_messages(
     settings: &AiSettings,
 ) -> Vec<ChatMessage> {
     let osv_section = osv
-        .map(|o| serde_json::to_string_pretty(o).unwrap_or_default())
+        .map(|o| oxaudit_parsers::stable_json::to_string_pretty(o).unwrap_or_default())
         .unwrap_or_else(|| "no OSV record".into());
     let user = format!(
         "Research the following vulnerability and produce a structured security \

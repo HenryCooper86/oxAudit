@@ -1,6 +1,6 @@
 import { useId, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
-import type { BinaryScanResult, CanonicalRun, DependencyScanResult, HistoryScanResult, ImageScanOutcome, ScanRunDetail } from "../../lib/types";
+import type { BinaryScanResult, CanonicalRun, DependencyScanResult, HistoryScanResult, ImageScanOutcome, ScanRunDetail, TemplateScanResult, YaraScanResult } from "../../lib/types";
 
 type Receipt = { id?: string | null; state?: string | null; saved?: boolean; observedAt?: string | number | null };
 export type Evidence = {
@@ -92,6 +92,50 @@ export function historyEvidence(result: HistoryScanResult, receipt?: CanonicalRu
     ]),
     limitations: ["Dangling Git objects are not enumerated. No findings is not proof no credential was ever typed.", ...(!result.validation ? ["Live provider validation was not recorded for this run."] : [])],
     nextAction: findingTotal > 0 ? "Review historical evidence and rotate exposed credentials; deletion does not close a leak." : partial || result.blobsSkipped || contextUnknown ? "Rerun after resolving history coverage limits before relying on this empty result." : "Check the recorded Git scope before relying on this empty result.",
+  };
+}
+
+const mebibytes = (bytes: number) => bytes < 1024 * 1024 ? `${bytes.toLocaleString()} bytes` : `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+
+/** `counts` carry the section totals of a saved run, whose rows are paged rather than loaded. */
+export function yaraEvidence(result: YaraScanResult, receipt?: CanonicalRun | null, counts: { matches?: number; skipped?: number } = {}): Evidence {
+  const matches = counts.matches ?? result.matches.length;
+  const skipped = counts.skipped ?? result.skipped.length;
+  const incomplete = result.state !== "completed";
+  return {
+    receipt: canonicalReceipt(receipt, result.runId, result.state),
+    findings: `${count(matches, "rule match", "rule matches")} recorded`,
+    coverage: `${count(result.filesScanned, "file")} scanned (${mebibytes(result.bytesScanned)}) · ${count(result.rulesCompiled, "rule")} compiled · ${count(skipped, "file")} not scanned · ${count(result.rulesSkippedTotal, "rule file")} not applied`,
+    caveats: warnings(result.notes, canonicalWarnings(receipt), [
+      ...(matches === 0 ? ["No rule matched in the files that were scanned. A rule only finds what it describes, so this says nothing about files it does not describe."] : []),
+      ...(incomplete ? ["This run is incomplete. Files that were not read were not evaluated."] : []),
+      ...(skipped > 0 ? [`${count(skipped, "file")} could not be scanned and were not evaluated.`] : []),
+      ...(result.rulesSkippedTotal > 0 ? [`${count(result.rulesSkippedTotal, "rule file")} did not compile and were not applied; what they would match is unknown.`] : []),
+      ...(result.matchesDropped > 0 ? [`${count(result.matchesDropped, "further match", "further matches")} were counted but not stored.`] : []),
+    ]),
+    limitations: ["The walk reads every file under the target, including ignored folders, and does not follow symlinks.", "Only the enabled packs recorded for this run were applied."],
+    nextAction: skipped > 0 || incomplete || result.rulesSkippedTotal > 0 ? "Resolve the listed limits and rerun; review any recorded matches." : matches > 0 ? "Review each match and its string evidence, then decide what to do with the file." : "Check the packs and the scanned scope before relying on this empty result.",
+  };
+}
+
+export function templateEvidence(result: TemplateScanResult, receipt?: CanonicalRun | null, counts: { matches?: number; notEvaluated?: number } = {}): Evidence {
+  const matches = counts.matches ?? result.matches.length;
+  const notEvaluated = counts.notEvaluated ?? result.notEvaluated.length;
+  const live = result.mode === "targets";
+  const incomplete = result.state !== "completed";
+  return {
+    receipt: canonicalReceipt(receipt, result.runId, result.state),
+    findings: `${count(matches, "template match", "template matches")} recorded`,
+    coverage: `${live ? `${count(result.requestsSent, "request")} sent · ${count(result.requestsRefused, "request")} refused` : `${count(result.filesScanned, "file")} scanned`} · ${result.templatesRun.toLocaleString()} of ${result.templatesLoaded.toLocaleString()} templates run · ${count(notEvaluated, "check")} not evaluated`,
+    caveats: warnings(result.notes, canonicalWarnings(receipt), [
+      ...(matches === 0 ? ["No template matched. This is not a statement about the target."] : []),
+      ...(incomplete ? ["This run is incomplete. What was not run was not evaluated."] : []),
+      ...(notEvaluated > 0 ? [`${count(notEvaluated, "template or check")} did not run and were not evaluated.`] : []),
+      ...(live && result.unreachableTargets.length > 0 ? [`${count(result.unreachableTargets.length, "target")} could not be reached and were not evaluated.`] : []),
+      ...(result.matchesDropped > 0 ? [`${count(result.matchesDropped, "further match", "further matches")} were counted but not stored.`] : []),
+    ]),
+    limitations: [live ? "Live results reflect one moment and only the listed targets. Redirects and lookups outside them were refused." : "Local path scans run only file templates.", "Templates that cannot be evaluated are listed, never dropped."],
+    nextAction: incomplete || notEvaluated > 0 ? "Review what was not evaluated and rerun if it matters; review any recorded matches." : matches > 0 ? "Review each match and its evidence before deciding what to fix." : "Check the templates and scope before relying on this empty result.",
   };
 }
 

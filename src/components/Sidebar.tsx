@@ -1,5 +1,7 @@
 import {
   Binary,
+  Crosshair,
+  ScanEye,
   Bot,
   Boxes,
   Bug,
@@ -48,6 +50,8 @@ const NAVIGATION_GROUPS: { label: string; items: NavigationItem[] }[] = [
       { page: "deps-scan", label: "Dependencies", icon: Boxes },
       { page: "binary-scan", label: "Binary Scan", icon: Binary },
       { page: "image-scan", label: "Image Scan", icon: Package },
+      { page: "yara-scan", label: "YARA Scan", icon: ScanEye },
+      { page: "template-scan", label: "Template Scan", icon: Crosshair },
     ],
   },
   {

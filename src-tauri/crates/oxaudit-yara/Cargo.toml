@@ -1,0 +1,30 @@
+[package]
+name = "oxaudit-yara"
+version = "0.1.0"
+edition = "2021"
+# yara-x 1.23 requires Rust 1.95.
+rust-version = "1.95"
+# Internal to the oxAudit workspace; not published to crates.io.
+publish = false
+license = "Apache-2.0"
+description = "YARA rule compilation and byte scanning for oxAudit, built on YARA-X"
+
+[dependencies]
+oxaudit-domain = { path = "../oxaudit-domain" }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+# WARNING: yara-x unconditionally enables serde_json's `preserve_order` feature,
+# and Cargo feature unification applies it to every crate in the build, so
+# `serde_json::Map` / `Value` iterate and serialize in insertion order instead
+# of key order whenever this crate is built (the host's default `yara`
+# feature). Code must never rely on serde_json map order: sort explicitly
+# (see oxaudit_parsers::canonical_json and oxaudit_parsers::sorted_entries) so
+# results and digests are identical with the feature on or off.
+yara-x = { version = "1.23.0", default-features = false, features = ["constant-folding", "exact-atoms", "fast-regexp", "elf-module", "pe-module", "macho-module", "dotnet-module", "lnk-module", "dex-module", "math-module", "hash-module", "string-module", "time-module", "console-module"] }
+# yara-x uses rsa::Pkcs1v15Sign but does not enable the rsa feature that
+# exports it when its own default features are off. Enabling it here unifies
+# the feature; remove once yara-x declares it.
+rsa = { version = "0.10.0", default-features = false, features = ["pkcs1v15"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"

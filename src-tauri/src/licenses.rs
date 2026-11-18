@@ -120,7 +120,8 @@ fn parse_license(ecosystem: &str, body: &[u8], wanted_version: &str) -> Option<S
         "Packagist" => {
             let value: serde_json::Value = serde_json::from_slice(body).ok()?;
             let packages = value.get("packages")?.as_object()?;
-            let entries = packages.values().next()?.as_array()?;
+            // Sorted-key first entry, as serde_json yields without `preserve_order`.
+            let entries = packages.iter().min_by(|a, b| a.0.cmp(b.0))?.1.as_array()?;
             // Prefer the entry matching the pinned version; fall back to the
             // first (most recent) entry.
             let entry = entries

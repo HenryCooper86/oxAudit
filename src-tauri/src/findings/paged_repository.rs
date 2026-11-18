@@ -204,6 +204,8 @@ fn sections(kind: &str) -> &'static [(&'static str, &'static str)] {
             ("layers", "$.layers"),
         ],
         "history" => &[("findings", "$.findings"), ("blobs", "$.blobs")],
+        "yara" => &[("matches", "$.matches"), ("skipped", "$.skipped")],
+        "template" => &[("matches", "$.matches"), ("notEvaluated", "$.notEvaluated")],
         _ => &[],
     }
 }

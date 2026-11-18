@@ -8,6 +8,7 @@ import {
   Monitor,
   Moon,
   Palette,
+  Radar,
   RotateCcw,
   Save,
   ShieldCheck,
@@ -36,7 +37,17 @@ import {
   unavailableAiReadiness,
 } from "../lib/settingsRequests";
 import { useAppStore, useToastStore } from "../lib/stores";
-import type { AiSettings, AiStatus, AppSettings, UsageSummary } from "../lib/types";
+import type { AiSettings, AiStatus, AppSettings, LiveScanSettings, UsageSummary } from "../lib/types";
+
+/** Mirrors `LiveScanSettings::default()` in src-tauri/src/models.rs. */
+const DEFAULT_LIVE_SCAN_SETTINGS: LiveScanSettings = {
+  requestsPerSecond: 50,
+  perHostConcurrency: 10,
+  timeoutSeconds: 10,
+  maxResponseKb: 4096,
+  maxRequests: 100000,
+  proxy: null,
+};
 
 const DEFAULT_SETTINGS: AppSettings = {
   editor: "system",
@@ -70,11 +81,37 @@ const DEFAULT_SETTINGS: AppSettings = {
   binaryScannerRuntime: "auto",
   grypePath: null,
   agentAllowedFetchHosts: [],
+  liveScan: { ...DEFAULT_LIVE_SCAN_SETTINGS },
 };
 
-type NumberFieldKey = "timeoutSecs" | "maxTokens" | "contextWindow" | "maxFileSizeKb";
+type LiveNumberFieldKey = "liveRequestsPerSecond" | "livePerHostConcurrency" | "liveTimeoutSeconds" | "liveMaxResponseKb" | "liveMaxRequests";
+type NumberFieldKey = "timeoutSecs" | "maxTokens" | "contextWindow" | "maxFileSizeKb" | LiveNumberFieldKey;
 type ListFieldKey = "agentAllowedFetchHosts" | "ignoredDirs";
-type RawFieldKey = NumberFieldKey | ListFieldKey;
+type RawFieldKey = NumberFieldKey | ListFieldKey | "liveProxy";
+
+/** Which `settings.liveScan` property each live-scanning number field edits. */
+const LIVE_FIELD_PROP: Record<LiveNumberFieldKey, Exclude<keyof LiveScanSettings, "proxy">> = {
+  liveRequestsPerSecond: "requestsPerSecond",
+  livePerHostConcurrency: "perHostConcurrency",
+  liveTimeoutSeconds: "timeoutSeconds",
+  liveMaxResponseKb: "maxResponseKb",
+  liveMaxRequests: "maxRequests",
+};
+
+/** An explicit proxy must be an http or https URL without embedded credentials. */
+export function validateProxyUrl(raw: string): string | null {
+  const text = raw.trim();
+  if (!text) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    return "Enter a full http:// or https:// URL, for example http://127.0.0.1:8080.";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "The proxy must use http:// or https://.";
+  if (parsed.username || parsed.password) return "Credentials in the proxy URL are not accepted. Configure the proxy to allow this machine instead.";
+  return null;
+}
 
 /** Bounds a number field must satisfy before the draft can be saved. */
 const NUMBER_BOUNDS: Record<NumberFieldKey, { min: number; max: number }> = {
@@ -82,6 +119,11 @@ const NUMBER_BOUNDS: Record<NumberFieldKey, { min: number; max: number }> = {
   maxTokens: { min: 256, max: 8192 },
   contextWindow: { min: 4096, max: 2_000_000 },
   maxFileSizeKb: { min: 1, max: 10240 },
+  liveRequestsPerSecond: { min: 1, max: 1000 },
+  livePerHostConcurrency: { min: 1, max: 100 },
+  liveTimeoutSeconds: { min: 1, max: 120 },
+  liveMaxResponseKb: { min: 1, max: 32768 },
+  liveMaxRequests: { min: 1, max: 1_000_000_000 },
 };
 
 /** Parses a non-negative whole number within bounds, or explains why not. */
@@ -96,6 +138,14 @@ export function parseBoundedInteger(
   }
   return { value, error: null };
 }
+
+const LIVE_FIELDS: Array<{ key: LiveNumberFieldKey; id: string; label: string; hint: string }> = [
+  { key: "liveRequestsPerSecond", id: "live-requests-per-second", label: "Requests per second", hint: "Across the whole run, 1 to 1,000." },
+  { key: "livePerHostConcurrency", id: "live-per-host-concurrency", label: "Concurrent requests per host", hint: "Requests in flight to one host, 1 to 100." },
+  { key: "liveTimeoutSeconds", id: "live-timeout-seconds", label: "Request timeout (seconds)", hint: "One request, 1 to 120 seconds." },
+  { key: "liveMaxResponseKb", id: "live-max-response-kb", label: "Max response size (KiB)", hint: "Larger responses are cut off, 1 to 32,768 KiB." },
+  { key: "liveMaxRequests", id: "live-max-requests", label: "Max requests per run", hint: "Reaching it ends the run as incomplete." },
+];
 
 /** One entry per non-blank line, trimmed. */
 export function parseLineList(raw: string): string[] {
@@ -113,6 +163,8 @@ function cloneSettings(settings: AppSettings): AppSettings {
       ignoredDirs: [...settings.scan.ignoredDirs],
     },
     agentAllowedFetchHosts: [...(settings.agentAllowedFetchHosts ?? [])],
+    // A store loaded before the field existed gets the defaults.
+    liveScan: { ...DEFAULT_LIVE_SCAN_SETTINGS, ...settings.liveScan },
   };
 }
 
@@ -469,7 +521,8 @@ export function SettingsPage() {
     const parsed = parseBoundedInteger(raw, NUMBER_BOUNDS[key]);
     if (parsed.error) fieldErrors[key] = parsed.error;
   }
-  const hasFieldErrors = Object.keys(fieldErrors).length > 0;
+  const proxyError = rawFields.liveProxy === undefined ? null : validateProxyUrl(rawFields.liveProxy);
+  const hasFieldErrors = Object.keys(fieldErrors).length > 0 || proxyError !== null;
 
   const setRawField = (key: RawFieldKey, raw: string) =>
     setRawFields((fields) => ({ ...fields, [key]: raw }));
@@ -482,6 +535,7 @@ export function SettingsPage() {
       if (key in NUMBER_BOUNDS && parseBoundedInteger(raw, NUMBER_BOUNDS[key as NumberFieldKey]).error) {
         return fields;
       }
+      if (key === "liveProxy" && validateProxyUrl(raw)) return fields;
       const next = { ...fields };
       delete next[key];
       return next;
@@ -499,9 +553,21 @@ export function SettingsPage() {
     }
     if (key === "maxFileSizeKb") {
       publishDraft({ ...current, scan: { ...current.scan, maxFileSizeKb: parsed.value } });
+    } else if (key in LIVE_FIELD_PROP) {
+      publishDraft({ ...current, liveScan: { ...current.liveScan, [LIVE_FIELD_PROP[key as LiveNumberFieldKey]]: parsed.value } });
     } else {
-      publishDraft({ ...current, ai: { ...current.ai, [key]: parsed.value } });
+      publishDraft({ ...current, ai: { ...current.ai, [key as "timeoutSecs" | "maxTokens" | "contextWindow"]: parsed.value } });
     }
+  };
+
+  const editProxy = (raw: string) => {
+    setRawField("liveProxy", raw);
+    const current = formRef.current ?? form;
+    if (validateProxyUrl(raw)) {
+      publishDraft(current);
+      return;
+    }
+    publishDraft({ ...current, liveScan: { ...current.liveScan, proxy: raw.trim() || null } });
   };
 
   const numberInputProps = (key: NumberFieldKey, value: number) => ({
@@ -902,6 +968,35 @@ export function SettingsPage() {
                 onChange={(event) => editList("ignoredDirs", event.target.value)}
                 onBlur={() => settleRawField("ignoredDirs")}
                 rows={4}
+              />
+            </Field>
+          </div>
+        </section>
+
+        <section className={sectionCls} aria-labelledby="live-scanning-title">
+          <h2 id="live-scanning-title" className={sectionTitleCls}>
+            <Radar size={15} aria-hidden="true" className="text-accent" />
+            Live scanning
+          </h2>
+          <p className={sectionDescriptionCls}>These limits apply to Template Scan live targets only. Local scans never use them.</p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {LIVE_FIELDS.map(({ key, id, label, hint }) => (
+              <Field key={key} label={label} htmlFor={id} hint={hint} error={fieldErrors[key]}>
+                <Input id={id} {...numberInputProps(key, form.liveScan[LIVE_FIELD_PROP[key]])} />
+              </Field>
+            ))}
+          </div>
+          <div className="mt-3">
+            <Field label="Proxy (optional)" htmlFor="live-proxy" hint="An http:// or https:// URL for HTTP templates. Leave empty to connect directly; proxy environment variables are ignored." error={proxyError ?? undefined}>
+              <Input
+                id="live-proxy"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="http://127.0.0.1:8080"
+                value={rawFields.liveProxy ?? form.liveScan.proxy ?? ""}
+                onChange={(event) => editProxy(event.target.value)}
+                onBlur={() => settleRawField("liveProxy")}
               />
             </Field>
           </div>

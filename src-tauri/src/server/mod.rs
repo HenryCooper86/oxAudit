@@ -43,6 +43,9 @@ pub struct ServerConfig {
     pub config_dir: PathBuf,
     pub web_root: Option<PathBuf>,
     pub token: String,
+    /// `--allow-live-targets` / `OXAUDIT_SERVER_ALLOW_LIVE_TARGETS=1`: serve
+    /// template scans against live targets. Off by default.
+    pub allow_live_targets: bool,
 }
 
 /// Everything a dispatched command needs, mirroring the states the Tauri
@@ -52,12 +55,16 @@ pub struct ServerContext {
     pub findings: FindingsState,
     pub cve: crate::cve::CveState,
     pub rule_packs: crate::rulepack_store::RulePacksState,
+    pub sig_packs: crate::sigpacks::SigPacksState,
     pub schedules: crate::schedule_store::ScheduleState,
     pub hub: Arc<EventHub>,
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub config_dir: PathBuf,
     pub web_root: Option<PathBuf>,
+    /// Template scans against live targets are served only when the
+    /// operator started the server with them allowed.
+    pub allow_live_targets: bool,
 }
 
 impl ServerContext {
@@ -128,6 +135,8 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
             crate::rulepack_store::RulePacksState::unavailable(error)
         }
     };
+    let sig_packs =
+        crate::sigpacks::SigPacksState::open_beside(&config.data_dir.join("rule-packs.sqlite3"));
     let schedules = match crate::schedule_store::ScheduleStore::open(
         &config.data_dir.join("schedules.sqlite3"),
     ) {
@@ -144,12 +153,14 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         findings,
         cve,
         rule_packs,
+        sig_packs,
         schedules,
         hub: hub.clone(),
         data_dir: config.data_dir.clone(),
         cache_dir: config.data_dir.join("cache"),
         config_dir: config.config_dir.clone(),
         web_root: config.web_root.clone(),
+        allow_live_targets: config.allow_live_targets,
     });
 
     // The re-scan ticker, same cadence and semantics as the desktop's.
@@ -342,11 +353,21 @@ async fn events(
 }
 
 /// Tells the served frontend it is talking to the headless server, so the
-/// transport swaps invoke/listen for fetch/SSE.
-async fn env_js() -> impl IntoResponse {
+/// transport swaps invoke/listen for fetch/SSE, and which optional server
+/// features the operator switched on (so the GUI can explain a refusal
+/// before the user fills in a form). Serving this without a token reveals
+/// only those switches; every command still needs the token.
+async fn env_js(State(ctx): State<Arc<ServerContext>>) -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        "window.OXAUDIT_SERVER = true;\n",
+        env_js_body(ctx.allow_live_targets),
+    )
+}
+
+fn env_js_body(allow_live_targets: bool) -> String {
+    format!(
+        "window.OXAUDIT_SERVER = true;\nwindow.OXAUDIT_SERVER_FEATURES = {};\n",
+        serde_json::json!({ "liveTargetsAllowed": allow_live_targets })
     )
 }
 
@@ -480,12 +501,14 @@ mod tests {
             findings,
             cve,
             rule_packs,
+            sig_packs: crate::sigpacks::SigPacksState::unavailable("test".into()),
             schedules,
             hub: hub.clone(),
             data_dir,
             cache_dir: dir.path().join("cache"),
             config_dir,
             web_root: None,
+            allow_live_targets: false,
         });
         (ctx, dir)
     }
@@ -496,6 +519,15 @@ mod tests {
         assert!(!token_matches("secret-toke", "secret-token"));
         assert!(!token_matches("secret-token-longer", "secret-token"));
         assert!(!token_matches("", "secret-token"));
+    }
+
+    #[test]
+    fn env_js_tells_the_gui_whether_live_targets_are_allowed() {
+        assert_eq!(
+            env_js_body(false),
+            "window.OXAUDIT_SERVER = true;\nwindow.OXAUDIT_SERVER_FEATURES = {\"liveTargetsAllowed\":false};\n"
+        );
+        assert!(env_js_body(true).contains("{\"liveTargetsAllowed\":true}"));
     }
 
     #[tokio::test]

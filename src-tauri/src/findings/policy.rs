@@ -734,8 +734,8 @@ fn update_policy_decision_under_authority_with_hook(
     }
     validate_policy(&policy, ValidationMode::Load).map_err(|_| CommandError::review_invalid())?;
 
-    let mut bytes =
-        serde_json::to_vec_pretty(&policy).map_err(|_| CommandError::policy_write_failed())?;
+    let mut bytes = oxaudit_parsers::stable_json::to_vec_pretty(&policy)
+        .map_err(|_| CommandError::policy_write_failed())?;
     bytes.push(b'\n');
     let terminal = atomic_write_policy(
         &mut capability,

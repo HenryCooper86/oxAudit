@@ -6,6 +6,8 @@ export type Page =
   | "deps-scan"
   | "binary-scan"
   | "image-scan"
+  | "yara-scan"
+  | "template-scan"
   | "advisory-database"
   | "vex-trust"
   | "inventory"
@@ -48,6 +50,8 @@ export const PAGE_META: Record<Page, PageMeta> = {
   "deps-scan": { title: "Dependencies", group: "Scanning" },
   "binary-scan": { title: "Binary Scan", group: "Scanning" },
   "image-scan": { title: "Image Scan", group: "Scanning" },
+  "yara-scan": { title: "YARA Scan", group: "Scanning" },
+  "template-scan": { title: "Template Scan", group: "Scanning" },
   "advisory-database": { title: "Advisory Database", group: "Trust & quality" },
   "vex-trust": { title: "VEX Trust", group: "Trust & quality" },
   inventory: { title: "Inventory", group: "Trust & quality" },

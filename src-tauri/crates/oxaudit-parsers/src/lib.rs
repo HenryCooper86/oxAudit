@@ -7,7 +7,23 @@
 //! without the GUI crate (see `src-tauri/fuzz`). The main crate re-exports
 //! each module at its original path.
 
+/// Entries of a JSON object in key order.
+///
+/// `serde_json::Map` iterates in insertion (file) order when any crate in the
+/// build enables `preserve_order` (the `yara-x` dependency does, workspace
+/// wide) and in key order otherwise. Every parser that iterates a JSON object
+/// goes through this helper so output ordering, error precedence and
+/// truncation limits are identical in both builds.
+pub(crate) fn sorted_entries(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<(&String, &serde_json::Value)> {
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    entries
+}
+
 pub mod bdb_hash;
+pub mod canonical_json;
 pub mod go_buildinfo;
 pub mod go_inventory;
 pub(crate) mod graph_paths;
@@ -20,3 +36,4 @@ pub mod relationships;
 pub mod report_import;
 pub mod rpm_header;
 pub mod rulepack_index;
+pub mod stable_json;

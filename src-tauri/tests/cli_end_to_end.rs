@@ -1074,7 +1074,8 @@ fn seed_dependency_receipt(database: &Path) {
         }]));
     }
     let payload = serde_json::json!({"schemaVersion":2,"advisoryCoverage":"complete","queryKeys":keys,"results":results,"recordCount":3});
-    let bytes = serde_json::to_vec(&payload).unwrap();
+    // Receipts are hashed and stored over key-sorted bytes in every build.
+    let bytes = oxaudit_parsers::canonical_json::canonical_bytes(&payload).unwrap();
     rusqlite::Connection::open(database)
         .unwrap()
         .execute(
@@ -4448,5 +4449,1719 @@ fn a_subdirectory_scan_under_github_actions_writes_valid_prefixed_sarif() {
         assert!(result
             .get("relatedLocations")
             .is_none_or(|value| value.is_array()));
+    }
+}
+
+// ------------------------------------------------------------------- yara
+//
+// Every rule below is authored for these tests.
+
+#[cfg(feature = "yara")]
+mod yara {
+    use super::*;
+
+    const RULE_HIGH: &str = r#"rule fixture_marker_high {
+    meta:
+        severity = "high"
+    strings:
+        $a = "OXAUDIT-FIXTURE-ALPHA"
+    condition:
+        $a
+}
+"#;
+
+    const RULE_LOW: &str = r#"rule fixture_marker_low {
+    meta:
+        severity = "low"
+    strings:
+        $a = "OXAUDIT-FIXTURE-BETA"
+    condition:
+        $a
+}
+"#;
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir_all(root.join("target/sub")).unwrap();
+            std::fs::write(
+                root.join("target/sub/hit.bin"),
+                b"xx OXAUDIT-FIXTURE-ALPHA yy",
+            )
+            .unwrap();
+            std::fs::write(root.join("target/plain.txt"), b"nothing here").unwrap();
+            std::fs::write(root.join("high.yar"), RULE_HIGH).unwrap();
+            std::fs::write(root.join("low.yar"), RULE_LOW).unwrap();
+            Self { dir }
+        }
+
+        fn path(&self, relative: &str) -> String {
+            self.dir
+                .path()
+                .join(relative)
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+
+    fn stderr(output: &Output) -> String {
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    #[test]
+    fn a_match_is_reported_with_its_offset_and_gates_by_severity() {
+        let f = Fixture::new();
+        let output = run(&["yara", &f.path("target"), "--rules", &f.path("high.yar")]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("sub/hit.bin"), "{text}");
+        assert!(text.contains("fixture_marker_high"), "{text}");
+        assert!(text.contains("$a at offset 3 (21 byte(s))"), "{text}");
+
+        let gated = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--fail-on",
+            "high",
+        ]);
+        assert_eq!(code(&gated), 1, "{}", stderr(&gated));
+        let not_gated = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--fail-on",
+            "critical",
+        ]);
+        assert_eq!(code(&not_gated), 0);
+    }
+
+    #[test]
+    fn json_output_carries_matches_and_the_run() {
+        let f = Fixture::new();
+        let output = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--format",
+            "json",
+            "-q",
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["kind"], "yara");
+        assert_eq!(value["state"], "completed");
+        assert_eq!(value["matches"][0]["path"], "sub/hit.bin");
+        assert_eq!(value["matches"][0]["strings"][0]["offset"], 3);
+        assert_eq!(value["filesScanned"], 2);
+    }
+
+    #[test]
+    fn no_match_exits_zero_and_says_no_rule_matched() {
+        let f = Fixture::new();
+        let output = run(&["yara", &f.path("target"), "--rules", &f.path("low.yar")]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("No rule matched"), "{text}");
+        let lowered = text.to_lowercase();
+        assert!(
+            !lowered.contains("clean") && !lowered.contains("safe"),
+            "{text}"
+        );
+    }
+
+    const RULE_SECRET: &str = r#"rule fixture_secret : secrets {
+    strings:
+        $k = "AKIAIOSFODNN7EXAMPLE"
+    condition:
+        $k
+}
+"#;
+
+    #[test]
+    fn excerpts_of_rules_that_report_secrets_are_masked_in_text_json_and_sarif() {
+        let f = Fixture::new();
+        std::fs::write(
+            f.dir.path().join("target/creds.txt"),
+            b"key=AKIAIOSFODNN7EXAMPLE",
+        )
+        .unwrap();
+        std::fs::write(f.dir.path().join("secret.yar"), RULE_SECRET).unwrap();
+        let full = hex::encode(b"AKIAIOSFODNN7EXAMPLE");
+        let prefix = hex::encode(b"AKIA");
+
+        let text_out = run(&["yara", &f.path("target"), "--rules", &f.path("secret.yar")]);
+        assert_eq!(code(&text_out), 0, "{}", stderr(&text_out));
+        let text = stdout(&text_out);
+        assert!(
+            text.contains(&format!(
+                "$k at offset 4 (20 byte(s)): {prefix}\u{2026} (masked"
+            )),
+            "{text}"
+        );
+        assert!(!text.contains(&full), "{text}");
+
+        let json_out = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("secret.yar"),
+            "--format",
+            "json",
+            "-q",
+        ]);
+        let json = String::from_utf8_lossy(&json_out.stdout).into_owned();
+        assert!(!json.contains(&full), "{json}");
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let string = &value["matches"][0]["strings"][0];
+        assert_eq!(string["excerptHex"], prefix);
+        assert_eq!(string["excerptMasked"], true);
+        assert_eq!(string["length"], 20);
+
+        let sarif_out = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("secret.yar"),
+            "--format",
+            "sarif",
+            "-q",
+        ]);
+        let sarif = String::from_utf8_lossy(&sarif_out.stdout).into_owned();
+        assert!(!sarif.contains(&full), "{sarif}");
+        let value: serde_json::Value = serde_json::from_str(&sarif).unwrap();
+        let region = &value["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"];
+        assert_eq!(region["byteLength"], 20, "the length survives masking");
+    }
+
+    #[test]
+    fn an_empty_target_is_incomplete_not_no_rule_matched() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.dir.path().join("empty")).unwrap();
+        let output = run(&["yara", &f.path("empty"), "--rules", &f.path("high.yar")]);
+        assert_eq!(code(&output), 3, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("No file was scanned"), "{text}");
+        assert!(!text.contains("No rule matched"), "{text}");
+        assert!(
+            stderr(&output).contains("no file was scanned"),
+            "{}",
+            stderr(&output)
+        );
+    }
+
+    #[test]
+    fn sarif_output_is_a_valid_document_with_byte_regions() {
+        let f = Fixture::new();
+        let output = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--format",
+            "sarif",
+            "-q",
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["version"], "2.1.0");
+        let result = &value["runs"][0]["results"][0];
+        assert_eq!(result["level"], "error");
+        assert!(result["ruleId"]
+            .as_str()
+            .unwrap()
+            .ends_with(":fixture_marker_high"));
+        let region = &result["locations"][0]["physicalLocation"]["region"];
+        assert_eq!(region["byteOffset"], 3);
+        assert_eq!(region["byteLength"], 21);
+        assert_eq!(
+            result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "sub/hit.bin"
+        );
+        assert_eq!(
+            value["runs"][0]["invocations"][0]["executionSuccessful"],
+            true
+        );
+    }
+
+    #[test]
+    fn running_without_any_rules_is_a_usage_error() {
+        let f = Fixture::new();
+        let output = run(&["yara", &f.path("target")]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("no YARA rules"),
+            "{}",
+            stderr(&output)
+        );
+
+        // A pack database with nothing enabled in it is the same mistake.
+        let output = run(&[
+            "yara",
+            &f.path("target"),
+            "--pack-db",
+            &f.path("packs.sqlite3"),
+        ]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("no enabled YARA pack"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = run(&[
+            "yara",
+            &f.path("target"),
+            "--pack",
+            "x",
+            "--rules",
+            &f.path("high.yar"),
+        ]);
+        assert_eq!(code(&output), 2);
+    }
+
+    #[test]
+    fn a_broken_rule_is_skipped_and_the_good_rules_still_scan() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.dir.path().join("rules")).unwrap();
+        std::fs::write(f.dir.path().join("rules/good.yar"), RULE_HIGH).unwrap();
+        std::fs::write(
+            f.dir.path().join("rules/broken.yar"),
+            "rule broken { condition: $missing }",
+        )
+        .unwrap();
+        let output = run(&["yara", &f.path("target"), "--rules", &f.path("rules")]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("fixture_marker_high"), "{text}");
+        assert!(text.contains("1 rule file(s) did not compile"), "{text}");
+        assert!(text.contains("broken.yar"), "{text}");
+    }
+
+    #[test]
+    fn installed_packs_scan_and_a_tampered_pack_makes_the_run_incomplete() {
+        let f = Fixture::new();
+        let db = f.path("store/rule-packs.sqlite3");
+        let install = run(&[
+            "signature-pack",
+            "install",
+            "--db",
+            &db,
+            "--kind",
+            "yara",
+            "--name",
+            "Fixture pack",
+            "--license",
+            "Apache-2.0",
+            &f.path("high.yar"),
+        ]);
+        assert_eq!(code(&install), 0, "{}", stderr(&install));
+        assert!(
+            stdout(&install).contains("1 rule(s)"),
+            "{}",
+            stdout(&install)
+        );
+
+        let listed = run(&["signature-pack", "list", "--db", &db, "--json"]);
+        let packs: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let id = packs[0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(packs[0]["license"], "Apache-2.0");
+
+        let scan = run(&["yara", &f.path("target"), "--pack-db", &db, "-q"]);
+        assert_eq!(code(&scan), 0, "{}", stderr(&scan));
+        assert!(stdout(&scan).contains("fixture_marker_high"));
+
+        // Disabled: no pack applies by default (usage error), but --pack still selects it.
+        assert_eq!(
+            code(&run(&["signature-pack", "disable", "--db", &db, &id])),
+            0
+        );
+        let none = run(&["yara", &f.path("target"), "--pack-db", &db, "-q"]);
+        assert_eq!(code(&none), 2);
+        let explicit = run(&[
+            "yara",
+            &f.path("target"),
+            "--pack-db",
+            &db,
+            "--pack",
+            &id,
+            "-q",
+        ]);
+        assert_eq!(code(&explicit), 0, "{}", stderr(&explicit));
+        assert_eq!(
+            code(&run(&["signature-pack", "enable", "--db", &db, &id])),
+            0
+        );
+
+        // Tamper with the stored file: the pack is skipped, the other rules
+        // still run, and the run ends incomplete (exit 3) with the reason.
+        let stored = f
+            .dir
+            .path()
+            .join("store/sigpacks/yara")
+            .join(&id)
+            .join("high.yar");
+        std::fs::write(&stored, "rule evil { condition: true }").unwrap();
+        let tampered = run(&[
+            "yara",
+            &f.path("target"),
+            "--pack-db",
+            &db,
+            "--rules",
+            &f.path("low.yar"),
+            "-q",
+        ]);
+        assert_eq!(code(&tampered), 3, "{}", stderr(&tampered));
+        assert!(
+            stderr(&tampered).contains("incomplete"),
+            "{}",
+            stderr(&tampered)
+        );
+        assert!(stderr(&tampered).contains(&id), "{}", stderr(&tampered));
+        // The report is printed above, so the wording points up, and only the
+        // reasons are listed as reasons.
+        assert!(
+            stderr(&tampered)
+                .contains("the matches reported above are real findings; coverage was partial"),
+            "{}",
+            stderr(&tampered)
+        );
+        assert!(
+            !stderr(&tampered).contains("matches below"),
+            "{}",
+            stderr(&tampered)
+        );
+        assert!(
+            stdout(&tampered).contains("No rule matched"),
+            "{}",
+            stdout(&tampered)
+        );
+
+        // Only the tampered pack: no rules apply, so the scan fails outright.
+        let only = run(&["yara", &f.path("target"), "--pack-db", &db, "-q"]);
+        assert_eq!(code(&only), 3, "{}", stderr(&only));
+        assert!(stderr(&only).contains("No YARA rules"), "{}", stderr(&only));
+        // The pack exists; it failed verification. The message says that,
+        // names the pack and the reason, and does not claim none is installed.
+        assert!(
+            stderr(&only).contains("failed verification"),
+            "{}",
+            stderr(&only)
+        );
+        assert!(stderr(&only).contains(&id), "{}", stderr(&only));
+        assert!(
+            !stderr(&only).contains("No enabled YARA pack is installed"),
+            "{}",
+            stderr(&only)
+        );
+
+        assert_eq!(
+            code(&run(&["signature-pack", "remove", "--db", &db, &id])),
+            0
+        );
+        assert!(!f.dir.path().join("store/sigpacks/yara").join(&id).exists());
+    }
+
+    #[test]
+    fn a_stored_yara_run_exports_sarif_and_refuses_inventory_formats() {
+        let f = Fixture::new();
+        let db = f.path("runs/runs.sqlite3");
+        let scan = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--db",
+            &db,
+            "--format",
+            "json",
+            "-q",
+        ]);
+        assert_eq!(code(&scan), 0, "{}", stderr(&scan));
+        let value: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+        let run_id = value["runId"].as_str().unwrap().to_owned();
+
+        let sarif = run(&["export", "--db", &db, "--run", &run_id, "--format", "sarif"]);
+        assert_eq!(code(&sarif), 0, "{}", stderr(&sarif));
+        let doc: serde_json::Value = serde_json::from_slice(&sarif.stdout).unwrap();
+        assert_eq!(doc["runs"][0]["results"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["runs"][0]["results"][0]["level"], "error");
+
+        let sbom = run(&[
+            "export",
+            "--db",
+            &db,
+            "--run",
+            &run_id,
+            "--format",
+            "cyclonedx",
+        ]);
+        // Same as every other export that cannot be rendered (OpenVEX with no
+        // advisories, ticket CSV of a partial run): a failure, exit 3.
+        assert_eq!(code(&sbom), 3, "{}", stderr(&sbom));
+        assert!(
+            stderr(&sbom).contains("not supported for YARA"),
+            "{}",
+            stderr(&sbom)
+        );
+
+        let listed = run(&["runs", "--db", &db, "--kind", "yara", "--json"]);
+        assert_eq!(code(&listed), 0, "{}", stderr(&listed));
+        assert!(stdout(&listed).contains(&run_id));
+    }
+
+    #[test]
+    fn every_rule_file_failing_to_compile_is_reported_as_that() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.dir.path().join("broken")).unwrap();
+        std::fs::write(
+            f.dir.path().join("broken/broken.yar"),
+            "rule broken { condition: $missing }",
+        )
+        .unwrap();
+        let output = run(&["yara", &f.path("target"), "--rules", &f.path("broken")]);
+        assert_eq!(code(&output), 3, "{}", stderr(&output));
+        let message = stderr(&output);
+        assert!(message.contains("none of them compiled"), "{message}");
+        assert!(message.contains("broken.yar"), "{message}");
+        assert!(
+            !message.contains("No enabled YARA pack is installed"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn signature_pack_install_needs_a_name_and_a_licence() {
+        let f = Fixture::new();
+        let db = f.path("store/rule-packs.sqlite3");
+        for (name, license, flag) in [
+            ("Pack", "", "--license"),
+            ("Pack", "   ", "--license"),
+            ("", "Apache-2.0", "--name"),
+            ("  ", "Apache-2.0", "--name"),
+        ] {
+            let output = run(&[
+                "signature-pack",
+                "install",
+                "--db",
+                &db,
+                "--kind",
+                "yara",
+                "--name",
+                name,
+                "--license",
+                license,
+                &f.path("high.yar"),
+            ]);
+            assert_eq!(
+                code(&output),
+                2,
+                "{name:?} {license:?}: {}",
+                stderr(&output)
+            );
+            let message = stderr(&output);
+            assert!(
+                message.contains(&format!("{flag} must not be empty")),
+                "{message}"
+            );
+            assert!(!message.contains("you recorded"), "{message}");
+        }
+        let listed = run(&["signature-pack", "list", "--db", &db, "--json"]);
+        assert_eq!(stdout(&listed).trim(), "[]", "nothing was installed");
+    }
+
+    #[test]
+    fn format_accepts_only_the_four_report_formats() {
+        let f = Fixture::new();
+        for format in [
+            "cyclonedx",
+            "spdx",
+            "openvex",
+            "junit",
+            "gitlab-code-quality",
+        ] {
+            let output = run(&[
+                "yara",
+                &f.path("target"),
+                "--rules",
+                &f.path("high.yar"),
+                "--format",
+                format,
+            ]);
+            assert_eq!(code(&output), 2, "{format}: {}", stderr(&output));
+            assert!(
+                stderr(&output).contains("[possible values: text, json, sarif, oxaudit-json]"),
+                "{}",
+                stderr(&output)
+            );
+        }
+        let help = stdout(&run(&["yara", "--help"]));
+        let section = help
+            .split("--format <FORMAT>")
+            .nth(1)
+            .and_then(|rest| rest.split("--output").next())
+            .expect("the --format help");
+        let listed: Vec<&str> = section
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- "))
+            .filter_map(|line| line.split(':').next())
+            .collect();
+        assert_eq!(listed, ["text", "json", "sarif", "oxaudit-json"], "{help}");
+    }
+
+    #[test]
+    fn strict_makes_uncompilable_rule_files_a_failure_and_is_off_by_default() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.dir.path().join("rules")).unwrap();
+        std::fs::write(f.dir.path().join("rules/good.yar"), RULE_HIGH).unwrap();
+        std::fs::write(
+            f.dir.path().join("rules/broken.yar"),
+            "rule broken { condition: $missing }",
+        )
+        .unwrap();
+        let rules = f.path("rules");
+
+        let lenient = run(&["yara", &f.path("target"), "--rules", &rules]);
+        assert_eq!(code(&lenient), 0, "{}", stderr(&lenient));
+        assert!(stdout(&lenient).contains("broken.yar"));
+
+        let strict = run(&["yara", &f.path("target"), "--rules", &rules, "--strict"]);
+        assert_eq!(code(&strict), 3, "{}", stderr(&strict));
+        assert!(
+            stdout(&strict).contains("fixture_marker_high"),
+            "the report is still printed"
+        );
+        let message = stderr(&strict);
+        assert!(message.contains("--strict: 1 rule file(s)"), "{message}");
+        assert!(message.contains("broken.yar"), "{message}");
+
+        // Every rule compiled: --strict changes nothing, and --fail-on still gates.
+        let clean = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--strict",
+        ]);
+        assert_eq!(code(&clean), 0, "{}", stderr(&clean));
+        let gated = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--strict",
+            "--fail-on",
+            "high",
+        ]);
+        assert_eq!(code(&gated), 1, "{}", stderr(&gated));
+    }
+}
+
+// --------------------------------------------------------------- template
+//
+// Every template below is authored for these tests.
+
+#[cfg(feature = "templates")]
+mod template {
+    use super::*;
+
+    const WORD: &str = r#"id: fixture-marker-word
+info:
+  name: Fixture marker word
+  author: oxaudit-tests
+  severity: high
+  tags: fixture,marker
+file:
+  - extensions:
+      - conf
+    matchers:
+      - type: word
+        words:
+          - "OXAUDIT-FIXTURE-MARKER"
+"#;
+
+    const SECRET: &str = r#"id: fixture-token
+info:
+  name: Fixture token
+  author: oxaudit-tests
+  severity: medium
+  tags: token,exposure
+file:
+  - extensions:
+      - env
+    matchers:
+      - type: regex
+        regex:
+          - 'FIXTURE_TOKEN=[A-Za-z0-9]{20,}'
+    extractors:
+      - type: regex
+        name: value
+        group: 1
+        regex:
+          - 'FIXTURE_TOKEN=([A-Za-z0-9]{20,})'
+"#;
+
+    const DOS: &str = r#"id: fixture-dos
+info:
+  name: Fixture dos
+  author: oxaudit-tests
+  severity: high
+  tags: dos
+file:
+  - extensions: [all]
+    matchers:
+      - type: word
+        words: ["DOS-FIXTURE-MARKER"]
+"#;
+
+    const HTTP_ONLY: &str = r#"id: fixture-http-only
+info:
+  name: Fixture http only
+  author: oxaudit-tests
+  severity: info
+http:
+  - path:
+      - "{{BaseURL}}/fixture"
+    matchers:
+      - type: status
+        status:
+          - 200
+"#;
+
+    const SECRET_VALUE: &str = "Zx9Qw3Lm7Rt2Vb5Nc8Kd";
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir_all(root.join("target/sub")).unwrap();
+            std::fs::create_dir_all(root.join("templates")).unwrap();
+            std::fs::write(
+                root.join("target/sub/app.conf"),
+                "alpha\nbeta OXAUDIT-FIXTURE-MARKER here\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("target/app.env"),
+                format!("FIXTURE_TOKEN={SECRET_VALUE}\n"),
+            )
+            .unwrap();
+            std::fs::write(root.join("target/plain.txt"), b"nothing here").unwrap();
+            std::fs::write(root.join("templates/word.yaml"), WORD).unwrap();
+            std::fs::write(root.join("templates/secret.yaml"), SECRET).unwrap();
+            std::fs::write(root.join("templates/dos.yaml"), DOS).unwrap();
+            std::fs::write(root.join("templates/http.yaml"), HTTP_ONLY).unwrap();
+            Self { dir }
+        }
+
+        fn path(&self, relative: &str) -> String {
+            self.dir
+                .path()
+                .join(relative)
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+
+    fn stderr(output: &Output) -> String {
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    #[test]
+    fn a_match_is_reported_with_its_line_gates_by_severity_and_lists_what_was_not_evaluated() {
+        let f = Fixture::new();
+        let output = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--templates",
+            &f.path("templates"),
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("sub/app.conf"), "{text}");
+        assert!(text.contains("[high] Fixture marker word"), "{text}");
+        assert!(
+            text.contains("2:6  beta OXAUDIT-FIXTURE-MARKER here"),
+            "{text}"
+        );
+        // The dos template and the network-only template are counted and
+        // grouped by reason, and the summary states the count.
+        assert!(
+            text.contains("2 template(s) or template check(s) were not evaluated"),
+            "{text}"
+        );
+        assert!(text.contains("1 x tagged `dos`"), "{text}");
+        assert!(text.contains("1 x needs a live target"), "{text}");
+        // Not evaluated does not make the scan incomplete.
+        assert!(
+            !stderr(&output).contains("incomplete"),
+            "{}",
+            stderr(&output)
+        );
+
+        let gated = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--templates",
+            &f.path("templates"),
+            "--fail-on",
+            "high",
+        ]);
+        assert_eq!(code(&gated), 1, "{}", stderr(&gated));
+        let not_gated = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--templates",
+            &f.path("templates"),
+            "--fail-on",
+            "critical",
+        ]);
+        assert_eq!(code(&not_gated), 0);
+    }
+
+    #[test]
+    fn filters_select_templates_and_credentials_are_masked_in_every_format() {
+        let f = Fixture::new();
+        for format in ["text", "json", "sarif", "oxaudit-json"] {
+            let output = run(&[
+                "template",
+                "--path",
+                &f.path("target"),
+                "--templates",
+                &f.path("templates"),
+                "--tags",
+                "token",
+                "--severity",
+                "medium,high",
+                "--id",
+                "fixture-token",
+                "--format",
+                format,
+                "-q",
+            ]);
+            assert_eq!(code(&output), 0, "{format}: {}", stderr(&output));
+            let text = stdout(&output);
+            assert!(
+                !text.contains(SECRET_VALUE),
+                "{format} leaked the credential"
+            );
+            assert!(
+                !text.contains("FIXTURE_TOKEN="),
+                "{format} leaked matched text"
+            );
+            if format == "json" {
+                let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(value["kind"], "template");
+                assert_eq!(value["state"], "completed");
+                assert_eq!(value["mode"], "path");
+                assert_eq!(value["templatesRun"], 1);
+                assert_eq!(value["matches"].as_array().unwrap().len(), 1);
+                assert_eq!(
+                    value["matches"][0]["extracted"][0][1][0],
+                    "Zx9Q\u{2026} (20 chars)"
+                );
+                assert_eq!(value["requestsSent"], 0);
+            }
+        }
+        let text = stdout(&run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--templates",
+            &f.path("templates"),
+            "--id",
+            "fixture-token",
+        ]));
+        assert!(text.contains("value: Zx9Q\u{2026} (20 chars)"), "{text}");
+    }
+
+    #[test]
+    fn dos_never_runs_and_intrusive_needs_its_switch() {
+        let f = Fixture::new();
+        std::fs::write(f.dir.path().join("target/dos.conf"), "DOS-FIXTURE-MARKER").unwrap();
+        let output = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--templates",
+            &f.path("templates"),
+            "--include-intrusive",
+            "--format",
+            "json",
+            "-q",
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(value["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["templateId"] != "fixture-dos"));
+        assert!(value["notEvaluated"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["templateId"] == "fixture-dos"));
+    }
+
+    #[test]
+    fn no_match_exits_zero_and_says_no_template_matched() {
+        let f = Fixture::new();
+        // Without an .env file under target/sub, the token template reads
+        // nothing: that is incomplete, not "no template matched".
+        let args = [
+            "template",
+            "--path",
+            &f.path("target/sub"),
+            "--templates",
+            &f.path("templates"),
+            "--id",
+            "fixture-token",
+        ];
+        let nothing = run(&args);
+        assert_eq!(code(&nothing), 3, "{}", stderr(&nothing));
+        assert!(
+            stdout(&nothing).contains("No file was evaluated"),
+            "{}",
+            stdout(&nothing)
+        );
+        assert!(!stdout(&nothing).contains("No template matched"));
+        assert!(
+            stderr(&nothing).contains("none could be evaluated"),
+            "{}",
+            stderr(&nothing)
+        );
+
+        std::fs::write(f.dir.path().join("target/sub/other.env"), "NOTHING=here\n").unwrap();
+        let output = run(&args);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("No template matched"), "{text}");
+        let lowered = text.to_lowercase();
+        assert!(
+            !lowered.contains("clean") && !lowered.contains("safe") && !lowered.contains("secure"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn sarif_output_is_a_valid_document_with_line_regions() {
+        let f = Fixture::new();
+        let output = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--templates",
+            &f.path("templates"),
+            "--id",
+            "fixture-marker-word",
+            "--format",
+            "sarif",
+            "-q",
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["version"], "2.1.0");
+        let result = &value["runs"][0]["results"][0];
+        assert_eq!(result["level"], "error");
+        assert_eq!(result["ruleId"], "adhoc/fixture-marker-word");
+        let physical = &result["locations"][0]["physicalLocation"];
+        assert_eq!(physical["artifactLocation"]["uri"], "sub/app.conf");
+        assert_eq!(physical["region"]["startLine"], 2);
+        assert_eq!(physical["region"]["startColumn"], 6);
+        assert_eq!(physical["region"]["endColumn"], 28);
+        assert_eq!(result["properties"]["tags"][0], "fixture");
+        assert_eq!(
+            value["runs"][0]["tool"]["driver"]["rules"][0]["name"],
+            "Fixture marker word"
+        );
+    }
+
+    #[test]
+    fn usage_errors_exit_two_and_explain_themselves() {
+        let f = Fixture::new();
+        let target = f.path("target");
+        let templates = f.path("templates");
+
+        let output = run(&["template", "--templates", &templates]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("nothing to scan"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = run(&[
+            "template",
+            "--path",
+            &target,
+            "--target",
+            "https://lab.example.test",
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+        ]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("separate scans"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = run(&[
+            "template",
+            "--target",
+            "https://lab.example.test",
+            "--templates",
+            &templates,
+        ]);
+        assert_eq!(code(&output), 2);
+        let message = stderr(&output);
+        assert!(message.contains("sends network traffic"), "{message}");
+        assert!(message.contains("--i-am-authorized"), "{message}");
+
+        let output = run(&["template", "--path", &target]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("no templates"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = run(&[
+            "template",
+            "--path",
+            &target,
+            "--templates",
+            &templates,
+            "--pack",
+            "x",
+        ]);
+        assert_eq!(code(&output), 2);
+
+        let output = run(&[
+            "template",
+            "--path",
+            &target,
+            "--templates",
+            &templates,
+            "--severity",
+            "urgent",
+        ]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("unknown --severity"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = run(&[
+            "template",
+            "--target-file",
+            &f.path("missing.txt"),
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+        ]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("--target-file"),
+            "{}",
+            stderr(&output)
+        );
+    }
+
+    const LIVE_MARKER: &str = r#"id: live-marker
+info:
+  name: Live marker
+  author: oxaudit-tests
+  severity: high
+  tags: fixture
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/fixture"
+    matchers:
+      - type: word
+        name: marker
+        words:
+          - "OXAUDIT-LIVE-MARKER"
+"#;
+
+    const LIVE_TOKEN: &str = r#"id: live-token
+info:
+  name: Live token
+  author: oxaudit-tests
+  severity: medium
+  tags: token,exposure
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/token"
+    matchers:
+      - type: regex
+        regex:
+          - 'LIVE_TOKEN=[A-Za-z0-9]{20,}'
+    extractors:
+      - type: regex
+        name: value
+        group: 1
+        regex:
+          - 'LIVE_TOKEN=([A-Za-z0-9]{20,})'
+"#;
+
+    const LIVE_TOKEN_VALUE: &str = "Mn3Bv5Cx7Zl9Kj2Hg4Fd";
+
+    /// A loopback HTTP server on a thread, recording each request path.
+    /// Nothing else on the network is contacted.
+    struct Listener {
+        port: u16,
+        paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Listener {
+        fn start() -> Self {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = paths.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") && head.len() < 65536 {
+                        match stream.read(&mut byte) {
+                            Ok(1) => head.push(byte[0]),
+                            _ => break,
+                        }
+                        if head.first() == Some(&0x16) {
+                            break;
+                        }
+                    }
+                    if !head.ends_with(b"\r\n\r\n") {
+                        continue;
+                    }
+                    let text = String::from_utf8_lossy(&head).into_owned();
+                    let path = text.split_whitespace().nth(1).unwrap_or("").to_owned();
+                    seen.lock().unwrap().push(path.clone());
+                    let (status, body) = match path.as_str() {
+                        "/fixture" => (
+                            200,
+                            format!("hello OXAUDIT-LIVE-MARKER {}", "x".repeat(400)),
+                        ),
+                        "/token" => (200, format!("LIVE_TOKEN={LIVE_TOKEN_VALUE}\n")),
+                        _ => (404, "not here".to_string()),
+                    };
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                }
+            });
+            Self { port, paths }
+        }
+
+        fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+
+        fn hits(&self) -> usize {
+            self.paths.lock().unwrap().len()
+        }
+    }
+
+    fn live_templates(f: &Fixture) -> String {
+        let dir = f.dir.path().join("live-templates");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("marker.yaml"), LIVE_MARKER).unwrap();
+        std::fs::write(dir.join("token.yaml"), LIVE_TOKEN).unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_live_target_scan_reports_matches_by_target_and_the_scope_it_used() {
+        let f = Fixture::new();
+        let templates = live_templates(&f);
+        let server = Listener::start();
+        let target = server.url();
+        let output = run(&[
+            "template",
+            "--target",
+            &target,
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+            "--rate-limit",
+            "200",
+            "--concurrency",
+            "2",
+            "--timeout",
+            "5",
+            "--max-requests",
+            "50",
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        assert_eq!(server.hits(), 2, "one request per template");
+        let text = stdout(&output);
+        assert!(text.contains(&format!("\n{target}\n")), "{text}");
+        assert!(
+            text.contains("[high] Live marker  (adhoc/live-marker, http)"),
+            "{text}"
+        );
+        assert!(text.contains("matchers: marker"), "{text}");
+        assert!(
+            text.contains(&format!("request: GET {target}/fixture HTTP/1.1")),
+            "{text}"
+        );
+        // The response excerpt is cut at 300 characters in text mode.
+        let response = text
+            .lines()
+            .find(|line| line.trim_start().starts_with("response: HTTP/1.1 200"))
+            .expect("the marker's response line");
+        assert!(response.contains("OXAUDIT-LIVE-MARKER"), "{response}");
+        assert!(!response.contains(&"x".repeat(350)), "{response}");
+        // A credential template's response is never printed.
+        assert!(
+            text.contains("response: withheld (this template reports credentials)"),
+            "{text}"
+        );
+        assert!(!text.contains(LIVE_TOKEN_VALUE), "{text}");
+        assert!(text.contains("value: Mn3B\u{2026} (20 chars)"), "{text}");
+        assert!(text.contains("\nScope:\n  requests sent: 2\n"), "{text}");
+        assert!(
+            text.contains("requests refused by scope (not sent): 0"),
+            "{text}"
+        );
+        assert!(text.contains("unreachable targets: none"), "{text}");
+        let lowered = text.to_lowercase();
+        assert!(
+            !lowered.contains("clean") && !lowered.contains(" safe") && !lowered.contains("secure"),
+            "{text}"
+        );
+
+        let json = run(&[
+            "template",
+            "--target",
+            &target,
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+            "--format",
+            "json",
+            "-q",
+        ]);
+        assert_eq!(code(&json), 0, "{}", stderr(&json));
+        let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+        assert_eq!(value["mode"], "targets");
+        assert_eq!(value["state"], "completed");
+        assert_eq!(value["authorization"]["acknowledged"], true);
+        assert!(value["authorization"]["statement"]
+            .as_str()
+            .unwrap()
+            .contains("--i-am-authorized"));
+        assert!(value["authorization"]["acknowledgedAtMs"].as_u64().unwrap() > 0);
+        assert_eq!(value["requestsSent"], 2);
+        let marker = value["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["templateId"] == "live-marker")
+            .unwrap();
+        assert_eq!(marker["exchange"]["target"], target.as_str());
+        assert!(!String::from_utf8_lossy(&json.stdout).contains(LIVE_TOKEN_VALUE));
+
+        let sarif = run(&[
+            "template",
+            "--target",
+            &target,
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+            "--format",
+            "sarif",
+            "-q",
+        ]);
+        assert_eq!(code(&sarif), 0, "{}", stderr(&sarif));
+        let document = String::from_utf8_lossy(&sarif.stdout).into_owned();
+        let value: serde_json::Value = serde_json::from_str(&document).unwrap();
+        let results = value["runs"][0]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        for result in results {
+            assert_eq!(
+                result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+                target.as_str()
+            );
+        }
+        for leaked in ["GET ", "HTTP/1.1", "OXAUDIT-LIVE-MARKER", LIVE_TOKEN_VALUE] {
+            assert!(!document.contains(leaked), "SARIF carries {leaked}");
+        }
+    }
+
+    #[test]
+    fn live_target_usage_errors_send_nothing() {
+        let f = Fixture::new();
+        let templates = live_templates(&f);
+        let server = Listener::start();
+        let target = server.url();
+
+        let output = run(&["template", "--target", &target, "--templates", &templates]);
+        assert_eq!(code(&output), 2);
+        let message = stderr(&output);
+        assert!(message.contains("--i-am-authorized"), "{message}");
+
+        let output = run(&[
+            "template",
+            "--target",
+            &target,
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+            "--concurrency",
+            "0",
+        ]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("--concurrency"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = run(&[
+            "template",
+            "--target",
+            &target,
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+            "--proxy",
+            "http://user:pw@127.0.0.1:9",
+        ]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("user name or password"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--templates",
+            &templates,
+            "--rate-limit",
+            "5",
+        ]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("live scans"),
+            "{}",
+            stderr(&output)
+        );
+
+        // A target the scope cannot parse is a usage error before anything is
+        // sent, and names the target.
+        let output = run(&[
+            "template",
+            "--target",
+            &target,
+            "--target",
+            "ftp://lab.invalid",
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+        ]);
+        assert_eq!(code(&output), 2, "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains("`ftp://lab.invalid`"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(stdout(&output).is_empty(), "no report for a failed scan");
+
+        assert_eq!(server.hits(), 0, "no usage error sent anything");
+    }
+
+    #[test]
+    fn bad_targets_are_usage_errors_and_send_nothing() {
+        let f = Fixture::new();
+        let templates = live_templates(&f);
+        let server = Listener::start();
+        let live = server.url();
+        let many = std::iter::repeat_n("10.0.0.1\n", 1001).collect::<String>();
+        std::fs::write(f.dir.path().join("many.txt"), many).unwrap();
+        let cases: [(&str, Vec<&str>); 5] = [
+            ("wildcard", vec!["--target", "*.example.com"]),
+            ("cidr", vec!["--target", "10.0.0.0/16"]),
+            (
+                "credentials",
+                vec!["--target", "http://user:secret@lab.invalid/"],
+            ),
+            ("scheme", vec!["--target", "gopher://lab.invalid"]),
+            ("count", vec!["--target-file", "many.txt"]),
+        ];
+        for (label, extra) in cases {
+            let mut args = vec!["template".to_string(), "--target".into(), live.clone()];
+            for arg in extra {
+                args.push(if arg == "many.txt" {
+                    f.path("many.txt")
+                } else {
+                    arg.to_string()
+                });
+            }
+            args.extend([
+                "--i-am-authorized".into(),
+                "--templates".into(),
+                templates.clone(),
+            ]);
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let output = run(&refs);
+            assert_eq!(code(&output), 2, "{label}: {}", stderr(&output));
+            assert!(stdout(&output).is_empty(), "{label}");
+            if label == "count" {
+                // One shared limit: the scope's, named in the message.
+                assert!(
+                    stderr(&output).contains("at most 1000 targets"),
+                    "{}",
+                    stderr(&output)
+                );
+            }
+        }
+        assert_eq!(server.hits(), 0, "nothing was sent");
+    }
+
+    #[test]
+    fn a_scan_with_no_runnable_template_says_why() {
+        let f = Fixture::new();
+        let target = f.path("target");
+        let scan = |dir: &str, extra: &[&str]| {
+            let mut args = vec!["template", "--path", &target, "--templates", dir, "-q"];
+            args.extend_from_slice(extra);
+            run(&args)
+        };
+        let only = |name: &str, body: &str| {
+            let dir = f.dir.path().join(format!("only-{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("{name}.yaml")), body).unwrap();
+            dir.to_string_lossy().into_owned()
+        };
+
+        let output = scan(&f.path("templates"), &["--tags", "no-such-tag"]);
+        assert_eq!(code(&output), 3, "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains("left out by the tag, severity or id filters"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = scan(&only("dos", DOS), &[]);
+        assert_eq!(code(&output), 3, "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains("tagged `dos`, which never run"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = scan(&only("http", HTTP_ONLY), &[]);
+        assert_eq!(code(&output), 3, "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains("are not file-protocol templates for a local path scan"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = scan(&only("broken", "id: [\n"), &[]);
+        assert_eq!(code(&output), 3, "{}", stderr(&output));
+        assert!(
+            stderr(&output).contains("none of them loaded as a template"),
+            "{}",
+            stderr(&output)
+        );
+    }
+
+    #[test]
+    fn format_accepts_only_the_four_report_formats() {
+        let f = Fixture::new();
+        for format in ["cyclonedx", "spdx", "openvex", "junit", "jira-csv"] {
+            let output = run(&[
+                "template",
+                "--path",
+                &f.path("target"),
+                "--templates",
+                &f.path("templates"),
+                "--format",
+                format,
+            ]);
+            assert_eq!(code(&output), 2, "{format}: {}", stderr(&output));
+            assert!(
+                stderr(&output).contains("[possible values: text, json, sarif, oxaudit-json]"),
+                "{}",
+                stderr(&output)
+            );
+        }
+        let help = stdout(&run(&["template", "--help"]));
+        let section = help
+            .split("--format <FORMAT>")
+            .nth(1)
+            .and_then(|rest| rest.split("--output").next())
+            .expect("the --format help");
+        let listed: Vec<&str> = section
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- "))
+            .filter_map(|line| line.split(':').next())
+            .collect();
+        assert_eq!(listed, ["text", "json", "sarif", "oxaudit-json"], "{help}");
+    }
+
+    #[test]
+    fn strict_makes_unloadable_template_files_a_failure_but_not_unsupported_ones() {
+        let f = Fixture::new();
+        let target = f.path("target");
+        // The fixture's own templates include a `dos` one and a network-only
+        // one: "not evaluated" is expected in any pack, and --strict ignores it.
+        let clean = run(&[
+            "template",
+            "--path",
+            &target,
+            "--templates",
+            &f.path("templates"),
+            "--strict",
+        ]);
+        assert_eq!(code(&clean), 0, "{}", stderr(&clean));
+        assert!(stdout(&clean).contains("were not evaluated"));
+
+        let dir = f.dir.path().join("strict-templates");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("word.yaml"), WORD).unwrap();
+        std::fs::write(dir.join("broken.yaml"), "id: [\n").unwrap();
+        let dir = dir.to_string_lossy().into_owned();
+
+        let lenient = run(&["template", "--path", &target, "--templates", &dir]);
+        assert_eq!(code(&lenient), 0, "{}", stderr(&lenient));
+        assert!(
+            stdout(&lenient).contains("broken.yaml"),
+            "{}",
+            stdout(&lenient)
+        );
+
+        let strict = run(&[
+            "template",
+            "--path",
+            &target,
+            "--templates",
+            &dir,
+            "--strict",
+        ]);
+        assert_eq!(code(&strict), 3, "{}", stderr(&strict));
+        assert!(
+            stdout(&strict).contains("fixture-marker-word"),
+            "the report is still printed"
+        );
+        let message = stderr(&strict);
+        assert!(
+            message.contains("--strict: 1 template file(s)"),
+            "{message}"
+        );
+        assert!(message.contains("broken.yaml"), "{message}");
+    }
+
+    #[test]
+    fn a_target_file_is_read_and_its_targets_are_scanned() {
+        let f = Fixture::new();
+        let templates = live_templates(&f);
+        let server = Listener::start();
+        std::fs::write(
+            f.dir.path().join("targets.txt"),
+            format!("# lab\n{}\n\n", server.url()),
+        )
+        .unwrap();
+        let output = run(&[
+            "template",
+            "--target-file",
+            &f.path("targets.txt"),
+            "--i-am-authorized",
+            "--templates",
+            &templates,
+            "--format",
+            "json",
+            "-q",
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["target"], server.url().as_str());
+        assert_eq!(server.hits(), 2);
+    }
+
+    #[test]
+    fn installed_packs_scan_and_a_tampered_pack_makes_the_run_incomplete() {
+        let f = Fixture::new();
+        let db = f.path("store/rule-packs.sqlite3");
+        let install = run(&[
+            "signature-pack",
+            "install",
+            "--db",
+            &db,
+            "--kind",
+            "nuclei",
+            "--name",
+            "Fixture pack",
+            "--license",
+            "Apache-2.0",
+            &f.path("templates"),
+        ]);
+        assert_eq!(code(&install), 0, "{}", stderr(&install));
+        let listed = run(&["signature-pack", "list", "--db", &db, "--json"]);
+        let packs: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let id = packs[0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(packs[0]["protocols"]["file"], 3);
+        assert_eq!(packs[0]["protocols"]["http"], 1);
+
+        let scan = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--pack-db",
+            &db,
+            "-q",
+        ]);
+        assert_eq!(code(&scan), 0, "{}", stderr(&scan));
+        assert!(
+            stdout(&scan).contains(&format!("{id}/fixture-marker-word")),
+            "{}",
+            stdout(&scan)
+        );
+
+        let stored = f
+            .dir
+            .path()
+            .join("store/sigpacks/nuclei")
+            .join(&id)
+            .join("word.yaml");
+        std::fs::write(&stored, "id: evil\n").unwrap();
+        let tampered = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--pack-db",
+            &db,
+            "--templates",
+            &f.path("templates"),
+            "-q",
+        ]);
+        assert_eq!(code(&tampered), 3, "{}", stderr(&tampered));
+        assert!(
+            stderr(&tampered).contains("incomplete"),
+            "{}",
+            stderr(&tampered)
+        );
+        assert!(stderr(&tampered).contains(&id), "{}", stderr(&tampered));
+        assert!(
+            stdout(&tampered).contains("fixture-marker-word"),
+            "the report still prints"
+        );
+        // Reasons and notes are separate sections: the pack is a reason, the
+        // "not evaluated" count is only a note.
+        let message = stderr(&tampered);
+        assert!(
+            message.contains("the matches reported above are real findings; coverage was partial"),
+            "{message}"
+        );
+        assert!(!message.contains("matches below"), "{message}");
+        let (reasons, notes) = message
+            .split_once("Notes (not reasons):")
+            .expect("a notes section");
+        assert!(reasons.contains(&id), "{message}");
+        assert!(!reasons.contains("not evaluated"), "{message}");
+        assert!(notes.contains("not evaluated"), "{message}");
+
+        // Only the tampered pack: no templates apply, and the message says
+        // the pack failed verification rather than that none is installed.
+        let only = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--pack-db",
+            &db,
+            "-q",
+        ]);
+        assert_eq!(code(&only), 3, "{}", stderr(&only));
+        assert!(
+            stderr(&only).contains("failed verification"),
+            "{}",
+            stderr(&only)
+        );
+        assert!(stderr(&only).contains(&id), "{}", stderr(&only));
+        assert!(
+            !stderr(&only).contains("No enabled Nuclei pack is installed"),
+            "{}",
+            stderr(&only)
+        );
+    }
+
+    #[test]
+    fn a_stored_template_run_exports_sarif_lists_by_kind_and_refuses_inventory_formats() {
+        let f = Fixture::new();
+        let db = f.path("runs/runs.sqlite3");
+        let scan = run(&[
+            "template",
+            "--path",
+            &f.path("target"),
+            "--templates",
+            &f.path("templates"),
+            "--db",
+            &db,
+            "--format",
+            "json",
+            "-q",
+        ]);
+        assert_eq!(code(&scan), 0, "{}", stderr(&scan));
+        let value: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+        let run_id = value["runId"].as_str().unwrap().to_owned();
+
+        let sarif = run(&["export", "--db", &db, "--run", &run_id, "--format", "sarif"]);
+        assert_eq!(code(&sarif), 0, "{}", stderr(&sarif));
+        let doc: serde_json::Value = serde_json::from_slice(&sarif.stdout).unwrap();
+        assert_eq!(doc["runs"][0]["results"].as_array().unwrap().len(), 2);
+
+        let sbom = run(&[
+            "export",
+            "--db",
+            &db,
+            "--run",
+            &run_id,
+            "--format",
+            "cyclonedx",
+        ]);
+        assert_eq!(code(&sbom), 3, "{}", stderr(&sbom));
+        assert!(
+            stderr(&sbom).contains("not supported for template"),
+            "{}",
+            stderr(&sbom)
+        );
+
+        let listed = run(&["runs", "--db", &db, "--kind", "template", "--json"]);
+        assert_eq!(code(&listed), 0, "{}", stderr(&listed));
+        assert!(stdout(&listed).contains(&run_id));
     }
 }

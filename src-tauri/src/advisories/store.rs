@@ -37,7 +37,7 @@ pub struct StoredRecord {
 }
 
 fn compress(record: &Value) -> Result<Vec<u8>, String> {
-    let raw = serde_json::to_vec(record).map_err(|error| error.to_string())?;
+    let raw = oxaudit_parsers::stable_json::to_vec(record).map_err(|error| error.to_string())?;
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
     encoder
         .write_all(&raw)
@@ -224,7 +224,7 @@ impl AdvisoryDb {
         merged.sort();
         self.set_meta(
             "ecosystems",
-            &serde_json::to_string(&merged).map_err(|e| e.to_string())?,
+            &oxaudit_parsers::stable_json::to_string(&merged).map_err(|e| e.to_string())?,
         )?;
         self.set_meta("source", SOURCE_URL)?;
         self.set_meta("builtAtMs", &built_at_ms.to_string())?;

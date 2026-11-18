@@ -158,6 +158,12 @@ pub(crate) fn save_secure_to_path(
     credentials: &dyn CredentialStore,
     request: SaveSettingsRequest,
 ) -> Result<SaveSettingsResult, CommandError> {
+    // Rejected before anything (credentials included) is touched.
+    request
+        .settings
+        .live_scan
+        .validate()
+        .map_err(CommandError::data_operation_failed)?;
     let previous_ai = credentials.get(CredentialKind::AiProvider)?;
     let previous_nvd = credentials.get(CredentialKind::Nvd)?;
 
@@ -218,7 +224,7 @@ pub(crate) fn save_to_path(path: &Path, settings: &AppSettings) -> Result<(), St
     let parent = path
         .parent()
         .ok_or_else(|| "settings path has no parent directory".to_string())?;
-    let content = serde_json::to_vec_pretty(settings)
+    let content = oxaudit_parsers::stable_json::to_vec_pretty(settings)
         .map_err(|error| format!("cannot serialize settings: {error}"))?;
     let mut temporary = NamedTempFile::new_in(parent)
         .map_err(|error| format!("cannot create temporary settings file: {error}"))?;
@@ -257,7 +263,9 @@ pub(crate) fn save_to_path(path: &Path, settings: &AppSettings) -> Result<(), St
 mod tests {
     use super::{load_secure_from_path, save_secure_to_path, save_to_path};
     use crate::credentials::{CredentialKind, CredentialStore, MemoryCredentialStore};
-    use crate::models::{AppSettings, CredentialMutation, CredentialPresence, SaveSettingsRequest};
+    use crate::models::{
+        AppSettings, CredentialMutation, CredentialPresence, LiveScanSettings, SaveSettingsRequest,
+    };
     use std::fs;
 
     #[test]
@@ -299,6 +307,72 @@ mod tests {
         assert_eq!(loaded.theme, "light");
         assert_eq!(loaded.ai.context_window, 128_000);
         assert!(loaded.scan.scan_vulnerabilities);
+    }
+
+    #[test]
+    fn live_scan_settings_default_when_absent_and_round_trip_when_present() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = MemoryCredentialStore::default();
+
+        // A settings file written before live scanning existed.
+        let old = directory.path().join("old/settings.json");
+        fs::create_dir_all(old.parent().unwrap()).expect("dir");
+        fs::write(
+            &old,
+            br#"{"theme":"light","agentAllowedFetchHosts":["a.example"]}"#,
+        )
+        .expect("fixture");
+        let loaded = load_secure_from_path(&old, &store).expect("old settings load");
+        assert_eq!(loaded.theme, "light");
+        assert_eq!(loaded.live_scan, LiveScanSettings::default());
+        assert_eq!(loaded.live_scan.requests_per_second, 50);
+        assert_eq!(loaded.live_scan.max_requests, 100_000);
+
+        // A partial liveScan object keeps the defaults for what it omits.
+        let partial = directory.path().join("partial/settings.json");
+        fs::create_dir_all(partial.parent().unwrap()).expect("dir");
+        fs::write(
+            &partial,
+            br#"{"liveScan":{"requestsPerSecond":5,"proxy":"http://proxy.invalid:3128"}}"#,
+        )
+        .expect("fixture");
+        let loaded = load_secure_from_path(&partial, &store).expect("partial settings load");
+        assert_eq!(loaded.live_scan.requests_per_second, 5);
+        assert_eq!(
+            loaded.live_scan.proxy.as_deref(),
+            Some("http://proxy.invalid:3128")
+        );
+        assert_eq!(loaded.live_scan.per_host_concurrency, 10);
+        assert_eq!(loaded.live_scan.timeout_seconds, 10);
+
+        // Saved and loaded again, every field survives under camelCase keys.
+        let saved = directory.path().join("saved/settings.json");
+        let settings = AppSettings {
+            live_scan: LiveScanSettings {
+                requests_per_second: 7,
+                per_host_concurrency: 3,
+                timeout_seconds: 30,
+                max_response_kb: 512,
+                max_requests: 250,
+                proxy: None,
+            },
+            ..AppSettings::default()
+        };
+        save_to_path(&saved, &settings).expect("save");
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&saved).expect("read")).expect("json");
+        assert_eq!(raw["liveScan"]["requestsPerSecond"], 7);
+        assert_eq!(raw["liveScan"]["perHostConcurrency"], 3);
+        assert_eq!(raw["liveScan"]["timeoutSeconds"], 30);
+        assert_eq!(raw["liveScan"]["maxResponseKb"], 512);
+        assert_eq!(raw["liveScan"]["maxRequests"], 250);
+        assert!(raw["liveScan"]["proxy"].is_null());
+        let loaded = load_secure_from_path(&saved, &store).expect("saved settings load");
+        assert_eq!(loaded.live_scan, settings.live_scan);
+        assert!(
+            !fs::read_to_string(&saved).unwrap().contains("acknowledged"),
+            "no authorization is ever stored in settings"
+        );
     }
 
     #[test]

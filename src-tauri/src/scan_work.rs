@@ -23,6 +23,8 @@ pub enum WorkKind {
     Binary,
     Image,
     History,
+    Yara,
+    Template,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -31,7 +31,9 @@ export type CanonicalRunKind =
   | "firmware"
   | "import"
   | "external_evidence"
-  | "verification";
+  | "verification"
+  | "yara"
+  | "template";
 export type CanonicalRunState =
   | "queued"
   | "discovering"
@@ -96,7 +98,7 @@ export interface ImageScanOutcome {
   state?: CanonicalRunState;
 }
 
-export type ScanWorkKind = "source" | "dependencies" | "binary" | "image" | "history";
+export type ScanWorkKind = "source" | "dependencies" | "binary" | "image" | "history" | "yara" | "template";
 export type ScanWorkStatus = "running" | "cancelling" | "completed" | "failed" | "cancelled" | "incomplete";
 export interface ScanWorkDescriptor {
   operationId: string;
@@ -757,7 +759,7 @@ export interface SourceFindingsPage extends ResultPage<Finding> {
   languages: string[];
 }
 
-export type CanonicalProjectionSection = "dependencies" | "vulnerabilities" | "components" | "semanticFindings" | "layers" | "findings" | "blobs";
+export type CanonicalProjectionSection = "dependencies" | "vulnerabilities" | "components" | "semanticFindings" | "layers" | "findings" | "blobs" | "matches" | "skipped" | "notEvaluated";
 
 /** List arrays in projection are empty placeholders; sections supplies authoritative totals. */
 export interface CanonicalProjectionMetadata<T> {
@@ -1046,6 +1048,28 @@ export interface AppSettings {
    * built-in advisory sources. Entries may be bare hosts or pasted URLs.
    */
   agentAllowedFetchHosts: string[];
+  /** Limits for Template scans against live targets. */
+  liveScan: LiveScanSettings;
+}
+
+/**
+ * Live-target scan limits. Values outside their ranges are clamped when a
+ * scan uses them; an invalid proxy fails that scan. The per-run
+ * authorization acknowledgement is never stored in settings.
+ */
+export interface LiveScanSettings {
+  /** Requests per second across the run, 1 to 1000 (default 50). */
+  requestsPerSecond: number;
+  /** Requests in flight to one host, 1 to 100 (default 10). */
+  perHostConcurrency: number;
+  /** Timeout of one request in seconds, 1 to 120 (default 10). */
+  timeoutSeconds: number;
+  /** Response cap per request in KiB, 1 to 32768 (default 4096). */
+  maxResponseKb: number;
+  /** Requests per run (default 100000); reaching it makes the run incomplete. */
+  maxRequests: number;
+  /** Explicit http:// or https:// proxy for HTTP templates; null for direct connections. */
+  proxy: string | null;
 }
 
 export interface SaveSettingsRequest {
@@ -1385,4 +1409,299 @@ export interface HistoryScanResult {
   limitNote: string | null;
   /** Present only when live validation was opted into for this run. */
   validation: HistoryValidationSummary | null;
+}
+
+// ---------------------------------------------------------------- signature packs and YARA
+
+export type SignaturePackKind = "yara" | "nuclei";
+
+/** A rule file or rule left out of a pack, with the reason. */
+export interface SignaturePackSkip {
+  file: string;
+  line: number | null;
+  message: string;
+}
+
+/** What importing a pack would do; nothing is written. */
+export interface SignaturePackPreview {
+  kind: SignaturePackKind;
+  fileCount: number;
+  ignoredCount: number;
+  ruleCount: number;
+  skipped: SignaturePackSkip[];
+  contentSha256: string;
+  /** Recognised from a LICENSE/COPYING file in the pack root; the user confirms it. */
+  detectedLicense: string | null;
+  totalBytes: number;
+  /** Nuclei packs: supported templates per protocol; null for YARA packs. */
+  protocols: SignaturePackProtocols | null;
+  /** Nuclei packs: templates that load but that oxAudit cannot evaluate (each is in `skipped`). */
+  notEvaluatedCount: number;
+}
+
+/** Supported templates of a pack per protocol; a template with two protocols counts under each. */
+export interface SignaturePackProtocols {
+  http: number;
+  dns: number;
+  tcp: number;
+  ssl: number;
+  file: number;
+}
+
+export interface InstallSignaturePackRequest {
+  kind: SignaturePackKind;
+  /** A rule file, a folder, or a .zip. */
+  path: string;
+  name: string;
+  license: string;
+  version?: string;
+  source?: string;
+  authors?: string;
+}
+
+export interface InstalledSignaturePack {
+  id: string;
+  kind: SignaturePackKind;
+  name: string;
+  version: string;
+  license: string;
+  source: string;
+  authors: string;
+  contentSha256: string;
+  fileCount: number;
+  ruleCount: number;
+  skipped: SignaturePackSkip[];
+  enabled: boolean;
+  installedAt: string;
+  protocols: SignaturePackProtocols | null;
+  notEvaluatedCount: number;
+}
+
+export interface YaraScanRequest {
+  path: string;
+  /** Omit to apply every enabled YARA pack; an empty list applies none. */
+  packIds?: string[];
+  /** One-off rule files or folders that are not installed. */
+  extraRulePaths?: string[];
+  maxFileSizeMb?: number;
+  operationId?: string;
+}
+
+export interface YaraStringMatch {
+  identifier: string;
+  offset: number;
+  length: number;
+  /** For a rule that reports secrets, only the first 4 bytes (or none). */
+  excerptHex: string;
+  /** Set when the rule reports secrets and the excerpt was masked. */
+  excerptMasked?: boolean;
+}
+
+export interface YaraMatchRow {
+  id: string;
+  /** Relative to the scan target, forward slashes. */
+  path: string;
+  filePath: string;
+  sha256: string;
+  rule: string;
+  namespace: string;
+  pack: string;
+  ruleId: string;
+  tags: string[];
+  severity: "info" | "low" | "medium" | "high" | "critical";
+  meta: Array<[string, string | number | boolean]>;
+  strings: YaraStringMatch[];
+  stringsTruncated: number;
+}
+
+export interface YaraSkippedFile {
+  path: string;
+  reason: string;
+}
+
+export interface YaraPackInfo {
+  id: string;
+  name: string;
+  license: string;
+  contentSha256: string;
+  ruleCount: number;
+}
+
+export interface YaraRuleSkip {
+  pack: string;
+  file: string;
+  line: number | null;
+  message: string;
+}
+
+export interface YaraScanResult {
+  runId: string;
+  target: string;
+  /** "incomplete" when a file timed out, a pack failed its integrity check, or a cap was hit. */
+  state: "completed" | "incomplete";
+  filesScanned: number;
+  bytesScanned: number;
+  matches: YaraMatchRow[];
+  matchesDropped: number;
+  skipped: YaraSkippedFile[];
+  skippedDropped: number;
+  packs: YaraPackInfo[];
+  rulesCompiled: number;
+  rulesSkipped: YaraRuleSkip[];
+  rulesSkippedTotal: number;
+  notes: string[];
+  durationMs: number;
+}
+
+// ---------------------------------------------------------------- template scans
+
+export interface TemplateAuthorization {
+  acknowledged: boolean;
+  statement: string;
+}
+
+/** Exactly one of `path` and a non-empty `targets` must be given. */
+export interface TemplateScanRequest {
+  /** A local file or folder, scanned with `file` templates. */
+  path?: string;
+  /** Live targets (URL, host, host:port, IP, CIDR). Needs `authorization.acknowledged`. */
+  targets?: string[];
+  authorization?: TemplateAuthorization;
+  /** Omit to apply every enabled Nuclei pack; an empty list applies none. */
+  packIds?: string[];
+  /** One-off template files or folders that are not installed. */
+  extraTemplatePaths?: string[];
+  /** Run only templates with any of these tags. */
+  tags?: string[];
+  excludeTags?: string[];
+  severities?: Array<"info" | "low" | "medium" | "high" | "critical">;
+  templateIds?: string[];
+  /** Templates tagged `intrusive` or `fuzz`. `dos` templates never run. */
+  includeIntrusive?: boolean;
+  /** Live scans: requests per second overall. */
+  rateLimit?: number;
+  maxFileSizeMb?: number;
+  operationId?: string;
+}
+
+export interface TemplateLineRow {
+  line: number;
+  startColumn: number;
+  endColumn: number;
+  /** Capped; masked for templates that report credentials. */
+  text: string;
+}
+
+export interface TemplateClassification {
+  cveId: string[];
+  cweId: string[];
+  cvssScore: number | null;
+}
+
+export interface TemplateMatchRow {
+  id: string;
+  templateId: string;
+  /** `<pack>/<templateId>`. */
+  ruleId: string;
+  name: string;
+  severity: "info" | "low" | "medium" | "high" | "critical";
+  tags: string[];
+  pack: string;
+  protocol: "file" | "http" | "dns" | "tcp" | "ssl";
+  /** The file path or live endpoint that matched. */
+  matchedAt: string;
+  /** File matches: relative to the scan target, forward slashes. */
+  filePath?: string;
+  lines: TemplateLineRow[];
+  matcherNames: string[];
+  /** Extractor name (empty when unnamed) and its values (masked for credential templates). */
+  extracted: Array<[string, string[]]>;
+  classification: TemplateClassification;
+  description: string;
+  reference: string[];
+  remediation: string;
+  /** Live matches: bounded, redacted request and response excerpts. Always null for file matches. */
+  exchange: TemplateExchange | null;
+}
+
+export interface TemplateExchange {
+  protocol: "http" | "dns" | "tcp" | "ssl";
+  /** The target as the user typed it. */
+  target: string;
+  /** Credential-bearing header values are "[REDACTED]". */
+  request: string;
+  /** Withheld for templates that report credentials. */
+  responseExcerpt: string;
+  responseTruncated: boolean;
+}
+
+/** The authorization a live scan was started with; recorded per run, never remembered. */
+export interface TemplateAuthorizationRecord {
+  acknowledged: boolean;
+  statement: string;
+  acknowledgedAtMs: number;
+}
+
+export interface TemplateResolvedHost {
+  host: string;
+  addresses: string[];
+}
+
+export interface TemplateUnreachableTarget {
+  target: string;
+  reason: string;
+}
+
+export interface TemplateNotEvaluatedRow {
+  /** Empty when the file did not load as a template. */
+  templateId: string;
+  pack: string;
+  /** Path inside the pack. */
+  file: string;
+  protocol?: string;
+  target?: string;
+  reason: string;
+}
+
+export interface TemplatePackInfo {
+  id: string;
+  name: string;
+  license: string;
+  contentSha256: string;
+  templateCount: number;
+}
+
+export interface TemplateSkippedFile {
+  path: string;
+  reason: string;
+}
+
+export interface TemplateScanResult {
+  runId: string;
+  mode: "path" | "targets";
+  target: string;
+  /** "incomplete" when a pack failed its integrity check or a cap was hit. Templates not evaluated do not make a run incomplete. */
+  state: "completed" | "incomplete";
+  matches: TemplateMatchRow[];
+  matchesDropped: number;
+  notEvaluated: TemplateNotEvaluatedRow[];
+  notEvaluatedDropped: number;
+  packs: TemplatePackInfo[];
+  templatesLoaded: number;
+  templatesRun: number;
+  filesScanned: number;
+  bytesScanned: number;
+  skipped: TemplateSkippedFile[];
+  requestsSent: number;
+  requestsRefused: number;
+  /** Live scans: hosts (never URLs) refused by scope; nothing was sent to them. */
+  refusedHosts: string[];
+  /** Live scans: each host name and the addresses pinned for the run. */
+  resolved: TemplateResolvedHost[];
+  /** Live scans: targets that could not be resolved or reached (not evaluated). */
+  unreachableTargets: TemplateUnreachableTarget[];
+  /** Live scans: the recorded authorization; null for local scans. */
+  authorization: TemplateAuthorizationRecord | null;
+  notes: string[];
+  durationMs: number;
 }

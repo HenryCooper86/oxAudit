@@ -44,6 +44,10 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      # Audits shipped dependencies only. GHSA-fc5q-39xc-vjpf affects every
+      # picomatch release through 4.0.7 with no patched version, and picomatch
+      # is reached only through dev tooling (vite, vitest, eslint). Restore the
+      # full audit in package.json once a patched picomatch is published.
       - run: npm run audit:dependencies
 
   codeql:

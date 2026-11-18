@@ -147,7 +147,7 @@ pub fn parse_packages(root: &Value) -> Result<Vec<Dependency>, String> {
     let mut warnings = BTreeSet::new();
     let mut locals = BTreeSet::new();
     let mut linked_names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (path, value) in packages {
+    for (path, value) in crate::sorted_entries(packages) {
         if !value.is_object() {
             return Err(format!(
                 "invalid package-lock.json: package {path:?} must be an object"
@@ -185,7 +185,7 @@ pub fn parse_packages(root: &Value) -> Result<Vec<Dependency>, String> {
     }
     let mut out = Vec::new();
     let mut indices = BTreeMap::new();
-    for (path, value) in packages {
+    for (path, value) in crate::sorted_entries(packages) {
         if path.is_empty() || value.get("link") == Some(&Value::Bool(true)) {
             continue;
         }
@@ -307,7 +307,7 @@ pub fn parse_packages(root: &Value) -> Result<Vec<Dependency>, String> {
                     );
                     continue;
                 };
-                for (name, spec) in declarations {
+                for (name, spec) in crate::sorted_entries(declarations) {
                     edges += 1;
                     if edges > MAX_VISITS {
                         warning(

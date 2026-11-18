@@ -323,7 +323,7 @@ pub(crate) async fn scan_image_workflow(
                 "ecosystem": query.ecosystem, "osvName": query.osv_name})).collect::<Vec<_>>(), "components": result.components,
             "imageDigest": image_digest, "layers": layer_receipts, "localEvidence": attempt.local_evidence});
         use sha2::Digest;
-        let bytes = serde_json::to_vec(&provider_payload).map_err(|error| error.to_string())?;
+        let bytes = oxaudit_parsers::canonical_json::canonical_bytes(&provider_payload)?;
         let snapshot_id = oxaudit_domain::ProviderSnapshotId::new();
         repository.provider_save_snapshot(&crate::findings::repository::ProviderSnapshotRecord {
             id: snapshot_id.to_string(), provider_id: "oxaudit.image.evidence".into(),

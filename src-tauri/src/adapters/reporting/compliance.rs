@@ -75,7 +75,7 @@ fn generate_json(report: &ReportDocument) -> Result<Vec<u8>, String> {
         "assessment": assessment,
         "reviews": reviews
     });
-    serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())
+    oxaudit_parsers::stable_json::to_vec_pretty(&value).map_err(|error| error.to_string())
 }
 
 fn generate_csv(report: &ReportDocument) -> String {

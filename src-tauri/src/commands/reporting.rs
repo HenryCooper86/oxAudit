@@ -732,7 +732,7 @@ pub(crate) fn verify_finding_inner(
     if verifier_id == producer_id {
         return Err("the producing detector cannot independently verify its own claim".into());
     }
-    let snapshot = serde_json::to_vec(&(
+    let snapshot = oxaudit_parsers::stable_json::to_vec(&(
         finding.clone(),
         &observation.observation,
         &observation.evidence,

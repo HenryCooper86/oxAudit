@@ -19,6 +19,8 @@ declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
     OXAUDIT_SERVER?: boolean;
+    /** Optional server features the operator switched on, set by `/env.js`. */
+    OXAUDIT_SERVER_FEATURES?: { liveTargetsAllowed?: boolean };
   }
 }
 
@@ -26,6 +28,14 @@ export const serverMode: boolean =
   typeof window !== "undefined" &&
   !window.__TAURI_INTERNALS__ &&
   window.OXAUDIT_SERVER === true;
+
+/**
+ * Whether template scans against live targets can run. Always true on the
+ * desktop; on the headless server only when it was started with
+ * `--allow-live-targets`, since otherwise it refuses them.
+ */
+export const liveTargetsAllowed: boolean =
+  !serverMode || window.OXAUDIT_SERVER_FEATURES?.liveTargetsAllowed === true;
 
 const TOKEN_KEY = "oxaudit-server-token";
 

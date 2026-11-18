@@ -1,0 +1,50 @@
+[pack]
+schemaVersion = 1
+id = "rulepack.parity"
+name = "Parity rules"
+version = "1.0.0"
+minimumOxauditVersion = "0.1.0"
+contentSha256 = "41afcddd1211ab7a953414464c0388b696bdeed5350cb655f5b2453baa973f91"
+
+[pack.provenance]
+authors = ["parity fixture"]
+source = "independent fixture"
+license = "Apache-2.0"
+creationMethod = "independently_derived"
+contentSha256 = "41afcddd1211ab7a953414464c0388b696bdeed5350cb655f5b2453baa973f91"
+
+[[rule]]
+id = "source.parity-marker"
+version = "1"
+title = "Parity marker rule"
+description = "Matches the marker call."
+recommendation = "Remove the marker call."
+engine = "source_regex"
+severity = "high"
+pattern = 'parityMarkerCall\(([^)]+)\)'
+classifications = ["CWE-95"]
+
+[rule.scope]
+languages = ["javascript"]
+platforms = []
+architectures = []
+fileExtensions = []
+
+[rule.provenance]
+authors = ["parity fixture"]
+source = "independent fixture"
+license = "Apache-2.0"
+creationMethod = "independently_derived"
+contentSha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[[rule.positiveFixtures]]
+id = "positive"
+path = "positive.txt"
+sha256 = "d090939f3db498a7f416c25963009316f8e6c75dc958fb68bb10e2bf09fbcff9"
+expectedValues = []
+
+[[rule.negativeFixtures]]
+id = "negative"
+path = "negative.txt"
+sha256 = "b7162766fa31d05e9239fe0f02442adabc99385c113a50461b760adf5e755cf1"
+expectedValues = []

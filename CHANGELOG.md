@@ -21,6 +21,51 @@ lists what each release ships.
 
 ## [Unreleased]
 
+### Added
+
+- YARA scanning. `oxaudit-cli yara <PATH>` and the YARA Scan page apply YARA
+  rules you import to every file under a path, through the embedded YARA-X
+  engine: no external binary and no network. Matches carry byte offsets and
+  64-byte excerpts, severity comes from a rule's `severity` or `score`
+  metadata, and SARIF export maps string matches to byte regions. A scan ends
+  incomplete, not completed, when a pack fails its integrity check, a file
+  times out, or a cap is hit, and the CLI then exits 3. A rule file that does
+  not compile, a file that was not read and a module oxAudit does not provide
+  (`cuckoo`, `vt`, `magic`) are listed, never silently dropped. `include` and
+  compiled `.yarc` rules are not supported. See
+  [YARA scanning](docs/yara.md).
+- Template scanning. `oxaudit-cli template` and the Template Scan page run
+  Nuclei templates you import: `file` templates against a local path, and
+  `http`, `dns`, `tcp` and `ssl` templates against live targets you name. A
+  live scan needs a per-run authorization (`--i-am-authorized`, recorded with
+  the run and never remembered), refuses every request, redirect hop and DNS
+  question outside the listed targets, pins each host's addresses for the run,
+  refuses cloud metadata endpoints unless typed, and applies rate, concurrency,
+  timeout, response and request limits (Settings, Live scanning; flags on the
+  CLI). Templates that use features oxAudit does not implement are listed as not
+  evaluated, never as clean. Credential values and headers are redacted in
+  stored evidence. See [Template scanning](docs/template-scanning.md), which
+  includes the compatibility matrix and what scope does not cover.
+- Signature packs. `oxaudit-cli signature-pack install|list|enable|disable|
+  remove` and Rule Library's **Import signature rules** import YARA rules and
+  Nuclei templates from a file, folder or `.zip`. A licence is required and is
+  recorded with every run that used the pack; files are copied with a hash
+  manifest that is verified before every scan. oxAudit bundles no rules or
+  templates.
+- `oxaudit-server --allow-live-targets` (`OXAUDIT_SERVER_ALLOW_LIVE_TARGETS=1`).
+  Without it the server refuses live-target template scans, because they send
+  traffic from the server's network position. Local-path template scans work
+  either way.
+- `yara` and `templates` Cargo features, on by default. A build without one
+  reports that scan as unavailable rather than returning an empty result.
+
+### Fixed
+
+- The YARA-X dependency turns on insertion-ordered JSON maps for the whole
+  build. Parsers, receipt digests and JSON outputs that depended on key order
+  were made order-independent, so results and digests are the same as in a
+  build without it.
+
 ## [0.3.3] - 2026-11-17
 
 ### Changed

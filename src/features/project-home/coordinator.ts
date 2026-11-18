@@ -53,6 +53,7 @@ export const useScanWorkStore = create<{
 const WORK_LABELS: Record<ScanWorkKind, string> = {
   source: "Scanning source", dependencies: "Checking dependencies", binary: "Scanning binaries",
   image: "Scanning image", history: "Scanning git history",
+  yara: "YARA scan", template: "Template scan",
 };
 
 function validWorkSnapshot(value: unknown): value is ScanWorkSnapshot {

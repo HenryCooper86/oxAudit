@@ -9,6 +9,8 @@ members = [
   "crates/oxaudit-archive",
   "crates/oxaudit-parsers",
   "crates/oxaudit-sca",
+  "crates/oxaudit-yara",
+  "crates/oxaudit-nuclei",
 ]
 resolver = "2"
 
@@ -41,7 +43,7 @@ publish = false
 #
 # The Kotlin, Swift, C#, and C++ grammars are the large ones; dropping all four
 # is most of the saving.
-default = ["grammars-all"]
+default = ["grammars-all", "yara", "templates"]
 
 grammars-all = [
   "grammar-javascript",
@@ -84,6 +86,19 @@ grammar-swift = ["dep:tree-sitter-swift"]
 # browser GUI served alongside. The desktop and CLI builds exclude it, so
 # its dependencies never enter their graphs.
 server = ["dep:axum", "dep:tokio-stream", "dep:mime_guess"]
+# The embedded YARA-X engine. Without it `scan_yara` fails with an explicit
+# "no YARA engine in this build" error; it never reports an empty result.
+yara = ["dep:oxaudit-yara"]
+# The Nuclei template engine for Template scans. Without it `scan_templates`
+# fails with an explicit "no template engine in this build" error.
+templates = [
+  "dep:oxaudit-nuclei",
+  "dep:hickory-resolver",
+  "dep:rustls",
+  "dep:tokio-rustls",
+  "dep:x509-parser",
+  "dep:md-5",
+]
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -109,6 +124,17 @@ oxaudit-scanners = { path = "crates/oxaudit-scanners" }
 oxaudit-archive = { path = "crates/oxaudit-archive" }
 oxaudit-parsers = { path = "crates/oxaudit-parsers" }
 oxaudit-sca = { path = "crates/oxaudit-sca" }
+oxaudit-yara = { path = "crates/oxaudit-yara", optional = true }
+oxaudit-nuclei = { path = "crates/oxaudit-nuclei", optional = true }
+# Live-target networking for Template scans (feature `templates`, module
+# `livenet`). The DNS client uses the system resolver configuration only; the
+# TLS stack is the rustls/aws-lc-rs one reqwest already brings, and
+# x509-parser is the version yara-x already brings.
+hickory-resolver = { version = "0.26.3", optional = true, default-features = false, features = ["system-config", "tokio"] }
+rustls = { version = "0.23.46", optional = true, default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26.6", optional = true, default-features = false }
+x509-parser = { version = "0.18.1", optional = true, default-features = false }
+md-5 = { version = "0.11.0", optional = true }
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-opener = "2.7.2"
 tauri-plugin-dialog = "2.8.4"
@@ -121,6 +147,9 @@ regex = "1.13.1"
 rusqlite = { version = "0.41.1", features = ["bundled", "serialize", "hooks", "limits"] }
 libc = "0.2.191"
 walkdir = "2.5.0"
+# Folds signature-pack paths so members that would collide on a case- or
+# normalisation-insensitive filesystem are refused at import.
+unicode-normalization = "0.1.26"
 ignore = "0.4.34"
 rayon = "1.12.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "gzip", "stream", "query"] }
@@ -188,6 +217,8 @@ criterion = { version = "0.8.2", features = ["html_reports"] }
 tar = "0.4.46"
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 backhand = "0.25.5"
+# Self-signed certificates for the livenet loopback TLS tests.
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [[bin]]
 name = "oxaudit-server"

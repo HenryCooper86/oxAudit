@@ -162,7 +162,7 @@ impl RulePackStore {
                     installed.toml_sha256,
                     installed.content_sha256,
                     installed.rule_count as i64,
-                    serde_json::to_string(&installed.engines).unwrap_or_default(),
+                    oxaudit_parsers::stable_json::to_string(&installed.engines).unwrap_or_default(),
                     1_i64,
                     installed.installed_at,
                     toml_text,

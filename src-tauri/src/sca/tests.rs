@@ -348,3 +348,18 @@ async fn the_portfolio_rebuilds_reports_from_stored_runs_without_touching_them()
     assert!(!gone[0].report.fails());
     assert!(gone[0].report.summary.notes[0].contains("not on this machine"));
 }
+
+/// `yara-x` turns on serde_json's `preserve_order` workspace-wide, which makes a
+/// `Value` serialize in insertion order. Stored receipts were hashed over
+/// key-sorted bytes, so the digest must stay the sorted-bytes digest.
+#[test]
+fn receipt_digest_is_over_key_sorted_bytes_whatever_the_insertion_order() {
+    use sha2::Digest;
+    let mut payload = serde_json::json!({});
+    payload["zeta"] = serde_json::json!({"y": 1, "b": [{"d": 1, "c": 2}]});
+    payload["alpha"] = serde_json::json!(true);
+    let expected = hex::encode(sha2::Sha256::digest(
+        br#"{"alpha":true,"zeta":{"b":[{"c":2,"d":1}],"y":1}}"#,
+    ));
+    assert_eq!(super::receipt_hash(&payload).unwrap(), expected);
+}

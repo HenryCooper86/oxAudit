@@ -9,7 +9,10 @@ pub mod reporting;
 pub mod schedule;
 pub mod sessions;
 pub mod settings;
+pub mod sigpacks;
+pub mod template;
 pub mod vex;
+pub mod yara;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1768,6 +1771,8 @@ pub(crate) fn list_canonical_runs_inner(
         Some("import") => Some("import"),
         Some("external_evidence") => Some("external_evidence"),
         Some("verification") => Some("verification"),
+        Some("yara") => Some("yara"),
+        Some("template") => Some("template"),
         Some(_) => return Err("unknown run kind".into()),
         None => None,
     };

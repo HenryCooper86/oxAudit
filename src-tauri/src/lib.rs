@@ -12,11 +12,14 @@ mod deps;
 mod editor;
 pub mod exploit;
 pub mod external;
+mod filewalk;
 pub mod findings;
 mod fs_utils;
 pub mod git_context;
 mod history;
 mod licenses;
+#[cfg(feature = "templates")]
+pub(crate) mod livenet;
 mod migration;
 mod models;
 mod monitor;
@@ -31,7 +34,10 @@ mod sca;
 mod scan_work;
 mod schedule_store;
 mod secrets_validation;
+mod sigpacks;
+mod template;
 mod vex_trust;
+mod yara;
 // Public so benches/scanning.rs can measure the rule engines directly. The
 // benchmark exists to catch a rule change that quietly makes matching
 // quadratic, which means it has to reach the same functions a scan does.
@@ -118,6 +124,15 @@ pub fn run() {
                 ),
             };
             app.manage(rule_packs_state);
+            let sig_packs_state = match app.path().app_data_dir() {
+                Ok(data_dir) => crate::sigpacks::SigPacksState::open_beside(
+                    &data_dir.join("rule-packs.sqlite3"),
+                ),
+                Err(_) => crate::sigpacks::SigPacksState::unavailable(
+                    "no application data directory available".into(),
+                ),
+            };
+            app.manage(sig_packs_state);
             let schedule_state = match app.path().app_data_dir() {
                 Ok(data_dir) => {
                     match crate::schedule_store::ScheduleStore::open(
@@ -238,6 +253,13 @@ pub fn run() {
             commands::quality::list_installed_rule_packs,
             commands::quality::set_rule_pack_enabled,
             commands::quality::remove_rule_pack,
+            commands::sigpacks::validate_signature_pack,
+            commands::sigpacks::install_signature_pack,
+            commands::sigpacks::list_signature_packs,
+            commands::sigpacks::set_signature_pack_enabled,
+            commands::sigpacks::remove_signature_pack,
+            commands::yara::scan_yara,
+            commands::template::scan_templates,
             commands::schedule::list_scan_schedules,
             commands::schedule::set_scan_schedule,
             commands::schedule::remove_scan_schedule,

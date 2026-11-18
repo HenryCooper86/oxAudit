@@ -1,0 +1,25 @@
+[package]
+name = "oxaudit-nuclei"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+# Internal to the oxAudit workspace; not published to crates.io.
+publish = false
+license = "Apache-2.0"
+description = "Nuclei template model, DSL, matchers and request planning for oxAudit; performs no I/O"
+
+[dependencies]
+oxaudit-domain = { path = "../oxaudit-domain" }
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# The same YAML parser, with the same hostile-input budgets, that
+# oxaudit-parsers already uses for lockfiles: pure Rust, no unsafe, bounded
+# alias expansion.
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize"] }
+thiserror = "2.0.21"
+base64 = "0.22.1"
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+md-5 = "0.11.0"
+sha1 = "0.11.0"
+sha2 = "0.11.1"

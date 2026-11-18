@@ -307,7 +307,10 @@ const ALIASES: &[(&str, Alias)] = &[
     ("gnu gpl v2", Alias::Id("GPL-2.0-only")),
     ("gnu general public v2 gplv2", Alias::Id("GPL-2.0-only")),
     ("gplv2+", Alias::Id("GPL-2.0-or-later")),
-    ("gnu general public v2 or later gplv2+", Alias::Id("GPL-2.0-or-later")),
+    (
+        "gnu general public v2 or later gplv2+",
+        Alias::Id("GPL-2.0-or-later"),
+    ),
     ("gplv3", Alias::Id("GPL-3.0-only")),
     ("gpl v3", Alias::Id("GPL-3.0-only")),
     ("gpl 3", Alias::Id("GPL-3.0-only")),
@@ -316,28 +319,46 @@ const ALIASES: &[(&str, Alias)] = &[
     ("gnu general public v3.0", Alias::Id("GPL-3.0-only")),
     ("gnu general public v3 gplv3", Alias::Id("GPL-3.0-only")),
     ("gplv3+", Alias::Id("GPL-3.0-or-later")),
-    ("gnu general public v3 or later gplv3+", Alias::Id("GPL-3.0-or-later")),
+    (
+        "gnu general public v3 or later gplv3+",
+        Alias::Id("GPL-3.0-or-later"),
+    ),
     ("lgpl", Alias::Family(Weak)),
     ("gnu lgpl", Alias::Family(Weak)),
     ("gnu lesser general public", Alias::Family(Weak)),
-    ("gnu library or lesser general public lgpl", Alias::Family(Weak)),
+    (
+        "gnu library or lesser general public lgpl",
+        Alias::Family(Weak),
+    ),
     ("lgplv2.1", Alias::Id("LGPL-2.1-only")),
     ("lgpl v2.1", Alias::Id("LGPL-2.1-only")),
     ("lgpl 2.1", Alias::Id("LGPL-2.1-only")),
     ("gnu lesser general public v2.1", Alias::Id("LGPL-2.1-only")),
-    ("gnu lesser general public v2 or later lgplv2+", Alias::Id("LGPL-2.0-or-later")),
+    (
+        "gnu lesser general public v2 or later lgplv2+",
+        Alias::Id("LGPL-2.0-or-later"),
+    ),
     ("lgplv3", Alias::Id("LGPL-3.0-only")),
     ("lgpl v3", Alias::Id("LGPL-3.0-only")),
     ("lgpl 3", Alias::Id("LGPL-3.0-only")),
-    ("gnu lesser general public v3 lgplv3", Alias::Id("LGPL-3.0-only")),
-    ("gnu lesser general public v3 or later lgplv3+", Alias::Id("LGPL-3.0-or-later")),
+    (
+        "gnu lesser general public v3 lgplv3",
+        Alias::Id("LGPL-3.0-only"),
+    ),
+    (
+        "gnu lesser general public v3 or later lgplv3+",
+        Alias::Id("LGPL-3.0-or-later"),
+    ),
     ("agpl", Alias::Family(Net)),
     ("gnu affero general public", Alias::Family(Net)),
     ("agplv3", Alias::Id("AGPL-3.0-only")),
     ("agpl v3", Alias::Id("AGPL-3.0-only")),
     ("agpl 3", Alias::Id("AGPL-3.0-only")),
     ("gnu affero general public v3", Alias::Id("AGPL-3.0-only")),
-    ("gnu affero general public v3 or later agplv3+", Alias::Id("AGPL-3.0-or-later")),
+    (
+        "gnu affero general public v3 or later agplv3+",
+        Alias::Id("AGPL-3.0-or-later"),
+    ),
     ("mpl", Alias::Family(Weak)),
     ("mpl 2", Alias::Id("MPL-2.0")),
     ("mpl 2.0", Alias::Id("MPL-2.0")),
@@ -358,13 +379,19 @@ const ALIASES: &[(&str, Alias)] = &[
     ("eclipse public 2.0 epl 2.0", Alias::Id("EPL-2.0")),
     ("cddl", Alias::Family(Weak)),
     ("cddl 1.0", Alias::Id("CDDL-1.0")),
-    ("common development and distribution 1.0", Alias::Id("CDDL-1.0")),
+    (
+        "common development and distribution 1.0",
+        Alias::Id("CDDL-1.0"),
+    ),
     ("cddl 1.1", Alias::Id("CDDL-1.1")),
     ("public domain", Alias::Family(Pd)),
     ("unlicense unlicense", Alias::Id("Unlicense")),
     ("cc0", Alias::Id("CC0-1.0")),
     ("cc0 1.0 universal", Alias::Id("CC0-1.0")),
-    ("cc0 1.0 universal cc0 1.0 public domain dedication", Alias::Id("CC0-1.0")),
+    (
+        "cc0 1.0 universal cc0 1.0 public domain dedication",
+        Alias::Id("CC0-1.0"),
+    ),
     ("psf", Alias::Id("PSF-2.0")),
     ("psfl", Alias::Id("PSF-2.0")),
     ("python software foundation", Alias::Id("PSF-2.0")),
@@ -375,7 +402,10 @@ const ALIASES: &[(&str, Alias)] = &[
     ("do what f*ck you want to public wtfpl", Alias::Id("WTFPL")),
     ("artistic", Alias::Family(Perm)),
     ("artistic 2.0", Alias::Id("Artistic-2.0")),
-    ("historical permission notice and disclaimer hpnd", Alias::Id("HPND")),
+    (
+        "historical permission notice and disclaimer hpnd",
+        Alias::Id("HPND"),
+    ),
     ("zope public", Alias::Id("ZPL-2.1")),
     ("university of illinois ncsa open source", Alias::Id("NCSA")),
     ("eupl 1.2", Alias::Id("EUPL-1.2")),
@@ -855,7 +885,11 @@ mod tests {
         let mut names = std::collections::BTreeSet::new();
         for (name, alias) in ALIASES {
             assert!(names.insert(*name), "duplicate alias {name}");
-            assert_eq!(*name, normalize_text(name), "alias {name} is not normalized");
+            assert_eq!(
+                *name,
+                normalize_text(name),
+                "alias {name} is not normalized"
+            );
             if let Alias::Id(id) = alias {
                 assert!(category_of(id).is_some(), "alias {name} -> {id}");
             }
@@ -900,7 +934,10 @@ mod tests {
         assert_eq!(assessment.terms[0].id, None);
         assert_eq!(category("GPL"), LicenseCategory::StrongCopyleft);
         assert_eq!(category("LGPL"), LicenseCategory::WeakCopyleft);
-        assert_eq!(category("Apache Software License"), LicenseCategory::Permissive);
+        assert_eq!(
+            category("Apache Software License"),
+            LicenseCategory::Permissive
+        );
     }
 
     #[test]
@@ -950,7 +987,10 @@ mod tests {
 
     #[test]
     fn unresolved_text_is_unknown_never_permissive() {
-        assert_eq!(category("SEE LICENSE IN LICENSE.txt"), LicenseCategory::Unknown);
+        assert_eq!(
+            category("SEE LICENSE IN LICENSE.txt"),
+            LicenseCategory::Unknown
+        );
         assert_eq!(category("Custom"), LicenseCategory::Unknown);
         assert_eq!(assess(None).category, LicenseCategory::Unknown);
         assert_eq!(assess(Some("   ")).declared, None);

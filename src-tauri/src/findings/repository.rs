@@ -564,7 +564,7 @@ impl FindingsRepository {
     ) -> Result<crate::adapters::scanners::ScanGraph, CommandError> {
         let connection = self.connection.lock().map_err(persistence_error)?;
         let load_payloads = |table: &str| -> Result<Vec<String>, CommandError> {
-            let sql = format!("SELECT payload_json FROM {table} WHERE run_id = ?1 ORDER BY id");
+            let sql = format!("SELECT payload_json FROM {table} WHERE run_id = ?1 ORDER BY rowid");
             let mut statement = connection.prepare(&sql).map_err(persistence_error)?;
             let rows = statement
                 .query_map([run_id.as_str()], |row| row.get::<_, String>(0))
@@ -582,7 +582,7 @@ impl FindingsRepository {
             .collect::<Result<Vec<_>, _>>()?;
         let mut statement = connection
             .prepare(
-                "SELECT payload_json, evidence_json FROM canonical_observations WHERE run_id = ?1 ORDER BY id",
+                "SELECT payload_json, evidence_json FROM canonical_observations WHERE run_id = ?1 ORDER BY rowid",
             )
             .map_err(persistence_error)?;
         let rows = statement
@@ -612,7 +612,7 @@ impl FindingsRepository {
             Some(run_id) => {
                 let mut statement = connection
                     .prepare(
-                        "SELECT payload_json FROM canonical_findings WHERE run_id = ?1 ORDER BY id",
+                        "SELECT payload_json FROM canonical_findings WHERE run_id = ?1 ORDER BY rowid",
                     )
                     .map_err(persistence_error)?;
                 let rows = statement
@@ -1157,7 +1157,10 @@ impl FindingsRepository {
         snapshot: &ProviderSnapshotRecord,
     ) -> Result<(), CommandError> {
         let fetched_at_ms = i64::try_from(snapshot.fetched_at_ms).map_err(persistence_error)?;
-        let payload = to_json(&snapshot.payload)?;
+        // Stored key-sorted so the row is byte-identical in every build.
+        let payload = to_json(&oxaudit_parsers::canonical_json::sort_keys(
+            snapshot.payload.clone(),
+        ))?;
         let connection = self.connection.lock().map_err(persistence_error)?;
         let existing = connection
             .query_row(
@@ -4019,7 +4022,7 @@ fn load_project_reviews_for_identities(
 }
 
 fn to_json(value: &impl Serialize) -> Result<String, CommandError> {
-    serde_json::to_string(value).map_err(persistence_error)
+    oxaudit_parsers::stable_json::to_string(value).map_err(persistence_error)
 }
 
 fn enum_name(value: &impl Serialize) -> Result<String, CommandError> {

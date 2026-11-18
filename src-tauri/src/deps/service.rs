@@ -257,7 +257,8 @@ fn validate_snapshot_hash(
     snapshot: &crate::findings::repository::ProviderSnapshotRecord,
 ) -> Result<(), String> {
     use sha2::Digest;
-    let bytes = serde_json::to_vec(&snapshot.payload).map_err(|e| e.to_string())?;
+    // Key-sorted bytes: the digest must not depend on how serde_json is built.
+    let bytes = oxaudit_parsers::canonical_json::canonical_bytes(&snapshot.payload)?;
     if hex::encode(sha2::Sha256::digest(bytes)) != snapshot.content_sha256 {
         return Err("cached OSV receipt integrity check failed".into());
     }
@@ -648,7 +649,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             payload["sourceUrl"] = serde_json::json!(db.source_url()?);
             payload["builtAtMs"] = serde_json::json!(advisory_fetched_at_ms);
             let validated = load_complete_osv_receipt(&payload, &query_keys)?;
-            let payload_bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+            let payload_bytes = oxaudit_parsers::canonical_json::canonical_bytes(&payload)?;
             let content_sha256 = {
                 use sha2::Digest;
                 hex::encode(sha2::Sha256::digest(&payload_bytes))
@@ -683,7 +684,7 @@ pub async fn scan(request: ScanRequest<'_>) -> Result<DependencyScanResult, Stri
             let payload = complete_osv_receipt_payload(query_keys.clone(), &results)?;
             let results = load_complete_osv_receipt(&payload, &query_keys)?;
             advisory_fetched_at_ms = Some(epoch_millis());
-            let payload_bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+            let payload_bytes = oxaudit_parsers::canonical_json::canonical_bytes(&payload)?;
             let content_sha256 = {
                 use sha2::Digest;
                 hex::encode(sha2::Sha256::digest(&payload_bytes))

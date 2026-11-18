@@ -65,6 +65,23 @@ ignore = [
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser via printpdf; builtin fonts only, no untrusted font input" },
   { id = "RUSTSEC-2026-0206", reason = "rustybuzz via printpdf; builtin fonts only, no untrusted font input" },
 
+  # chrono is a direct dependency (timestamps, including serialized and stored
+  # ones, in the host crate and oxaudit-sca). The advisory is a
+  # maintenance-status notice with no known defect and no safe upgrade; the
+  # suggested replacements are jiff and time. Replacing it must keep stored
+  # timestamp formats byte-identical, so it is a migration of its own. Remove
+  # this entry when that migration lands.
+  { id = "RUSTSEC-2026-0543", reason = "chrono is a direct dependency; migration to a maintained time crate is pending" },
+
+  # bincode reaches the tree only through yara-x, which uses it to serialize
+  # and deserialize compiled rule sets (`Rules::serialize` /
+  # `Rules::deserialize_from`). oxAudit compiles rules from source on every
+  # scan, never calls either function, and refuses to import compiled rule
+  # files, so no untrusted bytes reach the decoder. Verified:
+  # `grep -rn 'deserialize' crates/oxaudit-yara/src` returns nothing.
+  # Maintenance-status notice, no known defect; removable only upstream.
+  { id = "RUSTSEC-2025-0141", reason = "bincode via yara-x compiled-rule (de)serialization, which oxAudit never calls" },
+
   # zbus's D-Bus helpers reach the tree only through tauri-plugin-opener on
   # Linux (opening files and URLs with the desktop). Even opener 2.7.2 still
   # requires zbus ^5.9. Maintenance-status notices, no known defect;

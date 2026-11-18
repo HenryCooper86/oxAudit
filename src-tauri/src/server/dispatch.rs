@@ -639,6 +639,120 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                 a.id,
             ))
         }
+        // ------------------------------------------- signature packs / YARA
+        "validate_signature_pack" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                kind: crate::sigpacks::PackKind,
+                path: String,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::sigpacks::validate_signature_pack_inner(a.kind, &a.path).await)
+        }
+        "install_signature_pack" => {
+            #[derive(serde::Deserialize)]
+            struct Args {
+                request: crate::commands::sigpacks::InstallSignaturePackRequest,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(
+                crate::commands::sigpacks::install_signature_pack_inner(&ctx.sig_packs, a.request)
+                    .await,
+            )
+        }
+        "list_signature_packs" => ok_st(
+            crate::commands::sigpacks::list_signature_packs_inner(&ctx.sig_packs),
+        ),
+        "set_signature_pack_enabled" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                id: String,
+                enabled: bool,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::sigpacks::set_signature_pack_enabled_inner(
+                &ctx.sig_packs,
+                &a.id,
+                a.enabled,
+            ))
+        }
+        "remove_signature_pack" => {
+            let a = id_args(&args)?;
+            ok_st(crate::commands::sigpacks::remove_signature_pack_inner(
+                &ctx.sig_packs,
+                &a.id,
+            ))
+        }
+        "scan_yara" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                request: crate::yara::YaraScanRequest,
+            }
+            let a: Args = from_args(&args)?;
+            let progress: std::sync::Arc<dyn Fn(Value) + Send + Sync> = {
+                let hub_events = ctx.events();
+                std::sync::Arc::new(move |payload: Value| {
+                    let _ = hub_events.emit("yara://progress", payload);
+                })
+            };
+            let hub_events = ctx.events();
+            ok_st(
+                crate::commands::yara::scan_yara_engine(
+                    &ctx.app.scan_work,
+                    &ctx.findings,
+                    &ctx.sig_packs,
+                    &hub_events,
+                    progress,
+                    a.request,
+                )
+                .await,
+            )
+        }
+        "scan_templates" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                request: crate::template::TemplateScanRequest,
+            }
+            let a: Args = from_args(&args)?;
+            // Live targets make the server send traffic from its own network
+            // position, so a token holder could use it to probe that network.
+            // Refused unless the operator opted in at startup; checked before
+            // the request is validated, its targets parsed, or anything is
+            // resolved, opened or stored. Local-path scans are unaffected.
+            if !a.request.targets.is_empty() && !ctx.allow_live_targets {
+                return Err(st_err(LIVE_TARGETS_REFUSED.into()));
+            }
+            let live_settings = ctx
+                .app
+                .settings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .live_scan
+                .clone();
+            let progress: std::sync::Arc<dyn Fn(Value) + Send + Sync> = {
+                let hub_events = ctx.events();
+                std::sync::Arc::new(move |payload: Value| {
+                    let _ = hub_events.emit("template://progress", payload);
+                })
+            };
+            let hub_events = ctx.events();
+            ok_st(
+                crate::commands::template::scan_templates_engine(
+                    &ctx.app.scan_work,
+                    &ctx.findings,
+                    &ctx.sig_packs,
+                    &hub_events,
+                    progress,
+                    a.request,
+                    &live_settings,
+                )
+                .await,
+            )
+        }
         "quality_status" => {
             ok_st(crate::commands::quality::quality_status_inner(&ctx.findings))
         }
@@ -1071,6 +1185,10 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
 
 // ---------------------------------------------------------------- helpers
 
+/// The refusal a live-target template scan gets from a server that was not
+/// started with live targets allowed.
+pub(crate) const LIVE_TARGETS_REFUSED: &str = "This server does not run template scans against live targets: it would send traffic from the server's network position. Start oxaudit-server with --allow-live-targets (or OXAUDIT_SERVER_ALLOW_LIVE_TARGETS=1) to allow it. Local-path template scans work without it.";
+
 fn default_u32_limit() -> u32 {
     50
 }
@@ -1182,14 +1300,84 @@ mod tests {
             findings: crate::initialize_findings_state(&data_dir, chrono::Utc::now()),
             cve,
             rule_packs: crate::rulepack_store::RulePacksState::unavailable("test".into()),
+            sig_packs: crate::sigpacks::SigPacksState::unavailable("test".into()),
             schedules: crate::schedule_store::ScheduleState::unavailable("test".into()),
             hub: Arc::new(crate::server::hub::EventHub::new()),
             data_dir,
             cache_dir: dir.path().join("cache"),
             config_dir,
             web_root: None,
+            allow_live_targets: false,
         };
         (ctx, dir)
+    }
+
+    #[tokio::test]
+    async fn save_settings_rejects_invalid_live_scan_settings_without_storing_them() {
+        let (ctx, _dir) = test_context();
+        let request = |live_scan: serde_json::Value| {
+            let mut settings = serde_json::to_value(crate::models::AppSettings::default()).unwrap();
+            settings["liveScan"] = live_scan;
+            serde_json::json!({
+                "request": {
+                    "settings": settings,
+                    "aiApiKey": {"action": "unchanged"},
+                    "nvdApiKey": {"action": "unchanged"},
+                }
+            })
+        };
+        let defaults = serde_json::to_value(crate::models::LiveScanSettings::default()).unwrap();
+        let with = |field: &str, value: serde_json::Value| {
+            let mut live = defaults.clone();
+            live[field] = value;
+            request(live)
+        };
+        for (args, expected) in [
+            (
+                with(
+                    "proxy",
+                    serde_json::json!("http://alice:s3cret@proxy.invalid:3128"),
+                ),
+                "user name or password",
+            ),
+            (
+                with("proxy", serde_json::json!("socks5://proxy.invalid:1080")),
+                "http:// or https://",
+            ),
+            (
+                with("proxy", serde_json::json!("not a url")),
+                "not a valid URL",
+            ),
+            (
+                with("requestsPerSecond", serde_json::json!(0)),
+                "requests per second",
+            ),
+            (
+                with("requestsPerSecond", serde_json::json!(1001)),
+                "between 1 and 1000",
+            ),
+            (
+                with("perHostConcurrency", serde_json::json!(101)),
+                "per host",
+            ),
+            (with("timeoutSeconds", serde_json::json!(121)), "timeout"),
+            (
+                with("maxResponseKb", serde_json::json!(32769)),
+                "response cap",
+            ),
+            (with("maxRequests", serde_json::json!(0)), "request budget"),
+        ] {
+            let error = dispatch(&ctx, "save_settings", args)
+                .await
+                .expect_err("invalid live-scan settings are refused");
+            let text = error.to_string();
+            assert!(text.contains(expected), "{expected}: {text}");
+            assert!(!text.contains("s3cret"), "{text}");
+        }
+        assert!(
+            !ctx.settings_path().exists(),
+            "nothing was written for a refused save"
+        );
     }
 
     #[tokio::test]
@@ -1214,6 +1402,259 @@ mod tests {
                 "schedule storage damage must be visible: {result:?}"
             );
         }
+    }
+
+    #[cfg(feature = "yara")]
+    #[tokio::test]
+    async fn signature_packs_and_yara_scans_run_through_dispatch() {
+        let (mut ctx, dir) = test_context();
+        // Without a store, pack commands say so and a scan with no rules fails.
+        let unavailable = dispatch(&ctx, "list_signature_packs", serde_json::json!({})).await;
+        assert!(unavailable.is_err());
+
+        ctx.sig_packs =
+            crate::sigpacks::SigPacksState::open_beside(&ctx.data_dir.join("rule-packs.sqlite3"));
+        let rules = dir.path().join("alpha.yar");
+        std::fs::write(
+            &rules,
+            "rule marker_alpha { strings: $a = \"OXAUDIT-FIXTURE-ALPHA\" condition: $a }",
+        )
+        .unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("hit.bin"), b"..OXAUDIT-FIXTURE-ALPHA..").unwrap();
+
+        let none = dispatch(
+            &ctx,
+            "scan_yara",
+            serde_json::json!({"request": {"path": target.to_string_lossy()}}),
+        )
+        .await;
+        assert!(
+            none.unwrap_err()
+                .as_str()
+                .unwrap()
+                .contains("No YARA rules"),
+            "a scan without rules must fail, not report no matches"
+        );
+
+        let preview = dispatch(
+            &ctx,
+            "validate_signature_pack",
+            serde_json::json!({"kind": "yara", "path": rules.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview["ruleCount"], 1);
+        assert_eq!(preview["fileCount"], 1);
+
+        let installed = dispatch(
+            &ctx,
+            "install_signature_pack",
+            serde_json::json!({"request": {
+                "kind": "yara", "path": rules.to_string_lossy(),
+                "name": "Alpha", "license": "Apache-2.0"
+            }}),
+        )
+        .await
+        .unwrap();
+        let id = installed["id"].as_str().unwrap().to_owned();
+        let listed = dispatch(&ctx, "list_signature_packs", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+
+        let scan = dispatch(
+            &ctx,
+            "scan_yara",
+            serde_json::json!({"request": {"path": target.to_string_lossy()}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(scan["state"], "completed");
+        assert_eq!(scan["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(scan["matches"][0]["pack"], id);
+        assert_eq!(scan["matches"][0]["strings"][0]["offset"], 2);
+
+        dispatch(
+            &ctx,
+            "set_signature_pack_enabled",
+            serde_json::json!({"id": id, "enabled": false}),
+        )
+        .await
+        .unwrap();
+        assert!(dispatch(
+            &ctx,
+            "scan_yara",
+            serde_json::json!({"request": {"path": target.to_string_lossy()}}),
+        )
+        .await
+        .is_err());
+        dispatch(&ctx, "remove_signature_pack", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
+        let listed = dispatch(&ctx, "list_signature_packs", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(listed.as_array().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "templates")]
+    #[tokio::test]
+    async fn template_scans_run_through_dispatch_and_live_targets_need_the_server_flag() {
+        let (mut ctx, dir) = test_context();
+        ctx.sig_packs =
+            crate::sigpacks::SigPacksState::open_beside(&ctx.data_dir.join("rule-packs.sqlite3"));
+        let templates = dir.path().join("tpl");
+        std::fs::create_dir_all(&templates).unwrap();
+        std::fs::write(
+            templates.join("marker.yaml"),
+            "id: dispatch-marker\ninfo:\n  name: Dispatch marker\n  severity: medium\nfile:\n  - extensions: [conf]\n    matchers:\n      - type: word\n        words: [\"OXAUDIT-FIXTURE-DISPATCH\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            templates.join("http.yaml"),
+            "id: dispatch-http\ninfo:\n  name: Dispatch http\n  severity: info\nhttp:\n  - path: [\"{{BaseURL}}/x\"]\n    matchers:\n      - type: status\n        status: [200]\n",
+        )
+        .unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("app.conf"), "x\nOXAUDIT-FIXTURE-DISPATCH\n").unwrap();
+
+        let none = dispatch(
+            &ctx,
+            "scan_templates",
+            serde_json::json!({"request": {"path": target.to_string_lossy()}}),
+        )
+        .await;
+        assert!(
+            none.unwrap_err()
+                .as_str()
+                .unwrap()
+                .contains("No applicable templates"),
+            "a scan without templates must fail, not report no matches"
+        );
+
+        let preview = dispatch(
+            &ctx,
+            "validate_signature_pack",
+            serde_json::json!({"kind": "nuclei", "path": templates.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview["ruleCount"], 2);
+        assert_eq!(preview["protocols"]["http"], 1);
+        assert_eq!(preview["protocols"]["file"], 1);
+        assert_eq!(preview["notEvaluatedCount"], 0);
+        let installed = dispatch(
+            &ctx,
+            "install_signature_pack",
+            serde_json::json!({"request": {
+                "kind": "nuclei", "path": templates.to_string_lossy(),
+                "name": "Dispatch", "license": "Apache-2.0"
+            }}),
+        )
+        .await
+        .unwrap();
+        let id = installed["id"].as_str().unwrap().to_owned();
+
+        let scan = dispatch(
+            &ctx,
+            "scan_templates",
+            serde_json::json!({"request": {"path": target.to_string_lossy()}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(scan["state"], "completed");
+        assert_eq!(scan["mode"], "path");
+        assert_eq!(scan["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            scan["matches"][0]["ruleId"],
+            format!("{id}/dispatch-marker")
+        );
+        assert_eq!(scan["matches"][0]["lines"][0]["line"], 2);
+        assert_eq!(scan["notEvaluated"][0]["templateId"], "dispatch-http");
+        assert_eq!(scan["requestsSent"], 0);
+
+        // A loopback listener stands in for a live target; it counts every
+        // connection so the refusal can be shown to send nothing.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = connections.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut socket, _)) = listener.accept().await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        let live_request = serde_json::json!({"request": {
+            "targets": [format!("http://127.0.0.1:{port}")],
+            "authorization": {"acknowledged": true, "statement": "my lab"}
+        }});
+        let runs_before = ctx.app.scan_work.snapshot().unwrap().recent.len();
+        let refused = dispatch(&ctx, "scan_templates", live_request.clone()).await;
+        assert_eq!(refused.unwrap_err().as_str().unwrap(), LIVE_TARGETS_REFUSED);
+        assert!(LIVE_TARGETS_REFUSED.contains("--allow-live-targets"));
+        // Refused before validation: even an unauthorised request gets the
+        // server refusal, and nothing was started or sent.
+        let unauthorised = dispatch(
+            &ctx,
+            "scan_templates",
+            serde_json::json!({"request": {"targets": [format!("http://127.0.0.1:{port}")]}}),
+        )
+        .await;
+        assert_eq!(
+            unauthorised.unwrap_err().as_str().unwrap(),
+            LIVE_TARGETS_REFUSED
+        );
+        assert_eq!(
+            ctx.app.scan_work.snapshot().unwrap().recent.len(),
+            runs_before,
+            "the refusal starts no work"
+        );
+        assert_eq!(
+            connections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the refusal sent nothing"
+        );
+
+        // With the flag the same request runs; the http template matches.
+        ctx.allow_live_targets = true;
+        ctx.app
+            .settings
+            .lock()
+            .unwrap()
+            .live_scan
+            .requests_per_second = 1000;
+        let live = dispatch(&ctx, "scan_templates", live_request)
+            .await
+            .unwrap();
+        assert_eq!(live["mode"], "targets");
+        assert_eq!(live["state"], "completed", "{live}");
+        assert_eq!(live["authorization"]["acknowledged"], true);
+        assert!(connections.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        let unauthorised = dispatch(
+            &ctx,
+            "scan_templates",
+            serde_json::json!({"request": {"targets": [format!("http://127.0.0.1:{port}")]}}),
+        )
+        .await;
+        assert!(unauthorised
+            .unwrap_err()
+            .as_str()
+            .unwrap()
+            .contains("explicit authorization"));
     }
 
     #[tokio::test]

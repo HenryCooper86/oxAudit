@@ -560,6 +560,113 @@ pub struct AppSettings {
     /// before the egress policy existed still load.
     #[serde(default)]
     pub agent_allowed_fetch_hosts: Vec<String>,
+    /// Limits for Template scans against live targets. Defaulted so settings
+    /// files written before live scanning existed still load. Values are
+    /// clamped to their allowed ranges when a scan uses them; an invalid
+    /// proxy fails that scan with a clear error. The per-run authorization
+    /// acknowledgement is never stored here.
+    #[serde(default)]
+    pub live_scan: LiveScanSettings,
+}
+
+/// Live-target scan limits (Settings > Live scanning).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LiveScanSettings {
+    /// Requests per second across the whole run (1..=1000).
+    pub requests_per_second: u32,
+    /// Requests in flight to one host (1..=100).
+    pub per_host_concurrency: u32,
+    /// Connect and overall timeout of one attempt, in seconds (1..=120).
+    pub timeout_seconds: u32,
+    /// Response cap per request, in KiB (1..=32768).
+    pub max_response_kb: u32,
+    /// Outbound attempts per run; reaching it makes the run Incomplete.
+    pub max_requests: u64,
+    /// An explicit http:// or https:// proxy for HTTP templates. Proxy
+    /// environment variables are never read.
+    pub proxy: Option<String>,
+}
+
+/// Accepted ranges of the live-scan numbers (inclusive).
+pub const LIVE_RPS_RANGE: (u64, u64) = (1, 1000);
+pub const LIVE_PER_HOST_RANGE: (u64, u64) = (1, 100);
+pub const LIVE_TIMEOUT_SECONDS_RANGE: (u64, u64) = (1, 120);
+pub const LIVE_RESPONSE_KB_RANGE: (u64, u64) = (1, 32 * 1024);
+
+impl LiveScanSettings {
+    /// Checks the settings as they are about to be saved. Saving rejects
+    /// rather than clamps, so what is stored is what the user chose; a file
+    /// written by another version is still loaded as is and clamped (with a
+    /// note) when a scan uses it. The proxy text is never echoed: it may
+    /// hold a credential.
+    pub fn validate(&self) -> Result<(), String> {
+        let check = |name: &str, value: u64, (low, high): (u64, u64)| {
+            if (low..=high).contains(&value) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "The live-scan {name} must be between {low} and {high}; {value} was given."
+                ))
+            }
+        };
+        check(
+            "requests per second",
+            u64::from(self.requests_per_second),
+            LIVE_RPS_RANGE,
+        )?;
+        check(
+            "concurrent requests per host",
+            u64::from(self.per_host_concurrency),
+            LIVE_PER_HOST_RANGE,
+        )?;
+        check(
+            "timeout in seconds",
+            u64::from(self.timeout_seconds),
+            LIVE_TIMEOUT_SECONDS_RANGE,
+        )?;
+        check(
+            "response cap in KiB",
+            u64::from(self.max_response_kb),
+            LIVE_RESPONSE_KB_RANGE,
+        )?;
+        check("request budget", self.max_requests, (1, u64::MAX))?;
+        if let Some(text) = self
+            .proxy
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            let url = reqwest::Url::parse(text)
+                .map_err(|error| format!("The live-scan proxy is not a valid URL ({error})."))?;
+            if !matches!(url.scheme(), "http" | "https") {
+                return Err(format!(
+                    "The live-scan proxy must be an http:// or https:// URL, not {}://.",
+                    url.scheme()
+                ));
+            }
+            if url.host_str().is_none_or(str::is_empty) {
+                return Err("The live-scan proxy URL has no host.".into());
+            }
+            if !url.username().is_empty() || url.password().is_some() {
+                return Err("The live-scan proxy URL carries a user name or password; credentials in the proxy URL are not supported because settings are not a secret store. Use a proxy that does not need credentials in its URL.".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for LiveScanSettings {
+    fn default() -> Self {
+        Self {
+            requests_per_second: 50,
+            per_host_concurrency: 10,
+            timeout_seconds: 10,
+            max_response_kb: 4096,
+            max_requests: 100_000,
+            proxy: None,
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -574,6 +681,7 @@ impl Default for AppSettings {
             binary_scanner_runtime: None,
             grype_path: None,
             agent_allowed_fetch_hosts: Vec::new(),
+            live_scan: LiveScanSettings::default(),
         }
     }
 }

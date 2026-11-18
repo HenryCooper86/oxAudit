@@ -4,7 +4,7 @@ import type { CanonicalRun, CanonicalProjectionSection } from "../../lib/types";
 import { errorMessage } from "../../lib/commandError";
 
 /** Read stored evidence by canonical run identity, retaining a failed latest attempt separately. */
-export async function readSavedScanReceipt<T extends { runId?: string }>(kind: "image" | "history", target: string, preferredRunId?: string | null): Promise<{
+export async function readSavedScanReceipt<T extends { runId?: string }>(kind: "image" | "history" | "yara" | "template", target: string, preferredRunId?: string | null): Promise<{
   target: string; attempt: CanonicalRun | null; receipt: CanonicalRun | null; data: T | null; sections: Partial<Record<CanonicalProjectionSection, number>>; loadError: string | null;
 }> {
   const runs = (await api.listCanonicalRuns(kind)).filter(run => run.kind === kind)

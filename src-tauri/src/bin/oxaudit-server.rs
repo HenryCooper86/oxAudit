@@ -39,6 +39,23 @@ struct Args {
     /// directory with owner-only permissions.
     #[arg(long)]
     token: Option<String>,
+
+    /// Serve template scans against live targets. Off by default: such a
+    /// scan sends traffic from the server's own network position, so any
+    /// token holder could use the server to probe the network it sits in.
+    /// Also enabled by OXAUDIT_SERVER_ALLOW_LIVE_TARGETS=1. Local-path
+    /// template scans never need it.
+    #[arg(long)]
+    allow_live_targets: bool,
+}
+
+/// `--allow-live-targets`, or `OXAUDIT_SERVER_ALLOW_LIVE_TARGETS` set to `1`
+/// or `true`. Any other value leaves live targets refused.
+fn allow_live_targets(args: &Args) -> bool {
+    args.allow_live_targets
+        || std::env::var("OXAUDIT_SERVER_ALLOW_LIVE_TARGETS")
+            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true"))
+            .unwrap_or(false)
 }
 
 /// The container entrypoint supplies its bind address through the
@@ -125,12 +142,19 @@ fn main() {
             std::process::exit(2);
         }
     };
+    let allow_live_targets = allow_live_targets(&args);
+    if allow_live_targets {
+        eprintln!(
+            "Template scans against live targets are allowed: anyone with the access token can make this server send traffic to targets they name."
+        );
+    }
     let config = ServerConfig {
         bind: args.bind,
         data_dir,
         config_dir,
         web_root,
         token,
+        allow_live_targets,
     };
     if let Err(error) = oxaudit_lib::server::run(config) {
         eprintln!("oxaudit-server: {error}");
