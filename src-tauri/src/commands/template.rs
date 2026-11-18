@@ -1103,7 +1103,9 @@ file:
         assert_eq!(word.severity, "high");
         assert_eq!(word.protocol, "file");
         assert_eq!(word.file_path.as_deref(), Some("a/app.conf"));
-        assert!(word.matched_at.ends_with("a/app.conf"));
+        // `matched_at` is the native path, so compare path components, not
+        // separators.
+        assert!(std::path::Path::new(&word.matched_at).ends_with("a/app.conf"));
         assert_eq!(word.tags, ["fixture", "marker"]);
         assert_eq!(word.matcher_names, ["marker"]);
         assert_eq!(word.classification.cwe_id, ["CWE-200"]);

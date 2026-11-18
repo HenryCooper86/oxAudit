@@ -981,10 +981,9 @@ rule short_secret : token {
         assert!(reason("big.bin")
             .unwrap()
             .contains("larger than the 1 MiB limit"));
-        assert_eq!(
-            result.matches.len(),
-            1 + usize::from(reason("locked.bin").is_none())
-        );
+        // `locked.bin` only exists on Unix, and root can still read it there.
+        let locked_was_scanned = cfg!(unix) && reason("locked.bin").is_none();
+        assert_eq!(result.matches.len(), 1 + usize::from(locked_was_scanned));
         #[cfg(unix)]
         {
             assert!(reason("link").unwrap().contains("symbolic link"));
