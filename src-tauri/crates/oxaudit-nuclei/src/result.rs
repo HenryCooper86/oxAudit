@@ -42,6 +42,19 @@ pub struct TemplateMatch {
     pub warnings: Vec<String>,
 }
 
+/// A planner cap that cut a template's requests short against one target.
+/// Coverage shrank, so the host must report it as a partly evaluated check;
+/// it is never only a log line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Truncation {
+    pub protocol: Protocol,
+    /// Index of the request block inside the template's protocol list.
+    pub request_index: usize,
+    /// What was cut, for example "only 10 of 400 payload combinations were
+    /// sent".
+    pub message: String,
+}
+
 /// Why a planned request was not produced. Skips are reported, never silent.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SkipReason {

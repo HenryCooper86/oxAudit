@@ -8,7 +8,8 @@
 //! * pitchfork: set sizes are zipped, stopping at the shortest.
 //! * clusterbomb: nested loops, the first declared set varies slowest.
 
-use crate::model::{AttackType, Payloads};
+use crate::model::{AttackType, Payloads, Protocol};
+use crate::result::Truncation;
 
 /// Default cap on combinations per request template.
 pub const DEFAULT_MAX_COMBINATIONS: usize = 10_000;
@@ -18,6 +19,8 @@ pub struct PayloadPlan<'a> {
     payloads: &'a Payloads,
     total: usize,
     truncated: bool,
+    /// The uncapped count; `None` when it overflows `usize`.
+    requested: Option<usize>,
 }
 
 impl<'a> PayloadPlan<'a> {
@@ -43,7 +46,31 @@ impl<'a> PayloadPlan<'a> {
             payloads,
             total,
             truncated,
+            requested: raw_total,
         }
+    }
+
+    /// The number of combinations the template asked for, before the cap
+    /// (`None` when it does not fit in a `usize`).
+    pub fn requested(&self) -> Option<usize> {
+        self.requested
+    }
+
+    /// The truncation to report for block `request_index`, when the cap cut
+    /// the combination list short.
+    pub fn truncation(&self, protocol: Protocol, request_index: usize) -> Option<Truncation> {
+        self.truncated.then(|| Truncation {
+            protocol,
+            request_index,
+            message: format!(
+                "{} request {request_index}: only {} of {} payload combinations were sent (the cap is {})",
+                protocol.as_str(),
+                self.total,
+                self.requested
+                    .map_or_else(|| "more than 2^64".to_owned(), |n| n.to_string()),
+                self.total
+            ),
+        })
     }
 
     pub fn total(&self) -> usize {

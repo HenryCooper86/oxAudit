@@ -42,7 +42,10 @@ pub fn render(report: &ScaReport, project: &str) -> String {
             local += 1;
             continue;
         }
-        groups.entry(heading(component)).or_default().push(component);
+        groups
+            .entry(heading(component))
+            .or_default()
+            .push(component);
     }
     let listed: usize = groups.values().map(Vec::len).sum();
     let mut out = format!(

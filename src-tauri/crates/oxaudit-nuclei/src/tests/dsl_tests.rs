@@ -707,6 +707,43 @@ fn nested_markers_resolve_innermost_first() {
 }
 
 #[test]
+fn nested_values_bind_as_values_never_as_expression_source() {
+    // A value from a response that looks like the rest of an expression.
+    let breakout = r#"") + sha256("x"#;
+    let braces = r#"}}{{md5("a")}}{{"#;
+    let v = vars(&[
+        ("x", Value::str(breakout)),
+        ("y", Value::str(braces)),
+        ("z", Value::str("1) + len(\"zz\"")),
+        ("p", Value::str("__oxaudit_nested_1__")),
+        ("q", Value::str("Q")),
+    ]);
+    let mut c = ctx();
+    let b64 = |s: &str| {
+        interpolate(&format!("{{{{base64(\"{s}\")}}}}"), &vars(&[]), &mut ctx()).expect("ok")
+    };
+    // Inside a string literal: the literal holds the value's text.
+    assert_eq!(
+        interpolate(r#"{{base64("{{x}}")}}"#, &v, &mut c).expect("ok"),
+        b64(r#"\") + sha256(\"x"#)
+    );
+    assert_eq!(
+        interpolate(r#"{{to_upper("{{y}}")}}"#, &v, &mut c).expect("ok"),
+        r#"}}{{MD5("A")}}{{"#
+    );
+    // As an argument: the value itself, whatever it says.
+    assert_eq!(
+        interpolate("{{len({{z}})}}", &v, &mut c).expect("ok"),
+        "1) + len(\"zz\"".len().to_string()
+    );
+    // A value holding a placeholder name is not substituted again.
+    assert_eq!(
+        interpolate(r#"{{concat("{{p}}", "{{q}}")}}"#, &v, &mut c).expect("ok"),
+        "__oxaudit_nested_1__Q"
+    );
+}
+
+#[test]
 fn substituted_values_are_not_reinterpolated() {
     let v = vars(&[("token", Value::str("{{md5('x')}}"))]);
     let mut c = ctx();

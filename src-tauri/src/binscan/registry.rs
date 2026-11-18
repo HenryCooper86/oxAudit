@@ -196,7 +196,12 @@ pub fn load_docker_config_auth(registry: &str) -> DockerConfigAuth {
         key_host == registry || (is_docker_hub(registry) && is_docker_hub(key_host))
     };
 
-    for (key, entry) in auths {
+    // First matching entry wins, so walk the keys in sorted order: the choice
+    // must not depend on file order (serde_json `preserve_order` is on in
+    // some builds).
+    let mut entries: Vec<_> = auths.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, entry) in entries {
         if !wanted(key) {
             continue;
         }

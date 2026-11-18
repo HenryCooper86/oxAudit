@@ -251,7 +251,12 @@ pub(crate) fn compute(mut graph: Graph) -> Vec<NodeEvidence> {
                 path.workspace.clone(),
                 path.chain
                     .iter()
-                    .map(|s| format!("{}\u{0}{}\u{0}{}", s.name, s.install_path, s.dependency_type))
+                    .map(|s| {
+                        format!(
+                            "{}\u{0}{}\u{0}{}",
+                            s.name, s.install_path, s.dependency_type
+                        )
+                    })
                     .collect::<Vec<_>>(),
             )
         });
@@ -372,7 +377,8 @@ pub(crate) fn cargo_graph(content: &str) -> Result<Graph, String> {
                         .copied()
                         .filter(|&i| {
                             version.is_none_or(|v| graph.nodes[i].version == v)
-                                && source.is_none_or(|s| graph.nodes[i].source.as_deref() == Some(s))
+                                && source
+                                    .is_none_or(|s| graph.nodes[i].source.as_deref() == Some(s))
                         })
                         .collect()
                 })
@@ -416,7 +422,7 @@ pub(crate) fn pnpm_graph(content: &str) -> Result<Graph, String> {
     let mut graph = Graph::default();
     let mut by_coordinate: BTreeMap<(String, String), usize> = BTreeMap::new();
     if let Some(packages) = root.get("packages").and_then(Value::as_object) {
-        for key in packages.keys() {
+        for (key, _) in crate::sorted_entries(packages) {
             let Some((name, version)) = pnpm_coordinate(key) else {
                 continue;
             };
@@ -463,7 +469,7 @@ pub(crate) fn pnpm_graph(content: &str) -> Result<Graph, String> {
         let Some(entries) = root.get(section).and_then(Value::as_object) else {
             continue;
         };
-        for (key, entry) in entries {
+        for (key, entry) in crate::sorted_entries(entries) {
             let Some((name, version)) = pnpm_coordinate(key) else {
                 continue;
             };
@@ -478,7 +484,7 @@ pub(crate) fn pnpm_graph(content: &str) -> Result<Graph, String> {
                 let Some(declared) = entry.get(field).and_then(Value::as_object) else {
                     continue;
                 };
-                for (dep, value) in declared {
+                for (dep, value) in crate::sorted_entries(declared) {
                     if kind == "runtime" && optional.is_some_and(|o| o.contains_key(dep)) {
                         continue;
                     }
@@ -500,7 +506,11 @@ pub(crate) fn pnpm_graph(content: &str) -> Result<Graph, String> {
     let top = Value::Object(root.clone());
     let mut importers: Vec<(String, &Value)> = Vec::new();
     match root.get("importers").and_then(Value::as_object) {
-        Some(map) => importers.extend(map.iter().map(|(k, v)| (k.clone(), v))),
+        Some(map) => importers.extend(
+            crate::sorted_entries(map)
+                .into_iter()
+                .map(|(k, v)| (k.clone(), v)),
+        ),
         None => importers.push((".".into(), &top)),
     }
     for (path, importer) in importers {
@@ -517,7 +527,7 @@ pub(crate) fn pnpm_graph(content: &str) -> Result<Graph, String> {
             let Some(declared) = importer.get(field).and_then(Value::as_object) else {
                 continue;
             };
-            for (dep, entry) in declared {
+            for (dep, entry) in crate::sorted_entries(declared) {
                 let (version, spec) = match entry {
                     Value::Object(object) => (
                         object.get("version"),
@@ -529,7 +539,9 @@ pub(crate) fn pnpm_graph(content: &str) -> Result<Graph, String> {
                     ),
                 };
                 let Some(version) = version else {
-                    graph.warn(format!("Unknown declaration {dep} at importer {workspace:?}"));
+                    graph.warn(format!(
+                        "Unknown declaration {dep} at importer {workspace:?}"
+                    ));
                     continue;
                 };
                 match resolve(dep, version) {
@@ -539,9 +551,9 @@ pub(crate) fn pnpm_graph(content: &str) -> Result<Graph, String> {
                         edge(dep, to, kind, &spec.unwrap_or_default()),
                     ),
                     Target::Local => {}
-                    Target::Unresolved => {
-                        graph.warn(format!("Unresolved {kind} dependency {dep} at importer {workspace:?}"))
-                    }
+                    Target::Unresolved => graph.warn(format!(
+                        "Unresolved {kind} dependency {dep} at importer {workspace:?}"
+                    )),
                 }
             }
         }
@@ -563,10 +575,19 @@ pub(crate) fn uv_graph(content: &str) -> Result<Graph, String> {
         .unwrap_or_default();
     for pkg in &packages {
         let source = pkg.get("source").and_then(toml::Value::as_table);
-        let project = source.is_some_and(|s| s.contains_key("editable") || s.contains_key("virtual"));
+        let project =
+            source.is_some_and(|s| s.contains_key("editable") || s.contains_key("virtual"));
         graph.add_node(GraphNode {
-            name: pkg.get("name").and_then(toml::Value::as_str).unwrap_or("").into(),
-            version: pkg.get("version").and_then(toml::Value::as_str).unwrap_or("").into(),
+            name: pkg
+                .get("name")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("")
+                .into(),
+            version: pkg
+                .get("version")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("")
+                .into(),
             source: source.and_then(|s| s.keys().next().cloned()),
             project,
         });
@@ -600,7 +621,10 @@ pub(crate) fn uv_graph(content: &str) -> Result<Graph, String> {
         if let Some(list) = pkg.get("dependencies") {
             groups.push(("runtime", String::new(), list));
         }
-        for (field, kind) in [("optional-dependencies", "optional"), ("dev-dependencies", "dev")] {
+        for (field, kind) in [
+            ("optional-dependencies", "optional"),
+            ("dev-dependencies", "dev"),
+        ] {
             if kind == "dev" && !graph.nodes[from].project {
                 continue;
             }
@@ -635,7 +659,11 @@ pub(crate) fn uv_graph(content: &str) -> Result<Graph, String> {
                     })
                     .unwrap_or_default();
                 let [to] = candidates[..] else {
-                    let why = if candidates.is_empty() { "Unresolved" } else { "Ambiguous" };
+                    let why = if candidates.is_empty() {
+                        "Unresolved"
+                    } else {
+                        "Ambiguous"
+                    };
                     graph.warn(format!("{why} {kind} dependency {name} at {from_label}"));
                     continue;
                 };
@@ -689,9 +717,9 @@ pub(crate) fn gemfile_graph(content: &str) -> Result<Graph, String> {
         let indent = line.len() - line.trim_start_matches(' ').len();
         if section == "DEPENDENCIES" && indent == 2 {
             let entry = trimmed.trim_end_matches('!');
-            let (name, requirement) = entry.split_once(" (").map_or((entry, ""), |(n, r)| {
-                (n, r.strip_suffix(')').unwrap_or(r))
-            });
+            let (name, requirement) = entry
+                .split_once(" (")
+                .map_or((entry, ""), |(n, r)| (n, r.strip_suffix(')').unwrap_or(r)));
             raw_roots.push((name.into(), requirement.into()));
             continue;
         }
@@ -743,7 +771,11 @@ pub(crate) fn gemfile_graph(content: &str) -> Result<Graph, String> {
     }
     for (name, requirement) in raw_roots {
         match resolve(&name) {
-            Ok(to) => graph.add_root(String::new(), None, edge(&name, to, "unknown", &requirement)),
+            Ok(to) => graph.add_root(
+                String::new(),
+                None,
+                edge(&name, to, "unknown", &requirement),
+            ),
             Err(why) => graph.warn(format!("{why} direct dependency {name}")),
         }
     }
@@ -764,11 +796,11 @@ pub(crate) fn nuget_graph(content: &str) -> Result<Graph, String> {
     let mut graph = Graph::default();
     // Per framework: package name -> node.
     let mut resolved: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
-    for (framework, packages) in frameworks {
+    for (framework, packages) in crate::sorted_entries(frameworks) {
         let Some(packages) = packages.as_object() else {
             continue;
         };
-        for (name, details) in packages {
+        for (name, details) in crate::sorted_entries(packages) {
             if details.get("type").and_then(Value::as_str) == Some("Project") {
                 continue;
             }
@@ -787,20 +819,22 @@ pub(crate) fn nuget_graph(content: &str) -> Result<Graph, String> {
             resolved.entry(framework).or_default().insert(name, index);
         }
     }
-    for (framework, packages) in frameworks {
+    for (framework, packages) in crate::sorted_entries(frameworks) {
         let Some(packages) = packages.as_object() else {
             continue;
         };
         let known = resolved.get(framework.as_str());
-        for (name, details) in packages {
+        for (name, details) in crate::sorted_entries(packages) {
             let kind = details.get("type").and_then(Value::as_str);
             let from = known.and_then(|k| k.get(name.as_str())).copied();
             let declared = details.get("dependencies").and_then(Value::as_object);
             let project = kind == Some("Project");
-            for (dep, requirement) in declared.into_iter().flatten() {
+            for (dep, requirement) in declared.map(crate::sorted_entries).into_iter().flatten() {
                 let requirement = requirement.as_str().unwrap_or("");
                 let Some(&to) = known.and_then(|k| k.get(dep.as_str())) else {
-                    graph.warn(format!("Unresolved dependency {dep} at {name} ({framework})"));
+                    graph.warn(format!(
+                        "Unresolved dependency {dep} at {name} ({framework})"
+                    ));
                     continue;
                 };
                 let e = edge(dep, to, "unknown", requirement);
@@ -812,8 +846,15 @@ pub(crate) fn nuget_graph(content: &str) -> Result<Graph, String> {
             }
             if kind == Some("Direct") {
                 if let Some(to) = from {
-                    let requested = details.get("requested").and_then(Value::as_str).unwrap_or("");
-                    graph.add_root(framework.clone(), None, edge(name, to, "unknown", requested));
+                    let requested = details
+                        .get("requested")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    graph.add_root(
+                        framework.clone(),
+                        None,
+                        edge(name, to, "unknown", requested),
+                    );
                 }
             }
         }
@@ -858,10 +899,7 @@ pub(crate) fn merge(parts: Vec<(&Option<String>, &NodeEvidence)>) -> NodeEvidenc
             })
     };
     paths.dedup_by(|a, b| same(a, b));
-    let mut warnings: Vec<String> = parts
-        .iter()
-        .flat_map(|(_, p)| p.warnings.clone())
-        .collect();
+    let mut warnings: Vec<String> = parts.iter().flat_map(|(_, p)| p.warnings.clone()).collect();
     let sources: BTreeSet<_> = parts.iter().map(|(source, _)| source).collect();
     let mut status = if parts.iter().all(|(_, p)| p.status == parts[0].1.status) {
         parts[0].1.status
@@ -1057,7 +1095,10 @@ source = "registry+x"
         assert_eq!(rendered(a1), ["app:a"]);
         let w = &a1.occurrence.warnings[0];
         assert!(w.contains("Ambiguous dependency a at app"), "{w}");
-        assert!(w.contains("Unresolved dependency ghost 9.9.9 at app"), "{w}");
+        assert!(
+            w.contains("Unresolved dependency ghost 9.9.9 at app"),
+            "{w}"
+        );
         // The version no declared root reaches gets no chain, only a warning.
         let a2 = find(&deps, "a", "2.0.0");
         assert_eq!(a2.occurrence.status, "partial");
@@ -1066,7 +1107,9 @@ source = "registry+x"
 
         // Every declaration unresolved: no root at all, so nothing is claimed.
         let none = parse("Cargo.lock", &missing.replace("\"a 1.0.0\", \"a\", ", ""));
-        assert!(none.iter().all(|d| d.occurrence.status == "unavailable" || d.name == "app"));
+        assert!(none
+            .iter()
+            .all(|d| d.occurrence.status == "unavailable" || d.name == "app"));
         assert!(none.iter().all(|d| d.occurrence.paths.is_empty()));
     }
 
@@ -1438,7 +1481,10 @@ DEPENDENCIES
         assert_eq!(b.occurrence.status, "partial");
         let w = &b.occurrence.warnings[0];
         assert!(w.contains("Dependency cycle at A@1.0.0"), "{w}");
-        assert!(w.contains("Unresolved dependency Ghost at A (net8.0)"), "{w}");
+        assert!(
+            w.contains("Unresolved dependency Ghost at A (net8.0)"),
+            "{w}"
+        );
         let orphan = find(&deps, "Orphan", "3.0.0");
         assert!(orphan.occurrence.paths.is_empty());
         assert_eq!(orphan.occurrence.status, "partial");

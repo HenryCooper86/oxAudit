@@ -31,9 +31,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::dsl::{DslError, EvalContext, Value, VarLookup, Vars};
 use crate::http_raw::{parse_raw, RawRequest};
 use crate::matchers::{build_operators, evaluate_block, normalise_key, ResponseParts};
-use crate::model::{HttpBlock, Operators, Template};
+use crate::model::{HttpBlock, Operators, Protocol, Template};
 use crate::payloads::{build_payloads, PayloadPlan, DEFAULT_MAX_COMBINATIONS};
-use crate::result::{SkipReason, TemplateMatch};
+use crate::result::{SkipReason, TemplateMatch, Truncation};
 use crate::ssl::{insert_cert_parts, SslResponseData};
 use crate::support::Reasons;
 use crate::vars::{
@@ -495,6 +495,7 @@ pub struct HttpRun<'t> {
     pending: Option<Pending>,
     matches: Vec<TemplateMatch>,
     warnings: Vec<String>,
+    truncations: Vec<Truncation>,
     stopped: bool,
 }
 
@@ -531,13 +532,32 @@ impl<'t> HttpRun<'t> {
             pending: None,
             matches: Vec::new(),
             warnings: Vec::new(),
+            truncations: Vec::new(),
             stopped: false,
         }
     }
 
-    /// Notes from planning (for example a truncated payload list).
+    /// Notes from planning that do not narrow coverage.
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// Every planner cap that cut this run's requests short so far (payload
+    /// combinations, request conditions, `iterate-all` fan-out). Each one
+    /// means part of the template was not evaluated against the target.
+    pub fn truncations(&self) -> &[Truncation] {
+        &self.truncations
+    }
+
+    fn truncated(&mut self, message: String) {
+        let truncation = Truncation {
+            protocol: Protocol::Http,
+            request_index: self.block,
+            message,
+        };
+        if !self.truncations.contains(&truncation) {
+            self.truncations.push(truncation);
+        }
     }
 
     pub fn matches(&self) -> &[TemplateMatch] {
@@ -566,11 +586,10 @@ impl<'t> HttpRun<'t> {
                 };
                 let payload_plan =
                     PayloadPlan::new(&block.payloads, self.limits.max_payload_combinations);
-                if payload_plan.truncated() {
-                    self.warnings.push(format!(
-                        "http block {}: payload combinations capped at {}",
-                        self.block, self.limits.max_payload_combinations
-                    ));
+                if let Some(truncation) = payload_plan.truncation(Protocol::Http, self.block) {
+                    if !self.truncations.contains(&truncation) {
+                        self.truncations.push(truncation);
+                    }
                 }
                 let combos = payload_plan.total().max(1);
                 let total = if payload_plan.total() == 0 {
@@ -580,8 +599,8 @@ impl<'t> HttpRun<'t> {
                 };
                 self.history_on = block.keep_history && total <= MAX_HISTORY_REQUESTS;
                 if block.keep_history && !self.history_on {
-                    self.warnings.push(format!(
-                        "http block {}: request conditions disabled, the block sends more than {MAX_HISTORY_REQUESTS} requests",
+                    self.truncated(format!(
+                        "http request {}: request conditions disabled, the block sends {total} requests (more than {MAX_HISTORY_REQUESTS}), so matchers that compare earlier responses were not evaluated",
                         self.block
                     ));
                 }
@@ -752,10 +771,14 @@ impl<'t> HttpRun<'t> {
         if !used.is_empty() && block.iterate_all {
             self.enqueue_variants(&watch, &used);
         }
-        if let Some(parsed_url) = url.split("://").next() {
-            if parsed_url != "http" && parsed_url != "https" {
-                return Err(SkipReason::Malformed(format!("unsupported URL `{url}`")));
-            }
+        // The message names the scheme only: the URL may carry a secret.
+        let scheme = url.split_once("://").map_or("", |(scheme, _)| scheme);
+        if scheme != "http" && scheme != "https" {
+            return Err(SkipReason::Malformed(if scheme.is_empty() {
+                "the request URL has no http:// or https:// scheme".into()
+            } else {
+                format!("unsupported URL scheme `{scheme}`")
+            }));
         }
         self.step += 1;
         let step = self.step;
@@ -787,6 +810,20 @@ impl<'t> HttpRun<'t> {
     fn enqueue_variants(&mut self, watch: &BTreeMap<String, Vec<String>>, used: &BTreeSet<String>) {
         let lists: Vec<(&String, &Vec<String>)> =
             watch.iter().filter(|(k, _)| used.contains(*k)).collect();
+        // Every combination but the first (the request just built).
+        let further = lists
+            .iter()
+            .try_fold(1usize, |acc, (_, values)| acc.checked_mul(values.len()))
+            .map(|n| n.saturating_sub(1));
+        if further.is_none_or(|n| n > self.limits.max_iterate_all_variants) {
+            self.truncated(format!(
+                "http request {}: iterate-all sent only {} of {} further value combinations (the cap is {})",
+                self.block,
+                self.limits.max_iterate_all_variants,
+                further.map_or_else(|| "more than 2^64".to_owned(), |n| n.to_string()),
+                self.limits.max_iterate_all_variants
+            ));
+        }
         let mut combos: Vec<Vec<(String, String)>> = vec![Vec::new()];
         for (name, values) in lists {
             let mut next = Vec::new();

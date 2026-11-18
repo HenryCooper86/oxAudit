@@ -9,12 +9,16 @@
 //! its reason, never silently applied.
 
 mod license;
+#[cfg(feature = "templates")]
+mod nuclei;
 mod source;
 mod store;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "yara")]
+#[cfg(feature = "templates")]
+pub use nuclei::load_templates;
+#[cfg(any(feature = "yara", feature = "templates"))]
 pub use store::ResolvedSigPacks;
 pub use store::{InstalledSigPack, PackMetadata, PackPreview, SigPackStore, SigPacksState};
 
@@ -62,7 +66,7 @@ pub struct PackSkip {
     pub message: String,
 }
 
-#[cfg(feature = "yara")]
+#[cfg(any(feature = "yara", feature = "templates"))]
 pub use source::{collect as collect_source, PackFile};
 pub use store::validate_pack;
 

@@ -158,7 +158,17 @@ mod engine {
         let mut message = String::from(
             "No YARA rules are available to scan with, so no scan was run (a scan with no rules cannot report \"no rule matched\").",
         );
-        if !had_sources {
+        if had_sources {
+            message.push_str(" Rule files were found, but none of them compiled.");
+        } else if !resolved_skipped.is_empty() {
+            message.push_str(
+                " Enabled YARA pack(s) are installed, but every one failed verification and was not applied, and no one-off rule files were given.",
+            );
+        } else if !compile_skips.is_empty() {
+            message.push_str(
+                " The rule files given could not be read or compiled, and no installed pack supplied any.",
+            );
+        } else {
             message.push_str(
                 " No enabled YARA pack is installed and no one-off rule files were given; import a pack or pass rule files.",
             );
@@ -206,17 +216,29 @@ mod engine {
         let target = Path::new(&request.path)
             .canonicalize()
             .map_err(|error| format!("cannot resolve the YARA scan target: {error}"))?;
-        let adhoc = collect_adhoc(&request.extra_rule_paths)?;
+        // Reading rule files and re-verifying packs is file I/O and hashing:
+        // it runs on a blocking thread, never on an async runtime worker.
+        let adhoc_paths = request.extra_rule_paths.clone();
+        let adhoc = tokio::task::spawn_blocking(move || collect_adhoc(&adhoc_paths))
+            .await
+            .map_err(|error| format!("reading the rule files did not finish: {error}"))??;
 
         // Installed packs, re-verified against their manifests. A pack that
         // fails is reported and makes the run Incomplete; it never silently
         // narrows the rule set.
         let mut store_error: Option<String> = None;
-        let resolved = match (packs.store(), request.pack_ids.as_deref()) {
+        let resolved = match (packs.shared(), request.pack_ids.as_deref()) {
             // An explicit empty selection means "no installed packs": the
             // store is not consulted and its absence is not a coverage gap.
             (_, Some([])) => ResolvedSigPacks::default(),
-            (Ok(store), ids) => store.resolve(PackKind::Yara, ids)?,
+            (Ok(store), ids) => {
+                let (store, ids) = (store.clone(), ids.map(<[String]>::to_vec));
+                tokio::task::spawn_blocking(move || store.resolve(PackKind::Yara, ids.as_deref()))
+                    .await
+                    .map_err(|error| {
+                        format!("verifying the installed packs did not finish: {error}")
+                    })??
+            }
             (Err(error), Some(ids)) if !ids.is_empty() => return Err(error),
             (Err(error), _) => {
                 store_error = Some(error);
@@ -394,10 +416,7 @@ mod engine {
             let scan_cancel = cancel.clone();
             let scan_progress = progress.clone();
             let scan_operation = operation_id.clone();
-            let limits = ScanLimits {
-                max_file_bytes: max_bytes,
-                timeout: scan::FILE_TIMEOUT,
-            };
+            let limits = ScanLimits::new(max_bytes, scan::FILE_TIMEOUT);
             let scanned = tokio::task::spawn_blocking(move || {
                 scan::scan_files(
                     &scan_compiled.set,
@@ -470,6 +489,16 @@ mod engine {
                 skipped.push(entry.path, entry.reason);
             }
             skipped.dropped += scanned.skipped.dropped;
+            if scanned.files_scanned == 0 {
+                // An empty folder, or every file skipped: the rules were
+                // never applied to anything, which is not "no rule matched".
+                let message = format!(
+                    "{rules_compiled} rule(s) compiled, but no file was scanned ({} file(s) skipped), so nothing was evaluated and the absence of matches means nothing.",
+                    skipped.rows.len() as u64 + skipped.dropped
+                );
+                warn(&mut managed, "yara_nothing_scanned", message.clone());
+                incomplete_reasons.push(message);
+            }
             if skipped.dropped > 0 {
                 notes.push(format!(
                     "{} more skipped files were counted but not listed.",
@@ -494,6 +523,7 @@ mod engine {
                 rules_skipped,
                 rules_skipped_total,
                 notes,
+                incomplete_reasons,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
             stage(&mut managed, RunState::Persisting)?;
@@ -745,6 +775,138 @@ mod tests {
             }
             other => panic!("unexpected evidence {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn excerpts_of_rules_that_report_secrets_are_masked_in_rows_projection_and_graph() {
+        let h = Harness::new();
+        let rules = h.write(
+            "rules/secret.yar",
+            r#"rule tagged : Credentials {
+    strings:
+        $k = "AKIAIOSFODNN7EXAMPLE"
+    condition:
+        $k
+}
+rule flagged {
+    meta:
+        sensitive = true
+    strings:
+        $p = "hunter2-password"
+    condition:
+        $p
+}
+rule short_secret : token {
+    strings:
+        $s = "pw=abc"
+    condition:
+        $s
+}
+"#,
+        );
+        h.write(
+            "target/creds.txt",
+            b"AKIAIOSFODNN7EXAMPLE hunter2-password pw=abc",
+        );
+        let mut req = request(&h.dir.path().join("target"));
+        req.pack_ids = Some(vec![]);
+        req.extra_rule_paths = vec![rules.to_string_lossy().into_owned()];
+        let result = h.scan(req).await.unwrap();
+        assert_eq!(result.matches.len(), 3, "{:?}", result.matches);
+        let by_rule = |rule: &str| {
+            result
+                .matches
+                .iter()
+                .find(|row| row.rule == rule)
+                .unwrap()
+                .strings[0]
+                .clone()
+        };
+        let tagged = by_rule("tagged");
+        assert_eq!(tagged.excerpt_hex, hex::encode(b"AKIA"));
+        assert!(tagged.excerpt_masked);
+        assert_eq!(tagged.length, 20);
+        assert_eq!(by_rule("flagged").excerpt_hex, hex::encode(b"hunt"));
+        // Eight bytes or fewer: nothing of the value is kept.
+        let short = by_rule("short_secret");
+        assert_eq!(
+            (short.excerpt_hex.as_str(), short.excerpt_masked),
+            ("", true)
+        );
+
+        let run_id = RunId::parse(result.run_id.clone()).unwrap();
+        let projection = h
+            .repository()
+            .canonical_load_projection(&run_id)
+            .unwrap()
+            .unwrap()
+            .to_string();
+        let (_, _, observations) = h.repository().canonical_load_report_graph(&run_id).unwrap();
+        let graph = observations
+            .iter()
+            .map(|record| {
+                format!(
+                    "{}{}",
+                    serde_json::to_string(&record.observation).unwrap(),
+                    serde_json::to_string(&record.evidence).unwrap()
+                )
+            })
+            .collect::<String>();
+        for secret in [
+            hex::encode(b"AKIAIOSFODNN7EXAMPLE"),
+            hex::encode(b"hunter2-password"),
+            hex::encode(b"pw=abc"),
+        ] {
+            assert!(!projection.contains(&secret), "projection leaks {secret}");
+            assert!(!graph.contains(&secret), "graph leaks {secret}");
+        }
+        let evidence = observations
+            .iter()
+            .find(|o| o.observation.title == "tagged")
+            .unwrap();
+        match &evidence.evidence[0].evidence {
+            oxaudit_domain::Evidence::BinaryMatch(binary) => {
+                assert_eq!(binary.encoding, "masked-hex");
+                assert_eq!(
+                    binary.captured_value.as_deref(),
+                    Some("414b4941\u{2026} (20 bytes)")
+                );
+            }
+            other => panic!("unexpected evidence {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_folder_or_every_file_skipped_is_incomplete_not_no_rule_matched() {
+        let h = Harness::new();
+        let rules = h.write("rules/alpha.yar", RULE_ALPHA);
+        std::fs::create_dir_all(h.dir.path().join("empty")).unwrap();
+        let mut req = request(&h.dir.path().join("empty"));
+        req.pack_ids = Some(vec![]);
+        req.extra_rule_paths = vec![rules.to_string_lossy().into_owned()];
+        let result = h.scan(req.clone()).await.unwrap();
+        assert_eq!(result.files_scanned, 0);
+        assert_eq!(result.state, "incomplete");
+        assert!(result
+            .incomplete_reasons
+            .iter()
+            .any(|r| r.contains("1 rule(s) compiled, but no file was scanned")));
+        assert_eq!(h.run_state(&result.run_id), RunState::Incomplete);
+
+        // Every file over the size limit: listed as skipped, nothing scanned.
+        h.write("big/a.bin", vec![0u8; 2 * 1024 * 1024]);
+        req.path = h.dir.path().join("big").to_string_lossy().into_owned();
+        req.max_file_size_mb = Some(1);
+        let result = h.scan(req).await.unwrap();
+        assert_eq!(result.state, "incomplete");
+        assert!(
+            result
+                .incomplete_reasons
+                .iter()
+                .any(|r| r.contains("(1 file(s) skipped)")),
+            "{:?}",
+            result.incomplete_reasons
+        );
     }
 
     #[tokio::test]

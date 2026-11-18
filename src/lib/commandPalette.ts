@@ -58,6 +58,8 @@ const KEYWORDS: Record<Page, string[]> = {
   "deps-scan": ["dependencies", "packages", "lockfile", "osv", "sca", "npm", "cargo"],
   "binary-scan": ["firmware", "elf", "executable", "sbom", "components"],
   "image-scan": ["container", "docker", "registry", "oci", "tar", "dpkg", "apk", "offline"],
+  "yara-scan": ["yara", "malware", "signature", "rules", "ioc", "hex"],
+  "template-scan": ["nuclei", "template", "live", "target", "dast", "http", "cidr"],
   "advisory-database": ["osv", "dumps", "offline", "air-gapped", "update", "ecosystem"],
   "vex-trust": ["vex", "not_affected", "trust", "claims", "suggest", "adr"],
   inventory: ["components", "packages", "purl", "cpe", "bom"],

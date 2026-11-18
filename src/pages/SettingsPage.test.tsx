@@ -158,3 +158,60 @@ test("server mode replaces the AI section with a desktop-app note", () => {
   expect(screen.getByText(/AI features are available in the oxAudit desktop app/i)).toBeInTheDocument();
   expect(screen.getByLabelText("Ignored directories")).toBeInTheDocument();
 });
+
+test("the Live scanning section edits liveScan limits within their bounds and saves them", async () => {
+  const save = saveRequests();
+  render(<SettingsPage />);
+  expect(screen.getByText(/apply to Template Scan live targets only/i)).toBeInTheDocument();
+  const rate = screen.getByLabelText("Requests per second") as HTMLInputElement;
+  fireEvent.change(rate, { target: { value: "1001" } });
+  expect(await screen.findByText(/whole number between 1 and 1,000\./i)).toBeInTheDocument();
+  expect(rate).toHaveAttribute("aria-invalid", "true");
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  fireEvent.change(rate, { target: { value: "20" } });
+  fireEvent.change(screen.getByLabelText("Concurrent requests per host"), { target: { value: "3" } });
+  fireEvent.change(screen.getByLabelText("Request timeout (seconds)"), { target: { value: "30" } });
+  fireEvent.change(screen.getByLabelText("Max response size (KiB)"), { target: { value: "512" } });
+  fireEvent.change(screen.getByLabelText("Max requests per run"), { target: { value: "500" } });
+  fireEvent.change(screen.getByLabelText(/Proxy \(optional\)/), { target: { value: "http://127.0.0.1:8080" } });
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(save).toHaveBeenCalled());
+  expect(save.mock.calls[0][0].settings.liveScan).toEqual({
+    requestsPerSecond: 20, perHostConcurrency: 3, timeoutSeconds: 30, maxResponseKb: 512, maxRequests: 500, proxy: "http://127.0.0.1:8080",
+  });
+});
+
+test.each([
+  ["Concurrent requests per host", "0"],
+  ["Concurrent requests per host", "101"],
+  ["Request timeout (seconds)", "121"],
+  ["Max response size (KiB)", "32769"],
+  ["Max requests per run", "0"],
+])("%s rejects %s", async (label, value) => {
+  const save = saveRequests();
+  render(<SettingsPage />);
+  const input = screen.getByLabelText(label);
+  fireEvent.change(input, { target: { value } });
+  expect(input).toHaveAttribute("aria-invalid", "true");
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  expect(save).not.toHaveBeenCalled();
+});
+
+test("a proxy with credentials or a non-http scheme is rejected before saving", async () => {
+  const save = saveRequests();
+  render(<SettingsPage />);
+  const proxy = screen.getByLabelText(/Proxy \(optional\)/);
+  fireEvent.change(proxy, { target: { value: "http://user:secret@proxy.example:8080" } });
+  expect(await screen.findByText(/Credentials in the proxy URL are not accepted/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  fireEvent.change(proxy, { target: { value: "socks5://proxy.example:1080" } });
+  expect(await screen.findByText(/must use http:\/\/ or https:\/\//)).toBeInTheDocument();
+  fireEvent.change(proxy, { target: { value: "not a url" } });
+  expect(await screen.findByText(/full http:\/\/ or https:\/\/ URL/)).toBeInTheDocument();
+  expect(save).not.toHaveBeenCalled();
+  fireEvent.change(proxy, { target: { value: "" } });
+  fireEvent.change(screen.getByLabelText("Requests per second"), { target: { value: "5" } });
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(save).toHaveBeenCalled());
+  expect(save.mock.calls[0][0].settings.liveScan.proxy).toBeNull();
+});

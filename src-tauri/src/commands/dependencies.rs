@@ -457,7 +457,8 @@ pub(crate) async fn scan_binaries_engine(
             "scanners": outcome.result.scanners,
             "kind": "bounded-query-receipt"
         });
-        let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+        let bytes =
+            oxaudit_parsers::stable_json::to_vec(&payload).map_err(|error| error.to_string())?;
         let content_sha256 = {
             use sha2::Digest;
             hex::encode(sha2::Sha256::digest(bytes))

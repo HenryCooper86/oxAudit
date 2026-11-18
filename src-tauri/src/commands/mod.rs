@@ -10,6 +10,7 @@ pub mod schedule;
 pub mod sessions;
 pub mod settings;
 pub mod sigpacks;
+pub mod template;
 pub mod vex;
 pub mod yara;
 

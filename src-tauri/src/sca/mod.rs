@@ -201,7 +201,8 @@ fn epoch_millis() -> u64 {
 
 fn receipt_hash(payload: &serde_json::Value) -> Result<String, String> {
     use sha2::Digest;
-    let bytes = serde_json::to_vec(payload).map_err(|error| error.to_string())?;
+    // Key-sorted bytes: the digest must not depend on how serde_json is built.
+    let bytes = oxaudit_parsers::canonical_json::canonical_bytes(payload)?;
     Ok(hex::encode(sha2::Sha256::digest(bytes)))
 }
 

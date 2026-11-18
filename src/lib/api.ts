@@ -66,6 +66,8 @@ import type {
   InstalledSignaturePack,
   YaraScanRequest,
   YaraScanResult,
+  TemplateScanRequest,
+  TemplateScanResult,
   ScanRunSummary,
   ProjectContext,
   RecentProject,
@@ -152,6 +154,8 @@ export const api = {
     invoke<void>("remove_signature_pack", { id }),
   /** Cancel with `cancelScanWork(request.operationId)`. */
   scanYara: (request: YaraScanRequest) => invoke<YaraScanResult>("scan_yara", { request }),
+  scanTemplates: (request: TemplateScanRequest) =>
+    invoke<TemplateScanResult>("scan_templates", { request }),
   listScanSchedules: () => invoke<ScanScheduleStatus[]>("list_scan_schedules"),
   advisoryDbStatus: (path: string) =>
     invoke<AdvisoryDbStatus>("advisory_db_status", { path }),

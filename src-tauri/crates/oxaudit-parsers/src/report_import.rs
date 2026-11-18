@@ -691,7 +691,12 @@ fn bounded_text(value: &str, max_bytes: usize) -> Option<String> {
 }
 
 fn mapped_record_id(content_sha256: &str, coordinate: &str) -> String {
-    format!("external_claim_{}", hex::encode(Sha256::digest(format!("{content_sha256}\0{coordinate}").as_bytes())))
+    format!(
+        "external_claim_{}",
+        hex::encode(Sha256::digest(
+            format!("{content_sha256}\0{coordinate}").as_bytes()
+        ))
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -846,7 +851,7 @@ fn license_metadata(value: &Value, dialect: ComponentDialect) -> Value {
         ],
         ComponentDialect::OxAudit => &["license"],
     };
-    Value::Object(
+    crate::canonical_json::sort_keys(Value::Object(
         fields
             .iter()
             .filter_map(|key| {
@@ -855,7 +860,7 @@ fn license_metadata(value: &Value, dialect: ComponentDialect) -> Value {
                     .map(|value| ((*key).to_string(), value.clone()))
             })
             .collect(),
-    )
+    ))
 }
 
 fn source_reference(value: &Value, dialect: ComponentDialect) -> Option<String> {
@@ -1213,5 +1218,26 @@ mod tests {
     #[test]
     fn unsupported_documents_fail_closed() {
         assert!(inspect(br#"{"hello":"world"}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod map_order_independence {
+    use super::*;
+
+    /// Imported license metadata is serialized to callers; its object keys
+    /// must come out sorted whether or not serde_json's `preserve_order` is
+    /// enabled (it is, workspace-wide, when `yara-x` is built).
+    #[test]
+    fn license_metadata_is_key_sorted_at_every_depth() {
+        let component: Value = serde_json::from_str(
+            r#"{"licenseDeclared":{"z":1,"a":2},"copyrightText":"c","licenseConcluded":"MIT"}"#,
+        )
+        .unwrap();
+        let metadata = license_metadata(&component, ComponentDialect::Spdx);
+        assert_eq!(
+            serde_json::to_string(&metadata).unwrap(),
+            r#"{"copyrightText":"c","licenseConcluded":"MIT","licenseDeclared":{"a":2,"z":1}}"#
+        );
     }
 }

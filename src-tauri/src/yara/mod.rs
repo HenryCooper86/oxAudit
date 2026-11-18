@@ -17,15 +17,15 @@ pub(crate) mod scan;
 
 use serde::{Deserialize, Serialize};
 
-/// Largest `maxFileSizeMb` accepted.
-pub const MAX_FILE_SIZE_MB_LIMIT: u32 = 4096;
+/// Largest `maxFileSizeMb` accepted. Each scanned file is read into memory
+/// whole, and the workers share an in-flight budget of at most 2 GiB
+/// (`filewalk::MAX_READ_BUDGET_BYTES`).
+pub const MAX_FILE_SIZE_MB_LIMIT: u32 = 1024;
 pub const DEFAULT_MAX_FILE_SIZE_MB: u32 = 64;
-/// Files beyond this are reported, not scanned, and make the run Incomplete.
-pub const MAX_FILES: usize = 1_000_000;
+#[cfg(feature = "yara")]
+pub use crate::filewalk::MAX_FILES;
 /// Stored match rows; the remainder is counted and the run is Incomplete.
 pub const MAX_MATCH_ROWS: usize = 100_000;
-/// Stored skipped-file rows; the remainder is counted.
-pub const MAX_SKIPPED_ROWS: usize = 100_000;
 /// Stored rule-source skip rows; the remainder is counted.
 pub const MAX_RULE_SKIP_ROWS: usize = 500;
 /// Pack id used for one-off rule paths that are not installed.
@@ -49,12 +49,8 @@ pub struct YaraScanRequest {
     pub operation_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct YaraSkippedFile {
-    pub path: String,
-    pub reason: String,
-}
+/// A file the scan did not read, with the reason (shared with Template scans).
+pub type YaraSkippedFile = crate::filewalk::SkippedFile;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,8 +77,32 @@ pub struct YaraStringRow {
     pub identifier: String,
     pub offset: u64,
     pub length: u64,
+    /// Lowercase hex of up to 64 matched bytes; for a rule that reports
+    /// secrets only the first [`MASKED_EXCERPT_BYTES`] (when the match is
+    /// longer than 8 bytes, otherwise nothing) and `excerpt_masked` is set.
     pub excerpt_hex: String,
+    #[serde(default)]
+    pub excerpt_masked: bool,
 }
+
+/// Rule tags (compared case-insensitively) that mark a rule as reporting
+/// secrets. A rule with one of them, or with `meta: sensitive = true`, has
+/// its excerpts masked everywhere they are stored or printed.
+pub const SECRET_RULE_TAGS: &[&str] = &[
+    "secret",
+    "secrets",
+    "token",
+    "keys",
+    "credentials",
+    "creds",
+    "password",
+    "api-key",
+    "apikey",
+    "private-key",
+];
+/// Matched bytes a masked excerpt keeps (only for a match longer than 8
+/// bytes, as for masked template values).
+pub const MASKED_EXCERPT_BYTES: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +152,10 @@ pub struct YaraScanResult {
     /// Why the run is incomplete, or other limits worth knowing; empty for
     /// a fully covered scan.
     pub notes: Vec<String>,
+    /// The subset of `notes` that is why the run is `incomplete`; empty for
+    /// a completed run. The rest of `notes` is informational.
+    #[serde(default)]
+    pub incomplete_reasons: Vec<String>,
     pub duration_ms: u64,
 }
 
@@ -140,7 +164,7 @@ pub fn max_file_bytes(request: &YaraScanRequest) -> Result<u64, String> {
     let mb = request.max_file_size_mb.unwrap_or(DEFAULT_MAX_FILE_SIZE_MB);
     if mb == 0 || mb > MAX_FILE_SIZE_MB_LIMIT {
         return Err(format!(
-            "maxFileSizeMb must be between 1 and {MAX_FILE_SIZE_MB_LIMIT}"
+            "maxFileSizeMb must be between 1 and {MAX_FILE_SIZE_MB_LIMIT} (MiB): each file is read into memory whole, so larger files are listed as skipped instead"
         ));
     }
     Ok(u64::from(mb) * 1024 * 1024)

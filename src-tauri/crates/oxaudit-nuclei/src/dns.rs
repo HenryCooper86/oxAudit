@@ -13,7 +13,7 @@ use crate::http::RunLimits;
 use crate::matchers::{build_operators, evaluate_block, ResponseParts};
 use crate::model::{DnsBlock, DnsClass, DnsType, Protocol, Template};
 use crate::payloads::{build_payloads, PayloadPlan};
-use crate::result::{SkipReason, TemplateMatch};
+use crate::result::{SkipReason, TemplateMatch, Truncation};
 use crate::support::Reasons;
 use crate::vars::{interpolate_detailed, interpolate_lenient, resolve_template_variables};
 use crate::yaml::Yaml;
@@ -212,6 +212,20 @@ pub fn plan_dns(
         }
     }
     out
+}
+
+/// The planner caps [`plan_dns`] applies to `template` under `limits`: one
+/// entry per DNS block whose payload combinations were cut short.
+pub fn dns_truncations(template: &Template, limits: &RunLimits) -> Vec<Truncation> {
+    template
+        .dns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            PayloadPlan::new(&block.payloads, limits.max_payload_combinations)
+                .truncation(Protocol::Dns, index)
+        })
+        .collect()
 }
 
 /// Evaluates one DNS response against the block that produced `spec`.

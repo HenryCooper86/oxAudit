@@ -612,7 +612,8 @@ fn absolute(path: &Path) -> Result<PathBuf, CliError> {
 }
 
 fn print_json(value: &impl Serialize) -> CliResult {
-    let mut bytes = serde_json::to_vec_pretty(value).map_err(|error| failure(error.to_string()))?;
+    let mut bytes = oxaudit_parsers::stable_json::to_vec_pretty(value)
+        .map_err(|error| failure(error.to_string()))?;
     bytes.push(b'\n');
     write_output(None, &bytes)?;
     Ok(EXIT_OK)

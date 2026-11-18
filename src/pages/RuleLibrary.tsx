@@ -10,6 +10,7 @@ import { useToastStore } from "../lib/stores";
 import { serverMode } from "../lib/transport";
 import type { InstalledRulePack, RuleLibraryPackStatus, RulePackValidationPreview } from "../lib/types";
 import { errorMessage } from "../lib/commandError";
+import { SignaturePacksSection } from "../features/signature-packs/SignaturePacks";
 
 export function RuleLibraryPage(): JSX.Element {
   const push = useToastStore((state) => state.push);
@@ -175,7 +176,7 @@ export function RuleLibraryPage(): JSX.Element {
         <div className="border-b border-border px-4 py-3">
           <h2 id="installed-packs-title" className="text-[13px] font-semibold text-text-primary">Installed packs</h2>
           <p className="mt-1 text-[12px] text-text-muted">
-            Enabled packs apply to every source scan: their rules run beside the built-ins under the same budgets and redaction, and their findings carry a <span className="font-mono">pack/rule</span> id. Only the text engines (source_regex, secret_regex) apply today; dependency, binary, and semantic engine rules validate but do not yet run. A pack whose stored snapshot no longer validates is skipped with its reason instead of failing the scan.
+            Enabled packs apply to every source scan: their rules run beside the built-ins under the same budgets and redaction, and their findings carry a <span className="font-mono">pack/rule</span> id. Of the TOML pack engines, only the text engines (source_regex, secret_regex) apply today; dependency, binary, and semantic engine rules validate but do not yet run. YARA rules and Nuclei templates are separate: install them under Signature packs below, and they run in YARA Scan and Template Scan, not in source scans. A pack whose stored snapshot no longer validates is skipped with its reason instead of failing the scan.
           </p>
         </div>
         {installedError && <div className="px-4 py-3"><InlineState compact tone="error" title="The pack store is unavailable" description={installedError} /></div>}
@@ -209,6 +210,8 @@ export function RuleLibraryPage(): JSX.Element {
           </ul>
         )}
       </section>
+
+      <SignaturePacksSection />
 
       {!packs && !error && <InlineState tone="running" title="Validating built-in rule packs" />}
       {error && <InlineState tone="error" title="Rule metadata is unavailable" description={error} />}

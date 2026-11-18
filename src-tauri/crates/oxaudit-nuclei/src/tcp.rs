@@ -11,7 +11,7 @@ use crate::http::{split_host_port, RunLimits};
 use crate::matchers::{build_operators, evaluate_block, ResponseParts};
 use crate::model::{Protocol, TcpBlock, TcpInput, Template};
 use crate::payloads::{build_payloads, PayloadPlan};
-use crate::result::{SkipReason, TemplateMatch};
+use crate::result::{SkipReason, TemplateMatch, Truncation};
 use crate::support::Reasons;
 use crate::vars::{interpolate_detailed, interpolate_lenient, resolve_template_variables};
 use crate::yaml::Yaml;
@@ -335,6 +335,20 @@ pub fn plan_tcp(
         }
     }
     out
+}
+
+/// The planner caps [`plan_tcp`] applies to `template` under `limits`: one
+/// entry per TCP block whose payload combinations were cut short.
+pub fn tcp_truncations(template: &Template, limits: &RunLimits) -> Vec<Truncation> {
+    template
+        .tcp
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            PayloadPlan::new(&block.payloads, limits.max_payload_combinations)
+                .truncation(Protocol::Tcp, index)
+        })
+        .collect()
 }
 
 fn bytes_value(bytes: &[u8]) -> Value {

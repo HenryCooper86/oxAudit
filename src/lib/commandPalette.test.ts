@@ -114,6 +114,16 @@ describe("navigation commands", () => {
     expect(find("lockfile")).toBe("deps-scan");
     expect(find("precision")).toBe("quality-lab");
     expect(find("epss")).toBe("data-sources");
+    expect(find("yara")).toBe("yara-scan");
+    expect(find("malware")).toBe("yara-scan");
+    expect(find("nuclei")).toBe("template-scan");
+    expect(find("dast")).toBe("template-scan");
+  });
+
+  test("the signature scans are listed under Scanning", () => {
+    const byPage = (page: string) => NAVIGATION_COMMANDS.find((entry) => entry.page === page);
+    expect(byPage("yara-scan")).toMatchObject({ title: "YARA Scan", group: "Scanning" });
+    expect(byPage("template-scan")).toMatchObject({ title: "Template Scan", group: "Scanning" });
   });
 });
 

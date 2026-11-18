@@ -33,6 +33,12 @@ const BinaryScanPage = lazy(() =>
 const ImageScanPage = lazy(() =>
   import("./pages/ImageScanPage").then((module) => ({ default: module.ImageScanPage })),
 );
+const YaraScanPage = lazy(() =>
+  import("./pages/YaraScan").then((module) => ({ default: module.YaraScanPage })),
+);
+const TemplateScanPage = lazy(() =>
+  import("./pages/TemplateScan").then((module) => ({ default: module.TemplateScanPage })),
+);
 
 const AdvisoryDatabasePage = lazy(() =>
   import("./pages/AdvisoryDatabase").then((module) => ({ default: module.AdvisoryDatabasePage })),
@@ -96,6 +102,10 @@ function Page({ page }: { page: PageName }) {
       return <BinaryScanPage />;
     case "image-scan":
       return <ImageScanPage />;
+    case "yara-scan":
+      return <YaraScanPage />;
+    case "template-scan":
+      return <TemplateScanPage />;
     case "advisory-database":
       return <AdvisoryDatabasePage />;
     case "vex-trust":

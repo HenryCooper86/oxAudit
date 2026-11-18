@@ -1,8 +1,10 @@
 //! `{{expr}}` interpolation and template variables.
 //!
-//! Nested markers (`generate_jwt(j, "{{alg}}")`) are expanded innermost first.
-//! Substituted values are never rescanned, so a response-derived variable that
-//! contains `{{...}}` cannot inject an expression.
+//! Nested markers (`generate_jwt(j, "{{alg}}")`) are evaluated innermost
+//! first, and each nested result is bound into the enclosing expression as a
+//! value, never spliced into its source. Substituted values are never
+//! rescanned or parsed, so a response-derived variable that contains `{{...}}`
+//! or expression text cannot inject an expression.
 
 use std::collections::BTreeSet;
 
@@ -154,13 +156,54 @@ fn expand_marker(
     st: &mut State<'_>,
     depth: usize,
 ) -> Result<Option<Vec<u8>>, DslError> {
+    Ok(marker_value(inner, st, depth)?.map(|value| value.to_bytes().into_owned()))
+}
+
+/// Prefix of the identifiers that stand in for nested markers while the
+/// enclosing expression is parsed.
+const NESTED_PLACEHOLDER: &str = "__oxaudit_nested_";
+
+/// Evaluates one marker body. Nested markers are evaluated first, each to a
+/// value, and are bound into the enclosing expression as values: a nested
+/// marker becomes a placeholder identifier (bound as a variable) or, inside
+/// a string literal, is replaced in the parsed literal. A nested value is
+/// therefore never parsed as expression source, whatever text it holds.
+fn marker_value(inner: &str, st: &mut State<'_>, depth: usize) -> Result<Option<Value>, DslError> {
+    if depth > MAX_NESTED_MARKERS {
+        return Err(DslError::Limit("interpolation nested too deeply".into()));
+    }
+    let mut nested = Vars::new();
     let source: String = if inner.contains("{{") {
-        let before = st.unresolved.len();
-        let expanded = expand(inner, st, depth + 1)?;
-        if st.unresolved.len() != before {
-            return Ok(None);
+        let bytes = inner.as_bytes();
+        let mut out = String::with_capacity(inner.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'{' && bytes.get(i + 1) == Some(&b'{') {
+                if let Some(end) = find_close(bytes, i + 2) {
+                    let before = st.unresolved.len();
+                    let value = marker_value(&inner[i + 2..end], st, depth + 1)?;
+                    if st.unresolved.len() != before {
+                        return Ok(None);
+                    }
+                    match value {
+                        Some(value) => {
+                            let name = format!("{NESTED_PLACEHOLDER}{}__", nested.len());
+                            out.push_str(&name);
+                            nested.insert(name, value);
+                        }
+                        // A nested marker that is not an expression stays
+                        // as the template wrote it.
+                        None => out.push_str(&inner[i..end + 2]),
+                    }
+                    i = end + 2;
+                    continue;
+                }
+            }
+            let ch_len = inner[i..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&inner[i..i + ch_len]);
+            i += ch_len;
         }
-        String::from_utf8_lossy(&expanded).into_owned()
+        out
     } else {
         inner.to_string()
     };
@@ -168,7 +211,7 @@ fn expand_marker(
     if source.is_empty() {
         return Ok(None);
     }
-    let expr = match parse(source) {
+    let mut expr = match parse(source) {
         Ok(e) => e,
         Err(e) if st.strict => return Err(e),
         Err(_) => return Ok(None),
@@ -176,14 +219,90 @@ fn expand_marker(
     if !expr.is_dynamic() {
         return Ok(None);
     }
-    match eval(&expr, st.vars, st.ctx) {
-        Ok(value) => Ok(Some(value.to_bytes().into_owned())),
+    if !nested.is_empty() {
+        bind_nested_literals(&mut expr, &nested);
+    }
+    let lookup = Nested {
+        nested: &nested,
+        base: st.vars,
+    };
+    match eval(&expr, &lookup, st.ctx) {
+        Ok(value) => Ok(Some(value)),
         Err(DslError::UnknownVariable(name)) => {
             st.unresolved.push(name);
             Ok(None)
         }
         Err(e) if st.strict => Err(e),
         Err(_) => Ok(None),
+    }
+}
+
+/// Nested-marker values first, then the caller's variables.
+struct Nested<'a> {
+    nested: &'a Vars,
+    base: &'a dyn VarLookup,
+}
+
+impl VarLookup for Nested<'_> {
+    fn lookup(&self, name: &str) -> Option<&Value> {
+        if name.starts_with(NESTED_PLACEHOLDER) {
+            if let Some(value) = self.nested.get(name) {
+                return Some(value);
+            }
+        }
+        self.base.lookup(name)
+    }
+}
+
+/// Replaces placeholders inside parsed string literals with the text of
+/// their nested values (`"{{alg}}"` is the literal holding `alg`'s value).
+fn bind_nested_literals(expr: &mut Expr, nested: &Vars) {
+    match expr {
+        Expr::Lit(Value::String(text)) if text.contains(NESTED_PLACEHOLDER) => {
+            // One pass, so a value that happens to contain a placeholder
+            // name is never substituted again.
+            let mut bound = String::with_capacity(text.len());
+            let mut rest: &str = text;
+            while let Some(at) = rest.find(NESTED_PLACEHOLDER) {
+                bound.push_str(&rest[..at]);
+                let after = &rest[at..];
+                let value = after[NESTED_PLACEHOLDER.len()..]
+                    .find("__")
+                    .map(|end| &after[..NESTED_PLACEHOLDER.len() + end + 2])
+                    .and_then(|name| nested.get(name).map(|value| (name.len(), value)));
+                match value {
+                    Some((len, value)) => {
+                        bound.push_str(&value.to_text());
+                        rest = &after[len..];
+                    }
+                    None => {
+                        bound.push_str(&after[..NESTED_PLACEHOLDER.len()]);
+                        rest = &after[NESTED_PLACEHOLDER.len()..];
+                    }
+                }
+            }
+            bound.push_str(rest);
+            *expr = Expr::Lit(Value::from(bound));
+        }
+        Expr::Lit(_) | Expr::Var(_) => {}
+        Expr::Unary(_, e) => bind_nested_literals(e, nested),
+        Expr::Binary(_, a, b) => {
+            bind_nested_literals(a, nested);
+            bind_nested_literals(b, nested);
+        }
+        Expr::In(a, list) => {
+            bind_nested_literals(a, nested);
+            list.iter_mut()
+                .for_each(|e| bind_nested_literals(e, nested));
+        }
+        Expr::Call(_, args) => args
+            .iter_mut()
+            .for_each(|e| bind_nested_literals(e, nested)),
+        Expr::Ternary(a, b, c) => {
+            bind_nested_literals(a, nested);
+            bind_nested_literals(b, nested);
+            bind_nested_literals(c, nested);
+        }
     }
 }
 

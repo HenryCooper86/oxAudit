@@ -10,7 +10,7 @@ use oxaudit_domain::{
 use oxaudit_yara::{MetaValue, RuleMatch};
 use sha2::{Digest, Sha256};
 
-use super::scan::FileMatches;
+use super::scan::{is_sensitive_rule, FileMatches};
 use super::{YaraMatchRow, YaraStringRow, MAX_MATCH_ROWS};
 
 pub(crate) const DETECTOR_ID: &str = "oxaudit-yara";
@@ -99,6 +99,10 @@ pub(crate) fn build(
             };
             let (pack, in_pack) = split_namespace(&m.namespace);
             let id = rule_id(m);
+            // Excerpts of a rule that reports secrets were already cut to
+            // their first bytes by the scan; the evidence says so and keeps
+            // the length.
+            let masked = is_sensitive_rule(m);
             let mut evidence: Vec<EvidenceRecord> = m
                 .strings
                 .iter()
@@ -109,8 +113,12 @@ pub(crate) fn build(
                         offset: Some(s.offset),
                         section: None,
                         matcher_id: s.identifier.clone(),
-                        encoding: "hex".into(),
-                        captured_value: Some(s.excerpt_hex.clone()),
+                        encoding: if masked { "masked-hex" } else { "hex" }.into(),
+                        captured_value: Some(if masked {
+                            format!("{}\u{2026} ({} bytes)", s.excerpt_hex, s.length)
+                        } else {
+                            s.excerpt_hex.clone()
+                        }),
                     }),
                 })
                 .collect();
@@ -178,6 +186,7 @@ pub(crate) fn build(
                         offset: s.offset,
                         length: s.length,
                         excerpt_hex: s.excerpt_hex.clone(),
+                        excerpt_masked: masked,
                     })
                     .collect(),
                 strings_truncated: m.strings_truncated,

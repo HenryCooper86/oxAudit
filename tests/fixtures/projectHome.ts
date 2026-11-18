@@ -30,6 +30,14 @@ export const projectSettings: AppSettings = {
   binaryScannerRuntime: null,
   grypePath: null,
   agentAllowedFetchHosts: [],
+  liveScan: {
+    requestsPerSecond: 50,
+    perHostConcurrency: 10,
+    timeoutSeconds: 10,
+    maxResponseKb: 4096,
+    maxRequests: 100000,
+    proxy: null,
+  },
 };
 export function projectContext(path: string): ProjectContext {
   return {

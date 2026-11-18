@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Component, Path};
 
+use unicode_normalization::UnicodeNormalization;
+
 use super::license::{detect_license, is_license_file_name};
 use super::{PackKind, PackSkip};
 
@@ -186,6 +188,23 @@ fn normal_relative(path: &Path) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
+/// Test hook: read a `.zip` with smaller limits and report how many members
+/// were decompressed, so a test can prove the limits stop the read early.
+#[cfg(test)]
+pub(super) fn collect_zip_with_limits(
+    kind: PackKind,
+    path: &Path,
+    max_files: usize,
+    max_total_bytes: u64,
+) -> (Result<CollectedPack, String>, usize) {
+    let mut builder = Builder::new(kind);
+    builder.max_files = max_files;
+    builder.max_total_bytes = max_total_bytes;
+    let result = collect_zip(&mut builder, path);
+    let read = builder.members_read;
+    (result.and_then(|()| builder.finish()), read)
+}
+
 fn collect_zip(builder: &mut Builder, path: &Path) -> Result<(), String> {
     let file =
         std::fs::File::open(path).map_err(|error| format!("cannot read the archive: {error}"))?;
@@ -199,7 +218,13 @@ fn collect_zip(builder: &mut Builder, path: &Path) -> Result<(), String> {
     }
     // Members are gathered first so a single top-level folder (the shape of
     // a GitHub download) can be stripped from every path consistently.
+    // The pack limits are enforced while reading, on the bytes held so far
+    // (rule files and licence candidates), so a zip of many small members
+    // that decompress to a megabyte each is refused at the limit instead of
+    // being inflated into memory first.
     let mut members: Vec<(String, Option<Vec<u8>>)> = Vec::new();
+    let mut held_bytes = 0u64;
+    let mut rule_members = 0usize;
     for index in 0..archive.len() {
         let mut member = archive
             .by_index(index)
@@ -239,6 +264,14 @@ fn collect_zip(builder: &mut Builder, path: &Path) -> Result<(), String> {
             members.push((relative, None));
             continue;
         }
+        let is_rule =
+            extension_accepted(builder.kind, &leaf) || is_compiled_name(builder.kind, &leaf);
+        if is_rule {
+            rule_members += 1;
+            if rule_members > builder.max_files {
+                return Err(builder.too_many_files());
+            }
+        }
         if member.size() > MAX_FILE_BYTES {
             // The declared size is advisory; the bounded read below is the
             // real limit. A rule file declared too large is refused now.
@@ -252,11 +285,16 @@ fn collect_zip(builder: &mut Builder, path: &Path) -> Result<(), String> {
             continue;
         }
         let mut bytes = Vec::new();
+        builder.members_read += 1;
         member
             .by_ref()
             .take(MAX_FILE_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(|error| format!("archive member {name:?} is unreadable: {error}"))?;
+        held_bytes += bytes.len() as u64;
+        if held_bytes > builder.max_total_bytes {
+            return Err(builder.too_many_bytes());
+        }
         if bytes.len() as u64 > MAX_FILE_BYTES {
             if extension_accepted(builder.kind, &leaf) {
                 return Err(format!(
@@ -309,10 +347,24 @@ fn single_top_level(members: &[(String, Option<Vec<u8>>)]) -> Option<String> {
 struct Builder {
     kind: PackKind,
     files: BTreeMap<String, PackFile>,
+    /// Accepted paths folded the way a case- and normalisation-insensitive
+    /// filesystem (macOS, Windows) compares them, to the original path.
+    folded: BTreeMap<String, String>,
     ignored: usize,
     skipped: Vec<PackSkip>,
     total_bytes: u64,
     license: Option<String>,
+    max_files: usize,
+    max_total_bytes: u64,
+    /// Archive members decompressed so far (tests assert on it).
+    members_read: usize,
+}
+
+/// A path folded for collision detection: NFC, then lower case. Two pack
+/// paths with the same fold would overwrite each other when the pack is
+/// written to a case-insensitive or normalisation-insensitive filesystem.
+fn fold_path(path: &str) -> String {
+    path.nfc().collect::<String>().to_lowercase()
 }
 
 impl Builder {
@@ -320,11 +372,29 @@ impl Builder {
         Self {
             kind,
             files: BTreeMap::new(),
+            folded: BTreeMap::new(),
             ignored: 0,
             skipped: Vec::new(),
             total_bytes: 0,
             license: None,
+            max_files: MAX_FILES,
+            max_total_bytes: MAX_TOTAL_BYTES,
+            members_read: 0,
         }
+    }
+
+    fn too_many_files(&self) -> String {
+        format!(
+            "the pack holds more than {} rule files; import a smaller pack",
+            self.max_files
+        )
+    }
+
+    fn too_many_bytes(&self) -> String {
+        format!(
+            "the pack's rule files exceed {} bytes in total",
+            self.max_total_bytes
+        )
     }
 
     /// Whether this file should be read as a rule file (or a licence at the
@@ -370,16 +440,19 @@ impl Builder {
                 return Ok(());
             }
         };
-        if self.files.len() >= MAX_FILES {
-            return Err(format!(
-                "the pack holds more than {MAX_FILES} rule files; import a smaller pack"
-            ));
+        if self.files.len() >= self.max_files {
+            return Err(self.too_many_files());
         }
         self.total_bytes += text.len() as u64;
-        if self.total_bytes > MAX_TOTAL_BYTES {
-            return Err(format!(
-                "the pack's rule files exceed {MAX_TOTAL_BYTES} bytes in total"
-            ));
+        if self.total_bytes > self.max_total_bytes {
+            return Err(self.too_many_bytes());
+        }
+        if let Some(other) = self.folded.insert(fold_path(relative), relative.to_owned()) {
+            if other != relative {
+                return Err(format!(
+                    "the pack holds both {other} and {relative}, which are the same file on a case-insensitive or Unicode-normalising filesystem (macOS, Windows); rename one and import again"
+                ));
+            }
         }
         self.files.insert(
             relative.to_owned(),

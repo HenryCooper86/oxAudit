@@ -41,6 +41,22 @@ pub struct PackPreview {
     pub content_sha256: String,
     pub detected_license: Option<String>,
     pub total_bytes: u64,
+    /// Nuclei packs: supported templates per protocol. `None` for YARA packs.
+    pub protocols: Option<PackProtocols>,
+    /// Nuclei packs: templates that load but that oxAudit cannot evaluate
+    /// (each is in `skipped` with its reasons).
+    pub not_evaluated_count: usize,
+}
+
+/// How many supported templates of a Nuclei pack use each protocol. A
+/// template with two protocols counts once under each.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackProtocols {
+    pub http: usize,
+    pub dns: usize,
+    pub tcp: usize,
+    pub ssl: usize,
+    pub file: usize,
 }
 
 /// A pack as stored.
@@ -60,11 +76,14 @@ pub struct InstalledSigPack {
     pub skipped: Vec<PackSkip>,
     pub enabled: bool,
     pub installed_at: String,
+    /// Nuclei packs: supported templates per protocol. `None` for YARA packs.
+    pub protocols: Option<PackProtocols>,
+    pub not_evaluated_count: usize,
 }
 
 /// A pack whose files were re-read and verified against its manifest.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "yara"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "yara", feature = "templates")), allow(dead_code))]
 pub struct ResolvedPack {
     pub record: InstalledSigPack,
     pub files: Vec<PackFile>,
@@ -77,6 +96,14 @@ pub struct ResolvedSigPacks {
     pub packs: Vec<ResolvedPack>,
     /// `(pack id, reason)`.
     pub skipped: Vec<(String, String)>,
+}
+
+/// The per-kind counts kept in the `stats_json` column.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PackStats {
+    protocols: Option<PackProtocols>,
+    not_evaluated_count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,6 +123,10 @@ struct ManifestEntry {
 struct Inspection {
     rule_count: usize,
     skipped: Vec<PackSkip>,
+    /// YAML files that are clearly not templates (no top-level `id`).
+    ignored: usize,
+    protocols: Option<PackProtocols>,
+    not_evaluated_count: usize,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -144,6 +175,9 @@ fn inspect_yara_sources(files: &[PackFile]) -> Result<Inspection, String> {
                 message: skip.message.clone(),
             })
             .collect(),
+        ignored: 0,
+        protocols: None,
+        not_evaluated_count: 0,
     })
 }
 
@@ -155,21 +189,79 @@ fn inspect_yara_sources(_files: &[PackFile]) -> Result<Inspection, String> {
     )
 }
 
-/// The single seam where Nuclei template loading plugs in. For now every
-/// YAML file counts as one rule and nothing is reported as skipped; the
-/// template loader replaces this body to count loadable templates and to
-/// list the files it cannot evaluate.
-fn inspect_nuclei_sources(files: &[PackFile]) -> Inspection {
-    Inspection {
-        rule_count: files.len(),
-        skipped: Vec::new(),
+/// Load every YAML file as a Nuclei template. `rule_count` is the number of
+/// distinct templates that load and that oxAudit can evaluate; every file that
+/// fails to load, every template it cannot evaluate, and every repeated id is
+/// listed with its reason. YAML with no top-level `id` is not a template at
+/// all (workflows, configs, CI files) and is only counted as ignored.
+#[cfg(feature = "templates")]
+fn inspect_nuclei_sources(files: &[PackFile]) -> Result<Inspection, String> {
+    use oxaudit_nuclei::{Protocol, Support};
+    let loaded = super::nuclei::load_templates(files);
+    let mut skipped: Vec<PackSkip> = Vec::new();
+    for (file, message) in &loaded.errors {
+        skipped.push(PackSkip {
+            file: file.clone(),
+            line: None,
+            message: message.clone(),
+        });
     }
+    for (file, id, first) in &loaded.duplicates {
+        skipped.push(PackSkip {
+            file: file.clone(),
+            line: None,
+            message: format!("duplicate template id `{id}`; the copy in {first} is used"),
+        });
+    }
+    let mut rule_count = 0usize;
+    let mut not_evaluated_count = 0usize;
+    let mut protocols = PackProtocols::default();
+    for entry in &loaded.templates {
+        match entry.template.support() {
+            Support::Supported => {
+                rule_count += 1;
+                for protocol in entry.template.protocols() {
+                    match protocol {
+                        Protocol::Http => protocols.http += 1,
+                        Protocol::Dns => protocols.dns += 1,
+                        Protocol::Tcp => protocols.tcp += 1,
+                        Protocol::Ssl => protocols.ssl += 1,
+                        Protocol::File => protocols.file += 1,
+                    }
+                }
+            }
+            Support::NotEvaluated(reasons) => {
+                not_evaluated_count += 1;
+                skipped.push(PackSkip {
+                    file: entry.file.clone(),
+                    line: None,
+                    message: format!("not evaluated: {}", reasons.join("; ")),
+                });
+            }
+        }
+    }
+    skipped.sort_by(|a, b| a.file.cmp(&b.file));
+    Ok(Inspection {
+        rule_count,
+        skipped,
+        ignored: loaded.ignored,
+        protocols: Some(protocols),
+        not_evaluated_count,
+    })
+}
+
+#[cfg(not(feature = "templates"))]
+fn inspect_nuclei_sources(_files: &[PackFile]) -> Result<Inspection, String> {
+    Err(
+        "this build of oxAudit has no template engine, so Nuclei packs cannot be validated or imported"
+            .into(),
+    )
 }
 
 fn inspect(kind: PackKind, files: &[PackFile]) -> Result<Inspection, String> {
     match kind {
         PackKind::Yara => inspect_yara_sources(files),
-        PackKind::Nuclei => Ok(inspect_nuclei_sources(files)),
+        PackKind::Nuclei => inspect_nuclei_sources(files),
     }
 }
 
@@ -204,12 +296,14 @@ fn preview_of(
         PackPreview {
             kind,
             file_count: collected.files.len(),
-            ignored_count: collected.ignored,
+            ignored_count: collected.ignored + inspection.ignored,
             rule_count: inspection.rule_count,
             skipped,
             content_sha256: content_hash(&entries),
             detected_license: collected.detected_license.clone(),
             total_bytes: collected.total_bytes,
+            protocols: inspection.protocols,
+            not_evaluated_count: inspection.not_evaluated_count,
         },
         inspection,
     ))
@@ -301,7 +395,7 @@ pub struct SigPackStore {
 }
 
 const SELECT_COLUMNS: &str = "id, kind, name, version, license, source, authors, content_sha256, \
-     file_count, rule_count, skipped_json, enabled, installed_at";
+     file_count, rule_count, skipped_json, enabled, installed_at, stats_json";
 
 impl SigPackStore {
     /// Open the table in `db_path` (the rule-pack database) and keep pack
@@ -336,10 +430,28 @@ impl SigPackStore {
                      rule_count INTEGER NOT NULL,
                      skipped_json TEXT NOT NULL,
                      enabled INTEGER NOT NULL,
-                     installed_at TEXT NOT NULL
+                     installed_at TEXT NOT NULL,
+                     stats_json TEXT NOT NULL DEFAULT '{}'
                  )",
             )
             .map_err(|error| format!("cannot initialize the signature-pack store: {error}"))?;
+        // A table created before `stats_json` existed gets the column here.
+        let has_stats: bool = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('signature_packs') WHERE name = 'stats_json'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .map_err(|error| format!("cannot initialize the signature-pack store: {error}"))?;
+        if !has_stats {
+            connection
+                .execute(
+                    "ALTER TABLE signature_packs ADD COLUMN stats_json TEXT NOT NULL DEFAULT '{}'",
+                    [],
+                )
+                .map_err(|error| format!("cannot upgrade the signature-pack store: {error}"))?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
             root: root.to_owned(),
@@ -417,16 +529,23 @@ impl SigPackStore {
             skipped: preview.skipped.clone(),
             enabled: true,
             installed_at: now.to_owned(),
+            protocols: inspection.protocols,
+            not_evaluated_count: inspection.not_evaluated_count,
         };
-        let skipped_json = serde_json::to_string(&installed.skipped)
+        let skipped_json = oxaudit_parsers::stable_json::to_string(&installed.skipped)
             .map_err(|error| format!("cannot record skipped files: {error}"))?;
+        let stats_json = oxaudit_parsers::stable_json::to_string(&PackStats {
+            protocols: installed.protocols,
+            not_evaluated_count: installed.not_evaluated_count,
+        })
+        .map_err(|error| format!("cannot record pack statistics: {error}"))?;
         let inserted = self.lock().and_then(|connection| {
             connection
                 .execute(
                     "INSERT OR REPLACE INTO signature_packs
                          (id, kind, name, version, license, source, authors, content_sha256,
-                          file_count, rule_count, skipped_json, enabled, installed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                          file_count, rule_count, skipped_json, enabled, installed_at, stats_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                     rusqlite::params![
                         installed.id,
                         kind.as_str(),
@@ -441,6 +560,7 @@ impl SigPackStore {
                         skipped_json,
                         1_i64,
                         installed.installed_at,
+                        stats_json,
                     ],
                 )
                 .map_err(|error| format!("cannot install the signature pack: {error}"))
@@ -466,6 +586,8 @@ impl SigPackStore {
             usize::try_from(value)
                 .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
         };
+        let stats: PackStats = serde_json::from_str(&row.get::<_, String>(13)?)
+            .map_err(|error| conversion(13, error.to_string()))?;
         Ok(InstalledSigPack {
             id: row.get(0)?,
             kind: PackKind::parse(&kind).map_err(|error| conversion(1, error))?,
@@ -481,6 +603,8 @@ impl SigPackStore {
                 .map_err(|error| conversion(10, error.to_string()))?,
             enabled: row.get::<_, i64>(11)? != 0,
             installed_at: row.get(12)?,
+            protocols: stats.protocols,
+            not_evaluated_count: stats.not_evaluated_count,
         })
     }
 
@@ -698,7 +822,7 @@ fn write_pack_dir(dir: &Path, files: &[PackFile]) -> Result<(), String> {
         schema_version: 1,
         files: manifest_entries(files),
     };
-    let json = serde_json::to_vec_pretty(&manifest)
+    let json = oxaudit_parsers::stable_json::to_vec_pretty(&manifest)
         .map_err(|error| format!("cannot write the manifest: {error}"))?;
     std::fs::write(dir.join(MANIFEST_FILE), json)
         .map_err(|error| format!("cannot write the manifest: {error}"))
@@ -707,14 +831,14 @@ fn write_pack_dir(dir: &Path, files: &[PackFile]) -> Result<(), String> {
 /// The managed state: the store when its database opened, or the reason it
 /// did not.
 pub struct SigPacksState {
-    store: Option<SigPackStore>,
+    store: Option<std::sync::Arc<SigPackStore>>,
     error: Option<String>,
 }
 
 impl SigPacksState {
     pub fn available(store: SigPackStore) -> Self {
         Self {
-            store: Some(store),
+            store: Some(std::sync::Arc::new(store)),
             error: None,
         }
     }
@@ -727,6 +851,11 @@ impl SigPacksState {
     }
 
     pub fn store(&self) -> Result<&SigPackStore, String> {
+        self.shared().map(|store| &**store)
+    }
+
+    /// The store as a shared handle, for work moved to a blocking thread.
+    pub fn shared(&self) -> Result<&std::sync::Arc<SigPackStore>, String> {
         self.store.as_ref().ok_or_else(|| {
             self.error
                 .clone()

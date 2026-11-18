@@ -136,7 +136,8 @@ impl SessionStore {
     }
 
     fn save_index(&self, index: &[SessionInfo]) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
+        let content =
+            oxaudit_parsers::stable_json::to_string_pretty(index).map_err(|e| e.to_string())?;
         crate::private_storage::atomic_write(&self.index_path(), content.as_bytes())
             .map_err(|error| format!("cannot write index: {error}"))
     }
@@ -199,7 +200,7 @@ impl SessionStore {
         let pos = Self::indexed_position(&index, &id)?;
         let mut f = crate::private_storage::open_private_append(&self.transcript_path(&id))
             .map_err(|error| format!("cannot open transcript: {error}"))?;
-        let line = serde_json::to_string(msg).map_err(|e| e.to_string())?;
+        let line = oxaudit_parsers::stable_json::to_string(msg).map_err(|e| e.to_string())?;
         // `open_private_append` returns a plain `File`: `writeln!` surfaces any
         // write error directly (File::flush is a no-op), so the index below is
         // only advanced once the line is handed to the kernel.
@@ -262,7 +263,8 @@ impl SessionStore {
         let path = self.transcript_path(&id);
         let mut content = String::new();
         for m in &kept {
-            content.push_str(&serde_json::to_string(m).map_err(|e| e.to_string())?);
+            content
+                .push_str(&oxaudit_parsers::stable_json::to_string(m).map_err(|e| e.to_string())?);
             content.push('\n');
         }
         crate::private_storage::atomic_write(&path, content.as_bytes())

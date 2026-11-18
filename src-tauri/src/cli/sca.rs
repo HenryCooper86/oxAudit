@@ -348,9 +348,8 @@ pub(super) fn run_sca(args: &ScaArgs, quiet: bool) -> CliResult {
     let threshold = fail_on.threshold();
     let rendered = match args.format {
         ScaFormat::Text => render_text(&report),
-        ScaFormat::Json => {
-            serde_json::to_vec_pretty(&report).map_err(|error| failure(error.to_string()))?
-        }
+        ScaFormat::Json => oxaudit_parsers::stable_json::to_vec_pretty(&report)
+            .map_err(|error| failure(error.to_string()))?,
         ScaFormat::Junit => {
             let mut cases = ci::policy_cases(&report);
             cases.extend(ci::advisory_cases(&result, &prefix, |vulnerability| {
@@ -365,10 +364,10 @@ pub(super) fn run_sca(args: &ScaArgs, quiet: bool) -> CliResult {
         ScaFormat::GitlabCodeQuality => {
             let mut entries = ci::code_quality_policy(&report, &prefix);
             entries.extend(ci::code_quality_advisories(&result, &prefix));
-            serde_json::to_vec_pretty(&Value::Array(entries))
+            oxaudit_parsers::stable_json::to_vec_pretty(&Value::Array(entries))
                 .map_err(|error| failure(error.to_string()))?
         }
-        ScaFormat::GitlabDependencyScanning => serde_json::to_vec_pretty(
+        ScaFormat::GitlabDependencyScanning => oxaudit_parsers::stable_json::to_vec_pretty(
             &ci::gitlab_dependency_scanning(&result, &prefix, super::epoch_millis()),
         )
         .map_err(|error| failure(error.to_string()))?,
@@ -522,7 +521,8 @@ fn emit(
     text: String,
 ) -> Result<(), super::CliError> {
     let rendered = if source.json {
-        serde_json::to_vec_pretty(json).map_err(|error| failure(error.to_string()))?
+        oxaudit_parsers::stable_json::to_vec_pretty(json)
+            .map_err(|error| failure(error.to_string()))?
     } else {
         text.into_bytes()
     };

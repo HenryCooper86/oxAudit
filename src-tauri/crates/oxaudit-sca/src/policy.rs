@@ -419,7 +419,9 @@ impl ComponentPolicy {
             }
         }
         if raw.components.len() > MAX_LIST_ENTRIES {
-            return Err(format!("components has more than {MAX_LIST_ENTRIES} entries"));
+            return Err(format!(
+                "components has more than {MAX_LIST_ENTRIES} entries"
+            ));
         }
         for (index, component) in raw.components.into_iter().enumerate() {
             let at = |problem: &str| format!("components entry {}: {problem}", index + 1);
@@ -496,7 +498,9 @@ impl ComponentPolicy {
         if let Some(text) = entry.strip_prefix("text:") {
             let text = text.trim();
             if text.is_empty() {
-                return Err(format!("{list}: text: needs the declared license text to match"));
+                return Err(format!(
+                    "{list}: text: needs the declared license text to match"
+                ));
             }
             if let Some(existing) = self.by_text.insert(text.to_lowercase(), rule) {
                 return Err(duplicate(&existing));
@@ -915,7 +919,10 @@ mod tests {
         assert!(policy.has_rules());
         assert_eq!(license_action(&policy, Some("MIT")), Action::Allow);
         assert_eq!(license_action(&policy, Some("GPL-3.0-only")), Action::Deny);
-        assert_eq!(license_action(&policy, Some("AGPL-3.0-or-later")), Action::Deny);
+        assert_eq!(
+            license_action(&policy, Some("AGPL-3.0-or-later")),
+            Action::Deny
+        );
         assert_eq!(license_action(&policy, Some("LGPL-2.1-only")), Action::Warn);
         // An id rule beats the category rule.
         assert_eq!(license_action(&policy, Some("MPL-2.0")), Action::Allow);
@@ -990,7 +997,10 @@ mod tests {
         }));
         assert_eq!(license_action(&policy, Some("MIT")), Action::Allow);
         assert_eq!(license_action(&policy, Some("Unlicense")), Action::Allow);
-        assert_eq!(license_action(&policy, Some("acme internal")), Action::Allow);
+        assert_eq!(
+            license_action(&policy, Some("acme internal")),
+            Action::Allow
+        );
         assert_eq!(license_action(&policy, Some("ISC")), Action::Deny);
         assert_eq!(license_action(&policy, Some("ISC OR MIT")), Action::Allow);
         // An unclassified license answers to `unknown`, not to the allow list.
@@ -1020,12 +1030,17 @@ mod tests {
         assert_eq!(warned.violations.len(), 1);
         assert_eq!(warned.violations[0].action, Action::Warn);
         assert!(warned.violations[0].message.contains("(B)"));
-        assert!(warned.violations[0].message.starts_with("2 open advisories"));
+        assert!(warned.violations[0]
+            .message
+            .starts_with("2 open advisories"));
         let denied = evaluate(
             &policy,
             Some("MIT"),
             None,
-            &[advisory("A", Some("medium")), advisory("C", Some("critical"))],
+            &[
+                advisory("A", Some("medium")),
+                advisory("C", Some("critical")),
+            ],
         );
         assert_eq!(denied.violations.len(), 1);
         assert_eq!(denied.violations[0].rule, "vulnerabilities.deny");
@@ -1047,7 +1062,9 @@ mod tests {
         }));
         assert!(policy.uses_release_facts());
         // No facts, and `unknown` defaults to allow: nothing fires.
-        assert!(evaluate(&policy, Some("MIT"), None, &[]).violations.is_empty());
+        assert!(evaluate(&policy, Some("MIT"), None, &[])
+            .violations
+            .is_empty());
         let empty = ReleaseInfo::default();
         assert!(evaluate(&policy, Some("MIT"), Some(&empty), &[])
             .violations
@@ -1084,7 +1101,10 @@ mod tests {
             vec![
                 ("operational.deprecated".to_string(), Action::Deny),
                 ("operational.maxAgeDays".to_string(), Action::Deny),
-                ("operational.maxMajorVersionsBehind".to_string(), Action::Deny),
+                (
+                    "operational.maxMajorVersionsBehind".to_string(),
+                    Action::Deny
+                ),
                 ("operational.staleAfterDays".to_string(), Action::Warn),
             ]
         );
@@ -1216,12 +1236,19 @@ mod tests {
         let duplicate = invalid(json!({
             "version": 1, "licenses": {"deny": ["MIT"], "allow": ["mit"]}
         }));
-        assert!(duplicate.contains("already listed under licenses.deny"), "{duplicate}");
+        assert!(
+            duplicate.contains("already listed under licenses.deny"),
+            "{duplicate}"
+        );
     }
 
     #[test]
     fn package_names_compare_the_way_their_registry_does() {
-        assert!(same_package("PyPI", "Django_Rest.Framework", "django-rest-framework"));
+        assert!(same_package(
+            "PyPI",
+            "Django_Rest.Framework",
+            "django-rest-framework"
+        ));
         assert!(same_package("NuGet", "Newtonsoft.Json", "newtonsoft.json"));
         assert!(!same_package("npm", "Lodash", "lodash"));
         assert!(same_package("npm", "@scope/pkg", "@scope/pkg"));

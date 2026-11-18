@@ -12,11 +12,14 @@ mod deps;
 mod editor;
 pub mod exploit;
 pub mod external;
+mod filewalk;
 pub mod findings;
 mod fs_utils;
 pub mod git_context;
 mod history;
 mod licenses;
+#[cfg(feature = "templates")]
+pub(crate) mod livenet;
 mod migration;
 mod models;
 mod monitor;
@@ -32,6 +35,7 @@ mod scan_work;
 mod schedule_store;
 mod secrets_validation;
 mod sigpacks;
+mod template;
 mod vex_trust;
 mod yara;
 // Public so benches/scanning.rs can measure the rule engines directly. The
@@ -255,6 +259,7 @@ pub fn run() {
             commands::sigpacks::set_signature_pack_enabled,
             commands::sigpacks::remove_signature_pack,
             commands::yara::scan_yara,
+            commands::template::scan_templates,
             commands::schedule::list_scan_schedules,
             commands::schedule::set_scan_schedule,
             commands::schedule::remove_scan_schedule,

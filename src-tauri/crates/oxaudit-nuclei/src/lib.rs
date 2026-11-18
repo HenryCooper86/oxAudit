@@ -8,6 +8,9 @@
 //! [`Support::NotEvaluated`] with reasons; a request it cannot build is a
 //! [`SkipReason`]; neither is a clean result.
 
+/// The crate version, recorded as the detector version of template matches.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod dns;
 pub mod dsl;
 pub mod extractors;
@@ -25,7 +28,9 @@ pub mod tcp;
 pub mod vars;
 mod yaml;
 
-pub use dns::{evaluate_dns, plan_dns, DnsQuerySpec, DnsResponseData, DnsTarget, PlannedDns};
+pub use dns::{
+    dns_truncations, evaluate_dns, plan_dns, DnsQuerySpec, DnsResponseData, DnsTarget, PlannedDns,
+};
 pub use dsl::{DslError, EvalContext, Value, Vars, XorShiftContext};
 pub use file::{evaluate_file, evaluate_file_with, plan_file, FileRuleSpec};
 pub use http::{
@@ -37,10 +42,11 @@ pub use matchers::{
     evaluate_block, evaluate_matchers, BlockResult, MatchOutcome, MatchSpan, ResponseParts,
 };
 pub use model::{Protocol, Support, Template};
-pub use result::{FileLine, SkipReason, TemplateMatch};
+pub use result::{FileLine, SkipReason, TemplateMatch, Truncation};
 pub use ssl::{evaluate_ssl, plan_ssl, PlannedSsl, SslProbeSpec, SslResponseData};
 pub use tcp::{
-    evaluate_tcp, plan_tcp, PlannedTcp, TcpResponseData, TcpSessionSpec, TcpStep, TcpTarget,
+    evaluate_tcp, plan_tcp, tcp_truncations, PlannedTcp, TcpResponseData, TcpSessionSpec, TcpStep,
+    TcpTarget,
 };
 pub use vars::{interpolate, interpolate_detailed, Interpolated};
 

@@ -710,3 +710,38 @@ fn file_only_matches_declared_protocol_blocks() {
     let http_only = load_supported(&header("http:\n  - path: ['{{BaseURL}}']\n    matchers:\n      - type: status\n        status: [200]\n"));
     assert!(evaluate_file(&http_only, "a.conf", b"x").is_empty());
 }
+
+#[test]
+fn dns_and_tcp_payload_caps_are_reported_as_truncations() {
+    let big = (0..30)
+        .map(|i| format!("'p{i}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let limits = RunLimits {
+        max_payload_combinations: 50,
+        ..RunLimits::default()
+    };
+    let dns = load_supported(&header(&format!(
+        "dns:\n  - name: '{{{{a}}}}.{{{{b}}}}.{{{{FQDN}}}}'\n    attack: clusterbomb\n    payloads:\n      a: [{big}]\n      b: [{big}]\n    matchers:\n      - type: word\n        words: [IN]\n"
+    )));
+    let target = DnsTarget::parse("a.test").expect("t");
+    assert_eq!(plan_dns(&dns, &target, &mut ctx(), &limits).len(), 50);
+    let cut = crate::dns_truncations(&dns, &limits);
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].protocol, Protocol::Dns);
+    assert_eq!(
+        cut[0].message,
+        "dns request 0: only 50 of 900 payload combinations were sent (the cap is 50)"
+    );
+    assert!(crate::dns_truncations(&dns, &RunLimits::default()).is_empty());
+
+    let tcp = load_supported(&header(&format!(
+        "tcp:\n  - inputs:\n      - data: '{{{{a}}}}{{{{b}}}}'\n    host: ['{{{{Hostname}}}}']\n    port: 6379\n    attack: clusterbomb\n    payloads:\n      a: [{big}]\n      b: [{big}]\n    matchers:\n      - type: word\n        words: [x]\n"
+    )));
+    let target = TcpTarget::parse("10.0.0.1").expect("t");
+    assert_eq!(plan_tcp(&tcp, &target, &mut ctx(), &limits).len(), 50);
+    let cut = crate::tcp_truncations(&tcp, &limits);
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].protocol, Protocol::Tcp);
+    assert!(cut[0].message.contains("only 50 of 900"), "{cut:?}");
+}

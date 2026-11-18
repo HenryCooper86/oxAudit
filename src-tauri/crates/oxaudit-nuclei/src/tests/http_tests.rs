@@ -464,7 +464,16 @@ fn payload_values_are_reported_on_the_spec_and_capped_by_run_limits() {
         n += 1;
     }
     assert_eq!(n, 37);
-    assert!(r.warnings().iter().any(|w| w.contains("capped at 37")));
+    let truncations = r.truncations();
+    assert_eq!(truncations.len(), 1, "{truncations:?}");
+    assert_eq!(
+        truncations[0].message,
+        "http request 0: only 37 of 10000 payload combinations were sent (the cap is 37)"
+    );
+    assert!(
+        r.warnings().is_empty(),
+        "a cap is a truncation, not a warning"
+    );
     assert_eq!(
         last.expect("last").payload_values,
         [
@@ -664,6 +673,41 @@ fn iterate_all_fans_out_over_extracted_values() {
 }
 
 #[test]
+fn iterate_all_fan_out_cap_is_reported_as_a_truncation() {
+    let t = load_supported(&header(
+        "  - path: ['{{BaseURL}}/list']\n    extractors:\n      - type: regex\n        name: id\n        internal: true\n        group: 1\n        regex: ['id=(\\d+)']\n  - path: ['{{BaseURL}}/item/{{id}}']\n    iterate-all: true\n    matchers:\n      - type: status\n        status: [200]\n",
+    ));
+    let mut r = HttpRun::with_limits(
+        &t,
+        target("http://h.test"),
+        Box::new(ctx()),
+        RunLimits {
+            max_iterate_all_variants: 2,
+            ..RunLimits::default()
+        },
+    );
+    let mut urls = Vec::new();
+    while let Some(step) = r.next_request() {
+        let spec = step.expect("spec");
+        let body = if spec.url.ends_with("/list") {
+            "id=1 id=2 id=3 id=4 id=5"
+        } else {
+            ""
+        };
+        urls.push(spec.url);
+        r.on_response(resp(200, &[], body));
+    }
+    assert_eq!(urls.len(), 4, "{urls:?}");
+    let cut = r.truncations();
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].request_index, 1);
+    assert_eq!(
+        cut[0].message,
+        "http request 1: iterate-all sent only 2 of 4 further value combinations (the cap is 2)"
+    );
+}
+
+#[test]
 fn response_parts_exposed_to_matchers() {
     let t = load_supported(&header(concat!(
         "  - path: ['{{BaseURL}}']\n    matchers-condition: and\n    matchers:\n",
@@ -744,7 +788,7 @@ fn request_conditions_are_bounded_for_large_blocks() {
     r.next_request();
     r.on_response(resp(200, &[], ""));
     assert!(r
-        .warnings()
+        .truncations()
         .iter()
-        .any(|w| w.contains("request conditions disabled")));
+        .any(|t| t.message.contains("request conditions disabled")));
 }

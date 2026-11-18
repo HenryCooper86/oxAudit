@@ -127,7 +127,7 @@ fn lifecycle_properties(data: &ReportData) -> serde_json::Value {
     serde_json::json!([
         {"name": "oxaudit:runId", "value": data.run.id.as_str()},
         {"name": "oxaudit:runState", "value": run_state(data)},
-        {"name": "oxaudit:coverageWarnings", "value": serde_json::to_string(&coverage_warnings(data)).expect("warnings are serializable")}
+        {"name": "oxaudit:coverageWarnings", "value": oxaudit_parsers::stable_json::to_string(&coverage_warnings(data)).expect("warnings are serializable")}
     ])
 }
 
@@ -187,9 +187,11 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                         | oxaudit_domain::ObservationKind::PolicyConcern
                         | oxaudit_domain::ObservationKind::SemanticDataFlow
                         | oxaudit_domain::ObservationKind::SignatureMatch
+                        | oxaudit_domain::ObservationKind::TemplateMatch
                 )
             });
             let signatures = SignatureIndex::new(data);
+            let templates = TemplateIndex::new(data);
             let mut results =
                 applicable
                     .map(|record| {
@@ -207,8 +209,15 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                         } else {
                             Vec::new()
                         };
+                        let is_template = record.observation.kind
+                            == oxaudit_domain::ObservationKind::TemplateMatch;
+                        let template_locations = if is_template {
+                            TemplateIndex::locations(record)
+                        } else {
+                            Vec::new()
+                        };
                         let locations = location
-                            .filter(|_| !is_signature)
+                            .filter(|_| !is_signature && !is_template)
                             .map(|location| {
                                 vec![serde_json::json!({
                                     "physicalLocation": {
@@ -220,10 +229,18 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                                     }
                                 })]
                             })
-                            .unwrap_or(signature_locations);
+                            .unwrap_or_else(|| {
+                                if is_template {
+                                    template_locations
+                                } else {
+                                    signature_locations
+                                }
+                            });
                         let rule_id = record.observation.rule_id.as_deref();
                         let severity = if is_signature {
                             rule_id.and_then(|id| signatures.severity(id))
+                        } else if is_template {
+                            rule_id.and_then(|id| templates.severity(id))
                         } else {
                             rule_severity(rule_id)
                         };
@@ -232,7 +249,11 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                             // our own vocabulary. Without it every finding
                             // arrives as an undifferentiated warning.
                             "level": sarif_level(severity),
-                            "message": { "text": record.observation.summary },
+                            "message": { "text": if is_template {
+                                TemplateIndex::message(record)
+                            } else {
+                                record.observation.summary.clone()
+                            } },
                             "locations": locations,
                             "properties": {
                                 "observationId": record.observation.id,
@@ -243,6 +264,9 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                         });
                         if let Some(rule_id) = &record.observation.rule_id {
                             result["ruleId"] = serde_json::json!(rule_id);
+                            if is_template {
+                                templates.annotate(rule_id, &mut result["properties"]);
+                            }
                         }
                         if let Some(suppression) = findings_by_observation
                             .get(record.observation.id.as_str())
@@ -259,6 +283,8 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
             if results.is_empty() {
                 warnings.push(if data.run.kind == oxaudit_domain::RunKind::Yara {
                     "No rule matched. That says nothing about content the rules do not describe, or about files listed as skipped.".into()
+                } else if data.run.kind == oxaudit_domain::RunKind::Template {
+                    "No template matched. That says nothing about what the templates do not cover, or about templates listed as not evaluated.".into()
                 } else {
                     "This run has no observations that map to SARIF.".into()
                 });
@@ -273,7 +299,11 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                 .collect();
             let rules = fired
                 .iter()
-                .filter_map(|id| sarif_rule(id).or_else(|| signatures.rule_descriptor(id)))
+                .filter_map(|id| {
+                    sarif_rule(id)
+                        .or_else(|| signatures.rule_descriptor(id))
+                        .or_else(|| templates.rule_descriptor(id))
+                })
                 .collect::<Vec<_>>();
             serde_json::json!({
                 "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -380,7 +410,9 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
     };
     preserve_inventory_metadata(data, format, &mut value, &mut warnings)?;
     validate(&value, format)?;
-    let bytes = serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
+    // Key-sorted so the report bytes (and their digest) are identical in every build.
+    let bytes =
+        oxaudit_parsers::stable_json::to_vec_pretty(&value).map_err(|error| error.to_string())?;
     Ok(GeneratedReport { bytes, warnings })
 }
 
@@ -1241,6 +1273,170 @@ mod tests {
         );
     }
 
+    fn template_report(evidence: Vec<Evidence>, with_projection: bool) -> ReportData {
+        use oxaudit_domain::{
+            Artifact, ArtifactId, ArtifactKind, ArtifactLocation, EvidenceId, EvidenceRecord,
+            Observation, ObservationId, ObservationKind, RunId, RunKind,
+        };
+        let run_id = RunId::parse("run_template").unwrap();
+        let artifact_id = ArtifactId::parse("artifact_hit").unwrap();
+        let mut run = Run::queued(RunKind::Template, "/scan", 1);
+        run.id = run_id.clone();
+        run.state = RunState::Completed;
+        let rule_id = "pack-1/fixture-token";
+        let projection = with_projection.then(|| {
+            serde_json::json!({"matches": [{
+                "ruleId": rule_id, "name": "Fixture token", "severity": "critical",
+                "tags": ["token", "exposure"],
+                "description": "A fixture credential marker.",
+                "reference": ["https://example.test/advisory", "not a url"],
+                "remediation": "Rotate it.",
+                "classification": {"cveId": ["CVE-2099-0001"], "cweId": ["CWE-798"], "cvssScore": 9.1}
+            }]})
+        });
+        let records: Vec<EvidenceRecord> = evidence
+            .into_iter()
+            .map(|evidence| EvidenceRecord {
+                id: EvidenceId::new(),
+                evidence,
+            })
+            .collect();
+        ReportData {
+            run,
+            artifacts: vec![Artifact {
+                id: artifact_id.clone(),
+                kind: ArtifactKind::File,
+                location: ArtifactLocation {
+                    normalized_path: "dir/my hit.env".into(),
+                    canonical_path: None,
+                    parent_id: None,
+                },
+                size_bytes: 50,
+                media_type: None,
+                content_sha256: Some("a".repeat(64)),
+            }],
+            components: Vec::new(),
+            observations: vec![ObservationRecord {
+                observation: Observation {
+                    id: ObservationId::new(),
+                    run_id,
+                    artifact_id,
+                    kind: ObservationKind::TemplateMatch,
+                    detector_id: "oxaudit-nuclei".into(),
+                    detector_version: "0.1.0".into(),
+                    rule_id: Some(rule_id.into()),
+                    title: "Fixture token".into(),
+                    summary: "Template fixture-token from pack-1 matched dir/my hit.env".into(),
+                    evidence_ids: records.iter().map(|record| record.id.clone()).collect(),
+                },
+                evidence: records,
+            }],
+            findings: Vec::new(),
+            projection,
+        }
+    }
+
+    fn file_location(line: u32, start: u32, end: u32) -> Evidence {
+        Evidence::FileLocation(oxaudit_domain::FileLocationEvidence {
+            artifact_id: oxaudit_domain::ArtifactId::parse("artifact_hit").unwrap(),
+            normalized_path: "dir/my hit.env".into(),
+            start_line: Some(line),
+            start_column: Some(start),
+            end_line: Some(line),
+            end_column: Some(end),
+            context_sha256: None,
+        })
+    }
+
+    #[test]
+    fn sarif_maps_template_file_matches_to_line_regions_and_rule_metadata() {
+        let data = template_report(vec![file_location(3, 7, 27), file_location(9, 1, 5)], true);
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        let result = &value["runs"][0]["results"][0];
+        assert_eq!(result["ruleId"], "pack-1/fixture-token");
+        assert_eq!(result["level"], "error");
+        assert_eq!(result["properties"]["severity"], "critical");
+        assert_eq!(result["properties"]["tags"][0], "token");
+        assert_eq!(result["properties"]["cwe"][0], "CWE-798");
+        assert_eq!(result["properties"]["cve"][0], "CVE-2099-0001");
+        let first = &result["locations"][0]["physicalLocation"];
+        assert_eq!(first["artifactLocation"]["uri"], "dir/my%20hit.env");
+        assert_eq!(first["region"]["startLine"], 3);
+        assert_eq!(first["region"]["startColumn"], 7);
+        assert_eq!(first["region"]["endColumn"], 27);
+        assert_eq!(
+            result["locations"][1]["physicalLocation"]["region"]["startLine"],
+            9
+        );
+        let rule = &value["runs"][0]["tool"]["driver"]["rules"][0];
+        assert_eq!(rule["id"], "pack-1/fixture-token");
+        assert_eq!(rule["name"], "Fixture token");
+        assert_eq!(
+            rule["fullDescription"]["text"],
+            "A fixture credential marker."
+        );
+        assert_eq!(rule["helpUri"], "https://example.test/advisory");
+        assert_eq!(rule["properties"]["tags"][1], "exposure");
+        assert_eq!(rule["defaultConfiguration"]["level"], "error");
+    }
+
+    #[test]
+    fn sarif_maps_network_exchange_matches_to_the_target_uri_and_matcher_names() {
+        let exchange = Evidence::NetworkExchange(oxaudit_domain::NetworkExchangeEvidence {
+            artifact_id: oxaudit_domain::ArtifactId::parse("artifact_hit").unwrap(),
+            protocol: "http".into(),
+            target: "https://lab.example.test:8443/admin".into(),
+            request: "GET /admin HTTP/1.1".into(),
+            response_excerpt: "HTTP/1.1 200 OK".into(),
+            response_truncated: false,
+            matcher_names: vec!["panel".into(), "status".into()],
+            extracted: Vec::new(),
+        });
+        let data = template_report(vec![exchange], true);
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        let result = &value["runs"][0]["results"][0];
+        assert_eq!(
+            result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "https://lab.example.test:8443/admin"
+        );
+        assert!(result["locations"][0]["physicalLocation"]["region"].is_null());
+        let text = result["message"]["text"].as_str().unwrap();
+        assert!(text.contains("Matchers: panel, status."), "{text}");
+        assert!(
+            !text.contains("GET /admin"),
+            "request text stays out of SARIF"
+        );
+    }
+
+    #[test]
+    fn sarif_for_templates_without_a_projection_degrades_to_a_warning_level() {
+        let data = template_report(vec![file_location(1, 1, 2)], false);
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert_eq!(value["runs"][0]["results"][0]["level"], "warning");
+        assert!(value["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_template_run_with_no_matches_says_no_template_matched_in_sarif() {
+        let mut data = template_report(Vec::new(), true);
+        data.observations.clear();
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        assert!(output
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("No template matched")));
+        assert!(!output
+            .warnings
+            .iter()
+            .any(|w| w.to_lowercase().contains("clean")));
+    }
+
     #[test]
     fn a_yara_run_with_no_matches_says_no_rule_matched_in_sarif() {
         let mut data = yara_report(true);
@@ -1608,9 +1804,12 @@ impl<'a> SignatureIndex<'a> {
                 })
                 .copied()
                 .or_else(|| {
+                    // Only a full hex excerpt measures the match; a masked
+                    // one keeps a few bytes.
                     binary
                         .captured_value
                         .as_ref()
+                        .filter(|_| binary.encoding == "hex")
                         .map(|hex| (hex.len() / 2) as u64)
                 })
                 .unwrap_or(0);
@@ -1644,6 +1843,186 @@ impl<'a> SignatureIndex<'a> {
                 "tags": self.tags.get(rule_id).cloned().unwrap_or_default()
             }
         }))
+    }
+}
+
+/// What a SARIF result for a template match needs that the canonical evidence
+/// does not carry: the template's severity, name, description, references,
+/// tags and classification. They live in the run's stored projection, so SARIF
+/// reads them back from there. Without a projection the level falls back to
+/// `warning` and descriptors are omitted.
+struct TemplateIndex {
+    rows: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl TemplateIndex {
+    fn new(data: &ReportData) -> Self {
+        let mut rows = std::collections::BTreeMap::new();
+        for row in data
+            .projection
+            .as_ref()
+            .filter(|_| data.run.kind == oxaudit_domain::RunKind::Template)
+            .and_then(|projection| projection.get("matches"))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(rule_id) = row.get("ruleId").and_then(serde_json::Value::as_str) {
+                rows.entry(rule_id.to_owned())
+                    .or_insert_with(|| row.clone());
+            }
+        }
+        Self { rows }
+    }
+
+    fn text<'a>(&'a self, rule_id: &str, key: &str) -> Option<&'a str> {
+        self.rows
+            .get(rule_id)?
+            .get(key)?
+            .as_str()
+            .filter(|text| !text.is_empty())
+    }
+
+    fn list(&self, rule_id: &str, key: &str) -> Vec<String> {
+        self.rows
+            .get(rule_id)
+            .and_then(|row| row.get(key))
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn classification(&self, rule_id: &str, key: &str) -> Vec<String> {
+        self.rows
+            .get(rule_id)
+            .and_then(|row| row.get("classification"))
+            .and_then(|classification| classification.get(key))
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn severity(&self, rule_id: &str) -> Option<&str> {
+        self.text(rule_id, "severity")
+    }
+
+    /// Tags, CWE and CVE identifiers of the rule, added to a result's
+    /// `properties`.
+    fn annotate(&self, rule_id: &str, properties: &mut serde_json::Value) {
+        if !self.rows.contains_key(rule_id) {
+            return;
+        }
+        properties["tags"] = serde_json::json!(self.list(rule_id, "tags"));
+        let cwe = self.classification(rule_id, "cweId");
+        if !cwe.is_empty() {
+            properties["cwe"] = serde_json::json!(cwe);
+        }
+        let cve = self.classification(rule_id, "cveId");
+        if !cve.is_empty() {
+            properties["cve"] = serde_json::json!(cve);
+        }
+    }
+
+    /// One location per matched line of a file match (the first is primary),
+    /// and one per network exchange, whose URI is the target that was probed.
+    fn locations(record: &ObservationRecord) -> Vec<serde_json::Value> {
+        let mut locations = Vec::new();
+        for evidence in &record.evidence {
+            match &evidence.evidence {
+                Evidence::FileLocation(location) => {
+                    let mut region = serde_json::Map::new();
+                    if let Some(line) = location.start_line {
+                        region.insert("startLine".into(), serde_json::json!(line));
+                        region.insert(
+                            "startColumn".into(),
+                            serde_json::json!(location.start_column.unwrap_or(1)),
+                        );
+                        if let Some(end_column) = location.end_column {
+                            region.insert("endColumn".into(), serde_json::json!(end_column));
+                        }
+                    }
+                    let mut physical = serde_json::json!({
+                        "artifactLocation": { "uri": sarif_artifact_uri(&location.normalized_path) }
+                    });
+                    if !region.is_empty() {
+                        physical["region"] = serde_json::Value::Object(region);
+                    }
+                    locations.push(serde_json::json!({ "physicalLocation": physical }));
+                }
+                Evidence::NetworkExchange(exchange) => locations.push(serde_json::json!({
+                    "physicalLocation": { "artifactLocation": { "uri": exchange.target } }
+                })),
+                _ => {}
+            }
+        }
+        locations
+    }
+
+    /// The result text: the observation summary, plus the matcher names of a
+    /// network match.
+    fn message(record: &ObservationRecord) -> String {
+        let mut names: Vec<&str> = Vec::new();
+        for evidence in &record.evidence {
+            if let Evidence::NetworkExchange(exchange) = &evidence.evidence {
+                for name in &exchange.matcher_names {
+                    if !names.contains(&name.as_str()) {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+        if names.is_empty() {
+            record.observation.summary.clone()
+        } else {
+            format!(
+                "{} Matcher{}: {}.",
+                record.observation.summary,
+                if names.len() == 1 { "" } else { "s" },
+                names.join(", ")
+            )
+        }
+    }
+
+    fn rule_descriptor(&self, rule_id: &str) -> Option<serde_json::Value> {
+        let severity = self.severity(rule_id)?;
+        let name = self.text(rule_id, "name").unwrap_or(rule_id);
+        let references = self.list(rule_id, "reference");
+        let mut descriptor = serde_json::json!({
+            "id": rule_id,
+            "name": name,
+            "shortDescription": { "text": name },
+            "defaultConfiguration": { "level": sarif_level(Some(severity)) },
+            "properties": { "severity": severity }
+        });
+        if let Some(description) = self.text(rule_id, "description") {
+            descriptor["fullDescription"] = serde_json::json!({ "text": description });
+        }
+        if let Some(remediation) = self.text(rule_id, "remediation") {
+            descriptor["help"] = serde_json::json!({ "text": remediation });
+        }
+        if let Some(uri) = references
+            .iter()
+            .find(|reference| reference.starts_with("https://") || reference.starts_with("http://"))
+        {
+            descriptor["helpUri"] = serde_json::json!(uri);
+        }
+        self.annotate(rule_id, &mut descriptor["properties"]);
+        if !references.is_empty() {
+            descriptor["properties"]["references"] = serde_json::json!(references);
+        }
+        Some(descriptor)
     }
 }
 

@@ -293,7 +293,12 @@ mod tests {
             target: target.into(),
             run_id: format!("run-{target}"),
             scanned_at_ms: Some(1),
-            report: assess(inputs, &[], &policy, "2026-11-16T00:00:00Z".parse().unwrap()),
+            report: assess(
+                inputs,
+                &[],
+                &policy,
+                "2026-11-16T00:00:00Z".parse().unwrap(),
+            ),
         }
     }
 
@@ -313,7 +318,10 @@ mod tests {
                     ("npm", "mpl-thing", "2.0.0", "MPL-2.0"),
                 ],
             ),
-            project("/srv/worker", &[("PyPI", "Django_Rest", "3.0", "BSD-3-Clause")]),
+            project(
+                "/srv/worker",
+                &[("PyPI", "Django_Rest", "3.0", "BSD-3-Clause")],
+            ),
         ]
     }
 
@@ -332,9 +340,16 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            vec![("/srv/api", "fail"), ("/srv/web", "warn"), ("/srv/worker", "pass")]
+            vec![
+                ("/srv/api", "fail"),
+                ("/srv/web", "warn"),
+                ("/srv/worker", "pass")
+            ]
         );
-        assert_eq!(summary.projects[0].highest_severity.as_deref(), Some("high"));
+        assert_eq!(
+            summary.projects[0].highest_severity.as_deref(),
+            Some("high")
+        );
         assert!(!summary.projects[0].release_facts);
         assert_eq!(serde_json::to_value(&summary).unwrap()["kind"], "portfolio");
     }
@@ -374,7 +389,10 @@ mod tests {
         };
         assert_eq!(targets(None, "lodash", None), vec!["/srv/api", "/srv/web"]);
         assert_eq!(targets(None, "lodash", Some("4.17.21")), vec!["/srv/web"]);
-        assert_eq!(targets(Some("pypi"), "django-rest", None), vec!["/srv/worker"]);
+        assert_eq!(
+            targets(Some("pypi"), "django-rest", None),
+            vec!["/srv/worker"]
+        );
         assert!(targets(Some("npm"), "django-rest", None).is_empty());
         assert!(targets(None, "Lodash", None).is_empty());
     }

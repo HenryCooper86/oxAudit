@@ -2,6 +2,8 @@ use std::io::Write;
 use std::path::Path;
 
 use super::source::{self, MAX_FILES};
+#[cfg(feature = "templates")]
+use super::store::PackProtocols;
 use super::store::{is_valid_pack_id, pack_id_for};
 use super::*;
 use sha2::Digest;
@@ -215,6 +217,96 @@ fn more_than_256_mebibytes_in_total_is_refused() {
 }
 
 #[test]
+fn zip_limits_are_enforced_while_reading_not_after_inflating_everything() {
+    // Many members that compress to almost nothing but inflate to 16 KiB
+    // each. With a 64 KiB budget the reader must stop at the fifth member
+    // instead of inflating all of them and checking afterwards.
+    let dir = tempfile::tempdir().unwrap();
+    let filler = vec![b' '; 16 * 1024];
+    let names: Vec<String> = (0..100).map(|i| format!("r{i:03}.yar")).collect();
+    let entries: Vec<(&str, &[u8])> = names
+        .iter()
+        .map(|name| (name.as_str(), filler.as_slice()))
+        .collect();
+    let zip = dir.path().join("bomb.zip");
+    std::fs::write(&zip, zip_of(&entries)).unwrap();
+    assert!(std::fs::metadata(&zip).unwrap().len() < 100 * 1024);
+
+    let (result, read) =
+        source::collect_zip_with_limits(PackKind::Yara, &zip, MAX_FILES, 64 * 1024);
+    let error = result.unwrap_err();
+    assert!(error.contains("in total"), "{error}");
+    assert_eq!(read, 5, "members inflated before the refusal");
+
+    // The file-count limit also stops the read at the first excess member.
+    let tiny: Vec<(&str, &[u8])> = names
+        .iter()
+        .map(|name| (name.as_str(), &b"// x"[..]))
+        .collect();
+    std::fs::write(&zip, zip_of(&tiny)).unwrap();
+    let (result, read) = source::collect_zip_with_limits(PackKind::Yara, &zip, 10, u64::MAX);
+    let error = result.unwrap_err();
+    assert!(error.contains("more than 10 rule files"), "{error}");
+    assert_eq!(read, 10, "members inflated before the refusal");
+
+    // Members that are not rule files are never inflated.
+    let blobs: Vec<String> = (1..100).map(|i| format!("x{i}.bin")).collect();
+    let mut other: Vec<(&str, &[u8])> = vec![("r.yar", RULE_ALPHA.as_bytes())];
+    other.extend(blobs.iter().map(|name| (name.as_str(), filler.as_slice())));
+    std::fs::write(&zip, zip_of(&other)).unwrap();
+    let (result, read) =
+        source::collect_zip_with_limits(PackKind::Yara, &zip, MAX_FILES, 64 * 1024);
+    let collected = result.unwrap();
+    assert_eq!(collected.files.len(), 1);
+    assert_eq!(collected.ignored, 99);
+    assert_eq!(read, 1);
+}
+
+#[test]
+fn paths_that_collide_on_case_or_normalisation_insensitive_filesystems_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let zip = dir.path().join("case.zip");
+    std::fs::write(
+        &zip,
+        zip_of(&[
+            ("rules/A.yar", RULE_ALPHA.as_bytes()),
+            ("rules/a.yar", RULE_BETA.as_bytes()),
+        ]),
+    )
+    .unwrap();
+    let error = validate_pack(PackKind::Yara, &zip).unwrap_err();
+    assert!(
+        error.contains("A.yar") && error.contains("a.yar"),
+        "{error}"
+    );
+    assert!(error.contains("case-insensitive"), "{error}");
+
+    // The same name in NFC (precomposed) and NFD (decomposed) form.
+    let nfc = "caf\u{e9}.yar";
+    let nfd = "cafe\u{301}.yar";
+    std::fs::write(
+        &zip,
+        zip_of(&[(nfc, RULE_ALPHA.as_bytes()), (nfd, RULE_BETA.as_bytes())]),
+    )
+    .unwrap();
+    let error = validate_pack(PackKind::Yara, &zip).unwrap_err();
+    assert!(error.contains(nfc) && error.contains(nfd), "{error}");
+
+    // Folders that differ only by case collide too.
+    std::fs::write(
+        &zip,
+        zip_of(&[
+            ("Sub/x.yar", RULE_ALPHA.as_bytes()),
+            ("sub/x.yar", RULE_BETA.as_bytes()),
+        ]),
+    )
+    .unwrap();
+    assert!(validate_pack(PackKind::Yara, &zip)
+        .unwrap_err()
+        .contains("Sub/x.yar"));
+}
+
+#[test]
 fn compiled_rules_are_refused_with_an_explanation() {
     let dir = tempfile::tempdir().unwrap();
     let magic = dir.path().join("compiled.yar");
@@ -264,18 +356,121 @@ fn rules_that_do_not_compile_are_reported_and_the_rest_still_count() {
     assert_eq!(preview.skipped[0].file, "broken.yar");
 }
 
+const T_FILE: &str = "id: file-one\ninfo:\n  name: File one\n  severity: low\nfile:\n  - extensions: [conf]\n    matchers:\n      - type: word\n        words: [needle]\n";
+#[cfg(feature = "templates")]
+const T_HTTP: &str = "id: http-one\ninfo:\n  name: Http one\n  severity: low\nhttp:\n  - path: ['{{BaseURL}}/x']\n    matchers:\n      - type: status\n        status: [200]\nfile:\n  - extensions: [conf]\n    matchers:\n      - type: word\n        words: [needle]\n";
+#[cfg(feature = "templates")]
+const T_DNS: &str = "id: dns-one\ninfo:\n  name: Dns one\n  severity: info\ndns:\n  - name: '{{FQDN}}'\n    type: A\n    matchers:\n      - type: word\n        words: ['1.2.3.4']\n";
+#[cfg(feature = "templates")]
+const T_HEADLESS: &str = "id: headless-one\ninfo:\n  name: Headless one\n  severity: info\nheadless:\n  - steps:\n      - action: navigate\n        args:\n          url: '{{BaseURL}}'\n";
+
+#[cfg(feature = "templates")]
 #[test]
-fn nuclei_import_accepts_yaml_and_counts_files() {
+fn nuclei_import_loads_templates_and_reports_what_it_cannot_evaluate() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("t");
-    write(&src.join("one.yaml"), "id: one\n");
-    write(&src.join("two.yml"), "id: two\n");
+    write(&src.join("a/file.yaml"), T_FILE);
+    write(&src.join("a/http.yml"), T_HTTP);
+    write(&src.join("dns.yaml"), T_DNS);
+    write(&src.join("headless.yaml"), T_HEADLESS);
+    write(&src.join("dup.yaml"), T_FILE); // repeats id file-one
+    write(&src.join("broken.yaml"), "id: broken\ninfo: [oops\n");
+    write(&src.join("noname.yaml"), "id: noname\n");
+    write(
+        &src.join("workflow.yaml"),
+        "workflows:\n  - template: a.yaml\n",
+    );
+    write(&src.join("ci.yml"), "name: ci\non: push\n");
     write(&src.join("rule.yar"), RULE_ALPHA);
     let preview = validate_pack(PackKind::Nuclei, &src).unwrap();
-    assert_eq!(preview.file_count, 2);
-    assert_eq!(preview.ignored_count, 1);
-    assert_eq!(preview.rule_count, 2);
-    assert!(validate_pack(PackKind::Yara, &src.join("one.yaml")).is_err());
+    assert_eq!(preview.file_count, 9, "every yaml file is kept in the pack");
+    assert_eq!(
+        preview.ignored_count,
+        1 + 2,
+        "the .yar file and the two yaml files with no top-level id"
+    );
+    // file-one, http-one, dns-one load and are supported.
+    assert_eq!(preview.rule_count, 3);
+    assert_eq!(preview.not_evaluated_count, 1);
+    assert_eq!(
+        preview.protocols,
+        Some(PackProtocols {
+            http: 1,
+            dns: 1,
+            tcp: 0,
+            ssl: 0,
+            file: 2
+        })
+    );
+    let by_file = |name: &str| {
+        preview
+            .skipped
+            .iter()
+            .find(|skip| skip.file == name)
+            .map(|skip| skip.message.clone())
+            .unwrap_or_default()
+    };
+    assert!(by_file("headless.yaml").starts_with("not evaluated: "));
+    assert!(by_file("headless.yaml").contains("headless"));
+    assert!(by_file("dup.yaml").contains("duplicate template id `file-one`"));
+    assert!(
+        by_file("broken.yaml").contains("invalid YAML"),
+        "{}",
+        by_file("broken.yaml")
+    );
+    assert!(by_file("noname.yaml").contains("info.name"));
+    assert_eq!(preview.skipped.len(), 4);
+    assert!(validate_pack(PackKind::Yara, &src.join("dns.yaml")).is_err());
+}
+
+#[cfg(feature = "templates")]
+#[test]
+fn nuclei_pack_statistics_survive_install_and_a_database_from_before_the_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("t");
+    write(&src.join("file.yaml"), T_FILE);
+    write(&src.join("headless.yaml"), T_HEADLESS);
+    let store = store_in(dir.path());
+    let pack = store
+        .install(PackKind::Nuclei, &src, &meta("fixtures"), NOW)
+        .unwrap();
+    assert_eq!(pack.rule_count, 1);
+    assert_eq!(pack.not_evaluated_count, 1);
+    assert_eq!(pack.protocols.unwrap().file, 1);
+    let listed = store.list().unwrap();
+    assert_eq!(listed[0].protocols, pack.protocols);
+    assert_eq!(listed[0].not_evaluated_count, 1);
+    let json = serde_json::to_value(&listed[0]).unwrap();
+    assert_eq!(json["protocols"]["file"], 1);
+    assert_eq!(json["notEvaluatedCount"], 1);
+
+    // A table created before `stats_json` is upgraded in place.
+    drop(store);
+    let db = dir.path().join("data").join("rule-packs.sqlite3");
+    {
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch("ALTER TABLE signature_packs DROP COLUMN stats_json")
+            .unwrap();
+    }
+    let reopened = store_in(dir.path());
+    let listed = reopened.list().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].protocols, None,
+        "unknown until the pack is re-imported"
+    );
+    assert_eq!(listed[0].not_evaluated_count, 0);
+}
+
+#[cfg(not(feature = "templates"))]
+#[test]
+fn nuclei_import_without_the_template_engine_fails_explicitly() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("t");
+    write(&src.join("file.yaml"), T_FILE);
+    let error = validate_pack(PackKind::Nuclei, &src).unwrap_err();
+    assert!(error.contains("no template engine"), "{error}");
 }
 
 #[test]

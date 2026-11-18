@@ -51,13 +51,13 @@ pub(super) struct YaraArgs {
     #[arg(long)]
     pub db: Option<PathBuf>,
 
-    /// Files larger than this are listed as skipped (default 64).
+    /// Files larger than this many MiB are listed as skipped (default 64, 1 to 1024).
     #[arg(long, value_name = "MB")]
     pub max_file_size_mb: Option<u32>,
 
-    /// Output format: text, json, sarif, or oxaudit-json.
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    pub format: OutputFormat,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = ScanFormat::Text)]
+    pub format: ScanFormat,
 
     /// Write the report here instead of stdout.
     #[arg(long, short)]
@@ -67,6 +67,84 @@ pub(super) struct YaraArgs {
     /// severity comes from its `severity` or `score` metadata, else medium.
     #[arg(long, value_enum, default_value_t = FailOn::None)]
     pub fail_on: FailOn,
+
+    /// Exit 3 when any rule file that was given (--rules or an installed
+    /// pack) could not be compiled and was not applied. Without it such
+    /// files are reported in the output but do not change the exit code.
+    #[arg(long)]
+    pub strict: bool,
+}
+
+/// The output formats of `yara` and `template`: a subset of the formats of
+/// the other commands, so clap itself rejects the rest and `--help` lists
+/// only these.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub(super) enum ScanFormat {
+    /// Human-readable summary, grouped by file.
+    Text,
+    /// oxAudit's own match list.
+    Json,
+    /// SARIF 2.1.0, for GitHub code scanning and most CI viewers.
+    Sarif,
+    /// The full canonical run graph.
+    OxauditJson,
+}
+
+impl From<ScanFormat> for OutputFormat {
+    fn from(value: ScanFormat) -> Self {
+        match value {
+            ScanFormat::Text => Self::Text,
+            ScanFormat::Json => Self::Json,
+            ScanFormat::Sarif => Self::Sarif,
+            ScanFormat::OxauditJson => Self::OxauditJson,
+        }
+    }
+}
+
+/// What to print on stderr when a scan ended incomplete: the reasons it is
+/// incomplete, then (separately) the informational notes. The report has
+/// already been written, so the matches in it are real; the coverage is not
+/// total.
+pub(super) fn report_incomplete(scan: &str, reasons: &[String], notes: &[String]) {
+    eprintln!(
+        "oxaudit: the {scan} scan is incomplete; the matches reported above are real findings; coverage was partial. Why it is incomplete:"
+    );
+    for reason in reasons {
+        eprintln!("  - {reason}");
+    }
+    let informational: Vec<&String> = notes
+        .iter()
+        .filter(|note| !reasons.contains(note))
+        .collect();
+    if !informational.is_empty() {
+        eprintln!("Notes (not reasons):");
+        for note in informational {
+            eprintln!("  - {note}");
+        }
+    }
+}
+
+/// The `--strict` failure message: how many files were not applied and the
+/// first few, or `None` when there were none.
+pub(super) fn strict_message(
+    what: &str,
+    failure: &str,
+    total: usize,
+    first: &[String],
+) -> Option<String> {
+    if total == 0 {
+        return None;
+    }
+    let listed = first.iter().take(5).cloned().collect::<Vec<_>>().join("; ");
+    let more = if total > first.len().min(5) {
+        format!("; and {} more", total - first.len().min(5))
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "oxaudit: --strict: {total} {what} could not be {failure} and {} not applied; first: {listed}{more}",
+        if total == 1 { "was" } else { "were" }
+    ))
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -148,15 +226,7 @@ pub(super) enum SignaturePackCommand {
 }
 
 pub(super) fn run_yara(args: &YaraArgs, quiet: bool) -> CliResult {
-    args.format.refuse_ci_report("yara")?;
-    if !matches!(
-        args.format,
-        OutputFormat::Text | OutputFormat::Json | OutputFormat::Sarif | OutputFormat::OxauditJson
-    ) {
-        return Err(usage(
-            "yara supports --format text, json, sarif or oxaudit-json",
-        ));
-    }
+    let format = OutputFormat::from(args.format);
     if args.rules.is_empty() && args.pack_db.is_none() {
         return Err(usage(
             "no YARA rules to scan with: pass --rules FILE|DIR, or --pack-db FILE with installed packs",
@@ -227,12 +297,13 @@ pub(super) fn run_yara(args: &YaraArgs, quiet: bool) -> CliResult {
     let service = findings
         .service()
         .map_err(|error| failure(error.to_string()))?;
-    let rendered = match args.format {
+    let rendered = match format {
         OutputFormat::Json => {
             let mut value =
                 serde_json::to_value(&result).map_err(|error| failure(error.to_string()))?;
             value["kind"] = serde_json::json!("yara");
-            serde_json::to_vec_pretty(&value).map_err(|error| failure(error.to_string()))?
+            oxaudit_parsers::stable_json::to_vec_pretty(&value)
+                .map_err(|error| failure(error.to_string()))?
         }
         OutputFormat::Text => render_text(&result).into_bytes(),
         other => render_stored_run(
@@ -258,13 +329,24 @@ pub(super) fn run_yara(args: &YaraArgs, quiet: bool) -> CliResult {
         quiet,
     );
     if result.state != "completed" {
-        eprintln!(
-            "oxaudit: the YARA scan is incomplete; matches below are real, but coverage is not total:"
-        );
-        for note in &result.notes {
-            eprintln!("  - {note}");
-        }
+        report_incomplete("YARA", &result.incomplete_reasons, &result.notes);
         return Ok(EXIT_FAILURE);
+    }
+    if args.strict {
+        let first: Vec<String> = result
+            .rules_skipped
+            .iter()
+            .map(|skip| format!("{}/{}: {}", skip.pack, skip.file, skip.message))
+            .collect();
+        if let Some(message) = strict_message(
+            "rule file(s)",
+            "compiled",
+            result.rules_skipped_total,
+            &first,
+        ) {
+            eprintln!("{message}");
+            return Ok(EXIT_FAILURE);
+        }
     }
     Ok(if gated == EXIT_OK { EXIT_OK } else { gated })
 }
@@ -280,7 +362,12 @@ fn render_text(result: &YaraScanResult) -> String {
         result.rules_compiled,
         result.packs.len()
     );
-    if result.matches.is_empty() {
+    if result.files_scanned == 0 {
+        let _ = writeln!(
+            out,
+            "No file was scanned, so no rule was evaluated. This is not \"no rule matched\"; the run is incomplete."
+        );
+    } else if result.matches.is_empty() {
         let _ = writeln!(
             out,
             "No rule matched. That is not a statement about content the rules do not describe or about the files listed as skipped."
@@ -314,10 +401,18 @@ fn render_text(result: &YaraScanResult) -> String {
         }
         let _ = writeln!(out);
         for string in &row.strings {
+            let excerpt = if string.excerpt_masked {
+                format!(
+                    "{}\u{2026} (masked: the rule reports secrets)",
+                    string.excerpt_hex
+                )
+            } else {
+                string.excerpt_hex.clone()
+            };
             let _ = writeln!(
                 out,
-                "    {} at offset {} ({} byte(s)): {}",
-                string.identifier, string.offset, string.length, string.excerpt_hex
+                "    {} at offset {} ({} byte(s)): {excerpt}",
+                string.identifier, string.offset, string.length
             );
         }
         if row.strings_truncated > 0 {
@@ -370,6 +465,14 @@ pub(super) fn run_signature_pack(command: &SignaturePackCommand, quiet: bool) ->
             authors,
             path,
         } => {
+            if name.trim().is_empty() {
+                return Err(usage("--name must not be empty: give the pack a name"));
+            }
+            if license.trim().is_empty() {
+                return Err(usage(
+                    "--license must not be empty: record the licence the content is published under (for example Apache-2.0)",
+                ));
+            }
             let kind = PackKind::from(*kind);
             let store = SigPackStore::open(db).map_err(failure)?;
             let preview = crate::sigpacks::validate_pack(kind, path).map_err(usage)?;
@@ -420,7 +523,7 @@ pub(super) fn run_signature_pack(command: &SignaturePackCommand, quiet: bool) ->
                 .list()
                 .map_err(failure)?;
             if *json {
-                let rendered = serde_json::to_vec_pretty(&packs)
+                let rendered = oxaudit_parsers::stable_json::to_vec_pretty(&packs)
                     .map_err(|error| failure(error.to_string()))?;
                 write_output(None, &rendered)?;
                 return Ok(EXIT_OK);

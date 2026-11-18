@@ -228,7 +228,7 @@ pub(super) fn run_staged(args: &ScanArgs, quiet: bool) -> CliResult {
     );
     let rendered = match args.format {
         OutputFormat::Text => render_scan_text(&summary, &findings),
-        OutputFormat::Json => serde_json::to_vec_pretty(&serde_json::json!({
+        OutputFormat::Json => oxaudit_parsers::stable_json::to_vec_pretty(&serde_json::json!({
             "summary": summary,
             "findings": findings,
         }))

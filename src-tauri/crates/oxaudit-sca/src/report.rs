@@ -434,7 +434,10 @@ mod tests {
         };
         assert_eq!(direct(vec![occurrence("x", None)]), None);
         assert_eq!(
-            direct(vec![occurrence("x", Some(false)), occurrence("y", Some(false))]),
+            direct(vec![
+                occurrence("x", Some(false)),
+                occurrence("y", Some(false))
+            ]),
             Some(false)
         );
         assert_eq!(
