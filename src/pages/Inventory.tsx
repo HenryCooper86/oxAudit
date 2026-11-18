@@ -1,6 +1,6 @@
-import { Box, Database, Search, ShieldCheck } from "lucide-react";
+import { Box, Database, ShieldCheck } from "lucide-react";
 import { useDeferredValue, useEffect, useState, type JSX } from "react";
-import { Select } from "../components/ui";
+import { SearchField, Select } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { ResultPagination } from "../components/workbench/ResultPagination";
@@ -30,7 +30,7 @@ export function InventoryPage(): JSX.Element {
 
   return (
     <ToolPage title="Inventory" description="Inspect every component a completed scan identified—even when no vulnerability matched—and trace each identity back to its artifact evidence.">
-      <section className="rounded-sm border border-border bg-surface-secondary p-4">
+      <section className="surface-card p-4">
         <label className="block text-[12px] text-text-secondary">Completed inventory run
           <Select className="mt-1 w-full" value={runId} onChange={event => setRunId(event.target.value)} disabled={runs.loading || !runs.items.length}>
             {runId && !runs.items.some(run => run.id === runId) && <option value={runId}>Selected inventory · {runId}</option>}
@@ -47,13 +47,9 @@ export function InventoryPage(): JSX.Element {
       </section>
 
       {runs.data?.total === 0 && <InlineState tone="empty" title="No completed inventory runs yet" description="Run a Dependency, Binary, or Image scan. Unflagged components remain visible here." />}
-      {runId && <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+      {runId && <section className="overflow-hidden surface-card">
         <ResultsToolbar countLabel={inventory ? `${inventory.filteredTotal.toLocaleString()} of ${inventory.total.toLocaleString()} components` : components.error ? "Inventory unavailable" : "Loading components…"}
-          search={<label className="relative min-w-0">
-            <span className="sr-only">Search inventory</span>
-            <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
-            <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search package, purl, CPE, or advisory…" className="w-72 max-w-full rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[12px] text-text-primary placeholder:text-text-muted" />
-          </label>}
+          search={<SearchField aria-label="Search inventory" wrapperClassName="w-72 max-w-full" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search package, purl, CPE, or advisory…" />}
         />
         <ServerPageState page={components} />
         {inventory?.filteredTotal === 0 && <InlineState compact tone="empty" title={inventory.total ? "No components match this search" : "No components were recorded in this run"} />}
@@ -76,7 +72,7 @@ export function InventoryPage(): JSX.Element {
                     {component.cpes.map((cpe) => <span key={cpe} className="rounded-full border border-border px-2 py-0.5 font-mono">{cpe}</span>)}
                     {component.advisoryIds.map((advisory) => <span key={advisory} className="rounded-full border border-warning-subtle px-2 py-0.5 text-warning">{advisory}</span>)}
                   </div>
-                  <details className="mt-3 rounded-sm border border-border bg-surface-primary">
+                  <details className="mt-3 rounded-md border border-border bg-surface-primary">
                     <summary className="cursor-pointer px-3 py-2 text-[11px] text-text-secondary">{component.identities.length} identity evidence records</summary>
                     <div className="divide-y divide-border border-t border-border">
                       {component.identities.map((identity, index) => (

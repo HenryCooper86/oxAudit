@@ -51,7 +51,7 @@ export function ServerTokenGate({ onConnected }: { onConnected: () => void }): J
     >
       <form
         onSubmit={submit}
-        className="m-auto w-full max-w-sm shrink-0 space-y-4 rounded-sm border border-border bg-surface-secondary p-5"
+        className="surface-card m-auto w-full max-w-sm shrink-0 animate-dialog-in space-y-4 p-6 shadow-lg"
       >
         <div className="flex items-center gap-2">
           <ShieldCheck size={16} aria-hidden="true" className="text-accent" />

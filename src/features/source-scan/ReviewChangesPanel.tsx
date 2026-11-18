@@ -1,5 +1,5 @@
 import type { JSX } from "react";
-import { Button, Select } from "../../components/ui";
+import { Button, Checkbox, Input, Select } from "../../components/ui";
 import type { ScanRunDetail, ScanRunSummary } from "../../lib/types";
 import type { GitPathMode, ReviewChangesState } from "./useReviewChanges";
 
@@ -11,33 +11,33 @@ export function ReviewChangesPanel({ review, run, runs, newOnly, onNewOnly, page
   const evidence = run?.summary.gitContext;
   const revision = evidence?.before;
   const eligible = runs.filter(candidate => candidate.status === "completed" && candidate.runId !== run?.runId && candidate.completedAt && run && Date.parse(candidate.completedAt) < Date.parse(run.startedAt));
-  return <section aria-label="Review changes" className="space-y-3 rounded-sm border border-border bg-surface-secondary p-4 text-[12px] text-text-secondary">
-    <div className="flex flex-wrap items-center gap-3">
+  return <section aria-label="Review changes" className="space-y-3 surface-card p-4 text-[12px] leading-relaxed text-text-secondary">
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <h2 className="text-[13px] font-semibold text-text-primary">Review changes</h2>
-      <span>Full working-tree scans · filters change the view only</span>
+      <span className="text-text-muted">Full working-tree scans · filters change the view only</span>
     </div>
     {run && <>
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="flex min-w-0 max-w-full flex-wrap items-center gap-2">Saved baseline
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <label className="flex min-w-0 max-w-full flex-wrap items-center gap-2 text-[11px] font-medium text-text-muted">Saved baseline
           <Select aria-label="Saved baseline" className="min-w-0 max-w-full" value={review.baseline} disabled={run.persistence.status !== "saved" || run.status !== "completed"} onChange={e => review.setBaseline(e.target.value)} variant="compact">
             <option value="automatic">Automatic baseline</option>
             {review.baseline !== "automatic" && !eligible.some(candidate => candidate.runId === review.baseline) && <option value={review.baseline}>Selected baseline · {review.baseline.slice(0, 8)}</option>}
             {eligible.map(candidate => <option key={candidate.runId} value={candidate.runId}>{new Date(candidate.completedAt!).toLocaleString()} · {candidate.runId.slice(0, 8)}</option>)}
           </Select>
         </label>
-        <label className="flex items-center gap-2 font-medium text-text-primary"><input type="checkbox" checked={newOnly && review.hasBaseline} disabled={!review.hasBaseline} onChange={e => onNewOnly(e.target.checked)} />New since baseline</label>
+        <Checkbox labelClassName="font-medium text-text-primary" checked={newOnly && review.hasBaseline} disabled={!review.hasBaseline} onChange={e => onNewOnly(e.target.checked)}>New since baseline</Checkbox>
       </div>
       {review.comparisonLoading ? <p role="status">{paged ? "Loading saved result counts…" : "Comparing saved runs… Showing automatic results until comparison completes."}</p>
-        : review.comparisonError ? <p role="alert" className="text-status-error">{review.comparisonError} {paged ? "Choose a compatible baseline or retry the saved page." : "Showing automatic results."}</p>
+        : review.comparisonError ? <p role="alert" className="text-error">{review.comparisonError} {paged ? "Choose a compatible baseline or retry the saved page." : "Showing automatic results."}</p>
         : review.hasBaseline ? <p>Baseline {review.baselineId?.slice(0, 8)}: {review.counts.new} new · {review.counts.unchanged} unchanged · {review.counts.resolved} resolved · {review.counts.notEvaluated} not evaluated. Review states and scope views remain independent.</p>
         : <p>No compatible saved baseline for this run. Findings are observed results; no claim that a commit introduced them.</p>}
       <p>Run revision: <span className="selectable font-mono">{revision?.head ?? "unavailable"}</span>{revision?.branch ? ` (${revision.branch})` : ""}. {evidence?.contextChanged === true ? "Checkout/index context changed during this scan." : evidence?.contextChanged === false ? "Checkout/index metadata matched before and after scanning; this is not an atomic Git snapshot." : "Revision consistency unavailable."}</p>
       <p>Coverage: {run.summary.filesScanned} files scanned · {run.summary.filesSkipped} skipped. Deleted or unscanned files remain not evaluated. Per-artifact content hashes are the scan evidence.</p>
     </>}
     <div className="flex flex-wrap items-end gap-3">
-      <label className="grid min-w-0 max-w-full gap-1">Git base reference<input aria-label="Git base reference" value={review.baseInput} onChange={e => review.setBaseInput(e.target.value)} className="w-44 rounded-sm border border-border bg-surface-primary px-2 py-1.5 text-text-primary" /></label>
-      <Button variant="outline" size="md" onClick={review.refreshGit} disabled={review.gitLoading}>Refresh Git</Button>
-      <label className="grid min-w-0 max-w-full gap-1">Paths in findings view<Select aria-label="Git path mode" className="min-w-0 max-w-full" value={review.pathMode} onChange={e => review.setPathMode(e.target.value as GitPathMode)} variant="compact">
+      <label className="grid min-w-0 max-w-full gap-1 text-[11px] font-medium text-text-muted">Git base reference<Input aria-label="Git base reference" value={review.baseInput} onChange={e => review.setBaseInput(e.target.value)} className="h-7 w-44 text-[12px]" /></label>
+      <Button variant="outline" size="sm" onClick={review.refreshGit} disabled={review.gitLoading}>Refresh Git</Button>
+      <label className="grid min-w-0 max-w-full gap-1 text-[11px] font-medium text-text-muted">Paths in findings view<Select aria-label="Git path mode" className="min-w-0 max-w-full" value={review.pathMode} onChange={e => review.setPathMode(e.target.value as GitPathMode)} variant="compact">
         <option value="all">All files</option>
         <option value="changed" disabled={!review.gitUsable}>Changes against base + working tree</option>
         <option value="staged" disabled={!review.gitUsable}>Staged paths · current working-tree content</option>

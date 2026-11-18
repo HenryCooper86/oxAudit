@@ -1,15 +1,19 @@
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 
 /**
- * Variant/size vocabulary follows y-agent's `y-gui/src/components/ui/Button.tsx`.
+ * Variants, sizes and shape follow oxFuzz's `components/ui/Button.tsx`:
+ * 28px (`sm`) and 32px (`md`) heights on the 8px control radius; `primary` is
+ * the accent fill, `outline` the primary surface with a hairline border,
+ * `ghost` and `icon` borderless until hovered.
  *
- * Two deviations, both because oxAudit's controls carry more semantic weight
- * than an agent shell's:
+ * Three deviations, because oxAudit's controls carry more semantic weight
+ * than a fuzzing shell's:
  *   - `danger` is tinted rather than solid. Destructive actions here sit inside
  *     dense result tables, where a solid red block would outshout the severity
  *     badges that are the actual signal.
  *   - `accent` is new: the subtle-tinted affordance used by "Ask AI" and other
  *     hand-offs into the assistant.
+ *   - `warning` is new: the tinted caution action (e.g. accepting a risk).
  */
 export type ButtonVariant =
   | "primary"
@@ -30,19 +34,19 @@ const VARIANT: Record<ButtonVariant, string> = {
   primary: "border-transparent bg-accent text-accent-contrast hover:bg-accent-hover",
   accent: "border-accent-glow bg-accent-subtle text-accent hover:bg-accent-glow",
   ghost:
-    "border-border bg-transparent text-text-secondary hover:bg-surface-hover hover:text-text-primary",
+    "border-transparent bg-transparent text-text-secondary hover:bg-surface-hover hover:text-text-primary",
   danger:
     "border-error-border bg-transparent text-error hover:bg-error-subtle",
   warning:
     "border-warning-border bg-transparent text-warning hover:bg-warning-subtle",
   outline:
-    "border-border bg-surface-tertiary text-text-primary hover:border-border-strong hover:bg-surface-active",
-  icon: "border-transparent bg-transparent text-text-muted hover:border-border hover:bg-surface-hover hover:text-text-primary",
+    "border-border bg-surface-primary text-text-secondary hover:border-border-strong hover:bg-surface-hover hover:text-text-primary",
+  icon: "border-transparent bg-transparent text-text-muted hover:bg-surface-hover hover:text-text-primary",
 };
 
 const SIZE: Record<ButtonSize, string> = {
-  sm: "h-7 px-2.5 text-[11px]",
-  md: "h-8 px-3 text-[12px]",
+  sm: "h-7 px-3 text-[11px]",
+  md: "h-8 px-4 text-[12px]",
 };
 
 const ICON_SIZE: Record<ButtonSize, string> = {
@@ -63,7 +67,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       className={[
         "inline-flex shrink-0 items-center justify-center gap-1.5",
         "cursor-pointer font-sans font-medium whitespace-nowrap",
-        "rounded-sm border border-solid transition-colors duration-150",
+        "rounded-md border border-solid transition-colors duration-150",
         "disabled:pointer-events-none disabled:opacity-55",
         VARIANT[variant],
         sizing,

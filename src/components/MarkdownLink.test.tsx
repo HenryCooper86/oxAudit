@@ -48,6 +48,57 @@ describe("AI markdown links", () => {
     expect(opener.openUrl).not.toHaveBeenCalled();
   });
 
+  test("GFM autolinks keep the safe-href rule", () => {
+    render(
+      <SearchableMarkdown
+        content={"Visit https://example.com/x and www.example.org now.\n\n<javascript:alert(1)> and <data:text/html,hi>"}
+        query=""
+      />,
+    );
+    const hrefs = screen.getAllByRole("link").map((l) => l.getAttribute("href"));
+    expect(hrefs).toEqual(["https://example.com/x", "http://www.example.org/"]);
+    expect(document.body.textContent).toContain("javascript:alert(1)");
+    expect(document.querySelector('a[href^="javascript"]')).toBeNull();
+    expect(document.querySelector('a[href^="data"]')).toBeNull();
+  });
+
+  test("raw HTML stays disabled with GFM on", () => {
+    const { container } = render(
+      <SearchableMarkdown content={'<img src=x onerror="alert(1)"> <b>bold</b>'} query="" />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("b")).toBeNull();
+  });
+
+  test("renders GFM tables, strikethrough and inert task lists", () => {
+    const { container } = render(
+      <SearchableMarkdown
+        content={"| Sink | File |\n|---|---|\n| exec | a.rs |\n\n~~old~~\n\n- [x] done\n- [ ] todo"}
+        query=""
+      />,
+    );
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Sink", "File"]);
+    expect(screen.getByRole("cell", { name: "a.rs" })).toBeInTheDocument();
+    expect(container.querySelector("del")?.textContent).toBe("old");
+    const boxes = container.querySelectorAll('input[type="checkbox"]');
+    expect(boxes).toHaveLength(2);
+    boxes.forEach((b) => expect(b).toBeDisabled());
+    expect(container.textContent).not.toContain("|---|");
+  });
+
+  test("search highlights matches inside table cells", () => {
+    const { container } = render(
+      <SearchableMarkdown
+        content={"| Sink | File |\n|---|---|\n| exec_command | runner.rs |"}
+        query="runner"
+      />,
+    );
+    const marks = container.querySelectorAll("td mark[data-chat-search-match]");
+    expect(marks).toHaveLength(1);
+    expect(marks[0].textContent).toBe("runner");
+  });
+
   test("links in a CVE AI briefing open externally", async () => {
     const detail: CveDetail = {
       item: {

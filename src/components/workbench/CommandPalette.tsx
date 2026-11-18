@@ -10,6 +10,7 @@ import {
   type PaletteCommand,
 } from "../../lib/commandPalette";
 import { api } from "../../lib/api";
+import { activateRecentProject } from "../../features/project-home/openProject";
 import { useAppStore } from "../../lib/stores";
 
 /**
@@ -30,7 +31,6 @@ import { useAppStore } from "../../lib/stores";
  */
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const setPage = useAppStore((state) => state.setPage);
-  const setActiveProject = useAppStore((state) => state.setActiveProject);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const [projects, setProjects] = useState<PaletteCommand[]>([]);
@@ -42,7 +42,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     () => [...projects, ...NAVIGATION_COMMANDS],
     [projects],
   );
-  const matches = useMemo(() => filterCommands(commands, query), [commands, query]);
+  // With no query nothing is ranked: recent projects first, then the screens
+  // in sidebar order, so the palette reads like the navigation it mirrors.
+  const matches = useMemo(
+    () => (query.trim() ? filterCommands(commands, query) : commands),
+    [commands, query],
+  );
   const grouped = useMemo(() => groupCommands(matches), [matches]);
   // The keyboard walks rows in the order they are drawn. Rank order crosses
   // groups, so indexing `matches` would highlight one row and run another.
@@ -117,11 +122,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   const run = (command: PaletteCommand) => {
     if (command.kind === "project") {
-      setActiveProject(command.projectPath);
       // Switching to a project means going to where its findings are; landing
       // on whatever screen happened to be open would leave the switch
-      // invisible.
-      setPage("source-scan");
+      // invisible. The sidebar's recent list does exactly the same.
+      activateRecentProject(command.projectPath);
     } else {
       setPage(command.page);
     }
@@ -152,7 +156,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     <div
       ref={rootRef}
       role="presentation"
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-6 pt-[12vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-6 pt-[12vh] backdrop-blur-[2px]"
       onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
@@ -180,9 +184,9 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="w-full max-w-lg overflow-hidden rounded-md border border-border bg-surface-secondary shadow-lg"
+        className="surface-card flex w-[min(560px,92vw)] animate-dialog-in flex-col overflow-hidden shadow-lg"
       >
-        <div className="flex items-center gap-2 border-b border-border px-3">
+        <div className="flex items-center gap-2 border-b border-border px-3.5 focus-within:border-b-accent">
           <Search size={15} aria-hidden="true" className="text-text-muted" />
           <input
             ref={inputRef}
@@ -194,10 +198,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             aria-label="Search commands"
             aria-controls="command-palette-results"
             aria-activedescendant={ordered[selected] ? `command-${ordered[selected].id}` : undefined}
-            className="w-full bg-transparent py-3 text-[13px] text-text-primary outline-none placeholder:text-text-muted"
+            className="palette-search w-full bg-transparent py-2.5 text-[13px] text-text-primary outline-none placeholder:text-text-muted"
           />
+          <kbd aria-hidden="true" className="shrink-0 font-sans text-[11px] text-text-muted">esc</kbd>
           <button type="button" aria-label="Close command palette" onClick={onClose}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-text-muted hover:bg-surface-hover hover:text-text-primary">
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary">
             <X size={15} aria-hidden="true" />
           </button>
         </div>
@@ -207,17 +212,17 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           id="command-palette-results"
           role="listbox"
           aria-label="Commands"
-          className="max-h-80 overflow-y-auto py-1"
+          className="max-h-[50vh] overflow-y-auto py-1"
         >
           {matches.length === 0 && (
-            <p className="px-3 py-6 text-center text-[12px] text-text-muted" role="status">
+            <p className="px-3.5 py-3 text-[12px] text-text-muted" role="status">
               Nothing matches “{query}”.
             </p>
           )}
 
           {grouped.map(([group, commands]) => (
             <div key={group}>
-              <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <div className="px-3.5 pb-1 pt-2 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
                 {group}
               </div>
               {commands.map((command) => {
@@ -235,7 +240,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                     data-selected={isSelected}
                     onMouseMove={() => setSelected(position)}
                     onClick={() => run(command)}
-                    className={`cursor-pointer px-3 py-1.5 text-[13px] ${
+                    className={`cursor-pointer px-3.5 py-2 text-[13px] ${
                       isSelected
                         ? "bg-surface-active text-text-primary"
                         : "text-text-secondary hover:bg-surface-hover"
@@ -256,7 +261,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           ))}
         </div>
         {projects.length > 0 && (
-          <p className="border-t border-border px-3 py-1.5 text-[10px] text-text-muted">
+          <p className="border-t border-border px-3.5 py-1.5 text-[10.5px] text-text-muted">
             Only your 20 most recently opened projects are listed here.
           </p>
         )}

@@ -3,11 +3,21 @@ import { parseSelectedProject } from "../features/project-home/history";
 import type { AiReadiness } from "./settingsRequests";
 import type { AppSettings, DependencyScanResult } from "./types";
 import type { AssistantHandoff, Page, WorkbenchStatus } from "./workbench";
+import { DEFAULT_SETTINGS_SECTION, type SettingsSectionId } from "./settingsSections";
 import { newId } from "./ids";
 
 interface AppStore {
   page: Page;
   setPage: (p: Page) => void;
+  /** The Settings sub-page being shown while `page === "settings"`. */
+  settingsSection: SettingsSectionId;
+  setSettingsSection: (section: SettingsSectionId) => void;
+  /** Where "Back" in Settings returns to: the page Settings was opened from. */
+  settingsReturnPage: Page;
+  /** Open Settings, optionally on a given section (deep links: "ai", "scan-defaults"). */
+  openSettings: (section?: SettingsSectionId) => void;
+  /** Leave Settings for the page it was opened from. */
+  closeSettings: () => void;
   exportHandoff: { runId: string } | null;
   openExport: (runId: string) => void;
   settings: AppSettings | null;
@@ -33,6 +43,14 @@ interface AppStore {
   ) => void;
   activeProject: string | null;
   setActiveProject: (p: string | null) => void;
+  /**
+   * Set when something outside Project home (the sidebar's "Open project" in
+   * server mode, where no native folder picker exists) asks for the project
+   * folder field. Project home focuses the field and clears the request.
+   */
+  projectFieldRequest: number | null;
+  requestProjectField: () => void;
+  consumeProjectFieldRequest: () => void;
   assistantHandoff: AssistantHandoff | null;
   openAssistant: (handoff: AssistantHandoff) => void;
   clearAssistantHandoff: () => void;
@@ -43,7 +61,25 @@ interface AppStore {
 
 export const useAppStore = create<AppStore>((set) => ({
   page: "dashboard",
-  setPage: (page) => set({ page }),
+  setPage: (page) =>
+    set((state) =>
+      page === "settings" && state.page !== "settings"
+        ? { page, settingsReturnPage: state.page }
+        : { page },
+    ),
+  settingsSection: DEFAULT_SETTINGS_SECTION,
+  setSettingsSection: (settingsSection) => set({ settingsSection }),
+  settingsReturnPage: "dashboard",
+  openSettings: (section) =>
+    set((state) => ({
+      page: "settings",
+      settingsReturnPage: state.page === "settings" ? state.settingsReturnPage : state.page,
+      ...(section ? { settingsSection: section } : {}),
+    })),
+  closeSettings: () =>
+    set((state) => ({
+      page: state.settingsReturnPage === "settings" ? "dashboard" : state.settingsReturnPage,
+    })),
   exportHandoff: null,
   openExport: (runId) => set({ page: "export-center", exportHandoff: { runId } }),
   settings: null,
@@ -84,6 +120,10 @@ export const useAppStore = create<AppStore>((set) => ({
     })),
   activeProject: null,
   setActiveProject: (activeProject) => set({ activeProject }),
+  projectFieldRequest: null,
+  requestProjectField: () =>
+    set((state) => ({ page: "dashboard", projectFieldRequest: (state.projectFieldRequest ?? 0) + 1 })),
+  consumeProjectFieldRequest: () => set({ projectFieldRequest: null }),
   assistantHandoff: null,
   openAssistant: (assistantHandoff) =>
     set({ assistantHandoff, page: "assistant" }),

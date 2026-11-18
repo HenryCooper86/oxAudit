@@ -60,7 +60,7 @@ export function TargetInput({
 
   return (
     <div className="min-w-0">
-      <label htmlFor={id} className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">{label}</label>
+      <label htmlFor={id} className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">{label}</label>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <input
           id={id}
@@ -71,7 +71,7 @@ export function TargetInput({
           onChange={(event) => { pickerGeneration.current += 1; setPickerError(null); onChange(event.target.value); }}
           placeholder={placeholder}
           disabled={disabled}
-          className="selectable min-w-0 basis-full rounded-sm border border-border bg-surface-secondary px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-50 sm:basis-auto sm:flex-1"
+          className="selectable h-8 min-w-0 basis-full rounded-md border border-border bg-surface-primary px-3 font-mono text-xs text-text-primary outline-none transition-colors placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-50 sm:basis-auto sm:flex-1"
         />
         {!serverMode && pickers.map((mode) => {
           const Icon = mode === "folder" ? FolderOpen : FileUp;

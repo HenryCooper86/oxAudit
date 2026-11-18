@@ -98,8 +98,16 @@ test("onboarding, first scan, review, recheck, restart, reopen and SARIF export"
   // --- Real process restart with the same data and config ---------------
   await backend.restart();
   await page.goto(backend.origin);
-  await expect(page.locator('aside[aria-label="Primary navigation"]')).toBeVisible();
+  const navigation = page.locator('aside[aria-label="Primary navigation"]');
+  await expect(navigation).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  // The sidebar's Recent list is durable: the checked project is still listed
+  // after the restart, by its folder name.
+  await expect(navigation.getByRole("button", { name: "project", exact: true })).toBeVisible();
+  // The server has no native folder picker, so the sidebar's Open project
+  // lands on Project home's typed folder field instead.
+  await navigation.getByRole("button", { name: "Open project", exact: true }).click();
+  await expect(home.getByLabel("Project folder")).toBeFocused();
 
   // Reopen the project; the latest (corrected, empty) run restores first.
   await home.getByLabel("Project folder").fill(project);

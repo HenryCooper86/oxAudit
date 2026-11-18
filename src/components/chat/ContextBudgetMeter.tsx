@@ -1,6 +1,13 @@
 import type { ContextBudgetState } from "../../lib/contextBudget";
 
-export function ContextBudgetMeter({ budget }: { budget: ContextBudgetState }) {
+export function ContextBudgetMeter({
+  budget,
+  className = "hidden sm:flex",
+}: {
+  budget: ContextBudgetState;
+  /** Display utilities; the composer shows it by its own width. */
+  className?: string;
+}) {
   const tone = {
     normal: "bg-success",
     warning: "bg-warning",
@@ -10,7 +17,7 @@ export function ContextBudgetMeter({ budget }: { budget: ContextBudgetState }) {
 
   return (
     <div
-      className="hidden shrink-0 items-center gap-1.5 sm:flex"
+      className={`shrink-0 items-center gap-1.5 ${className}`}
       title={title}
       aria-label={`Context budget ${budget.percent} percent used. ${title}.`}
     >

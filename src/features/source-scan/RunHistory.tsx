@@ -22,13 +22,13 @@ export function RunHistory(props: {
   }
 
   return (
-    <section aria-labelledby="run-history-title" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+    <section aria-labelledby="run-history-title" className="overflow-hidden surface-card">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
-        <h2 id="run-history-title" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+        <h2 id="run-history-title" className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
           Run history
         </h2>
         {runs.length > 3 && <button type="button" aria-expanded={expanded} aria-controls="source-run-history-rows"
-          className="rounded-sm px-2 py-1.5 text-[11px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+          className="rounded-md px-2 py-1.5 text-[11px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
           onClick={() => setExpansion({ projectId, expanded: !expanded })}>
           {expanded ? "Show fewer runs" : `Show all ${runs.length} runs`}
         </button>}

@@ -124,7 +124,7 @@ export function FindingDetail({
             <p className="selectable mt-1 break-all font-mono text-[11px] text-text-muted">{finding.filePath}:{finding.line}:{finding.column}</p>
             <p className="mt-1 text-[11px] text-text-muted">Recorded byte column. Editor navigation converts the current saved line; edits since scanning may move the finding.</p>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
             {hasDraft && <span className="text-[11px] text-warning">Unsaved review draft</span>}
             <Button ref={reviewButtonRef} type="button" onClick={() => setReviewing(true)} variant="accent" size="md" disabled={finding.diffStatus === "resolved"}>
               <ShieldCheck size={13} aria-hidden="true" />
@@ -163,19 +163,19 @@ export function FindingDetail({
         </section>
 
         <section aria-labelledby="finding-description" className="mt-5">
-          <h3 id="finding-description" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Description</h3>
+          <h3 id="finding-description" className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Description</h3>
           <p className="selectable mt-1.5 text-[13px] leading-relaxed text-text-secondary">{finding.description}</p>
         </section>
 
         <section aria-labelledby="finding-evidence" className="mt-5">
-          <h3 id="finding-evidence" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Evidence</h3>
-          <div className="selectable mt-2 overflow-x-auto rounded-sm border border-border bg-surface-primary p-3">
-            <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-text-muted">{secret ? "Redacted preview" : "Match"}</p>
+          <h3 id="finding-evidence" className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Evidence</h3>
+          <div className="selectable mt-2 overflow-x-auto rounded-md border border-border bg-surface-primary p-3">
+            <p className="mb-1.5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-text-muted">{secret ? "Redacted preview" : "Match"}</p>
             <pre className="whitespace-pre-wrap break-all font-mono text-[13px] leading-relaxed text-warning">{safeMatch}</pre>
           </div>
           {!secret && finding.context && (
-            <div className="selectable mt-2 overflow-x-auto rounded-sm border border-border bg-surface-primary p-3">
-              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-text-muted">Context</p>
+            <div className="selectable mt-2 overflow-x-auto rounded-md border border-border bg-surface-primary p-3">
+              <p className="mb-1.5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-text-muted">Context</p>
               <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-text-secondary">{finding.context}</pre>
             </div>
           )}
@@ -184,8 +184,8 @@ export function FindingDetail({
           )}
         </section>
 
-        <section aria-labelledby="finding-analysis-evidence" className="mt-4 rounded-sm border border-border bg-surface-primary p-3">
-          <h3 id="finding-analysis-evidence" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Analysis evidence</h3>
+        <section aria-labelledby="finding-analysis-evidence" className="mt-4 rounded-md border border-border bg-surface-primary p-3">
+          <h3 id="finding-analysis-evidence" className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Analysis evidence</h3>
           <p className="mt-1.5 text-[13px] leading-relaxed text-text-secondary">
             {finding.analysis === "syntax"
               ? finding.category === "secret"
@@ -205,18 +205,18 @@ export function FindingDetail({
           )}
         </section>
 
-        <section aria-labelledby="finding-recommendation" className="mt-5 rounded-sm border border-success-border bg-success-subtle p-3">
-          <h3 id="finding-recommendation" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-success">Recommendation</h3>
+        <section aria-labelledby="finding-recommendation" className="mt-5 rounded-md border border-success-border bg-success-subtle p-3">
+          <h3 id="finding-recommendation" className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-success">Recommendation</h3>
           <p className="selectable mt-1.5 text-[13px] leading-relaxed text-text-secondary">{finding.recommendation}</p>
         </section>
 
         {remediation && (
-          <section aria-labelledby="remediation-example-title" className="mt-5 rounded-sm border border-border p-3">
+          <section aria-labelledby="remediation-example-title" className="mt-5 rounded-md border border-border p-3">
             <h3 id="remediation-example-title" className="text-[12px] font-semibold">Remediation example</h3>
             <p className="mt-2 text-[12px] leading-relaxed text-text-secondary">{remediation.constraint}</p>
             <div className="mt-3 grid gap-3 xl:grid-cols-2">
-              <div><h4 className="text-[11px] font-medium">Before (illustrative)</h4><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-sm bg-surface-primary p-3 font-mono text-[12px]">{remediation.before}</pre></div>
-              <div><h4 className="text-[11px] font-medium">After (adapt to your application)</h4><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-sm bg-surface-primary p-3 font-mono text-[12px]">{remediation.after}</pre></div>
+              <div><h4 className="text-[11px] font-medium">Before (illustrative)</h4><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-surface-primary p-3 font-mono text-[12px]">{remediation.before}</pre></div>
+              <div><h4 className="text-[11px] font-medium">After (adapt to your application)</h4><pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-surface-primary p-3 font-mono text-[12px]">{remediation.after}</pre></div>
             </div>
             <h4 className="mt-3 text-[12px] font-semibold">Verification steps</h4>
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-[12px] leading-relaxed text-text-secondary">{remediation.verify.map(step => <li key={step}>{step}</li>)}</ol>
@@ -224,11 +224,11 @@ export function FindingDetail({
         )}
 
         {finding.review && (
-          <section aria-labelledby="finding-review-summary" className="mt-5 rounded-sm border border-border bg-surface-primary p-3">
+          <section aria-labelledby="finding-review-summary" className="mt-5 rounded-md border border-border bg-surface-primary p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <History size={14} aria-hidden="true" className="text-text-muted" />
-                <h3 id="finding-review-summary" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Current review</h3>
+                <h3 id="finding-review-summary" className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Current review</h3>
               </div>
               {onResetReview && finding.review.state !== "candidate" && (
                 <Button
@@ -261,7 +261,7 @@ export function FindingDetail({
         )}
 
         {finding.reviewHistory.length > 0 && (
-          <details className="mt-3 rounded-sm border border-border bg-surface-primary p-3">
+          <details className="mt-3 rounded-md border border-border bg-surface-primary p-3">
             <summary className="cursor-pointer text-[12px] font-medium text-text-secondary hover:text-text-primary">Review history ({finding.reviewHistory.length})</summary>
             <ol className="mt-3 space-y-3 border-l border-border pl-4">
               {finding.reviewHistory.map((review) => (
@@ -297,7 +297,7 @@ function MetadataChip({ children }: { children: string }): JSX.Element {
 function DetailMetric({ label, value, mono = false }: { label: string; value: string; mono?: boolean }): JSX.Element {
   return (
     <div className="min-w-0">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">{label}</p>
+      <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">{label}</p>
       <p className={`mt-1 break-words text-[11px] text-text-secondary ${mono ? "font-mono" : ""}`} title={value}>{value}</p>
     </div>
   );

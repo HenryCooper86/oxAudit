@@ -28,13 +28,13 @@ export function ThinkingCard({
   const hasContent = text.trim().length > 0;
 
   return (
-    <div className="selectable my-1">
+    <div className="selectable">
       <button
         type="button"
         aria-expanded={hasContent ? open : undefined}
         aria-controls={hasContent ? detailsId : undefined}
         onClick={() => hasContent && setOpen(!open)}
-        className={`inline-flex items-center gap-1.5 rounded-sm py-1 pr-1.5 text-left text-text-muted ${ hasContent ? "cursor-pointer hover:text-text-secondary" : "cursor-default" }`}
+        className={`inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-secondary px-2.5 py-1 text-left text-text-muted ${ hasContent ? "cursor-pointer hover:bg-surface-hover" : "cursor-default" }`}
       >
         <span className="relative flex h-2 w-2">
           {streaming && (
@@ -44,7 +44,7 @@ export function ThinkingCard({
             className={`relative inline-flex h-2 w-2 rounded-full ${ streaming ? "bg-accent" : "bg-text-muted" }`}
           />
         </span>
-        <span className="text-[12px] font-medium text-text-muted">
+        <span className="text-[11px] font-medium text-text-muted">
           {streaming ? "Thinking" : "Thought"}
           {streaming ? `… ${elapsed}s` : elapsed > 0 ? ` · ${elapsed}s` : ""}
         </span>
@@ -57,8 +57,8 @@ export function ThinkingCard({
         )}
       </button>
       {hasContent && open && (
-        <div id={detailsId} className="mt-1 rounded-md bg-surface-secondary px-3 py-2.5">
-          <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap font-sans text-[13px] leading-relaxed text-text-secondary">
+        <div id={detailsId} className="mt-1 rounded-md border border-border bg-surface-secondary px-3 py-2.5">
+          <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap font-sans text-[12px] italic leading-relaxed text-text-secondary">
             {text}
           </pre>
         </div>

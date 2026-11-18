@@ -1,6 +1,6 @@
 import { FlaskConical, Gauge, RefreshCw, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState, type JSX } from "react";
-import { Button, SectionLabel } from "../components/ui";
+import { Button, Input, MetricGrid, MetricTile, SectionLabel } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { api } from "../lib/api";
@@ -31,21 +31,21 @@ export function QualityLabPage(): JSX.Element {
     <ToolPage
       title="Quality Lab"
       description="Run pinned ground truth locally and inspect passes, misses, false positives, and limitations—without a network connection or model."
-      context={<Button type="button" onClick={() => void run()} disabled={running} variant="outline" size="md"><RefreshCw size={13} aria-hidden="true" />{running ? "Running…" : "Run benchmark"}</Button>}
+      actions={<Button type="button" onClick={() => void run()} disabled={running} variant="outline" size="md"><RefreshCw size={13} aria-hidden="true" />{running ? "Running…" : "Run benchmark"}</Button>}
     >
       {running && !status && <InlineState tone="running" title="Running the deterministic benchmark" />}
       {error && <InlineState tone="error" title="Benchmark failed" description={error} />}
       {status && (
         <>
-          <section aria-label="Benchmark metrics" className="grid grid-cols-2 overflow-hidden rounded-sm border border-border bg-surface-secondary min-[720px]:grid-cols-6">
+          <MetricGrid label="Benchmark metrics" minTile={170}>
             <Metric label="Corpus" value={String(status.corpusTargets)} />
             <Metric label="Passed" value={`${status.passedTargets}/${status.corpusTargets}`} />
             <Metric label="Precision" value={percent(status.precision)} />
             <Metric label="Recall" value={percent(status.recall)} />
             <Metric label="Misses / FP" value={`${status.falseNegatives} / ${status.falsePositives}`} />
             <Metric label="Runtime" value={`${status.runtimeMs} ms`} />
-          </section>
-          <section className="rounded-sm border border-border bg-surface-secondary p-4">
+          </MetricGrid>
+          <section className="surface-card p-4">
             <div className="flex items-start gap-3">
               <FlaskConical className="mt-0.5 shrink-0 text-accent" size={17} aria-hidden="true" />
               <div>
@@ -55,7 +55,7 @@ export function QualityLabPage(): JSX.Element {
             </div>
           </section>
           {(status.misses.length > 0 || status.unexpected.length > 0) && (
-            <section className="rounded-sm border border-warning-subtle bg-warning-subtle p-4">
+            <section className="rounded-md border border-warning-subtle bg-warning-subtle p-4">
               <h2 className="flex items-center gap-2 text-[13px] font-semibold text-text-primary"><TriangleAlert size={14} aria-hidden="true" />Regressions</h2>
               <ul className="mt-2 space-y-1 font-mono text-[11px] text-text-secondary">
                 {[...status.misses, ...status.unexpected].map((item) => <li key={item}>{item}</li>)}
@@ -108,7 +108,7 @@ function ExternalBenchmarkPanel(): JSX.Element {
   }, [path, running]);
 
   return (
-    <section aria-labelledby="external-benchmark-title" className="rounded-sm border border-border bg-surface-secondary p-4">
+    <section aria-labelledby="external-benchmark-title" className="surface-card p-4">
       <h2 id="external-benchmark-title"><SectionLabel>External benchmark · OWASP Benchmark</SectionLabel></h2>
       <p className="mt-2 text-[12px] leading-relaxed text-text-secondary">
         Score the scanner against the OWASP Benchmark Project's Java ground truth. Point this at a
@@ -116,9 +116,9 @@ function ExternalBenchmarkPanel(): JSX.Element {
         figures count only the categories oxAudit has Java rules for, and say so for the rest.
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <input
+        <Input
           aria-label="OWASP Benchmark repository path"
-          className="min-w-[280px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[13px] text-text-primary"
+          className="min-w-[280px] flex-1 font-mono text-[12px]"
           placeholder="/path/to/OWASP-Benchmark/Benchmark"
           value={path}
           onChange={(event) => setPath(event.target.value)}
@@ -144,14 +144,14 @@ function ExternalReportView({ report }: { report: ExternalBenchmarkReport }): JS
   const uncoveredVulnerable = report.uncoveredTotals.truePositives + report.uncoveredTotals.falseNegatives;
   return (
     <div className="mt-4 space-y-3">
-      <div aria-label="External benchmark metrics" className="grid grid-cols-2 overflow-hidden rounded-sm border border-border min-[720px]:grid-cols-6">
+      <MetricGrid label="External benchmark metrics" minTile={170}>
         <Metric label="Cases" value={String(report.cases)} />
         <Metric label="Covered" value={String(covered.cases)} />
         <Metric label="Precision" value={percent(covered.precision)} />
         <Metric label="Recall" value={percent(covered.recall)} />
         <Metric label="False-positive rate" value={percent(covered.falsePositiveRate)} />
         <Metric label="Youden index" value={covered.youden === null ? "—" : covered.youden.toFixed(3)} />
-      </div>
+      </MetricGrid>
       <p className="text-[12px] leading-relaxed text-text-secondary">
         {report.suite} · {report.runtimeMs} ms. The Youden index (recall − false-positive rate) is
         the Benchmark's own score: flagging everything and flagging nothing both score zero.
@@ -163,10 +163,10 @@ function ExternalReportView({ report }: { report: ExternalBenchmarkReport }): JS
           out of the figures — absent rules, not inaccurate ones.
         </p>
       )}
-      <div className="overflow-x-auto rounded-sm border border-border" aria-label="External benchmark category table">
+      <div className="overflow-x-auto rounded-md border border-border" aria-label="External benchmark category table">
         <table className="w-full table-fixed border-collapse text-left text-[12px]">
           <caption className="sr-only">Per-category OWASP Benchmark results</caption>
-          <thead className="sticky top-0 border-b border-border bg-surface-secondary text-[11px] font-semibold uppercase tracking-[0.1em] text-text-muted">
+          <thead className="sticky top-0 border-b border-border bg-surface-secondary text-[11px] font-semibold uppercase tracking-[0.06em] text-text-muted">
             <tr>
               <th scope="col" className="px-3 py-2">Category</th>
               <th scope="col" className="px-3 py-2">CWE</th>
@@ -225,7 +225,7 @@ function CompiledGrammarsPanel(): JSX.Element {
   }, [revision]);
 
   return (
-    <section aria-labelledby="compiled-grammars-title" className="rounded-sm border border-border bg-surface-secondary p-4">
+    <section aria-labelledby="compiled-grammars-title" className="surface-card p-4">
       <h2 id="compiled-grammars-title"><SectionLabel>Compiled grammars</SectionLabel></h2>
       {error ? (
         <InlineState compact tone="error" title="Compiled grammars unavailable" description={error}
@@ -254,7 +254,7 @@ function CompiledGrammarsPanel(): JSX.Element {
 }
 
 function Metric({ label, value }: { label: string; value: string }): JSX.Element {
-  return <div className="border-b border-r border-border px-3 py-3 last:border-r-0"><p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-text-muted">{label}</p><p className="mt-1 font-mono text-[18px] font-semibold tabular-nums text-text-primary">{value}</p></div>;
+  return <MetricTile icon={<Gauge size={16} aria-hidden="true" />} label={label} value={value} />;
 }
 
 function percent(value: number | null): string {

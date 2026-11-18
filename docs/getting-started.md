@@ -259,7 +259,7 @@ owns cancellation across pages. Open **View source findings**, inspect `js-eval`
 then use your configured editor to apply the correction. **Recheck finding**
 provides covered-file evidence when compatible saved runs support it. A changed
 or skipped scope must remain not evaluated. Skip/Escape closes setup, and
-Settings can reopen it; choosing a folder alone never starts scanning.
+**Settings → About → Run readiness setup** can reopen it; choosing a folder alone never starts scanning.
 
 Core source detection is local. Ordinary source scans may request optional CISA
 KEV enrichment; this is not a source `--offline` mode. Dependencies normally need

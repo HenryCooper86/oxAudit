@@ -1,6 +1,7 @@
-import { BadgeCheck, Search, ShieldAlert } from "lucide-react";
+import { BadgeCheck, ShieldAlert } from "lucide-react";
+import { listRowClassName } from "../components/workbench/listRow";
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
-import { Button, Select } from "../components/ui";
+import { Button, Input, SearchField, Select, Textarea } from "../components/ui";
 import { InlineState } from "../components/workbench/InlineState";
 import { ResultsToolbar } from "../components/workbench/ResultsToolbar";
 import { ResultPagination } from "../components/workbench/ResultPagination";
@@ -62,20 +63,17 @@ export function VerificationPage(): JSX.Element {
         />
       )}
       {claims && claims.length > 0 && (
-        <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <section className="overflow-hidden surface-card">
           <ResultsToolbar
             countLabel={`${visible.length} of ${claims.length} claims`}
             search={
-              <label className="relative">
-                <span className="sr-only">Search claims</span>
-                <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input
-                  value={query}
-                  onChange={event => setQuery(event.target.value)}
-                  placeholder="Search claims…"
-                  className="w-56 rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[12px] text-text-primary"
-                />
-              </label>
+              <SearchField
+                aria-label="Search claims"
+                wrapperClassName="w-56"
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder="Search claims…"
+              />
             }
           />
           <SplitWorkspace
@@ -88,7 +86,7 @@ export function VerificationPage(): JSX.Element {
               <InlineState tone="empty" compact title="No claims match this search" />
             ) : (
               <>
-                <ul className="divide-y divide-border">
+                <ul className="flex flex-col gap-1.5">
                   {page.items.map(claim => (
                     <li key={claim.id}>
                       <button
@@ -96,7 +94,7 @@ export function VerificationPage(): JSX.Element {
                         data-detail-trigger
                         onClick={() => setSelectedId(claim.id)}
                         aria-current={selected?.id === claim.id}
-                        className={`w-full border-l-2 px-3 py-3 text-left ${selected?.id === claim.id ? "border-accent-glow bg-accent-subtle" : "border-transparent hover:bg-surface-hover"}`}
+                        className={`w-full px-3 py-2.5 text-left ${listRowClassName(selected?.id === claim.id)}`}
                       >
                         <span className="block text-[13px] font-medium text-text-primary">{claim.title}</span>
                         <span className="mt-1 block truncate font-mono text-[10px] text-text-muted">{claim.id}</span>
@@ -188,7 +186,7 @@ function ClaimVerification({ claim, verifierId, onVerifierId }: {
         <h2 className="mt-1 text-[15px] font-semibold text-text-primary">{claim.title}</h2>
         <p className="mt-1 text-[12px] text-text-secondary">Candidate from run {claim.runId}. The input hash below is fixed when verification is saved.</p>
       </div>
-      <div className="rounded-sm border border-border bg-surface-primary p-3">
+      <div className="rounded-md border border-border bg-surface-primary p-3">
         <h3 className="flex items-center gap-2 text-[12px] font-semibold text-text-primary">
           <ShieldAlert size={13} aria-hidden="true" />Independence contract
         </h3>
@@ -196,11 +194,11 @@ function ClaimVerification({ claim, verifierId, onVerifierId }: {
       </div>
       <label className="block text-[12px] text-text-secondary">
         Verifier identity
-        <input
+        <Input
           value={verifierId}
           onChange={event => onVerifierId(event.target.value)}
           disabled={saving}
-          className="mt-1 w-full rounded-sm border border-border bg-surface-primary px-3 py-2 text-[12px] text-text-primary"
+          className="mt-1"
         />
       </label>
       <label className="block text-[12px] text-text-secondary">
@@ -213,13 +211,13 @@ function ClaimVerification({ claim, verifierId, onVerifierId }: {
       </label>
       <label className="block text-[12px] text-text-secondary">
         Limitations
-        <textarea
+        <Textarea
           disabled={saving}
           value={limitation}
           onChange={event => setLimitation(event.target.value)}
           rows={3}
           placeholder="What could this check not establish?"
-          className="mt-1 w-full resize-y rounded-sm border border-border bg-surface-primary px-3 py-2 text-[12px] text-text-primary"
+          className="mt-1 resize-y"
         />
       </label>
       <Button type="button" onClick={() => void verify()} disabled={saving || !verifierId.trim()} variant="primary" size="md">
@@ -238,10 +236,10 @@ function ClaimVerification({ claim, verifierId, onVerifierId }: {
       )}
       {records.length > 0 && (
         <section>
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-muted">Immutable history</h3>
+          <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Immutable history</h3>
           <ul className="mt-2 space-y-2">
             {records.map(record => (
-              <li key={record.id} className="rounded-sm border border-border bg-surface-primary p-3">
+              <li key={record.id} className="rounded-md border border-border bg-surface-primary p-3">
                 <div className="flex justify-between gap-3">
                   <span className="text-[12px] font-medium capitalize text-text-primary">{record.result}</span>
                   <time className="text-[10px] text-text-muted">{new Date(record.verifiedAtMs).toLocaleString()}</time>

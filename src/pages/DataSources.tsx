@@ -72,7 +72,7 @@ export function DataSourcesPage(): JSX.Element {
       {sources && (
         <div className="grid gap-3 min-[820px]:grid-cols-2">
           {sources.map((source) => (
-            <article key={source.id} className="rounded-sm border border-border bg-surface-secondary p-4">
+            <article key={source.id} className="surface-card p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-3">
                   <Database size={17} aria-hidden="true" className="mt-0.5 shrink-0 text-accent" />

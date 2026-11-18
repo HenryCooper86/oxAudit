@@ -7,6 +7,7 @@ import { useAppStore } from "../../lib/stores";
 import { useScanWorkStore, acquireScan, releaseScan } from "../project-home/coordinator";
 import { SourceScanPage } from "../../pages/SourceScan";
 import { SettingsPage } from "../../pages/SettingsPage";
+import { WorkbenchHeader } from "../../components/workbench/WorkbenchHeader";
 import { projectSettings, projectContext, sourceResult } from "../../../tests/fixtures/projectHome";
 import type { Finding, RecheckSourceResult } from "../../lib/types";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -33,7 +34,8 @@ beforeEach(() => {
 test("settings saves preferred editor through the settings transaction", async () => {
   vi.spyOn(api, "getTotalUsage").mockRejectedValue("none");
   vi.spyOn(api, "saveSettings").mockImplementation(async request => ({ settings: request.settings }));
-  render(<SettingsPage />);
+  // Save lives in the shell header, so render the header with the page.
+  render(<><WorkbenchHeader onOpenNavigation={() => {}} navigationHidden={false} onToggleNavigation={() => {}} /><SettingsPage /></>);
   fireEvent.change(screen.getByLabelText("Preferred editor"), { target: { value: "vscode" } });
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(useAppStore.getState().settings?.editor).toBe("vscode"));

@@ -4,7 +4,7 @@ import { Database, Download, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import type { AdvisoryDbStatus, AdvisoryDbUpdateReport } from "../lib/types";
 import { useToastStore } from "../lib/stores";
-import { Button, SectionLabel } from "../components/ui";
+import { Button, Input, SectionLabel } from "../components/ui";
 import { ToolPage } from "../components/workbench/ToolPage";
 import { errorMessage } from "../lib/commandError";
 
@@ -111,12 +111,12 @@ export function AdvisoryDatabasePage() {
       description="Build and refresh the local OSV corpus that dependency and image scans can answer from without the network."
     >
       <div className="space-y-4">
-        <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px]">
+        <section className="surface-card p-4 text-[13px]">
           <SectionLabel>Database file</SectionLabel>
           <div className="mt-2 flex flex-wrap gap-2">
-            <input
+            <Input
               aria-label="Advisory database path"
-              className="min-w-[320px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[13px] text-text-primary"
+              className="min-w-[320px] flex-1 font-mono text-[12px]"
               placeholder="advisories.sqlite3 — the file dependency and image scans answer from offline"
               value={path}
               disabled={busy === "update"}
@@ -139,11 +139,11 @@ export function AdvisoryDatabasePage() {
               Download defaults
             </Button>
           </div>
-          <label className="mt-3 flex items-center gap-2 text-[12px] text-text-secondary">
+          <label className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-text-secondary">
             Extra ecosystems (comma-separated, added to the defaults)
-            <input
+            <Input
               aria-label="Extra ecosystems"
-              className="min-w-[260px] flex-1 rounded-sm border border-border bg-surface px-2 py-1 text-[12px] text-text-primary"
+              className="min-w-[260px] flex-1 text-[12px]"
               placeholder='Debian:12, Alpine:v3.20, Hex, Pub'
               value={extraEcosystems}
               onChange={(event) => setExtraEcosystems(event.target.value)}
@@ -152,11 +152,11 @@ export function AdvisoryDatabasePage() {
         </section>
 
         {statusError && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px] text-warning">{statusError}</section>
+          <section className="surface-card p-4 text-[13px] text-warning">{statusError}</section>
         )}
 
         {status && (
-          <section className="overflow-hidden rounded-sm border border-border bg-surface-secondary text-[13px]">
+          <section className="overflow-hidden surface-card text-[13px]">
             <div className="divide-y divide-border">
               <div className="flex justify-between px-4 py-3"><span className="text-text-secondary">Coverage</span><span>{status.ecosystems.join(", ") || "empty"}</span></div>
               <div className="flex justify-between px-4 py-3"><span className="text-text-secondary">Advisories / packages</span><span>{status.advisories} / {status.packages}</span></div>
@@ -167,7 +167,7 @@ export function AdvisoryDatabasePage() {
         )}
 
         {progress.length > 0 && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4">
+          <section className="surface-card p-4">
             <SectionLabel>Progress</SectionLabel>
             <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-text-secondary">
               {progress.join("\n")}
@@ -176,7 +176,7 @@ export function AdvisoryDatabasePage() {
         )}
 
         {report && (
-          <section className="rounded-sm border border-border bg-surface-secondary p-4 text-[13px]">
+          <section className="surface-card p-4 text-[13px]">
             <SectionLabel>Last update</SectionLabel>
             <p className="mt-2 text-text-secondary">
               {report.totalAdvisories} advisories over {report.totalPackages} packages from{" "}

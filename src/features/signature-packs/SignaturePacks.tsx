@@ -39,7 +39,7 @@ export function SkippedFiles({ skipped, label }: { skipped: SignaturePackSkip[];
   const pagination = usePagination(skipped, 25);
   if (skipped.length === 0) return <p className="text-[11px] text-text-muted">No files or rules were skipped.</p>;
   return <div>
-    <ul aria-label={label} className="divide-y divide-border rounded-sm border border-border bg-surface-primary">
+    <ul aria-label={label} className="divide-y divide-border rounded-md border border-border bg-surface-primary">
       {pagination.items.map((skip, index) => (
         <li key={`${pagination.start + index}`} className="px-3 py-2 text-[11px]">
           <span className="break-all font-mono text-text-primary">{skip.file}{skip.line ? `:${skip.line}` : ""}</span>
@@ -173,7 +173,7 @@ export function SignaturePacksSection(): JSX.Element {
   const protocols = useMemo(() => current ? protocolSummary(current.protocols) : null, [current]);
 
   return <>
-    <section aria-labelledby="signature-import-title" className="rounded-sm border border-border bg-surface-secondary p-4">
+    <section aria-labelledby="signature-import-title" className="surface-card p-4">
       <h2 id="signature-import-title" className="text-[13px] font-semibold text-text-primary">Import signature rules</h2>
       <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-text-muted">
         Import YARA rules for YARA Scan or Nuclei templates for Template Scan, from a file, a folder, or a .zip. Inspecting reads the pack and shows what would run; nothing is installed until you confirm a licence. Compiled .yarc files cannot be imported.
@@ -203,7 +203,7 @@ export function SignaturePacksSection(): JSX.Element {
         </Button>
       </div>
       {importError && <div className="mt-3"><InlineState compact tone="error" title="The pack could not be inspected or installed" description={importError} /></div>}
-      {current && <div className="mt-3 space-y-3 rounded-sm border border-border bg-surface-primary p-3" aria-label="Pack preview" role="group">
+      {current && <div className="mt-3 space-y-3 rounded-md border border-border bg-surface-primary p-3" aria-label="Pack preview" role="group">
         <p className="inline-flex items-center gap-1 text-[12px] font-medium text-text-primary"><CheckCircle2 size={13} aria-hidden="true" className="text-success" />Inspected: {KIND_LABEL[current.kind]}</p>
         <dl className="grid gap-3 text-[12px] min-[700px]:grid-cols-4">
           <Fact label="Files" value={current.fileCount.toLocaleString()} />
@@ -214,7 +214,7 @@ export function SignaturePacksSection(): JSX.Element {
           {current.kind === "nuclei" && <Fact label="Not evaluated" value={`${current.notEvaluatedCount.toLocaleString()} (listed below; they will not run)`} />}
           <Fact label="Content SHA-256" value={current.contentSha256} mono wide />
         </dl>
-        <details className="rounded-sm border border-border bg-surface-secondary">
+        <details className="surface-card">
           <summary className="cursor-pointer px-3 py-2 text-[12px] font-medium text-text-primary">Skipped files and rules ({current.skipped.length.toLocaleString()})</summary>
           <div className="border-t border-border p-3"><SkippedFiles skipped={current.skipped} label="Skipped in this pack" /></div>
         </details>
@@ -237,7 +237,7 @@ export function SignaturePacksSection(): JSX.Element {
       </div>}
     </section>
 
-    <section aria-labelledby="signature-packs-title" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+    <section aria-labelledby="signature-packs-title" className="overflow-hidden surface-card">
       <div className="border-b border-border px-4 py-3">
         <h2 id="signature-packs-title" className="text-[13px] font-semibold text-text-primary">Signature packs</h2>
         <p className="mt-1 text-[12px] text-text-muted">Enabled YARA packs apply to YARA Scan and enabled Nuclei packs to Template Scan. A pack whose stored files no longer match their recorded hashes is skipped with its reason. Packs stay in your local data directory.</p>
@@ -265,7 +265,7 @@ export function SignaturePacksSection(): JSX.Element {
               </div>
             </div>
             <CopyleftNotice license={pack.license} />
-            <details className="mt-2 rounded-sm border border-border bg-surface-primary">
+            <details className="mt-2 rounded-md border border-border bg-surface-primary">
               <summary className="cursor-pointer px-3 py-1.5 text-[12px] text-text-secondary">Details for {pack.name}</summary>
               <div className="space-y-2 border-t border-border p-3 text-[11px] text-text-muted">
                 <p>Pack ID <span className="font-mono">{pack.id}</span> · installed {pack.installedAt}</p>

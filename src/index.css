@@ -16,8 +16,11 @@
 /* ============================================================
    oxAudit — Global Design System
 
-   Token names and values follow y-agent's `y-gui/src/styles/index.css`
-   so the two products read as one design language. Two layers:
+   The shell, token values, radii, elevation, focus ring and motion follow
+   oxFuzz (`crates/hf-gui/src/styles/index.css`) so the two products read as
+   one family. Where an oxFuzz colour fails oxAudit's contrast contract
+   (tests/themeContrast.test.ts) the accessible oxAudit value is kept. Two
+   layers:
 
      1. Runtime layer — plain CSS variables on `:root` / `[data-theme]`.
         These are what the theme switch swaps.
@@ -26,9 +29,9 @@
         `border-border`, `shadow-md`, `rounded-sm`…). `inline` is what keeps
         the utility pointing at the live variable instead of baking a value.
 
-   Deviation from y-agent: no `@import` of Google Fonts. oxAudit only talks
-   to NVD, OSV, and the configured AI endpoint, so remote font fetching is
-   out; the stacks below degrade to the same system faces.
+   No `@import` of remote fonts: oxAudit only talks to NVD, OSV, and the
+   configured AI endpoint, and the CSP allows `font-src 'self'` only, so the
+   stacks below degrade to the same system faces oxFuzz falls back to.
    ============================================================ */
 
 /* ---- Runtime variables: dark theme (default) ---- */
@@ -38,14 +41,14 @@
   --surface-primary: #0f0f0f;
   --surface-secondary: #141414;
   --surface-tertiary: #1c1c1c;
-  --surface-hover: rgba(255, 255, 255, 0.03);
+  --surface-hover: rgba(255, 255, 255, 0.045);
   --surface-active: rgba(255, 255, 255, 0.06);
   --surface-code: #1a1a1a;
 
   /* Text hierarchy */
   --text-primary: #e8e6e1;
-  --text-secondary: #8a8680;
-  --text-muted: #87837d;
+  --text-secondary: #aaa59e;
+  --text-muted: #8c8881;
 
   /* Accent — warm gold, used sparingly */
   --accent: #c8b560;
@@ -76,13 +79,13 @@
   --control-border: #7d776f;
 
   /* Elevation (aliased to Tailwind's shadow-* below) */
-  --elevation-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
-  --elevation-md: 0 4px 16px rgba(0, 0, 0, 0.55);
-  --elevation-lg: 0 16px 40px rgba(0, 0, 0, 0.65);
+  --elevation-sm: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --elevation-md: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --elevation-lg: 0 16px 48px rgba(0, 0, 0, 0.65);
 
   /* Scrollbar */
   --scrollbar-thumb: rgba(255, 255, 255, 0.1);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
 
 
   /* Severity scale — oxAudit's own axis, shaped like the semantic triplets
@@ -115,14 +118,16 @@
   --surface-primary: #ffffff;
   --surface-secondary: #f5f4f1;
   --surface-tertiary: #edecea;
-  --surface-hover: rgba(0, 0, 0, 0.03);
+  --surface-hover: rgba(0, 0, 0, 0.04);
   --surface-active: rgba(0, 0, 0, 0.06);
   --surface-code: #f1efed;
 
   --text-primary: #1a1917;
   --text-secondary: #6b6560;
-  --text-muted: #6f6964;
+  --text-muted: #6d6761;
 
+  /* oxFuzz uses #9a7c2a; it fails 4.5:1 as text on the tertiary surface, so
+     the darker gold stays. The same applies to the light semantic colours. */
   --accent: #7b601e;
   --accent-hover: #654d16;
   --accent-subtle: rgba(154, 124, 42, 0.08);
@@ -143,14 +148,14 @@
   --info-subtle: rgba(37, 99, 235, 0.08);
   --info-border: rgba(37, 99, 235, 0.2);
 
-  --border: rgba(0, 0, 0, 0.09);
-  --border-strong: rgba(0, 0, 0, 0.16);
-  --border-focus: rgba(0, 0, 0, 0.18);
+  --border: rgba(0, 0, 0, 0.13);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --border-focus: rgba(0, 0, 0, 0.22);
   --control-border: #817a71;
 
-  --elevation-sm: 0 1px 3px rgba(0, 0, 0, 0.07);
-  --elevation-md: 0 4px 16px rgba(0, 0, 0, 0.09);
-  --elevation-lg: 0 16px 40px rgba(0, 0, 0, 0.12);
+  --elevation-sm: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --elevation-md: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --elevation-lg: 0 16px 48px rgba(0, 0, 0, 0.16);
 
   --scrollbar-thumb: rgba(0, 0, 0, 0.12);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.2);
@@ -233,6 +238,7 @@
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-border-focus: var(--border-focus);
+  --color-control-border: var(--control-border);
 
   --shadow-sm: var(--elevation-sm);
   --shadow-md: var(--elevation-md);
@@ -240,12 +246,21 @@
 }
 
 /* ---- Tailwind theme: static scales ----
-   The radius system is deliberately two-step: 4px for controls, 8px for
-   overlays. There is no 12px application radius (see the design contract
-   test in tests/designSystem.test.ts). */
+   Radius follows oxFuzz: 4px for badges and small chips, 8px for controls,
+   rows and overlays' inner parts, 12px for cards (`surface-card`) and
+   dialogs. One larger named radius exists for a single purpose: the AI
+   assistant's floating composer (`rounded-composer`, 16px). No other radius
+   is sanctioned (see tests/designSystem.test.ts). */
 @theme {
   --radius-sm: 4px;
   --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-composer: 16px;
+
+  --animate-fade-in: fadeIn 0.2s ease;
+  --animate-slide-in-up: slideInUp 0.2s ease;
+  --animate-dialog-in: dialogContentIn 0.14s ease;
+  --animate-status-pulse: statusPulse 1.2s ease-in-out infinite;
 
   --font-sans:
     "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif,
@@ -265,6 +280,51 @@
   }
   50% {
     opacity: 1;
+  }
+}
+
+/* Entry motion, from oxFuzz. Pages fade in, toasts slide up, dialogs scale
+   in; status dots pulse while work runs. The reduced-motion block below
+   neutralises all of them. */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes dialogContentIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+/* oxFuzz's `pulse`, renamed so it cannot replace the keyframes behind
+   Tailwind's own `animate-pulse` utility. */
+@keyframes statusPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
   }
 }
 
@@ -297,14 +357,98 @@ textarea:not(:disabled) {
   border-color: var(--control-border);
 }
 
-:where(button, a, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--accent) !important;
+/* One hover for every editable field: the border steps to the muted text
+   colour (brighter in dark, darker in light), never thicker. */
+input:not(:disabled):not([type="checkbox"]):not([type="radio"]):hover,
+select:not(:disabled):hover,
+textarea:not(:disabled):hover {
+  border-color: var(--text-muted);
+}
+
+/* Native option lists follow the theme (the popup is drawn by the OS, which
+   honours these on Chromium/WebKit and falls back to its own on others). */
+select {
+  color-scheme: dark;
+}
+[data-theme="light"] select {
+  color-scheme: light;
+}
+select option {
+  background-color: var(--surface-primary);
+  color: var(--text-primary);
+}
+
+/* Keyboard focus ring, from oxFuzz: a surface-coloured gap ring inside an
+   accent ring, drawn with box-shadow so `outline-none` utilities cannot
+   remove it. `!important` keeps elevation utilities (`shadow-sm` on cards)
+   from replacing it while focused. Unlike oxFuzz the element keeps its own
+   radius, so the ring follows 12px cards and round switches. The transparent
+   outline is what forced-colours mode paints, since it drops box-shadows. */
+:where(button, a, input, select, textarea, summary, [role="button"], [role="tab"], [role="switch"], [tabindex]):focus-visible {
+  outline: 2px solid transparent !important;
   outline-offset: 2px;
+  box-shadow:
+    0 0 0 2px var(--surface-primary),
+    0 0 0 4px var(--accent) !important;
 }
 
 ::selection {
   background: var(--accent-subtle);
   color: var(--text-primary);
+}
+
+/* The command palette's search field is focused for as long as the palette is
+   open; its row's accent underline is the focus indicator, so the ring would
+   only clip against the dialog edge. */
+.palette-search:focus-visible {
+  box-shadow: none !important;
+}
+
+/* The Assistant composer's textarea is borderless inside its 16px card, so
+   the card carries the focus indication instead of a square ring clipped
+   inside it: an accent border and a soft glow, no double ring. */
+.assistant-composer-input:focus-visible {
+  box-shadow: none !important;
+}
+.assistant-composer-card:has(.assistant-composer-input:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+  /* Forced-colours mode drops box-shadow; this outline is what it paints. */
+  outline: 1px solid transparent;
+}
+
+/* The one content card, oxFuzz's `surface-card`: primary surface, hairline
+   border, 12px radius, small shadow. It lives in the components layer so any
+   utility on the same element (a status stripe, a stronger border, padding)
+   overrides it. Floating surfaces set their own larger elevation. */
+@layer components {
+  .surface-card {
+    background-color: var(--surface-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--elevation-sm);
+  }
+}
+
+/* ---- Native macOS chrome ----
+   The desktop window uses the macOS overlay title bar: the traffic lights
+   float over the top-left of the webview. `main.tsx` stamps `data-host`
+   ("tauri" | "web") and `data-platform` on <html>; only the macOS desktop
+   host reserves room for the lights. Windows, Linux and the headless-server
+   browser build keep their native/absent title bars and see none of this.
+   Surfaces stay opaque: no vibrancy or private window APIs. */
+.titlebar-spacer {
+  display: none;
+}
+html[data-host="tauri"][data-platform="macos"] .titlebar-spacer {
+  display: block;
+  height: 28px;
+  flex-shrink: 0;
+}
+/* Below the spacer the brand row tucks up under the traffic lights, as in
+   oxFuzz; elsewhere it keeps its own top padding. */
+html[data-host="tauri"][data-platform="macos"] .sidebar-brand {
+  padding-top: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -355,34 +499,42 @@ input[type="number"] {
   appearance: textfield;
 }
 
-/* markdown-ish content styling for AI answers */
+/* Markdown in AI answers (and the CVE dossier), after oxFuzz's
+   `MarkdownContent`: tight paragraph rhythm, demoted headings, a quiet
+   blockquote rule, code on the active surface, and tables that scroll
+   sideways inside the message instead of crushing their columns. */
+.md-body > :first-child {
+  margin-top: 0;
+}
+.md-body > :last-child {
+  margin-bottom: 0;
+}
 .md-body h1,
 .md-body h2,
 .md-body h3,
 .md-body h4 {
   color: var(--text-primary);
   font-weight: 600;
-  margin: 1.1em 0 0.45em;
-  line-height: 1.3;
+  margin: 0.6em 0 0.3em;
+  line-height: 1.35;
 }
 .md-body h1 {
-  font-size: 1.25rem;
+  font-size: 1.1em;
 }
 .md-body h2 {
-  font-size: 1.12rem;
+  font-size: 1.05em;
 }
-.md-body h3 {
-  font-size: 1rem;
+.md-body h3,
+.md-body h4 {
+  font-size: 1em;
 }
 .md-body p {
-  margin: 0.55em 0;
-  line-height: 1.6;
+  margin: 0 0 0.5em;
 }
 .md-body ul,
 .md-body ol {
-  margin: 0.55em 0;
+  margin: 0 0 0.5em;
   padding-left: 1.4em;
-  line-height: 1.6;
 }
 .md-body ul {
   list-style: disc;
@@ -391,31 +543,31 @@ input[type="number"] {
   list-style: decimal;
 }
 .md-body li {
-  margin: 0.25em 0;
+  margin: 0.15em 0;
 }
 .md-body code {
   font-family: var(--font-mono);
-  font-size: 0.86em;
-  background: var(--surface-code);
-  border: 1px solid var(--border);
+  font-size: 0.92em;
+  background: var(--surface-active);
   border-radius: var(--radius-sm);
-  padding: 0.1em 0.35em;
-  color: var(--accent);
+  padding: 1px 4px;
 }
 .md-body pre {
-  background: var(--surface-code);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 0.8em 1em;
+  margin: 0 0 0.5em;
+  padding: 8px 10px;
   overflow-x: auto;
-  margin: 0.7em 0;
+  background: var(--surface-active);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: normal;
 }
 .md-body pre code {
   background: transparent;
-  border: none;
   padding: 0;
-  color: var(--text-primary);
-  font-size: 0.82em;
+  font-size: inherit;
 }
 .md-body a {
   color: var(--accent);
@@ -423,25 +575,44 @@ input[type="number"] {
   text-underline-offset: 2px;
 }
 .md-body blockquote {
-  border-left: 3px solid var(--accent);
-  margin: 0.6em 0;
-  padding-left: 0.9em;
+  margin: 0 0 0.5em;
+  padding-left: 0.8em;
+  border-left: 3px solid var(--border-strong);
   color: var(--text-secondary);
 }
 .md-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
-  margin: 0.7em 0;
-  font-size: 0.9em;
-  width: 100%;
+  margin: 0 0 0.5em;
+  font-size: 0.95em;
 }
 .md-body th,
 .md-body td {
   border: 1px solid var(--border);
-  padding: 0.35em 0.6em;
+  padding: 4px 8px;
   text-align: left;
+  overflow-wrap: normal;
 }
 .md-body th {
-  background: var(--surface-tertiary);
+  background: var(--surface-active);
+  font-weight: 600;
+}
+.md-body del {
+  color: var(--text-muted);
+  text-decoration-thickness: 1px;
+}
+.md-body li.task-list-item {
+  list-style: none;
+  margin-left: -1.2em;
+}
+.md-body input[type="checkbox"] {
+  margin: 0 0.5em 0 0;
+  vertical-align: -1px;
+  accent-color: var(--accent);
+  pointer-events: none;
 }
 .md-body strong {
   color: var(--text-primary);
@@ -449,5 +620,5 @@ input[type="number"] {
 .md-body hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 1em 0;
+  margin: 0.75em 0;
 }

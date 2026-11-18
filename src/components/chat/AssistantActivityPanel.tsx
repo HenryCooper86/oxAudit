@@ -1,4 +1,4 @@
-import { Activity, Bot, CircleDollarSign, ListChecks } from "lucide-react";
+import { Activity, Bot, CircleDollarSign, ListChecks, PanelRightClose } from "lucide-react";
 import type { JSX } from "react";
 import type { TodoItem, ToolRecord, UsageSummary } from "../../lib/types";
 import { AgentTodoPanel } from "./AgentTodoPanel";
@@ -10,36 +10,53 @@ export function AssistantActivityPanel({
   tools,
   todos,
   usage,
+  onClose,
+  id = "assistant-activity-panel",
 }: {
   busy: boolean;
   model: string | null;
   tools: ToolRecord[];
   todos: TodoItem[];
   usage: UsageSummary | null;
+  /** Closes the panel; rendered as the header's close button when given. */
+  onClose?: () => void;
+  /** The panel's id, the target of the header toggle's `aria-controls`. */
+  id?: string;
 }): JSX.Element {
   const completedTools = tools.filter((tool) => tool.status === "success").length;
 
   return (
     <aside
-      id="assistant-activity-panel"
+      id={id}
       aria-label="Assistant activity"
-      className="flex w-[292px] shrink-0 flex-col border-l border-border bg-surface-secondary max-[1180px]:hidden"
+      className="flex h-full min-h-0 w-full flex-col bg-surface-secondary"
     >
-      <header className="flex h-[52px] shrink-0 items-center gap-2 border-b border-border px-3.5">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border pl-4 pr-2">
         <Activity size={14} aria-hidden="true" className="text-accent" />
-        <h2 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
+        <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
           Activity
         </h2>
         <span
-          className={`ml-auto h-1.5 w-1.5 rounded-full ${busy ? "animate-pulse bg-accent" : "bg-text-muted"}`}
+          className={`ml-auto h-1.5 w-1.5 rounded-full ${busy ? "animate-status-pulse bg-accent" : "bg-text-muted"}`}
           aria-hidden="true"
         />
         <span className="text-[11px] text-text-muted">
           {busy ? "Running" : "Idle"}
         </span>
-      </header>
+        {onClose && (
+          <button
+            type="button"
+            aria-label="Close activity"
+            title="Close activity"
+            onClick={onClose}
+            className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors duration-150 hover:bg-surface-hover hover:text-text-primary"
+          >
+            <PanelRightClose size={14} aria-hidden="true" />
+          </button>
+        )}
+      </div>
 
-      <div className="grid shrink-0 grid-cols-3 border-b border-border">
+      <div className="m-3 grid shrink-0 grid-cols-3 overflow-hidden rounded-lg border border-border bg-surface-primary">
         <div className="px-2 py-3 text-center">
           <div className="font-mono text-[13px] tabular-nums text-text-primary">
             {tools.length}
@@ -67,7 +84,7 @@ export function AssistantActivityPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <section className="border-b border-border px-3 py-3">
+        <section className="border-b border-border px-4 pb-3">
           <div className="mb-2 flex items-center gap-1.5">
             <ListChecks size={12} aria-hidden="true" className="text-text-muted" />
             <h3 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
@@ -83,7 +100,7 @@ export function AssistantActivityPanel({
           )}
         </section>
 
-        <section className="px-3 py-3">
+        <section className="px-4 py-3">
           <div className="mb-2 flex items-center gap-1.5">
             <Bot size={12} aria-hidden="true" className="text-text-muted" />
             <h3 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
@@ -104,7 +121,7 @@ export function AssistantActivityPanel({
         </section>
       </div>
 
-      <footer className="shrink-0 border-t border-border px-3 py-2.5">
+      <div className="shrink-0 border-t border-border px-4 py-2.5">
         <div className="flex items-center gap-2 text-[11px] text-text-muted">
           <CircleDollarSign size={12} aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate font-mono">
@@ -116,7 +133,7 @@ export function AssistantActivityPanel({
             </span>
           )}
         </div>
-      </footer>
+      </div>
     </aside>
   );
 }

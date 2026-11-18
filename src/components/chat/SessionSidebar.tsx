@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, MessageSquare, Pencil, Plus, RotateCw, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, MessageSquare, PanelRightClose, Pencil, Plus, RotateCw, Search, Trash2, X } from "lucide-react";
 import { fmtDate } from "../../lib/format";
 import type { SessionInfo } from "../../lib/types";
-import { usePanelCollapsed } from "../../lib/usePanelCollapsed";
-import { PanelCollapseButton } from "../workbench/PanelCollapseButton";
 
 /**
- * Session list sidebar (y-gui ChatSidebarPanel, trimmed): search, active
- * highlight, streaming dot, inline rename, two-step delete, new chat.
+ * The Assistant's Conversations panel: new chat, search, active highlight,
+ * streaming dot, inline rename, two-step delete, and a load error with Retry.
+ * It fills the panel dock the header's "Conversations" toggle opens.
  */
 export function SessionSidebar({
   sessions,
@@ -20,6 +19,8 @@ export function SessionSidebar({
   onDelete,
   loadError = null,
   onRetry,
+  onClose,
+  id = "assistant-sessions-panel",
 }: {
   sessions: SessionInfo[];
   activeId: string | null;
@@ -35,6 +36,10 @@ export function SessionSidebar({
   onCreate: () => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  /** Closes the panel; rendered as the header's close button when given. */
+  onClose?: () => void;
+  /** The panel's id, the target of the header toggle's `aria-controls`. */
+  id?: string;
 }) {
   const controlsDisabled = busy || disabled;
   const [query, setQuery] = useState("");
@@ -43,7 +48,6 @@ export function SessionSidebar({
   const [renameValue, setRenameValue] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const [collapsed, toggleCollapsed] = usePanelCollapsed("assistant-sessions");
 
   useEffect(() => {
     if (renamingId) {
@@ -67,83 +71,59 @@ export function SessionSidebar({
     setRenamingId(null);
   };
 
-  const togglePanel = () => {
-    if (!collapsed) {
-      setSearchOpen(false);
-      setQuery("");
-    }
-    toggleCollapsed();
-  };
-
   return (
     <aside
+      id={id}
       aria-label="Chat sessions"
-      className={`flex shrink-0 flex-col border-r border-border bg-surface-secondary transition-[width] duration-200 motion-reduce:transition-none ${collapsed ? "w-[48px]" : "w-[216px] max-[1040px]:w-[196px]"}`}
+      className="flex h-full min-h-0 w-full flex-col bg-surface-secondary"
     >
-      <div className={`flex h-[52px] shrink-0 items-center gap-1 border-b border-border ${collapsed ? "justify-center px-2" : "px-2.5"}`}>
-        {collapsed ? (
-          <PanelCollapseButton
-            controls="assistant-session-list"
-            expanded={false}
-            label="conversation history"
-            onToggle={togglePanel}
-          />
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={onCreate}
-              disabled={controlsDisabled}
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-sm border border-transparent px-2 py-[7px] text-left text-[13px] leading-tight font-medium text-text-primary transition-colors duration-150 hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center text-accent">
-                <Plus size={15} aria-hidden="true" />
-              </span>
-              New chat
-            </button>
-            <button
-              type="button"
-              aria-label={searchOpen ? "Close session search" : "Search chat sessions"}
-              aria-expanded={searchOpen}
-              onClick={() => {
-                setSearchOpen((open) => !open);
-                if (searchOpen) setQuery("");
-              }}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary ${searchOpen ? "bg-surface-active text-text-primary" : ""}`}
-            >
-              {searchOpen ? <X size={13} aria-hidden="true" /> : <Search size={13} aria-hidden="true" />}
-            </button>
-            <PanelCollapseButton
-              controls="assistant-session-list"
-              expanded
-              label="conversation history"
-              onToggle={togglePanel}
-            />
-          </>
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border pl-4 pr-2">
+        <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+          Conversations
+        </h2>
+        <span className="ml-1.5 font-mono text-[10.5px] tabular-nums text-text-muted">{filtered.length}</span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          aria-label={searchOpen ? "Close session search" : "Search chat sessions"}
+          aria-expanded={searchOpen}
+          title={searchOpen ? "Close session search" : "Search chat sessions"}
+          onClick={() => {
+            setSearchOpen((open) => !open);
+            if (searchOpen) setQuery("");
+          }}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors duration-150 ${searchOpen ? "bg-accent-subtle text-accent" : "text-text-muted hover:bg-surface-hover hover:text-text-primary"}`}
+        >
+          {searchOpen ? <X size={14} aria-hidden="true" /> : <Search size={14} aria-hidden="true" />}
+        </button>
+        {onClose && (
+          <button
+            type="button"
+            aria-label="Close conversations"
+            title="Close conversations"
+            onClick={onClose}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors duration-150 hover:bg-surface-hover hover:text-text-primary"
+          >
+            <PanelRightClose size={14} aria-hidden="true" />
+          </button>
         )}
       </div>
 
-      {collapsed && (
-        <div className="border-b border-border p-2">
-          <button
-            type="button"
-            aria-label="New chat"
-            title="New chat"
-            onClick={onCreate}
-            disabled={controlsDisabled}
-            className="flex h-7 w-7 items-center justify-center rounded-sm border border-transparent text-accent transition-colors hover:border-border hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Plus size={15} aria-hidden="true" />
-          </button>
-        </div>
-      )}
+      <div className="shrink-0 px-3 pt-3">
+        <button
+          type="button"
+          onClick={onCreate}
+          disabled={controlsDisabled}
+          className="flex h-8 w-full items-center gap-2 rounded-md border border-border bg-surface-primary px-2.5 text-left text-[13px] font-medium text-text-primary transition-colors duration-150 hover:border-border-strong hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-55"
+        >
+          <Plus size={15} aria-hidden="true" className="shrink-0 text-accent" />
+          New chat
+        </button>
+      </div>
 
-      <div
-        id="assistant-session-list"
-        className={collapsed ? "hidden" : "flex min-h-0 flex-1 flex-col"}
-      >
+      <div id="assistant-session-list" className="flex min-h-0 flex-1 flex-col">
         {searchOpen && (
-          <label className="relative mx-2.5 mt-2 block">
+          <label className="relative mx-3 mt-2 block">
             <span className="sr-only">Search chat sessions</span>
             <Search
               size={12}
@@ -155,21 +135,16 @@ export function SessionSidebar({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search sessions…"
-              className="w-full rounded-sm border border-border bg-surface-primary py-1.5 pl-8 pr-2 text-[12px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-focus"
+              className="h-8 w-full rounded-md border border-border bg-surface-primary pl-8 pr-2 text-[12px] text-text-primary outline-none placeholder:text-text-muted focus:border-border-focus"
             />
           </label>
         )}
 
-        <div className="flex items-center px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-          <span>Conversations</span>
-          <span className="ml-auto font-mono font-normal tracking-normal">{filtered.length}</span>
-        </div>
-
-        <div className="flex-1 space-y-0.5 overflow-y-auto px-2 pb-3">
+        <div className="mt-2 flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
           {loadError && (
             <div
               role="alert"
-              className="mx-0.5 mb-1 rounded-sm border border-error-border bg-error-subtle px-2.5 py-2 text-[12px] leading-relaxed"
+              className="surface-card mb-1 border-l-[3px] border-l-error px-3 py-2.5 text-[12px] leading-relaxed shadow-none"
             >
               <p className="flex items-center gap-1.5 font-medium text-error">
                 <AlertTriangle size={12} aria-hidden="true" className="shrink-0" />
@@ -181,7 +156,7 @@ export function SessionSidebar({
                   type="button"
                   onClick={onRetry}
                   disabled={disabled}
-                  className="mt-1.5 inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-primary px-2 py-1 text-[11px] font-medium text-text-primary transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
+                  className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface-primary px-2.5 text-[11px] font-medium text-text-primary transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-55"
                 >
                   <RotateCw size={11} aria-hidden="true" />
                   Retry
@@ -201,7 +176,7 @@ export function SessionSidebar({
           return (
             <div
               key={s.id}
-              className={`group relative rounded-sm border px-2.5 py-2 transition-colors ${ active ? "border-accent-glow bg-accent-subtle" : "border-transparent hover:bg-surface-hover" }`}
+              className={`group relative rounded-md border px-2.5 py-2 transition-colors duration-150 ${ active ? "border-border bg-surface-active" : "border-transparent hover:bg-accent-subtle" }`}
             >
               {renamingId === s.id ? (
                 <div className="flex items-center gap-1">
@@ -216,7 +191,7 @@ export function SessionSidebar({
                       if (e.key === "Enter") commitRename();
                       if (e.key === "Escape") setRenamingId(null);
                     }}
-                    className="min-w-0 flex-1 rounded-sm border border-accent-glow bg-surface-primary px-1.5 py-0.5 text-[13px] text-text-primary outline-none"
+                    className="min-w-0 flex-1 rounded-md border border-border-focus bg-surface-primary px-1.5 py-0.5 text-[13px] text-text-primary outline-none"
                   />
                   <button
                     type="button"
@@ -244,14 +219,14 @@ export function SessionSidebar({
                       onDelete(s.id);
                       setConfirmDeleteId(null);
                     }}
-                    className="rounded-sm bg-transparent px-1.5 py-0.5 text-error hover:bg-error-subtle"
+                    className="rounded-md bg-transparent px-1.5 py-0.5 text-error hover:bg-error-subtle"
                   >
                     Yes
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmDeleteId(null)}
-                    className="rounded-sm bg-surface-tertiary px-1.5 py-0.5 text-text-muted hover:text-text-primary"
+                    className="rounded-md bg-surface-tertiary px-1.5 py-0.5 text-text-muted hover:text-text-primary"
                   >
                     No
                   </button>
@@ -284,19 +259,19 @@ export function SessionSidebar({
                     <span
                       role="status"
                       aria-label="Assistant is responding"
-                      className="mt-1 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+                      className="mt-1 h-1.5 w-1.5 shrink-0 animate-status-pulse rounded-full bg-accent"
                     />
                   )}
                 </button>
               )}
 
               {!controlsDisabled && renamingId !== s.id && confirmDeleteId !== s.id && (
-                <div className="absolute right-1.5 top-1.5 hidden items-center gap-0.5 group-hover:flex group-focus-within:flex">
+                <div className="absolute right-1.5 top-1.5 hidden items-center gap-1 group-hover:flex group-focus-within:flex">
                   <button
                     type="button"
                     aria-label={`Rename ${s.title}`}
                     onClick={() => setRenamingId(s.id)}
-                    className="rounded-sm bg-surface-tertiary p-0.5 text-text-muted hover:text-text-primary"
+                    className="rounded-md bg-surface-tertiary p-1 text-text-muted hover:text-text-primary"
                     title="Rename"
                   >
                     <Pencil size={11} aria-hidden="true" />
@@ -305,7 +280,7 @@ export function SessionSidebar({
                     type="button"
                     aria-label={`Delete ${s.title}`}
                     onClick={() => setConfirmDeleteId(s.id)}
-                    className="rounded-sm bg-surface-tertiary p-0.5 text-text-muted hover:text-error"
+                    className="rounded-md bg-surface-tertiary p-1 text-text-muted hover:text-error"
                     title="Delete"
                   >
                     <Trash2 size={11} aria-hidden="true" />

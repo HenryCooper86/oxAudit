@@ -4,6 +4,14 @@ Date: 2026-08-17
 Status: Approved design  
 Reference: [oxfuzz](https://github.com/HenryCooper86/oxfuzz/)
 
+> **Superseded in part, 2026-11-18.** This spec's position that "the oxfuzz UI
+> is a design reference, not a product model to copy", and the shell
+> dimensions it gives (sidebar width, no icon-only mode and the rest of the
+> chrome sizing), were superseded by the decision to follow oxFuzz's visual
+> structure: shell, tokens, radii and page primitives. The current contract is
+> [docs/design-system.md](../../design-system.md). The independent-tool
+> architecture and the non-goals below still stand.
+
 ## Objective
 
 Refine oxAudit into a balanced, professional desktop workbench while preserving its identity as a collection of independent security research tools.

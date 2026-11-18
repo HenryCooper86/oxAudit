@@ -115,7 +115,7 @@ export function CveDossier({
     <div className="p-4">
       <section
         aria-labelledby="cve-overview-heading"
-        className="rounded-sm border border-border bg-surface-secondary p-4"
+        className="rounded-md border border-border bg-surface-secondary p-4"
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -162,7 +162,7 @@ export function CveDossier({
             Discuss in Assistant
           </Button>
         </div>
-        <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+        <p className="mt-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
           Overview
         </p>
         <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-text-muted">
@@ -191,12 +191,12 @@ export function CveDossier({
 
       <section
         aria-labelledby="nvd-record-heading"
-        className="mt-3 rounded-sm border border-border bg-surface-secondary p-4"
+        className="mt-3 rounded-md border border-border bg-surface-secondary p-4"
       >
         <div className="flex items-center justify-between gap-3">
           <h3
             id="nvd-record-heading"
-            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
+            className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary"
           >
             NVD record
           </h3>
@@ -219,12 +219,12 @@ export function CveDossier({
 
       <section
         aria-labelledby="osv-record-heading"
-        className="mt-3 rounded-sm border border-border bg-surface-secondary p-4"
+        className="mt-3 rounded-md border border-border bg-surface-secondary p-4"
       >
         <div className="flex items-center justify-between gap-3">
           <h3
             id="osv-record-heading"
-            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
+            className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary"
           >
             OSV record
           </h3>
@@ -256,11 +256,11 @@ export function CveDossier({
 
       <section
         aria-labelledby="references-heading"
-        className="mt-3 rounded-sm border border-border bg-surface-secondary p-4"
+        className="mt-3 rounded-md border border-border bg-surface-secondary p-4"
       >
         <h3
           id="references-heading"
-          className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
+          className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary"
         >
           References
         </h3>
@@ -289,12 +289,12 @@ export function CveDossier({
 
       <section
         aria-labelledby="ai-briefing-heading"
-        className="mt-3 rounded-sm border border-border bg-surface-secondary p-4"
+        className="mt-3 rounded-md border border-border bg-surface-secondary p-4"
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3
             id="ai-briefing-heading"
-            className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary"
+            className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-secondary"
           >
             AI briefing
           </h3>
@@ -351,7 +351,7 @@ function MetadataChips({
 }): JSX.Element {
   return (
     <div className="mt-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
+      <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">
         {label}
       </p>
       <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -380,7 +380,7 @@ function RawRecord({
       <summary className="cursor-pointer text-[12px] text-info hover:underline">
         {label}
       </summary>
-      <pre className="selectable mt-2 max-h-72 overflow-auto rounded-sm border border-border bg-surface-primary p-3 font-mono text-[13px] leading-relaxed text-text-secondary">
+      <pre className="selectable mt-2 max-h-72 overflow-auto rounded-md border border-border bg-surface-primary p-3 font-mono text-[13px] leading-relaxed text-text-secondary">
         {JSON.stringify(value, null, 2) ?? "No raw data was returned."}
       </pre>
     </details>

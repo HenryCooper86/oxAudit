@@ -30,6 +30,17 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  test("with no query the screens are grouped and ordered as in the sidebar", async () => {
+    setup();
+    const list = screen.getByRole("listbox", { name: "Commands" });
+    const headings = Array.from(list.querySelectorAll("div.uppercase"), (heading) => heading.textContent);
+    expect(headings).toEqual(["Workspace", "Scanning", "Results", "Intelligence", "Quality", "System"]);
+    const options = screen.getAllByRole("option").map((option) => option.textContent);
+    expect(options.slice(0, 4)).toEqual(["Dashboard", "Portfolio", "AI Assistant", "Source Scan"]);
+    expect(options[options.length - 1]).toBe("Settings");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: /search commands/i })).toHaveFocus());
+  });
+
   test("opening moves focus before an animation frame so immediate Escape closes the palette", async () => {
     vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});

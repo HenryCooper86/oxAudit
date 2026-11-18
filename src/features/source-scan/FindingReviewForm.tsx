@@ -169,14 +169,14 @@ export function FindingReviewForm(props: {
           </Field>
 
           <div>
-            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Falsification gates</h4>
+            <h4 className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Falsification gates</h4>
             <p className="mt-1 text-[11px] text-text-muted">Try to eliminate the candidate before confirming it.</p>
           </div>
           {ALL_GATES.map((gate, index) => {
             const note = draft.gates.find((candidate) => candidate.gate === gate)!;
             const content = GATE_CONTENT[gate];
             return (
-              <fieldset key={gate} className="rounded-sm border border-border bg-surface-secondary p-3">
+              <fieldset key={gate} className="rounded-md border border-border bg-surface-secondary p-3">
                 <legend className="px-1 text-[12px] font-medium text-text-primary">{index + 1}. {content.title}</legend>
                 <p className="mt-1 text-[11px] text-text-secondary">{content.question}</p>
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">

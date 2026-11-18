@@ -170,7 +170,7 @@ labelled **no longer observed (coverage unverified)**, covering skipped/deleted
 files; only durable comparisons with compatible coverage claim resolution.
 Missing or invalid fingerprint identities are rejected.
 
-For a finding-to-fix workflow, choose **Settings → Editor → Visual Studio Code**
+For a finding-to-fix workflow, choose **Settings → General → Editor → Visual Studio Code**
 and save, then use **Open file** in a finding. The default **System opener** opens
 only the file. VS Code navigation uses its registered `vscode` URL handler; no
 shell template or editor CLI installation is needed. Paths stay within the
@@ -256,7 +256,7 @@ with a reason, an expiry, and a pull request.
 | **Pre-commit secrets gate** | `oxaudit-cli scan --staged` scans the staged index blobs — exactly what the commit will contain, not the working tree — and blocks the commit on high-severity secrets by default; `oxaudit-cli hook install` wires it into `.git/hooks/pre-commit` without clobbering an existing hook |
 | **CI annotations** | Under GitHub Actions the CLI annotates findings on the pull request's files automatically and appends a severity-table job summary — no inputs, no extra step; SARIF upload to code scanning stays available and opt-in |
 | **Editor integration** | A VS Code extension ([`editors/vscode/`](editors/vscode)) scans the open workspace with the same CLI and reports findings as native diagnostics, with severity mapping and a status-bar scan control |
-| **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable session sidebar, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
+| **Sessions** | Every AI conversation is **persisted** (JSONL transcripts + index) with a searchable Conversations panel, resume-on-launch, auto-titles, per-session token/cost totals, and tool-call history that survives reload |
 | **Headless server** | The same command surface the desktop exposes, served as token-authenticated HTTP + SSE with the browser GUI alongside — any device with a browser becomes a workbench; token-gated, loopback by default, shipped in the release's container image, pinned by digest ([server guide](docs/headless-server.md#container), [ADR 0004](docs/architecture/adr/0004-headless-server.md)) |
 | **Composition policy** | `oxaudit-cli sca` judges a dependency scan against a committed `.oxaudit/component-policy.json`: license rules by SPDX id or risk category (with `OR`/`AND`/`WITH` handled, and unresolved text reported as unknown rather than assumed permissive), release-health rules (deprecated, too old, too many major versions behind, package gone stale), advisory severity rules, and named component approvals and rejections with reasons and expiry. A `deny` fails the build; a waived violation stays in the report. `--notices` writes an attribution inventory. `oxaudit-cli portfolio` compares stored runs across projects and answers where a package is used. Engineering triage from declared metadata, not legal advice ([guide](docs/composition-analysis.md)) |
 | **CI systems** | JUnit XML for Jenkins, Azure Pipelines, Bitbucket and CircleCI; GitLab Code Quality and Dependency Scanning reports; Azure Pipelines issue commands; templates for each in [`examples/ci/`](examples/ci/README.md) that install a digest-pinned CLI |
@@ -281,8 +281,8 @@ with a reason, an expiry, and a pull request.
 - **Compliance Center** — framework selection, bounded local evidence collection, durable control matrices, and append-only human decisions
 - **Report Studio** — professional multi-format report metadata, disclosure controls, preview, atomic save, and content receipts
 - **CVE Research** — NVD search + OSV package lookup + detail view with AI briefing
-- **AI Assistant** — chat with code/context attachment
-- **Settings** — AI endpoint config, scan defaults, ignored directories, NVD API key, allowed fetch hosts, diagnostics
+- **AI Assistant** — one conversation column with the composer beneath it (Auto or Plan & act, reviewed context attachment); the Conversations and Activity panels open from the header
+- **Settings** — replaces the sidebar with its own sections (General, AI, Scan defaults, Live scanning, Data sources, Binary scanner, Diagnostics, About) and **Back** returns to the page you came from: editor and theme, AI endpoint config and allowed fetch hosts, scan defaults and ignored directories, live-scan limits, NVD API key, scanner paths, diagnostics and readiness setup. **Save** and **Reset** sit in the header
 
 Choose **Search** in the header, or press <kbd>⌘K</kbd>
 (<kbd>Ctrl</kbd>+<kbd>K</kbd> on Windows and Linux), to reach any
@@ -1601,7 +1601,7 @@ compile.
 
 ## Configuring the AI
 
-1. Open **Settings → AI engine**.
+1. Open **Settings → AI** (the **AI Engine** group).
 2. Pick any OpenAI-compatible endpoint: set **Base URL** (e.g. `https://api.openai.com/v1`,
    `http://localhost:11434/v1` for Ollama, `http://localhost:1234/v1` for LM Studio),
    the **model** name, and an API key if required.
@@ -1623,7 +1623,7 @@ pipx install cve-bin-tool     # recommended
 ```
 
 oxAudit finds it on PATH, falling back to `python3 -m cve_bin_tool`. If you keep it in a
-specific environment, set the path in **Settings → Binary Scanning**; an explicit path
+specific environment, set the path in **Settings → Binary scanner**; an explicit path
 suppresses the fallbacks so you always scan with the copy you meant.
 
 The first run downloads a CVE database and can take several minutes — the page shows

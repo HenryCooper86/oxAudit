@@ -204,7 +204,7 @@ export function PortfolioPage(): JSX.Element {
         />
       )}
       {projects && projects.length > 0 && (
-        <section aria-label="Projects" className="overflow-hidden rounded-sm border border-border bg-surface-secondary">
+        <section aria-label="Projects" className="overflow-hidden surface-card">
           <ul className="divide-y divide-border">
             {projects.map((project) => {
               const schedule = scheduleByProject.get(project.projectId);

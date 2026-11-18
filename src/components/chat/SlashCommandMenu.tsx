@@ -24,7 +24,7 @@ export function SlashCommandMenu({
     <ul
       role="listbox"
       aria-label="Slash commands"
-      className="mb-1 overflow-hidden rounded-md border border-border bg-surface-secondary shadow-md"
+      className="mb-2 overflow-hidden rounded-lg border border-border bg-surface-primary py-1 shadow-md"
     >
       {commands.map((command, index) => {
         const selected = index === safeIndex;
@@ -37,7 +37,7 @@ export function SlashCommandMenu({
               onMouseEnter={() => onHighlight(index)}
               onClick={() => onSelect(command)}
               className={`flex w-full items-baseline gap-2.5 px-3 py-1.5 text-left ${
-                selected ? "bg-surface-tertiary" : ""
+                selected ? "bg-surface-active" : ""
               }`}
             >
               <span className="shrink-0 font-mono text-[12px] font-medium text-accent">

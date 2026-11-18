@@ -1,4 +1,5 @@
 import { useEffect, useState, type JSX } from "react";
+import { Checkbox } from "../../components/ui";
 import { api } from "../../lib/api";
 import { errorMessage } from "../../lib/commandError";
 import type { InstalledSignaturePack, SignaturePackKind } from "../../lib/types";
@@ -28,15 +29,14 @@ export function PackSelector({ packs, excluded, onChange, disabled, unit }: {
 }): JSX.Element {
   const selected = packs.filter(pack => !excluded.includes(pack.id)).length;
   return <fieldset disabled={disabled} className="min-w-0">
-    <legend className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Packs ({selected} of {packs.length} selected)</legend>
+    <legend className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-text-muted">Packs ({selected} of {packs.length} selected)</legend>
     <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
       {packs.map(pack => (
         <li key={pack.id}>
-          <label className="inline-flex cursor-pointer items-center gap-2 text-[12px] text-text-secondary">
-            <input type="checkbox" checked={!excluded.includes(pack.id)} className="accent-[var(--accent)]"
-              onChange={event => onChange(event.target.checked ? excluded.filter(id => id !== pack.id) : [...excluded, pack.id])} />
+          <Checkbox checked={!excluded.includes(pack.id)}
+            onChange={event => onChange(event.target.checked ? excluded.filter(id => id !== pack.id) : [...excluded, pack.id])}>
             <span>{pack.name} <span className="text-text-muted">· {pack.ruleCount.toLocaleString()} {unit}</span></span>
-          </label>
+          </Checkbox>
         </li>
       ))}
     </ul>

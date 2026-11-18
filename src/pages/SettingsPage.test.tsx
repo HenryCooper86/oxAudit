@@ -5,7 +5,25 @@ import { api } from "../lib/api";
 import { useAppStore } from "../lib/stores";
 import { projectSettings } from "../../tests/fixtures/projectHome";
 import type { SaveSettingsResult } from "../lib/types";
+import { WorkbenchHeader } from "../components/workbench/WorkbenchHeader";
+import type { SettingsSectionId } from "../lib/settingsSections";
 import { SettingsPage } from "./SettingsPage";
+
+/** Settings with the shell header, where Reset and Save live. */
+function renderSettings(section: SettingsSectionId = "general") {
+  useAppStore.setState({ page: "settings", settingsSection: section });
+  return render(
+    <>
+      <WorkbenchHeader onOpenNavigation={() => {}} navigationHidden={false} onToggleNavigation={() => {}} />
+      <SettingsPage />
+    </>,
+  );
+}
+
+/** Switch the Settings sub-page, as the sidebar does. */
+function showSection(section: SettingsSectionId) {
+  act(() => useAppStore.getState().setSettingsSection(section));
+}
 
 const transport = vi.hoisted(() => ({ serverMode: false }));
 vi.mock("../lib/transport", async (importOriginal) => {
@@ -29,7 +47,7 @@ test("changing theme during a pending full save keeps the theme controls aligned
   const pending = new Promise<SaveSettingsResult>(done => { resolve = done; });
   vi.spyOn(api, "saveSettings").mockReturnValueOnce(pending)
     .mockImplementation(async request => ({ settings: request.settings }));
-  render(<SettingsPage />);
+  renderSettings("general");
   fireEvent.change(screen.getByLabelText("Preferred editor"), { target: { value: "vscode" } });
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
   await userEvent.click(screen.getByRole("radio", { name: "light" }));
@@ -42,7 +60,7 @@ test("changing theme during a pending full save keeps the theme controls aligned
 test("a failed automatic theme save restores the persisted preference and permits retry", async () => {
   vi.spyOn(api, "saveSettings").mockRejectedValueOnce("Disk unavailable")
     .mockImplementation(async request => ({ settings: request.settings }));
-  render(<SettingsPage />);
+  renderSettings("general");
   await userEvent.click(screen.getByRole("radio", { name: "light" }));
   await waitFor(() => expect(screen.getByRole("radio", { name: "dark" })).toHaveAttribute("aria-checked", "true"));
   await userEvent.click(screen.getByRole("radio", { name: "light" }));
@@ -52,7 +70,7 @@ test("a failed automatic theme save restores the persisted preference and permit
 test("a delayed theme save does not overwrite a newer reset draft", async () => {
   let resolve!: (value: SaveSettingsResult) => void;
   vi.spyOn(api, "saveSettings").mockReturnValue(new Promise(done => { resolve = done; }));
-  render(<SettingsPage />);
+  renderSettings("general");
   await userEvent.click(screen.getByRole("radio", { name: "light" }));
   await userEvent.click(screen.getByRole("button", { name: "Reset" }));
   await act(async () => resolve({ settings: { ...projectSettings, theme: "light" } }));
@@ -68,12 +86,13 @@ function saveRequests() {
 
 test("list textareas keep newlines and trailing spaces while typing and save the parsed list", async () => {
   const save = saveRequests();
-  render(<SettingsPage />);
+  renderSettings("ai");
   const hosts = screen.getByLabelText("Allowed fetch hosts") as HTMLTextAreaElement;
   await userEvent.clear(hosts);
   await userEvent.type(hosts, "psirt.vendor.example {Enter}  advisories.example ");
   expect(hosts.value).toBe("psirt.vendor.example \n  advisories.example ");
 
+  showSection("scan-defaults");
   const dirs = screen.getByLabelText("Ignored directories") as HTMLTextAreaElement;
   await userEvent.clear(dirs);
   await userEvent.type(dirs, "node_modules{Enter}{Enter}generated ");
@@ -88,7 +107,7 @@ test("list textareas keep newlines and trailing spaces while typing and save the
 });
 
 test("reset repopulates list text being edited", async () => {
-  render(<SettingsPage />);
+  renderSettings("scan-defaults");
   const dirs = screen.getByLabelText("Ignored directories") as HTMLTextAreaElement;
   await userEvent.clear(dirs);
   await userEvent.type(dirs, "only-this{Enter}");
@@ -99,7 +118,7 @@ test("reset repopulates list text being edited", async () => {
 
 test("clearing a number field keeps it empty with an inline error and blocks save", async () => {
   const save = saveRequests();
-  render(<SettingsPage />);
+  renderSettings("ai");
   const timeout = screen.getByLabelText("Timeout (seconds)") as HTMLInputElement;
   await userEvent.clear(timeout);
   expect(timeout.value).toBe("");
@@ -115,13 +134,13 @@ test("clearing a number field keeps it empty with an inline error and blocks sav
 });
 
 test.each([
-  ["Max file size (KB)", "-5"],
-  ["Max file size (KB)", "1.5"],
-  ["Max tokens", "100"],
-  ["Context window", "-1"],
-])("%s rejects %s before it reaches the backend", async (label, value) => {
+  ["Max file size (KB)", "-5", "scan-defaults"],
+  ["Max file size (KB)", "1.5", "scan-defaults"],
+  ["Max tokens", "100", "ai"],
+  ["Context window", "-1", "ai"],
+] as const)("%s rejects %s before it reaches the backend", async (label, value, section) => {
   const save = saveRequests();
-  render(<SettingsPage />);
+  renderSettings(section);
   const input = screen.getByLabelText(label) as HTMLInputElement;
   fireEvent.change(input, { target: { value } });
   fireEvent.blur(input);
@@ -133,7 +152,7 @@ test.each([
 
 test("structured errors show their message, not [object Object]", async () => {
   vi.spyOn(api, "saveSettings").mockRejectedValue(commandError("Settings file is read-only"));
-  render(<SettingsPage />);
+  renderSettings("general");
   fireEvent.change(screen.getByLabelText("Preferred editor"), { target: { value: "vscode" } });
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText("Settings file is read-only")).toBeInTheDocument();
@@ -143,7 +162,7 @@ test("structured errors show their message, not [object Object]", async () => {
 test("a structured load failure shows its message", async () => {
   useAppStore.setState({ settings: null, settingsLoadError: true });
   vi.spyOn(api, "loadSettings").mockRejectedValue(commandError("Config database is locked"));
-  render(<SettingsPage />);
+  renderSettings("general");
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText(/Config database is locked/)).toBeInTheDocument();
   expect(screen.queryByText(/object Object/)).not.toBeInTheDocument();
@@ -151,17 +170,18 @@ test("a structured load failure shows its message", async () => {
 
 test("server mode replaces the AI section with a desktop-app note", () => {
   transport.serverMode = true;
-  render(<SettingsPage />);
+  renderSettings("ai");
   expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
   expect(screen.queryByRole("switch", { name: "Enable AI engine" })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Allowed fetch hosts")).not.toBeInTheDocument();
   expect(screen.getByText(/AI features are available in the oxAudit desktop app/i)).toBeInTheDocument();
+  showSection("scan-defaults");
   expect(screen.getByLabelText("Ignored directories")).toBeInTheDocument();
 });
 
 test("the Live scanning section edits liveScan limits within their bounds and saves them", async () => {
   const save = saveRequests();
-  render(<SettingsPage />);
+  renderSettings("live-scanning");
   expect(screen.getByText(/apply to Template Scan live targets only/i)).toBeInTheDocument();
   const rate = screen.getByLabelText("Requests per second") as HTMLInputElement;
   fireEvent.change(rate, { target: { value: "1001" } });
@@ -189,7 +209,7 @@ test.each([
   ["Max requests per run", "0"],
 ])("%s rejects %s", async (label, value) => {
   const save = saveRequests();
-  render(<SettingsPage />);
+  renderSettings("live-scanning");
   const input = screen.getByLabelText(label);
   fireEvent.change(input, { target: { value } });
   expect(input).toHaveAttribute("aria-invalid", "true");
@@ -199,7 +219,7 @@ test.each([
 
 test("a proxy with credentials or a non-http scheme is rejected before saving", async () => {
   const save = saveRequests();
-  render(<SettingsPage />);
+  renderSettings("live-scanning");
   const proxy = screen.getByLabelText(/Proxy \(optional\)/);
   fireEvent.change(proxy, { target: { value: "http://user:secret@proxy.example:8080" } });
   expect(await screen.findByText(/Credentials in the proxy URL are not accepted/)).toBeInTheDocument();

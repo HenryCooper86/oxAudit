@@ -32,6 +32,7 @@ import { errorMessage, normalizeCommandError } from "../lib/commandError";
 
 export function BinaryScanPage(): JSX.Element {
   const setPageStatus = useAppStore((state) => state.setPageStatus);
+  const openSettings = useAppStore((state) => state.openSettings);
   const clearPageStatus = useAppStore((state) => state.clearPageStatus);
   const activeProject = useAppStore((state) => state.activeProject);
   const push = useToastStore((state) => state.push);
@@ -374,7 +375,7 @@ export function BinaryScanPage(): JSX.Element {
   // add coverage rather than being a prerequisite; their install notes live in
   // an optional section at the bottom of the page rather than a blocking gate.
   const moreScanners = (
-    <section className="rounded-sm border border-border bg-surface-secondary p-4">
+    <section className="surface-card p-4">
       <h2 className="text-[13px] font-semibold text-text-primary">
         Optional: add external scanners
       </h2>
@@ -391,7 +392,7 @@ export function BinaryScanPage(): JSX.Element {
           </dt>
           {!toolStatus?.grype.available && (
             <dd>
-              <pre className="selectable mt-1 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
+              <pre className="selectable mt-1 rounded-md border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
                 brew install grype
               </pre>
             </dd>
@@ -403,12 +404,13 @@ export function BinaryScanPage(): JSX.Element {
           </dt>
           {!toolStatus?.cveBinTool.available && (
             <dd>
-              <pre className="selectable mt-1 rounded-sm border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
+              <pre className="selectable mt-1 rounded-md border border-border bg-surface-primary px-3 py-2 font-mono text-[12px] text-text-secondary">
                 pipx install cve-bin-tool
               </pre>
               <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
                 Its CVE bootstrap is broken upstream; the Docker runtime carries the fix.
-                Choose it in Settings, and build the image with{" "}
+                Choose it in{" "}
+                <button type="button" className="rounded-sm text-accent underline underline-offset-2 hover:text-accent-hover" onClick={() => openSettings("binary-scanner")}>Settings</button>, and build the image with{" "}
                 <code className="font-mono">docker build -t oxaudit/cve-bin-tool:3.4 docker/cve-bin-tool</code>.
               </p>
             </dd>
@@ -528,7 +530,7 @@ export function BinaryScanPage(): JSX.Element {
 
 
       {notes.length > 0 && !running && !result && (
-        <div className="rounded-sm border border-warning-subtle bg-warning-subtle px-4 py-3">
+        <div className="rounded-md border border-warning-subtle bg-warning-subtle px-4 py-3">
           <SectionLabel>Caveats</SectionLabel>
           <ul className="mt-2 space-y-1">
             {notes.map((note) => (
@@ -564,7 +566,7 @@ export function BinaryScanPage(): JSX.Element {
       )}
 
       {result && !running && (
-        <section className="rounded-sm border border-border bg-surface-secondary">
+        <section className="surface-card">
           <ResultsToolbar
             countLabel={`${result.summary.components} components · ${result.summary.vulnerabilities} CVEs`}
             filters={
@@ -620,7 +622,7 @@ export function BinaryScanPage(): JSX.Element {
       )}
 
       {result?.semanticAnalysis && !running && (
-        <section className="rounded-sm border border-border bg-surface-secondary p-4">
+        <section className="surface-card p-4">
           <h2 className="text-[13px] font-semibold text-text-primary">Deep object-call analysis</h2>
           <p className="mt-1 font-mono text-[11px] text-text-muted">
             {result.semanticAnalysis.architecture} · {result.semanticAnalysis.functionsAnalyzed.toLocaleString()} functions · {result.semanticAnalysis.callEdges.toLocaleString()} relocation call edges · {result.semanticAnalysis.unresolvedEdges.toLocaleString()} unresolved
@@ -631,7 +633,7 @@ export function BinaryScanPage(): JSX.Element {
             <InlineState tone="empty" compact title="No bounded dangerous-sink calls were found" description="This does not prove their absence in stripped or statically resolved code." />
           ) : (
             <>
-            <ul aria-label="Semantic findings" className="mt-3 divide-y divide-border rounded-sm border border-border bg-surface-primary">
+            <ul aria-label="Semantic findings" className="mt-3 divide-y divide-border rounded-md border border-border bg-surface-primary">
               {semanticPagination.items.map((finding) => (
                 <li key={`${finding.ruleId}:${finding.functionAddress}`} className="px-3 py-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -691,7 +693,7 @@ function BinaryComponentEntry({ component }: { component: BinaryComponent }): JS
           <li
             key={vulnerability.cveId}
             title={`${vulnerability.source}${vulnerability.score !== null ? ` · CVSS ${vulnerability.score}` : ""}${vulnerability.epssProbability !== null ? ` · EPSS ${(vulnerability.epssProbability * 100).toFixed(1)}%` : ""}`}
-            className={`inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 ${
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 ${
               vulnerability.knownExploited
                 ? "border-sev-critical-border bg-sev-critical-subtle"
                 : "border-border bg-surface-primary"

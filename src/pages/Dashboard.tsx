@@ -1,6 +1,8 @@
 import { Binary, Bot, Boxes, Bug, FileSearch } from "lucide-react";
+import { Button } from "../components/ui";
 import { ToolLaunchCard } from "../components/workbench/ToolLaunchCard";
 import { ToolPage } from "../components/workbench/ToolPage";
+import { ActiveProjectBar } from "../features/project-home/ActiveProjectBar";
 import { ProjectHome } from "../features/project-home/ProjectHome";
 import { useAppStore } from "../lib/stores";
 
@@ -22,6 +24,7 @@ const toolIcons = {
 
 export function Dashboard() {
   const setPage = useAppStore((state) => state.setPage);
+  const openSettings = useAppStore((state) => state.openSettings);
   const aiReadiness = useAppStore((state) => state.aiReadiness);
   const aiAnnouncement = {
     loading: "AI assistant settings are loading.",
@@ -49,8 +52,9 @@ export function Dashboard() {
       <p aria-live="polite" aria-atomic="true" className="sr-only">
         {aiAnnouncement}
       </p>
+      <ActiveProjectBar />
       <ProjectHome />
-      <section aria-label="Tools" className="grid gap-3 sm:grid-cols-2">
+      <section aria-label="Tools" className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))]">
         {tools.map(([category, title, description, actionLabel, page]) => (
           <ToolLaunchCard
             key={page}
@@ -64,28 +68,24 @@ export function Dashboard() {
         ))}
       </section>
 
-      <section aria-labelledby="assistant-status-title" className="border-t border-border pt-4">
+      <section aria-labelledby="assistant-status-title" className="surface-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 id="assistant-status-title" className="text-[13px] font-semibold text-text-primary">
               AI Assistant
             </h2>
-            <p className="mt-1 text-[13px] text-text-muted">
+            <p className="mt-1 text-[13px] text-text-secondary">
               {aiDescription}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() =>
-              setPage(
-                aiReadiness.status === "unavailable" ||
-                  aiReadiness.status === "unconfigured"
-                  ? "settings"
-                  : "assistant",
-              )
-            }
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (aiReadiness.status === "unconfigured") openSettings("ai");
+              else if (aiReadiness.status === "unavailable") openSettings("general");
+              else setPage("assistant");
+            }}
             disabled={readinessPending}
-            className="shrink-0 rounded-sm border border-border bg-surface-tertiary px-3 py-1.5 text-[13px] font-medium text-text-primary transition-colors hover:border-border-strong hover:bg-surface-active"
           >
             {aiReadiness.status === "unavailable"
               ? "Review settings"
@@ -96,7 +96,7 @@ export function Dashboard() {
                   : aiReadiness.status === "checking"
                     ? "Checking AI…"
                     : "Open assistant"}
-          </button>
+          </Button>
         </div>
       </section>
     </ToolPage>

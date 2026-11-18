@@ -1,5 +1,6 @@
 import type { ComponentProps, JSX, MouseEvent } from "react";
 import Markdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { openUrl } from "../lib/opener";
 
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
@@ -44,7 +45,9 @@ export function MarkdownLink({ node: _node, href, children, onClick: _onClick, t
 
 export const safeMarkdownComponents: Components = { a: MarkdownLink };
 
-/** react-markdown with the safe external link renderer. */
+const REMARK_PLUGINS = [remarkGfm];
+
+/** react-markdown (GFM, no raw HTML) with the safe external link renderer. */
 export function SafeMarkdown({ children }: { children: string }): JSX.Element {
-  return <Markdown components={safeMarkdownComponents}>{children}</Markdown>;
+  return <Markdown remarkPlugins={REMARK_PLUGINS} components={safeMarkdownComponents}>{children}</Markdown>;
 }

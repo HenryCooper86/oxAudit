@@ -26,8 +26,8 @@ export function AgentTodoPanel({
       aria-label="Agent plan"
       className={
         compact
-          ? "overflow-hidden rounded-sm bg-surface-primary"
-          : "rounded-sm border border-border bg-surface-secondary"
+          ? "overflow-hidden rounded-md border border-border bg-surface-primary"
+          : "rounded-md border border-border bg-surface-secondary"
       }
     >
       <button

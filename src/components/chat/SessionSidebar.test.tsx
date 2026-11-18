@@ -19,7 +19,6 @@ function session(id: string, title: string, messageCount = 0): SessionInfo {
 const sessions = [session("a", "XSS review", 3), session("b", "Dependency triage")];
 
 beforeEach(() => {
-  // The collapsed state is remembered across visits; start every test open.
   localStorage.clear();
 });
 
@@ -128,20 +127,20 @@ test("while busy the controls lock and the active session shows it is responding
   expect(onSelect).not.toHaveBeenCalled();
 });
 
-test("collapsing hides the list but keeps New chat reachable", async () => {
-  const { user, onCreate } = setup();
-  await user.click(screen.getByRole("button", { name: /Collapse conversation history/i }));
-  // jsdom loads no stylesheet, so the list's `hidden` class cannot be observed
-  // as invisibility; the expanded state and the dropped search toggle can.
-  expect(screen.getByRole("button", { name: /Expand conversation history/i })).toHaveAttribute(
-    "aria-expanded",
-    "false",
-  );
-  expect(screen.queryByRole("button", { name: "Search chat sessions" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "New chat" }));
-  expect(onCreate).toHaveBeenCalledOnce();
-  await user.click(screen.getByRole("button", { name: /Expand conversation history/i }));
-  expect(sessionButton("XSS review")).toBeInTheDocument();
+// The panel used to collapse to a 48px rail of its own. It is now one of the
+// Assistant's side panels, opened and closed from the shell header (and this
+// close button); Assistant.test.tsx covers the toggles.
+test("the close button reports through onClose, and is absent when the panel cannot close", async () => {
+  const onClose = vi.fn();
+  const { user, unmount } = setup({ onClose });
+  const aside = screen.getByRole("complementary", { name: "Chat sessions" });
+  expect(aside).toHaveAttribute("id", "assistant-sessions-panel");
+  await user.click(within(aside).getByRole("button", { name: "Close conversations" }));
+  expect(onClose).toHaveBeenCalledOnce();
+  unmount();
+  setup();
+  expect(screen.queryByRole("button", { name: "Close conversations" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "New chat" })).toBeEnabled();
 });
 
 test("a load error replaces the empty state with an alert and a Retry button", async () => {
