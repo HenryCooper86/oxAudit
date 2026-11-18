@@ -27,6 +27,7 @@ mod dependency_baseline;
 mod project_config;
 mod sca;
 mod staged;
+mod yara;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -81,6 +82,15 @@ enum Command {
     /// Scan a container image, firmware archive, or binary tree with the
     /// native scanner — including the OS package database inside it.
     Image(ImageArgs),
+    /// Scan files with YARA rules you supply (one-off with --rules, or
+    /// installed packs): offsets and excerpts for every string match.
+    Yara(yara::YaraArgs),
+    /// Import, list, enable, disable, or remove signature packs (YARA rules
+    /// and Nuclei templates). oxAudit ships none; you supply them.
+    SignaturePack {
+        #[command(subcommand)]
+        command: yara::SignaturePackCommand,
+    },
     /// Re-export a stored run in a standards format.
     Export(ExportArgs),
     /// List stored runs.
@@ -694,6 +704,7 @@ enum RunListKind {
     Binary,
     Image,
     History,
+    Yara,
     All,
 }
 
@@ -923,6 +934,8 @@ pub fn run() -> i32 {
         Command::History(args) => run_history(args, cli.quiet),
         Command::Deps(args) => run_deps(args, cli.quiet),
         Command::Image(args) => run_image(args, cli.quiet),
+        Command::Yara(args) => yara::run_yara(args, cli.quiet),
+        Command::SignaturePack { command } => yara::run_signature_pack(command, cli.quiet),
         Command::Export(args) => run_export(args),
         Command::Runs(args) => run_runs(args),
         Command::Benchmark(args) => run_benchmark(args, cli.quiet),
@@ -2295,6 +2308,7 @@ fn run_runs(args: &RunsArgs) -> CliResult {
             RunListKind::Binary => Some("binary"),
             RunListKind::Image => Some("image"),
             RunListKind::History => Some("history"),
+            RunListKind::Yara => Some("yara"),
             RunListKind::All => None,
         };
         let runs = service

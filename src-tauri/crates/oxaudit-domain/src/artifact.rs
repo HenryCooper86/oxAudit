@@ -13,6 +13,10 @@ pub enum ArtifactKind {
     ContainerLayer,
     Sbom,
     Report,
+    /// Any scanned file, regardless of content type (YARA and template scans).
+    File,
+    /// A live network target (URL, host or host:port) named by the user.
+    NetworkTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

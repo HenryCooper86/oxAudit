@@ -31,7 +31,9 @@ export type CanonicalRunKind =
   | "firmware"
   | "import"
   | "external_evidence"
-  | "verification";
+  | "verification"
+  | "yara"
+  | "template";
 export type CanonicalRunState =
   | "queued"
   | "discovering"
@@ -96,7 +98,7 @@ export interface ImageScanOutcome {
   state?: CanonicalRunState;
 }
 
-export type ScanWorkKind = "source" | "dependencies" | "binary" | "image" | "history";
+export type ScanWorkKind = "source" | "dependencies" | "binary" | "image" | "history" | "yara" | "template";
 export type ScanWorkStatus = "running" | "cancelling" | "completed" | "failed" | "cancelled" | "incomplete";
 export interface ScanWorkDescriptor {
   operationId: string;
@@ -757,7 +759,7 @@ export interface SourceFindingsPage extends ResultPage<Finding> {
   languages: string[];
 }
 
-export type CanonicalProjectionSection = "dependencies" | "vulnerabilities" | "components" | "semanticFindings" | "layers" | "findings" | "blobs";
+export type CanonicalProjectionSection = "dependencies" | "vulnerabilities" | "components" | "semanticFindings" | "layers" | "findings" | "blobs" | "matches" | "skipped" | "notEvaluated";
 
 /** List arrays in projection are empty placeholders; sections supplies authoritative totals. */
 export interface CanonicalProjectionMetadata<T> {
@@ -1385,4 +1387,128 @@ export interface HistoryScanResult {
   limitNote: string | null;
   /** Present only when live validation was opted into for this run. */
   validation: HistoryValidationSummary | null;
+}
+
+// ---------------------------------------------------------------- signature packs and YARA
+
+export type SignaturePackKind = "yara" | "nuclei";
+
+/** A rule file or rule left out of a pack, with the reason. */
+export interface SignaturePackSkip {
+  file: string;
+  line: number | null;
+  message: string;
+}
+
+/** What importing a pack would do; nothing is written. */
+export interface SignaturePackPreview {
+  kind: SignaturePackKind;
+  fileCount: number;
+  ignoredCount: number;
+  ruleCount: number;
+  skipped: SignaturePackSkip[];
+  contentSha256: string;
+  /** Recognised from a LICENSE/COPYING file in the pack root; the user confirms it. */
+  detectedLicense: string | null;
+  totalBytes: number;
+}
+
+export interface InstallSignaturePackRequest {
+  kind: SignaturePackKind;
+  /** A rule file, a folder, or a .zip. */
+  path: string;
+  name: string;
+  license: string;
+  version?: string;
+  source?: string;
+  authors?: string;
+}
+
+export interface InstalledSignaturePack {
+  id: string;
+  kind: SignaturePackKind;
+  name: string;
+  version: string;
+  license: string;
+  source: string;
+  authors: string;
+  contentSha256: string;
+  fileCount: number;
+  ruleCount: number;
+  skipped: SignaturePackSkip[];
+  enabled: boolean;
+  installedAt: string;
+}
+
+export interface YaraScanRequest {
+  path: string;
+  /** Omit to apply every enabled YARA pack; an empty list applies none. */
+  packIds?: string[];
+  /** One-off rule files or folders that are not installed. */
+  extraRulePaths?: string[];
+  maxFileSizeMb?: number;
+  operationId?: string;
+}
+
+export interface YaraStringMatch {
+  identifier: string;
+  offset: number;
+  length: number;
+  excerptHex: string;
+}
+
+export interface YaraMatchRow {
+  id: string;
+  /** Relative to the scan target, forward slashes. */
+  path: string;
+  filePath: string;
+  sha256: string;
+  rule: string;
+  namespace: string;
+  pack: string;
+  ruleId: string;
+  tags: string[];
+  severity: "info" | "low" | "medium" | "high" | "critical";
+  meta: Array<[string, string | number | boolean]>;
+  strings: YaraStringMatch[];
+  stringsTruncated: number;
+}
+
+export interface YaraSkippedFile {
+  path: string;
+  reason: string;
+}
+
+export interface YaraPackInfo {
+  id: string;
+  name: string;
+  license: string;
+  contentSha256: string;
+  ruleCount: number;
+}
+
+export interface YaraRuleSkip {
+  pack: string;
+  file: string;
+  line: number | null;
+  message: string;
+}
+
+export interface YaraScanResult {
+  runId: string;
+  target: string;
+  /** "incomplete" when a file timed out, a pack failed its integrity check, or a cap was hit. */
+  state: "completed" | "incomplete";
+  filesScanned: number;
+  bytesScanned: number;
+  matches: YaraMatchRow[];
+  matchesDropped: number;
+  skipped: YaraSkippedFile[];
+  skippedDropped: number;
+  packs: YaraPackInfo[];
+  rulesCompiled: number;
+  rulesSkipped: YaraRuleSkip[];
+  rulesSkippedTotal: number;
+  notes: string[];
+  durationMs: number;
 }

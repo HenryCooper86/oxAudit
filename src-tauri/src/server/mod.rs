@@ -52,6 +52,7 @@ pub struct ServerContext {
     pub findings: FindingsState,
     pub cve: crate::cve::CveState,
     pub rule_packs: crate::rulepack_store::RulePacksState,
+    pub sig_packs: crate::sigpacks::SigPacksState,
     pub schedules: crate::schedule_store::ScheduleState,
     pub hub: Arc<EventHub>,
     pub data_dir: PathBuf,
@@ -128,6 +129,8 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
             crate::rulepack_store::RulePacksState::unavailable(error)
         }
     };
+    let sig_packs =
+        crate::sigpacks::SigPacksState::open_beside(&config.data_dir.join("rule-packs.sqlite3"));
     let schedules = match crate::schedule_store::ScheduleStore::open(
         &config.data_dir.join("schedules.sqlite3"),
     ) {
@@ -144,6 +147,7 @@ async fn serve(config: ServerConfig) -> Result<(), String> {
         findings,
         cve,
         rule_packs,
+        sig_packs,
         schedules,
         hub: hub.clone(),
         data_dir: config.data_dir.clone(),
@@ -480,6 +484,7 @@ mod tests {
             findings,
             cve,
             rule_packs,
+            sig_packs: crate::sigpacks::SigPacksState::unavailable("test".into()),
             schedules,
             hub: hub.clone(),
             data_dir,

@@ -139,6 +139,22 @@ pub struct DataFlowEvidence {
     pub unresolved_edges: u32,
 }
 
+/// One request and response exchanged with a live target. Both sides are
+/// bounded excerpts with credential-bearing header values already redacted
+/// by the producer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkExchangeEvidence {
+    pub artifact_id: ArtifactId,
+    pub protocol: String,
+    pub target: String,
+    pub request: String,
+    pub response_excerpt: String,
+    pub response_truncated: bool,
+    pub matcher_names: Vec<String>,
+    pub extracted: Vec<(String, Vec<String>)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "details", rename_all = "snake_case")]
 pub enum Evidence {
@@ -150,6 +166,7 @@ pub enum Evidence {
     GateDecision(GateDecisionEvidence),
     ToolReceipt(ToolReceiptEvidence),
     DataFlow(DataFlowEvidence),
+    NetworkExchange(NetworkExchangeEvidence),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

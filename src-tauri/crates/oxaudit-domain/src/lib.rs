@@ -23,7 +23,7 @@ pub use component::{Component, ComponentIdentity, IdentityMethod};
 pub use error::DomainError;
 pub use evidence::{
     AdvisoryMatchEvidence, BinaryMatchEvidence, DataFlowEdge, DataFlowEvidence, DataFlowNode,
-    Evidence, EvidenceRecord, FileLocationEvidence, GateDecisionEvidence,
+    Evidence, EvidenceRecord, FileLocationEvidence, GateDecisionEvidence, NetworkExchangeEvidence,
     PackageDeclarationEvidence, RedactedSecretEvidence, RedactedValue, ToolReceiptEvidence,
 };
 pub use finding::{Finding, FindingState, Severity};

@@ -131,7 +131,29 @@ fn lifecycle_properties(data: &ReportData) -> serde_json::Value {
     ])
 }
 
+/// Run kinds whose results are signature or template matches with no
+/// components, advisories or dependency inventory. The inventory and VEX
+/// formats would render them as an empty document that reads as "nothing
+/// found", so they are refused with a reason instead.
+fn refuse_unmappable_format(data: &ReportData, format: ReportFormat) -> Result<(), String> {
+    use oxaudit_domain::RunKind;
+    if !matches!(data.run.kind, RunKind::Yara | RunKind::Template) {
+        return Ok(());
+    }
+    if matches!(format, ReportFormat::OxAuditJson | ReportFormat::Sarif) {
+        return Ok(());
+    }
+    let kind = match data.run.kind {
+        RunKind::Yara => "YARA",
+        _ => "template",
+    };
+    Err(format!(
+        "{format:?} export is not supported for {kind} scan runs: it has no place for signature matches, and an empty document would read as a result. Export SARIF or the oxAudit JSON instead."
+    ))
+}
+
 pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedReport, String> {
+    refuse_unmappable_format(data, format)?;
     if matches!(
         format,
         ReportFormat::GithubIssuesCsv | ReportFormat::JiraCsv
@@ -164,8 +186,10 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                         | oxaudit_domain::ObservationKind::SecretCandidate
                         | oxaudit_domain::ObservationKind::PolicyConcern
                         | oxaudit_domain::ObservationKind::SemanticDataFlow
+                        | oxaudit_domain::ObservationKind::SignatureMatch
                 )
             });
+            let signatures = SignatureIndex::new(data);
             let mut results =
                 applicable
                     .map(|record| {
@@ -176,7 +200,15 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                             Evidence::RedactedSecret(secret) => Some(&secret.location),
                             _ => None,
                         });
+                        let is_signature = record.observation.kind
+                            == oxaudit_domain::ObservationKind::SignatureMatch;
+                        let signature_locations = if is_signature {
+                            signatures.locations(record)
+                        } else {
+                            Vec::new()
+                        };
                         let locations = location
+                            .filter(|_| !is_signature)
                             .map(|location| {
                                 vec![serde_json::json!({
                                     "physicalLocation": {
@@ -188,20 +220,25 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                                     }
                                 })]
                             })
-                            .unwrap_or_default();
+                            .unwrap_or(signature_locations);
                         let rule_id = record.observation.rule_id.as_deref();
+                        let severity = if is_signature {
+                            rule_id.and_then(|id| signatures.severity(id))
+                        } else {
+                            rule_severity(rule_id)
+                        };
                         let mut result = serde_json::json!({
                             // Consumers that show a severity read `level`, not
                             // our own vocabulary. Without it every finding
                             // arrives as an undifferentiated warning.
-                            "level": sarif_level(rule_severity(rule_id)),
+                            "level": sarif_level(severity),
                             "message": { "text": record.observation.summary },
                             "locations": locations,
                             "properties": {
                                 "observationId": record.observation.id,
                                 "detectorId": record.observation.detector_id,
                                 "detectorVersion": record.observation.detector_version,
-                                "severity": rule_severity(rule_id).unwrap_or("unknown")
+                                "severity": severity.unwrap_or("unknown")
                             }
                         });
                         if let Some(rule_id) = &record.observation.rule_id {
@@ -220,7 +257,11 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                 results.extend(dependencies::sarif_results(data)?);
             }
             if results.is_empty() {
-                warnings.push("This run has no observations that map to SARIF.".into());
+                warnings.push(if data.run.kind == oxaudit_domain::RunKind::Yara {
+                    "No rule matched. That says nothing about content the rules do not describe, or about files listed as skipped.".into()
+                } else {
+                    "This run has no observations that map to SARIF.".into()
+                });
             }
             // `tool.driver.rules` is where a SARIF consumer finds what a rule
             // means and how to fix it. Emitting only the rules that fired keeps
@@ -232,7 +273,7 @@ pub fn generate(data: &ReportData, format: ReportFormat) -> Result<GeneratedRepo
                 .collect();
             let rules = fired
                 .iter()
-                .filter_map(|id| sarif_rule(id))
+                .filter_map(|id| sarif_rule(id).or_else(|| signatures.rule_descriptor(id)))
                 .collect::<Vec<_>>();
             serde_json::json!({
                 "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -1085,6 +1126,162 @@ mod tests {
         );
     }
 
+    fn yara_report(with_projection: bool) -> ReportData {
+        use oxaudit_domain::{
+            Artifact, ArtifactId, ArtifactKind, ArtifactLocation, BinaryMatchEvidence, EvidenceId,
+            EvidenceRecord, Observation, ObservationId, ObservationKind, RunId, RunKind,
+        };
+        let run_id = RunId::parse("run_yara").unwrap();
+        let artifact_id = ArtifactId::parse("artifact_hit").unwrap();
+        let mut run = Run::queued(RunKind::Yara, "/scan", 1);
+        run.id = run_id.clone();
+        run.state = RunState::Completed;
+        let evidence_id = EvidenceId::new();
+        let second_id = EvidenceId::new();
+        let rule_id = "pack-1/rules/alpha.yar:marker_alpha";
+        let projection = with_projection.then(|| {
+            serde_json::json!({"matches": [{
+                "path": "dir/my hit.bin", "ruleId": rule_id, "severity": "high", "tags": ["fixture"],
+                "strings": [
+                    {"identifier": "$a", "offset": 3, "length": 21, "excerptHex": "00"},
+                    {"identifier": "$b", "offset": 40, "length": 5, "excerptHex": "00"}
+                ]
+            }]})
+        });
+        ReportData {
+            run,
+            artifacts: vec![Artifact {
+                id: artifact_id.clone(),
+                kind: ArtifactKind::File,
+                location: ArtifactLocation {
+                    normalized_path: "dir/my hit.bin".into(),
+                    canonical_path: None,
+                    parent_id: None,
+                },
+                size_bytes: 50,
+                media_type: None,
+                content_sha256: Some("a".repeat(64)),
+            }],
+            components: Vec::new(),
+            observations: vec![ObservationRecord {
+                observation: Observation {
+                    id: ObservationId::new(),
+                    run_id,
+                    artifact_id: artifact_id.clone(),
+                    kind: ObservationKind::SignatureMatch,
+                    detector_id: "oxaudit-yara".into(),
+                    detector_version: "1.23.0".into(),
+                    rule_id: Some(rule_id.into()),
+                    title: "marker_alpha".into(),
+                    summary: "YARA rule marker_alpha matched dir/my hit.bin".into(),
+                    evidence_ids: vec![evidence_id.clone(), second_id.clone()],
+                },
+                evidence: vec![
+                    EvidenceRecord {
+                        id: evidence_id,
+                        evidence: Evidence::BinaryMatch(BinaryMatchEvidence {
+                            artifact_id: artifact_id.clone(),
+                            offset: Some(3),
+                            section: None,
+                            matcher_id: "$a".into(),
+                            encoding: "hex".into(),
+                            captured_value: Some("4f58".into()),
+                        }),
+                    },
+                    EvidenceRecord {
+                        id: second_id,
+                        evidence: Evidence::BinaryMatch(BinaryMatchEvidence {
+                            artifact_id,
+                            offset: Some(40),
+                            section: None,
+                            matcher_id: "$b".into(),
+                            encoding: "hex".into(),
+                            captured_value: Some("4f58".into()),
+                        }),
+                    },
+                ],
+            }],
+            findings: Vec::new(),
+            projection,
+        }
+    }
+
+    #[test]
+    fn sarif_maps_yara_matches_to_byte_regions_with_severity_levels() {
+        let data = yara_report(true);
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        let result = &value["runs"][0]["results"][0];
+        assert_eq!(result["ruleId"], "pack-1/rules/alpha.yar:marker_alpha");
+        assert_eq!(result["level"], "error");
+        assert_eq!(result["properties"]["severity"], "high");
+        let first = &result["locations"][0]["physicalLocation"];
+        assert_eq!(first["artifactLocation"]["uri"], "dir/my%20hit.bin");
+        assert_eq!(first["region"]["byteOffset"], 3);
+        assert_eq!(first["region"]["byteLength"], 21);
+        let second = &result["locations"][1]["physicalLocation"];
+        assert_eq!(second["region"]["byteOffset"], 40);
+        assert_eq!(second["region"]["byteLength"], 5);
+        let rule = &value["runs"][0]["tool"]["driver"]["rules"][0];
+        assert_eq!(rule["id"], "pack-1/rules/alpha.yar:marker_alpha");
+        assert_eq!(rule["properties"]["tags"][0], "fixture");
+    }
+
+    #[test]
+    fn sarif_for_yara_without_a_projection_degrades_to_warning_and_excerpt_length() {
+        let data = yara_report(false);
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        let result = &value["runs"][0]["results"][0];
+        assert_eq!(result["level"], "warning");
+        assert_eq!(result["properties"]["severity"], "unknown");
+        assert_eq!(
+            result["locations"][0]["physicalLocation"]["region"]["byteLength"],
+            2
+        );
+    }
+
+    #[test]
+    fn a_yara_run_with_no_matches_says_no_rule_matched_in_sarif() {
+        let mut data = yara_report(true);
+        data.observations.clear();
+        let output = generate(&data, ReportFormat::Sarif).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert!(value["runs"][0]["results"].as_array().unwrap().is_empty());
+        assert!(output
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("No rule matched")));
+        assert!(!output
+            .warnings
+            .iter()
+            .any(|w| w.to_lowercase().contains("clean")));
+    }
+
+    #[test]
+    fn inventory_and_ticket_formats_refuse_yara_runs_instead_of_exporting_an_empty_report() {
+        let data = yara_report(true);
+        for format in [
+            ReportFormat::CycloneDx,
+            ReportFormat::Spdx,
+            ReportFormat::OpenVex,
+            ReportFormat::CycloneDxVex,
+            ReportFormat::GithubIssuesCsv,
+            ReportFormat::JiraCsv,
+        ] {
+            let error = generate(&data, format)
+                .err()
+                .unwrap_or_else(|| panic!("{format:?} must refuse"));
+            assert!(
+                error.contains("not supported for YARA scan runs"),
+                "{error}"
+            );
+        }
+        let output = generate(&data, ReportFormat::OxAuditJson).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert_eq!(value["observations"].as_array().unwrap().len(), 1);
+    }
+
     #[test]
     fn sarif_omits_absent_rule_ids_instead_of_emitting_null() {
         let mut data = advisory_report();
@@ -1297,6 +1494,156 @@ mod tests {
         assert_eq!(csv_cell("with,comma"), "\"with,comma\"");
         assert_eq!(csv_cell("say \"hi\""), "\"say \"\"hi\"\"\"");
         assert_eq!(csv_cell("two\nlines"), "\"two\nlines\"");
+    }
+}
+
+/// What a SARIF result for a YARA match needs that the canonical evidence
+/// does not carry: the rule's severity and each string match's length. Both
+/// live in the run's stored projection, so SARIF reads them back from there
+/// rather than inventing them. Without a projection the level falls back to
+/// `warning` and the length to the captured excerpt's length.
+struct SignatureIndex<'a> {
+    artifacts: std::collections::BTreeMap<&'a str, &'a str>,
+    severities: std::collections::BTreeMap<String, String>,
+    tags: std::collections::BTreeMap<String, Vec<String>>,
+    lengths: std::collections::BTreeMap<(String, String, String, u64), u64>,
+}
+
+impl<'a> SignatureIndex<'a> {
+    fn new(data: &'a ReportData) -> Self {
+        let mut index = Self {
+            artifacts: data
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    (
+                        artifact.id.as_str(),
+                        artifact.location.normalized_path.as_str(),
+                    )
+                })
+                .collect(),
+            severities: Default::default(),
+            tags: Default::default(),
+            lengths: Default::default(),
+        };
+        let rows = data
+            .projection
+            .as_ref()
+            .and_then(|projection| projection.get("matches"))
+            .and_then(serde_json::Value::as_array);
+        for row in rows.into_iter().flatten() {
+            let text = |key: &str| row.get(key).and_then(serde_json::Value::as_str);
+            let (Some(rule_id), Some(path)) = (text("ruleId"), text("path")) else {
+                continue;
+            };
+            if let Some(severity) = text("severity") {
+                index
+                    .severities
+                    .insert(rule_id.to_owned(), severity.to_owned());
+            }
+            if let Some(tags) = row.get("tags").and_then(serde_json::Value::as_array) {
+                index.tags.insert(
+                    rule_id.to_owned(),
+                    tags.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                );
+            }
+            for string in row
+                .get("strings")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let (Some(identifier), Some(offset), Some(length)) = (
+                    string.get("identifier").and_then(serde_json::Value::as_str),
+                    string.get("offset").and_then(serde_json::Value::as_u64),
+                    string.get("length").and_then(serde_json::Value::as_u64),
+                ) {
+                    index.lengths.insert(
+                        (
+                            rule_id.to_owned(),
+                            path.to_owned(),
+                            identifier.to_owned(),
+                            offset,
+                        ),
+                        length,
+                    );
+                }
+            }
+        }
+        index
+    }
+
+    fn severity(&self, rule_id: &str) -> Option<&str> {
+        self.severities.get(rule_id).map(String::as_str)
+    }
+
+    /// One SARIF location per string match, the first being the primary.
+    fn locations(&self, record: &ObservationRecord) -> Vec<serde_json::Value> {
+        let observation = &record.observation;
+        let Some(path) = self.artifacts.get(observation.artifact_id.as_str()) else {
+            return Vec::new();
+        };
+        let uri = sarif_artifact_uri(path);
+        let mut locations: Vec<serde_json::Value> = Vec::new();
+        for evidence in &record.evidence {
+            let Evidence::BinaryMatch(binary) = &evidence.evidence else {
+                continue;
+            };
+            let Some(offset) = binary.offset else {
+                continue;
+            };
+            let length = observation
+                .rule_id
+                .as_ref()
+                .and_then(|rule_id| {
+                    self.lengths.get(&(
+                        rule_id.clone(),
+                        (*path).to_owned(),
+                        binary.matcher_id.clone(),
+                        offset,
+                    ))
+                })
+                .copied()
+                .or_else(|| {
+                    binary
+                        .captured_value
+                        .as_ref()
+                        .map(|hex| (hex.len() / 2) as u64)
+                })
+                .unwrap_or(0);
+            locations.push(serde_json::json!({
+                "physicalLocation": {
+                    "artifactLocation": { "uri": uri },
+                    "region": { "byteOffset": offset, "byteLength": length }
+                }
+            }));
+        }
+        if locations.is_empty() {
+            // A rule that matched on file properties has no byte range; the
+            // result still names the file.
+            locations.push(serde_json::json!({
+                "physicalLocation": { "artifactLocation": { "uri": uri } }
+            }));
+        }
+        locations
+    }
+
+    fn rule_descriptor(&self, rule_id: &str) -> Option<serde_json::Value> {
+        let severity = self.severity(rule_id)?;
+        let name = rule_id.rsplit(':').next().unwrap_or(rule_id);
+        Some(serde_json::json!({
+            "id": rule_id,
+            "name": name,
+            "shortDescription": { "text": format!("YARA rule {name}") },
+            "defaultConfiguration": { "level": sarif_level(Some(severity)) },
+            "properties": {
+                "severity": severity,
+                "tags": self.tags.get(rule_id).cloned().unwrap_or_default()
+            }
+        }))
     }
 }
 

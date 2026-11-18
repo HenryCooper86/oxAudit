@@ -6,8 +6,8 @@ export function canonicalMetadata<T>(value: T): CanonicalProjectionMetadata<T> {
   const projection = structuredClone(value) as Record<string, any>;
   const sections: Partial<Record<CanonicalProjectionSection, number>> = {};
   const base = projection.result ?? projection;
-  for (const section of ["dependencies", "vulnerabilities", "components", "layers", "findings", "blobs"] as const) {
-    const owner = section === "layers" || section === "blobs" || section === "findings" ? projection : base;
+  for (const section of ["dependencies", "vulnerabilities", "components", "layers", "findings", "blobs", "matches", "skipped"] as const) {
+    const owner = section === "layers" || section === "blobs" || section === "findings" || section === "matches" || section === "skipped" ? projection : base;
     if (Array.isArray(owner[section])) { sections[section] = owner[section].length; owner[section] = []; }
   }
   if (base.semanticAnalysis) { sections.semanticFindings = base.semanticAnalysis.findings.length; base.semanticAnalysis.findings = []; }

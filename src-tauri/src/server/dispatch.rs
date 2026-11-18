@@ -639,6 +639,80 @@ pub async fn dispatch(ctx: &ServerContext, cmd: &str, args: Value) -> Result<Val
                 a.id,
             ))
         }
+        // ------------------------------------------- signature packs / YARA
+        "validate_signature_pack" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                kind: crate::sigpacks::PackKind,
+                path: String,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::sigpacks::validate_signature_pack_inner(
+                a.kind, &a.path,
+            ))
+        }
+        "install_signature_pack" => {
+            #[derive(serde::Deserialize)]
+            struct Args {
+                request: crate::commands::sigpacks::InstallSignaturePackRequest,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::sigpacks::install_signature_pack_inner(
+                &ctx.sig_packs,
+                a.request,
+            ))
+        }
+        "list_signature_packs" => ok_st(
+            crate::commands::sigpacks::list_signature_packs_inner(&ctx.sig_packs),
+        ),
+        "set_signature_pack_enabled" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                id: String,
+                enabled: bool,
+            }
+            let a: Args = from_args(&args)?;
+            ok_st(crate::commands::sigpacks::set_signature_pack_enabled_inner(
+                &ctx.sig_packs,
+                &a.id,
+                a.enabled,
+            ))
+        }
+        "remove_signature_pack" => {
+            let a = id_args(&args)?;
+            ok_st(crate::commands::sigpacks::remove_signature_pack_inner(
+                &ctx.sig_packs,
+                &a.id,
+            ))
+        }
+        "scan_yara" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                request: crate::yara::YaraScanRequest,
+            }
+            let a: Args = from_args(&args)?;
+            let progress: std::sync::Arc<dyn Fn(Value) + Send + Sync> = {
+                let hub_events = ctx.events();
+                std::sync::Arc::new(move |payload: Value| {
+                    let _ = hub_events.emit("yara://progress", payload);
+                })
+            };
+            let hub_events = ctx.events();
+            ok_st(
+                crate::commands::yara::scan_yara_engine(
+                    &ctx.app.scan_work,
+                    &ctx.findings,
+                    &ctx.sig_packs,
+                    &hub_events,
+                    progress,
+                    a.request,
+                )
+                .await,
+            )
+        }
         "quality_status" => {
             ok_st(crate::commands::quality::quality_status_inner(&ctx.findings))
         }
@@ -1182,6 +1256,7 @@ mod tests {
             findings: crate::initialize_findings_state(&data_dir, chrono::Utc::now()),
             cve,
             rule_packs: crate::rulepack_store::RulePacksState::unavailable("test".into()),
+            sig_packs: crate::sigpacks::SigPacksState::unavailable("test".into()),
             schedules: crate::schedule_store::ScheduleState::unavailable("test".into()),
             hub: Arc::new(crate::server::hub::EventHub::new()),
             data_dir,
@@ -1214,6 +1289,101 @@ mod tests {
                 "schedule storage damage must be visible: {result:?}"
             );
         }
+    }
+
+    #[cfg(feature = "yara")]
+    #[tokio::test]
+    async fn signature_packs_and_yara_scans_run_through_dispatch() {
+        let (mut ctx, dir) = test_context();
+        // Without a store, pack commands say so and a scan with no rules fails.
+        let unavailable = dispatch(&ctx, "list_signature_packs", serde_json::json!({})).await;
+        assert!(unavailable.is_err());
+
+        ctx.sig_packs =
+            crate::sigpacks::SigPacksState::open_beside(&ctx.data_dir.join("rule-packs.sqlite3"));
+        let rules = dir.path().join("alpha.yar");
+        std::fs::write(
+            &rules,
+            "rule marker_alpha { strings: $a = \"OXAUDIT-FIXTURE-ALPHA\" condition: $a }",
+        )
+        .unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("hit.bin"), b"..OXAUDIT-FIXTURE-ALPHA..").unwrap();
+
+        let none = dispatch(
+            &ctx,
+            "scan_yara",
+            serde_json::json!({"request": {"path": target.to_string_lossy()}}),
+        )
+        .await;
+        assert!(
+            none.unwrap_err()
+                .as_str()
+                .unwrap()
+                .contains("No YARA rules"),
+            "a scan without rules must fail, not report no matches"
+        );
+
+        let preview = dispatch(
+            &ctx,
+            "validate_signature_pack",
+            serde_json::json!({"kind": "yara", "path": rules.to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(preview["ruleCount"], 1);
+        assert_eq!(preview["fileCount"], 1);
+
+        let installed = dispatch(
+            &ctx,
+            "install_signature_pack",
+            serde_json::json!({"request": {
+                "kind": "yara", "path": rules.to_string_lossy(),
+                "name": "Alpha", "license": "Apache-2.0"
+            }}),
+        )
+        .await
+        .unwrap();
+        let id = installed["id"].as_str().unwrap().to_owned();
+        let listed = dispatch(&ctx, "list_signature_packs", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+
+        let scan = dispatch(
+            &ctx,
+            "scan_yara",
+            serde_json::json!({"request": {"path": target.to_string_lossy()}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(scan["state"], "completed");
+        assert_eq!(scan["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(scan["matches"][0]["pack"], id);
+        assert_eq!(scan["matches"][0]["strings"][0]["offset"], 2);
+
+        dispatch(
+            &ctx,
+            "set_signature_pack_enabled",
+            serde_json::json!({"id": id, "enabled": false}),
+        )
+        .await
+        .unwrap();
+        assert!(dispatch(
+            &ctx,
+            "scan_yara",
+            serde_json::json!({"request": {"path": target.to_string_lossy()}}),
+        )
+        .await
+        .is_err());
+        dispatch(&ctx, "remove_signature_pack", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
+        let listed = dispatch(&ctx, "list_signature_packs", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(listed.as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

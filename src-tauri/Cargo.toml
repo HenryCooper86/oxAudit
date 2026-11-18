@@ -9,6 +9,8 @@ members = [
   "crates/oxaudit-archive",
   "crates/oxaudit-parsers",
   "crates/oxaudit-sca",
+  "crates/oxaudit-yara",
+  "crates/oxaudit-nuclei",
 ]
 resolver = "2"
 
@@ -41,7 +43,7 @@ publish = false
 #
 # The Kotlin, Swift, C#, and C++ grammars are the large ones; dropping all four
 # is most of the saving.
-default = ["grammars-all"]
+default = ["grammars-all", "yara"]
 
 grammars-all = [
   "grammar-javascript",
@@ -84,6 +86,9 @@ grammar-swift = ["dep:tree-sitter-swift"]
 # browser GUI served alongside. The desktop and CLI builds exclude it, so
 # its dependencies never enter their graphs.
 server = ["dep:axum", "dep:tokio-stream", "dep:mime_guess"]
+# The embedded YARA-X engine. Without it `scan_yara` fails with an explicit
+# "no YARA engine in this build" error; it never reports an empty result.
+yara = ["dep:oxaudit-yara"]
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -109,6 +114,7 @@ oxaudit-scanners = { path = "crates/oxaudit-scanners" }
 oxaudit-archive = { path = "crates/oxaudit-archive" }
 oxaudit-parsers = { path = "crates/oxaudit-parsers" }
 oxaudit-sca = { path = "crates/oxaudit-sca" }
+oxaudit-yara = { path = "crates/oxaudit-yara", optional = true }
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-opener = "2.7.2"
 tauri-plugin-dialog = "2.8.4"

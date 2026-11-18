@@ -12,6 +12,8 @@ pub enum ObservationKind {
     AdvisoryMatch,
     PolicyConcern,
     SemanticDataFlow,
+    SignatureMatch,
+    TemplateMatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

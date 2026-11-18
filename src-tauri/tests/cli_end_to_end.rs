@@ -4450,3 +4450,362 @@ fn a_subdirectory_scan_under_github_actions_writes_valid_prefixed_sarif() {
             .is_none_or(|value| value.is_array()));
     }
 }
+
+// ------------------------------------------------------------------- yara
+//
+// Every rule below is authored for these tests.
+
+#[cfg(feature = "yara")]
+mod yara {
+    use super::*;
+
+    const RULE_HIGH: &str = r#"rule fixture_marker_high {
+    meta:
+        severity = "high"
+    strings:
+        $a = "OXAUDIT-FIXTURE-ALPHA"
+    condition:
+        $a
+}
+"#;
+
+    const RULE_LOW: &str = r#"rule fixture_marker_low {
+    meta:
+        severity = "low"
+    strings:
+        $a = "OXAUDIT-FIXTURE-BETA"
+    condition:
+        $a
+}
+"#;
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir_all(root.join("target/sub")).unwrap();
+            std::fs::write(
+                root.join("target/sub/hit.bin"),
+                b"xx OXAUDIT-FIXTURE-ALPHA yy",
+            )
+            .unwrap();
+            std::fs::write(root.join("target/plain.txt"), b"nothing here").unwrap();
+            std::fs::write(root.join("high.yar"), RULE_HIGH).unwrap();
+            std::fs::write(root.join("low.yar"), RULE_LOW).unwrap();
+            Self { dir }
+        }
+
+        fn path(&self, relative: &str) -> String {
+            self.dir
+                .path()
+                .join(relative)
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+
+    fn stderr(output: &Output) -> String {
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    #[test]
+    fn a_match_is_reported_with_its_offset_and_gates_by_severity() {
+        let f = Fixture::new();
+        let output = run(&["yara", &f.path("target"), "--rules", &f.path("high.yar")]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("sub/hit.bin"), "{text}");
+        assert!(text.contains("fixture_marker_high"), "{text}");
+        assert!(text.contains("$a at offset 3 (21 byte(s))"), "{text}");
+
+        let gated = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--fail-on",
+            "high",
+        ]);
+        assert_eq!(code(&gated), 1, "{}", stderr(&gated));
+        let not_gated = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--fail-on",
+            "critical",
+        ]);
+        assert_eq!(code(&not_gated), 0);
+    }
+
+    #[test]
+    fn json_output_carries_matches_and_the_run() {
+        let f = Fixture::new();
+        let output = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--format",
+            "json",
+            "-q",
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["kind"], "yara");
+        assert_eq!(value["state"], "completed");
+        assert_eq!(value["matches"][0]["path"], "sub/hit.bin");
+        assert_eq!(value["matches"][0]["strings"][0]["offset"], 3);
+        assert_eq!(value["filesScanned"], 2);
+    }
+
+    #[test]
+    fn no_match_exits_zero_and_says_no_rule_matched() {
+        let f = Fixture::new();
+        let output = run(&["yara", &f.path("target"), "--rules", &f.path("low.yar")]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("No rule matched"), "{text}");
+        let lowered = text.to_lowercase();
+        assert!(
+            !lowered.contains("clean") && !lowered.contains("safe"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn sarif_output_is_a_valid_document_with_byte_regions() {
+        let f = Fixture::new();
+        let output = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--format",
+            "sarif",
+            "-q",
+        ]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["version"], "2.1.0");
+        let result = &value["runs"][0]["results"][0];
+        assert_eq!(result["level"], "error");
+        assert!(result["ruleId"]
+            .as_str()
+            .unwrap()
+            .ends_with(":fixture_marker_high"));
+        let region = &result["locations"][0]["physicalLocation"]["region"];
+        assert_eq!(region["byteOffset"], 3);
+        assert_eq!(region["byteLength"], 21);
+        assert_eq!(
+            result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "sub/hit.bin"
+        );
+        assert_eq!(
+            value["runs"][0]["invocations"][0]["executionSuccessful"],
+            true
+        );
+    }
+
+    #[test]
+    fn running_without_any_rules_is_a_usage_error() {
+        let f = Fixture::new();
+        let output = run(&["yara", &f.path("target")]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("no YARA rules"),
+            "{}",
+            stderr(&output)
+        );
+
+        // A pack database with nothing enabled in it is the same mistake.
+        let output = run(&[
+            "yara",
+            &f.path("target"),
+            "--pack-db",
+            &f.path("packs.sqlite3"),
+        ]);
+        assert_eq!(code(&output), 2);
+        assert!(
+            stderr(&output).contains("no enabled YARA pack"),
+            "{}",
+            stderr(&output)
+        );
+
+        let output = run(&[
+            "yara",
+            &f.path("target"),
+            "--pack",
+            "x",
+            "--rules",
+            &f.path("high.yar"),
+        ]);
+        assert_eq!(code(&output), 2);
+    }
+
+    #[test]
+    fn a_broken_rule_is_skipped_and_the_good_rules_still_scan() {
+        let f = Fixture::new();
+        std::fs::create_dir_all(f.dir.path().join("rules")).unwrap();
+        std::fs::write(f.dir.path().join("rules/good.yar"), RULE_HIGH).unwrap();
+        std::fs::write(
+            f.dir.path().join("rules/broken.yar"),
+            "rule broken { condition: $missing }",
+        )
+        .unwrap();
+        let output = run(&["yara", &f.path("target"), "--rules", &f.path("rules")]);
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let text = stdout(&output);
+        assert!(text.contains("fixture_marker_high"), "{text}");
+        assert!(text.contains("1 rule file(s) did not compile"), "{text}");
+        assert!(text.contains("broken.yar"), "{text}");
+    }
+
+    #[test]
+    fn installed_packs_scan_and_a_tampered_pack_makes_the_run_incomplete() {
+        let f = Fixture::new();
+        let db = f.path("store/rule-packs.sqlite3");
+        let install = run(&[
+            "signature-pack",
+            "install",
+            "--db",
+            &db,
+            "--kind",
+            "yara",
+            "--name",
+            "Fixture pack",
+            "--license",
+            "Apache-2.0",
+            &f.path("high.yar"),
+        ]);
+        assert_eq!(code(&install), 0, "{}", stderr(&install));
+        assert!(
+            stdout(&install).contains("1 rule(s)"),
+            "{}",
+            stdout(&install)
+        );
+
+        let listed = run(&["signature-pack", "list", "--db", &db, "--json"]);
+        let packs: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let id = packs[0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(packs[0]["license"], "Apache-2.0");
+
+        let scan = run(&["yara", &f.path("target"), "--pack-db", &db, "-q"]);
+        assert_eq!(code(&scan), 0, "{}", stderr(&scan));
+        assert!(stdout(&scan).contains("fixture_marker_high"));
+
+        // Disabled: no pack applies by default (usage error), but --pack still selects it.
+        assert_eq!(
+            code(&run(&["signature-pack", "disable", "--db", &db, &id])),
+            0
+        );
+        let none = run(&["yara", &f.path("target"), "--pack-db", &db, "-q"]);
+        assert_eq!(code(&none), 2);
+        let explicit = run(&[
+            "yara",
+            &f.path("target"),
+            "--pack-db",
+            &db,
+            "--pack",
+            &id,
+            "-q",
+        ]);
+        assert_eq!(code(&explicit), 0, "{}", stderr(&explicit));
+        assert_eq!(
+            code(&run(&["signature-pack", "enable", "--db", &db, &id])),
+            0
+        );
+
+        // Tamper with the stored file: the pack is skipped, the other rules
+        // still run, and the run ends incomplete (exit 3) with the reason.
+        let stored = f
+            .dir
+            .path()
+            .join("store/sigpacks/yara")
+            .join(&id)
+            .join("high.yar");
+        std::fs::write(&stored, "rule evil { condition: true }").unwrap();
+        let tampered = run(&[
+            "yara",
+            &f.path("target"),
+            "--pack-db",
+            &db,
+            "--rules",
+            &f.path("low.yar"),
+            "-q",
+        ]);
+        assert_eq!(code(&tampered), 3, "{}", stderr(&tampered));
+        assert!(
+            stderr(&tampered).contains("incomplete"),
+            "{}",
+            stderr(&tampered)
+        );
+        assert!(stderr(&tampered).contains(&id), "{}", stderr(&tampered));
+        assert!(
+            stdout(&tampered).contains("No rule matched"),
+            "{}",
+            stdout(&tampered)
+        );
+
+        // Only the tampered pack: no rules apply, so the scan fails outright.
+        let only = run(&["yara", &f.path("target"), "--pack-db", &db, "-q"]);
+        assert_eq!(code(&only), 3, "{}", stderr(&only));
+        assert!(stderr(&only).contains("No YARA rules"), "{}", stderr(&only));
+
+        assert_eq!(
+            code(&run(&["signature-pack", "remove", "--db", &db, &id])),
+            0
+        );
+        assert!(!f.dir.path().join("store/sigpacks/yara").join(&id).exists());
+    }
+
+    #[test]
+    fn a_stored_yara_run_exports_sarif_and_refuses_inventory_formats() {
+        let f = Fixture::new();
+        let db = f.path("runs/runs.sqlite3");
+        let scan = run(&[
+            "yara",
+            &f.path("target"),
+            "--rules",
+            &f.path("high.yar"),
+            "--db",
+            &db,
+            "--format",
+            "json",
+            "-q",
+        ]);
+        assert_eq!(code(&scan), 0, "{}", stderr(&scan));
+        let value: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
+        let run_id = value["runId"].as_str().unwrap().to_owned();
+
+        let sarif = run(&["export", "--db", &db, "--run", &run_id, "--format", "sarif"]);
+        assert_eq!(code(&sarif), 0, "{}", stderr(&sarif));
+        let doc: serde_json::Value = serde_json::from_slice(&sarif.stdout).unwrap();
+        assert_eq!(doc["runs"][0]["results"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["runs"][0]["results"][0]["level"], "error");
+
+        let sbom = run(&[
+            "export",
+            "--db",
+            &db,
+            "--run",
+            &run_id,
+            "--format",
+            "cyclonedx",
+        ]);
+        assert_ne!(code(&sbom), 0);
+        assert!(
+            stderr(&sbom).contains("not supported for YARA"),
+            "{}",
+            stderr(&sbom)
+        );
+
+        let listed = run(&["runs", "--db", &db, "--kind", "yara", "--json"]);
+        assert_eq!(code(&listed), 0, "{}", stderr(&listed));
+        assert!(stdout(&listed).contains(&run_id));
+    }
+}
