@@ -25,16 +25,6 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # An entry with no analysis is not acceptable here — if we cannot say why an
 # advisory does not apply, it applies.
 ignore = [
-  # ---- Reachability-cleared vulnerabilities ----------------------------------
-  # lopdf parses nested PDF objects with unbounded recursion. Reached only
-  # through `Document::load*`, which is a *reading* entry point. oxAudit uses
-  # printpdf to generate reports and never loads a PDF, so no attacker-supplied
-  # bytes reach the parser. Verified: `grep -rn 'load_mem\|Document::load'`
-  # over src-tauri/src returns nothing.
-  # Clears when printpdf 0.12+ (lopdf 0.44) is adopted — an API break tracked
-  # separately, not a security fix.
-  { id = "RUSTSEC-2026-0187", reason = "lopdf load path is unreachable; oxAudit only writes PDFs" },
-
   # ---- Unmaintained, transitively imposed -----------------------------------
   # The gtk-rs GTK3 bindings are Tauri's Linux webview backend. oxAudit does not
   # depend on them directly and cannot replace them; they leave the tree when
